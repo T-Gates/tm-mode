@@ -1,0 +1,23 @@
+{
+  "id": "02-context-injection",
+  "title": "세션 시작 시 팀 메모리가 컨텍스트로 주입된다",
+  "spec_refs": ["01 §4"],
+  "tier_signal": "deterministic",
+  "steps": [
+    {
+      "name": "컨텍스트 조회 (세션 시작 주입)",
+      "action": { "kind": "command", "argv": ["context"] },
+      "expect": [
+        { "kind": "exit_code", "value": 0 },
+        { "kind": "stdout_contains", "value": "INDEX" }
+      ]
+    },
+    {
+      "name": "주입 단위 = 멤버별 최근 작업일 파일 1개 (요약 라인 포함)",
+      "action": { "kind": "noop" },
+      "expect": [
+        { "kind": "stdout_contains", "value": "summary" }
+      ]
+    }
+  ]
+}

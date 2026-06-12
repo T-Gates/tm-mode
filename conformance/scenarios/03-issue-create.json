@@ -1,0 +1,16 @@
+{
+  "id": "03-issue-create",
+  "title": "이슈 생성 — 서비스 슬롯(issues)이 동작한다",
+  "spec_refs": ["02 §9"],
+  "tier_signal": "deterministic",
+  "steps": [
+    {
+      "name": "이슈 트래커 슬롯으로 이슈 생성 요청",
+      "action": { "kind": "command", "argv": ["issue", "create", "--title", "테스트 이슈"] },
+      "expect": [
+        { "kind": "exit_code", "value": 0 },
+        { "kind": "stdout_contains", "value": "테스트 이슈" }
+      ]
+    }
+  ]
+}
