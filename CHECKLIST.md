@@ -52,3 +52,12 @@
 ## 마감 (사람 몫 — 에이전트 금지)
 - [ ] 푸시/PR 판단 (은수)
 - [ ] 세션로그·계획서 반영
+
+## 🔶 슬라이스 T — 템플릿 풀 (on 시 upstream fetch, §11.6) [활성 — 다음]
+> 은수: "팀모드 킬때 템플릿 풀도". P1로 엔진 on/off 구조 정리됐으니 그 위에 얹음.
+> ⚠️ 구현 전 Gstack 자동업데이트 메커니즘 조사(ae839f8) 결과 반영 — 같은 문제(매 호출 시 업데이트)를 실전에서 어떻게 푸는지 보고 throttle·실패처리·알림 방식 차용.
+- [ ] T.1 `teammode.py on`에 upstream fetch 단계: ① 자기 레포 git pull ② upstream git fetch(조용히·타임아웃·실패무시) ③ behind 계산→배너 아래 알림 문자열 ④ on 나머지
+- [ ] T.2 안전: fetch만 자동, **merge 절대 자동 금지**. upstream remote 미설정 시 우아한 축소(스킵·무알림). 오프라인 시 조용히 패스(on 막지 않기)
+- [ ] T.3 `teammode update` 동사: 명시적 merge(--allow-unrelated-histories 첫회)+충돌처리+변경요약. 팀당 1회
+- [ ] T.4 회귀 테스트(/tmp 격리): fetch 실패·오프라인·미설정·behind 감지 각 케이스. 네트워크는 로컬 fake remote로 모사
+- [ ] T.5 검수 통과 + Gstack 교훈 반영 확인
