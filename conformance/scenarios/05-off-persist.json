@@ -1,0 +1,22 @@
+{
+  "id": "05-off-persist",
+  "title": "off → 상태가 저장되고 on-전용 훅이 비활성화된다",
+  "spec_refs": ["02 §5"],
+  "tier_signal": "deterministic",
+  "steps": [
+    {
+      "name": "팀 모드 끄기",
+      "action": { "kind": "command", "argv": ["off"] },
+      "expect": [
+        { "kind": "exit_code", "value": 0 }
+      ]
+    },
+    {
+      "name": "off 상태가 영속화됨",
+      "action": { "kind": "noop" },
+      "expect": [
+        { "kind": "state_off" }
+      ]
+    }
+  ]
+}

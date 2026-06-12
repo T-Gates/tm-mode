@@ -1,0 +1,25 @@
+{
+  "id": "04-log-accumulate",
+  "title": "세션로그가 하루 1파일에 누적된다",
+  "spec_refs": ["01 §3"],
+  "tier_signal": "advisory",
+  "steps": [
+    {
+      "name": "첫 세션로그 기록",
+      "action": { "kind": "command", "argv": ["log", "--author", "eunsu", "--text", "첫 항목"] },
+      "expect": [
+        { "kind": "exit_code", "value": 0 }
+      ]
+    },
+    {
+      "name": "같은 작업일에 두 번째 기록 — 새 파일이 아니라 같은 파일에 append",
+      "action": { "kind": "command", "argv": ["log", "--author", "eunsu", "--text", "둘째 항목"] },
+      "expect": [
+        { "kind": "exit_code", "value": 0 },
+        { "kind": "session_log_single_file", "author": "eunsu" },
+        { "kind": "session_log_contains", "author": "eunsu", "value": "첫 항목" },
+        { "kind": "session_log_contains", "author": "eunsu", "value": "둘째 항목" }
+      ]
+    }
+  ]
+}
