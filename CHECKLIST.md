@@ -7,6 +7,13 @@
 ## 기준선
 - [x] 빈 레포, 테스트 0개 = 기준선 0
 
+## 🔴 슬라이스 0 — P0 긴급 (다른 모든 작업보다 먼저! 안 하면 호스트 환경 또 오염)
+> 사고: check.py가 ambient `LEGACY_TOOL_HOME`을 폴백으로 읽어 off-persist 시나리오를 실 호스트 toolkit에 실행 → 호스트 `.acme-active` 삭제. 변수명이 호스트와 겹친 게 근본 원인.
+- [x] 0.1 `LEGACY_TOOL_HOME` → `TEAMMODE_HOME` 전수 치환 (infra/teammode.py:26, infra/hooks/session-log-remind.py:25, conformance/check.py:322·325, tests/test_normalize.py ×5, 그 외 grep로 전수). teammode는 독립 프로젝트 = 자기 환경변수
+- [x] 0.2 check.py 환경 격리 강화 — ambient env 무시. subprocess를 `env={}` 빈 환경 + 명시 주입(`TEAMMODE_HOME=<run root>`, PATH 등 필수만)으로 실행. ambient `TEAMMODE_HOME`/`LEGACY_TOOL_HOME`이 set돼 있어도 새지 않게(`env -i` 정신). 누가 변수 set해도 호스트 오염 0 보장
+- [x] 0.3 회귀 테스트 신규: "ambient에 TEAMMODE_HOME=/실호스트 가 set된 상태에서 verify/conform 돌려도 그 경로를 절대 건드리지 않는다" (격리 증명)
+- [ ] 0.4 검수 통과 — 적대적 검수에 "ambient 오염 재현 시도"를 명시 관점으로
+
 ## 슬라이스 1 — 검수 도구 우선 (골든 시나리오 + 러너)
 - [x] 1.1 `conformance/scenarios/` — 골든 시나리오 5개 선언적 명세 (on→배너 / context 주입 / issue 생성 / log 누적 / off 저장)
 - [x] 1.2 `conformance/check.py` — 3모드 러너 골격: `lint`(정적) `verify`(동적 시나리오) `conform`(임의구현+Tier). 우선 verify/lint 동작

@@ -57,7 +57,7 @@ def env(tmp_path):
         proc = subprocess.run(
             argv, input=json.dumps(raw_input), capture_output=True, text=True,
             cwd=str(root),
-            env={**os.environ, "LEGACY_TOOL_HOME": str(root)},
+            env={**os.environ, "TEAMMODE_HOME": str(root)},
         )
         return proc
 
@@ -167,7 +167,7 @@ def test_malformed_input_exits_zero_non_strict(env):
     env.write_manifest([{"event": "PostToolUse", "script": "echo-stub.py"}])
     proc = subprocess.run(argv, input="NOT JSON{{", capture_output=True, text=True,
                           cwd=str(env.root),
-                          env={**os.environ, "LEGACY_TOOL_HOME": str(env.root)})
+                          env={**os.environ, "TEAMMODE_HOME": str(env.root)})
     assert proc.returncode == 0
     assert proc.stderr.strip() != ""
 
@@ -180,7 +180,7 @@ def test_malformed_input_propagates_when_strict(env):
                          "strict": True}])
     proc = subprocess.run(argv, input="NOT JSON{{", capture_output=True, text=True,
                           cwd=str(env.root),
-                          env={**os.environ, "LEGACY_TOOL_HOME": str(env.root)})
+                          env={**os.environ, "TEAMMODE_HOME": str(env.root)})
     assert proc.returncode != 0
 
 
@@ -196,7 +196,7 @@ def test_common_hook_consumes_canonical_only(env, tmp_path):
     proc = subprocess.run(
         [PY, str(hook)], input=json.dumps(canonical), capture_output=True, text=True,
         cwd=str(root),
-        env={**os.environ, "LEGACY_TOOL_HOME": str(root),
+        env={**os.environ, "TEAMMODE_HOME": str(root),
              "TMPDIR": str(tmp_path)})
     assert proc.returncode == 0
     # 세션로그 전무 → age 9999 ≥ 1800 → 리마인드 발화
@@ -213,7 +213,7 @@ def test_common_hook_ignores_non_userprompt_event(env, tmp_path):
     proc = subprocess.run(
         [PY, str(hook)], input=json.dumps(canonical), capture_output=True, text=True,
         cwd=str(env.root),
-        env={**os.environ, "LEGACY_TOOL_HOME": str(env.root), "TMPDIR": str(tmp_path)})
+        env={**os.environ, "TEAMMODE_HOME": str(env.root), "TMPDIR": str(tmp_path)})
     assert proc.returncode == 0
     assert proc.stdout.strip() == ""  # UserPromptSubmit 아니면 무동작
 

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 
 def _team_root() -> str:
-    return os.environ.get("LEGACY_TOOL_HOME", os.getcwd())
+    return os.environ.get("TEAMMODE_HOME", os.getcwd())
 
 
 def main() -> int:

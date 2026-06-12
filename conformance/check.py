@@ -318,17 +318,28 @@ class SubprocessEngine:
         self.engine_cmd = list(engine_cmd)
         self.root = Path(cwd)
 
+    # 격리에 필요한 최소 ambient 변수만 통과시킨다. 그 외(특히 TEAMMODE_HOME·
+    # LEGACY_TOOL_HOME 같은 팀 루트 지시 변수)는 절대 상속하지 않는다 — `env -i` 정신.
+    _PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+                    "SYSTEMROOT", "PATHEXT", "TZ", "PYTHONPATH", "TERM")
+
+    def _isolated_env(self) -> dict:
+        """ambient를 차단하고 필수 변수 + 명시적 TEAMMODE_HOME(run root)만 담은 env."""
+        env = {k: os.environ[k] for k in self._PASSTHROUGH if k in os.environ}
+        # 검사 대상 팀 루트를 명시 주입. ambient에 무엇이 set돼 있든 이 값이 유일 소스.
+        env["TEAMMODE_HOME"] = str(self.root)
+        return env
+
     def run(self, argv) -> Result:
-        # 엔진을 run root(=검사 대상 팀 루트)에 고정한다. ambient LEGACY_TOOL_HOME 등이
-        # 새어 들어와 실환경을 오염시키지 않도록 격리(스펙 01 §2.4).
-        env = dict(os.environ)
-        env["LEGACY_TOOL_HOME"] = str(self.root)
+        # 엔진을 run root(=검사 대상 팀 루트)에 고정한다. ambient TEAMMODE_HOME/
+        # LEGACY_TOOL_HOME 등이 새어 들어와 실환경을 오염시키지 않도록 강하게 격리한다
+        # (스펙 01 §2.4). dict(os.environ) 복사가 아니라 화이트리스트 env만 쓴다.
         proc = subprocess.run(
             self.engine_cmd + list(argv),
             cwd=str(self.root),
             capture_output=True,
             text=True,
-            env=env,
+            env=self._isolated_env(),
         )
         return Result(proc.returncode, proc.stdout, proc.stderr)
 

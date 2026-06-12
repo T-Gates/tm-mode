@@ -23,7 +23,7 @@ def _team_root() -> Path:
     (스펙 01 §2.4: 메모리 쓰기는 항상 팀 루트 memory/ 에. 설치 위치와 분리.)
     호출 시점에 해석한다 — subprocess·테스트 각각의 cwd를 정확히 반영하기 위함.
     """
-    return Path(os.environ.get("LEGACY_TOOL_HOME", os.getcwd())).resolve()
+    return Path(os.environ.get("TEAMMODE_HOME", os.getcwd())).resolve()
 
 
 def _active_marker() -> Path:
