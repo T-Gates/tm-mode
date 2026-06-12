@@ -1,0 +1,14 @@
+{
+  "agent": "codex",
+  "config_file": "~/.codex/config.toml",
+  "events": {
+    "SessionStart": "SessionStart",
+    "UserPromptSubmit": "UserPromptSubmit",
+    "PreToolUse": null,
+    "PostToolUse": "PostToolUse"
+  },
+  "actions": {
+    "file_edit": "apply_patch"
+  },
+  "mcp_tool_format": "{server}.{tool}"
+}
