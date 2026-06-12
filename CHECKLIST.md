@@ -12,7 +12,14 @@
 - [x] 0.1 `TGATES_HOME` → `TEAMMODE_HOME` 전수 치환 (infra/teammode.py:26, infra/hooks/session-log-remind.py:25, conformance/check.py:322·325, tests/test_normalize.py ×5, 그 외 grep로 전수). teammode는 독립 프로젝트 = 자기 환경변수
 - [x] 0.2 check.py 환경 격리 강화 — ambient env 무시. subprocess를 `env={}` 빈 환경 + 명시 주입(`TEAMMODE_HOME=<run root>`, PATH 등 필수만)으로 실행. ambient `TEAMMODE_HOME`/`TGATES_HOME`이 set돼 있어도 새지 않게(`env -i` 정신). 누가 변수 set해도 호스트 오염 0 보장
 - [x] 0.3 회귀 테스트 신규: "ambient에 TEAMMODE_HOME=/실호스트 가 set된 상태에서 verify/conform 돌려도 그 경로를 절대 건드리지 않는다" (격리 증명)
-- [ ] 0.4 검수 통과 — 적대적 검수에 "ambient 오염 재현 시도"를 명시 관점으로
+- [~] 0.4 검수 수행됨 — **"수정 필요 1건(P1)+권고(P2)" 판정**. 미통과(아래 슬라이스 P1로 이월)
+
+## 🔶 슬라이스 P1 — 검수 지적 반영 (다음 세션, 은수 승인 후)
+> 적대적 검수(0.4)가 잡은 진짜 근본: 변수명 rename은 반쪽 처방. 엔진이 ambient env를 무조건 신뢰하는 게 사고의 진짜 원인.
+- [ ] P1-a `infra/teammode.py:26` `_team_root()` — env 폴백 제거, 팀 루트를 **명시 인자 `--root`로만** 받기 (env 신뢰 제거). ⚠️ 인터페이스 변경 = 호출처(하니스·스킬·향후 러너) 전부 영향 + 스펙 01/02 반영 필요 → 은수 설계 승인 후 진행
+- [ ] P1-b 회귀 테스트: ambient `TEAMMODE_HOME=피해자` 상태에서 `teammode.py off` **직접 호출**해도 피해자 마커 생존 단언 (현 test_isolation은 SubprocessEngine 경유만 검증 — 직접호출 사각지대)
+- [ ] P2 `--settings` 생략 시 실 `~/.claude/settings.json` 오염 — 하니스가 항상 `--settings` 주입 강제 or 엔진에 "격리모드 아니면 ~/.claude 쓰기 거부" 가드
+- [ ] 재검수 → "수정할 내역 없음"까지 루프
 
 ## 슬라이스 1 — 검수 도구 우선 (골든 시나리오 + 러너)
 - [x] 1.1 `conformance/scenarios/` — 골든 시나리오 5개 선언적 명세 (on→배너 / context 주입 / issue 생성 / log 누적 / off 저장)
