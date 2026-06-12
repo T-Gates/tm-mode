@@ -319,11 +319,16 @@ class SubprocessEngine:
         self.root = Path(cwd)
 
     def run(self, argv) -> Result:
+        # 엔진을 run root(=검사 대상 팀 루트)에 고정한다. ambient LEGACY_TOOL_HOME 등이
+        # 새어 들어와 실환경을 오염시키지 않도록 격리(스펙 01 §2.4).
+        env = dict(os.environ)
+        env["LEGACY_TOOL_HOME"] = str(self.root)
         proc = subprocess.run(
             self.engine_cmd + list(argv),
             cwd=str(self.root),
             capture_output=True,
             text=True,
+            env=env,
         )
         return Result(proc.returncode, proc.stdout, proc.stderr)
 
