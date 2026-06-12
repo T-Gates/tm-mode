@@ -24,10 +24,10 @@
 - [x] 2.7 `verify` 재실행 → on/off 시나리오 일부 GREEN 전환 확인
 
 ## 슬라이스 3 — normalize 런타임 + 공통 훅 1종 (stretch)
-- [ ] 3.1 `infra/agents/claude/normalize.py` — 입력 JSON→정규 스키마 변환 + 자가 필터
-- [ ] 3.2 공통 훅 1종 이식(session-log-remind 또는 auto-commit) — 정규 스키마만 인지
-- [ ] 3.3 `tests/test_normalize.py`
-- [ ] 3.4 검수 통과
+- [x] 3.1 `infra/agents/claude/normalize.py` — 입력 JSON→정규 스키마 변환 + 자가 필터
+- [x] 3.2 공통 훅 1종 이식(session-log-remind 또는 auto-commit) — 정규 스키마만 인지
+- [x] 3.3 `tests/test_normalize.py`
+- [x] 3.4 검수 통과
 
 ## 슬라이스 4 — Codex 어댑터 + 폴백 (stretch)
 - [ ] 4.1 `infra/agents/codex/{events.json,adapter.py,normalize.py}` (PreToolUse null + fallback)
