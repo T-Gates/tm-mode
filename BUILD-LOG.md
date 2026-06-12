@@ -134,3 +134,13 @@ RED: 2/5 통과
 
 ### 결과
 - 신규 테스트 7개 green + conftest 가드. 누적 48 green. 슬라이스 4 검수 통과.
+
+---
+
+## 사후 정리 — 실환경 오염 사고 전말 및 복구
+
+은수의 세션로그(tgates-toolkit, 2026-06-12, 본인 작성분 — 무수정)에서 확인된 사고:
+- **원인**: 슬라이스 2 초기 `verify` 실행 시(env 격리 패치 *이전*), 빌드 에이전트 셸에 상속된 ambient `TGATES_HOME`(=실 tgates-toolkit)이 conformance 러너로 새어들어, `05-off-persist` 시나리오의 `off` 동작이 **실 toolkit의 `.tgates-active` 플래그를 실삭제**. banner.txt 도 같은 경로로 잠시 건드림(읽기만, 무수정·복구됨).
+- **이미 적용된 수정**(슬라이스 2 커밋 a81b6b0): `SubprocessEngine.run`이 subprocess env의 `TGATES_HOME`을 run root로 명시 주입 → ambient 무시. 검증: ambient `TGATES_HOME=실toolkit` set 상태로 verify 돌려도 실 `.tgates-active` 생존·banner는 격리 cwd 생성 확인.
+- **복구 조치**: 내 초기 verify가 삭제한 실 toolkit `.tgates-active`(런타임 마커, gitignored)를 `touch`로 재생성 — 사고 전 상태 복원. 은수 세션로그 파일은 본인 작성분이라 손대지 않음.
+- **교훈/백로그(teammode 설계)**: conformance 격리를 더 강하게 — `env -i` 류로 ambient 전부 차단 후 명시 변수만 주입하는 방식 검토(현 구현은 `dict(os.environ)` 복사 후 override라 다른 누수 변수 가능성 잔존). 또한 무인 빌드 에이전트 디스패치 자체도 깨끗한 env로 띄우는 것을 권고.
