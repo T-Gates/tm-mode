@@ -49,6 +49,15 @@
 - [x] 4.2 `tests/test_adapter_codex.py` — 폴백·enforcement 축소 검증
 - [x] 4.3 검수 통과 + 크로스에이전트 시나리오 GREEN
 
+## 🔶 슬라이스 U — 상시 레포 최신화 훅 (throttled auto-pull) [완료 2026-06-13]
+> 설계(Jane 새벽 합의): UserPromptSubmit 마다 팀 레포 최신화하되 스로틀로 과부하 방지, **실패는 절대 작업 차단 금지**(철칙). 슬라이스 T(on 시 fetch)와 별개 — 이건 상시 pull.
+- [x] U.1 `infra/hooks/auto_pull.py` 순수 함수 — `should_pull`(스로틀 판정·시각 주입) / `do_pull`(`git pull --ff-only`) / `auto_pull`(조립, 절대 raise 안 함). 시각·경로·스로틀초 전부 인자 주입(P1 교훈).
+- [x] U.2 스로틀 기본 300s, 상태는 팀 루트 밖 `$XDG_STATE_HOME/teammode/last-pull`. **시도(attempt) 단위 기록** — 원격 장애 시 매 프롬프트 재시도 세금 방지.
+- [x] U.3 안전: `--ff-only`(충돌 회피) + `GIT_TERMINAL_PROMPT=0`/`GIT_ASKPASS`/SSH BatchMode(자격증명 hang 차단) + subprocess 타임아웃 5s + git `http.lowSpeedLimit/Time`(defense-in-depth) + **프로세스 그룹 kill**(손자 git-remote-https 고아 방지).
+- [x] U.4 훅 통합: `session-log-remind.py`(기존 UserPromptSubmit 훅)가 `.acme-active` 활성 시 **리마인드 판정 전에** `auto_pull` 호출. 별도 manifest 엔트리·normalize subprocess 불필요. 어떤 예외도 삼킴(철칙).
+- [x] U.5 회귀 테스트 19종(/tmp fake remote): 스로틀(시각 주입)·ff-forward·ff불가 무오염·non-git 무raise·자격증명 hang 차단·훅 통합·throttle 2nd call. conftest 가드 강화(XDG 격리 autouse + last-pull 오염 가드, 가드 작동 실증).
+- [x] U.6 적대적 자기검수(새 관점, /tmp만) — 비라우팅/stall 원격 hang 없음(3s killpg) + 고아 프로세스 0 + state=dir/nonexist 무raise. **실측 버그 2건 수정**: ① timeout 후 손자 git 고아 누수 → 프로세스 그룹 killpg ② test_normalize 기존 테스트가 실 `~/.local/state` 오염 → XDG 격리+가드. 재검수 "수정할 내역 없음".
+
 ## 마감 (사람 몫 — 에이전트 금지)
 - [ ] 푸시/PR 판단 (Jane)
 - [ ] 세션로그·계획서 반영
