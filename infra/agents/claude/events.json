@@ -1,0 +1,14 @@
+{
+  "agent": "claude",
+  "config_file": "~/.claude/settings.json",
+  "events": {
+    "SessionStart": "SessionStart",
+    "UserPromptSubmit": "UserPromptSubmit",
+    "PreToolUse": "PreToolUse",
+    "PostToolUse": "PostToolUse"
+  },
+  "actions": {
+    "file_edit": "Write|Edit"
+  },
+  "mcp_tool_format": "mcp__{server}__{tool}"
+}

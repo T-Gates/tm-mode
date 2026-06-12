@@ -1,0 +1,34 @@
+[
+  {
+    "event": "SessionStart",
+    "script": "session-start.py",
+    "timeout": 5000,
+    "mode": "on",
+    "enforcement": "advisory"
+  },
+  {
+    "event": "UserPromptSubmit",
+    "script": "session-log-remind.py",
+    "timeout": 5000,
+    "mode": "on",
+    "enforcement": "advisory"
+  },
+  {
+    "event": "PostToolUse",
+    "match": { "action": "file_edit" },
+    "script": "auto-commit.py",
+    "timeout": 5000,
+    "fallback": "runtime",
+    "enforcement": "block"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "mcp": { "server": "linear", "tool": "create_issue" } },
+    "script": "confirm-action.py",
+    "args": "acme-linear-create-allow",
+    "timeout": 3000,
+    "fallback": "runtime",
+    "enforcement": "block",
+    "strict": true
+  }
+]

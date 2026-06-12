@@ -15,13 +15,13 @@
 - [x] 1.5 검수 통과("수정할 내역 없음")
 
 ## 슬라이스 2 — Claude 어댑터 수직 슬라이스
-- [ ] 2.1 `infra/hooks/manifest.json` — 정규형 샘플(PostToolUse+file_edit, SessionStart, PreToolUse+mcp; enforcement/fallback 필드 포함)
-- [ ] 2.2 `infra/agents/claude/events.json` — 번역표(events 매핑, actions.file_edit→`Write|Edit`, config_file)
-- [ ] 2.3 `infra/agents/claude/adapter.py` — `sync` 구현(파싱→번역→settings.json upsert, normalize 경유 배선, 멱등, 제거)
-- [ ] 2.4 `infra/install.py` — 디스패처 골격(`--claude`→adapter 위임, 분기로직 0)
-- [ ] 2.5 `tests/test_adapter_claude.py` — 6케이스(정규엔트리/action번역/mcp번역/멱등/제거/normalize경유)
-- [ ] 2.6 검수 통과
-- [ ] 2.7 `verify` 재실행 → on/off 시나리오 일부 GREEN 전환 확인
+- [x] 2.1 `infra/hooks/manifest.json` — 정규형 샘플(PostToolUse+file_edit, SessionStart, PreToolUse+mcp; enforcement/fallback 필드 포함)
+- [x] 2.2 `infra/agents/claude/events.json` — 번역표(events 매핑, actions.file_edit→`Write|Edit`, config_file)
+- [x] 2.3 `infra/agents/claude/adapter.py` — `sync` 구현(파싱→번역→settings.json upsert, normalize 경유 배선, 멱등, 제거)
+- [x] 2.4 `infra/install.py` — 디스패처 골격(`--claude`→adapter 위임, 분기로직 0)
+- [x] 2.5 `tests/test_adapter_claude.py` — 6케이스(정규엔트리/action번역/mcp번역/멱등/제거/normalize경유)
+- [x] 2.6 검수 통과
+- [x] 2.7 `verify` 재실행 → on/off 시나리오 일부 GREEN 전환 확인
 
 ## 슬라이스 3 — normalize 런타임 + 공통 훅 1종 (stretch)
 - [ ] 3.1 `infra/agents/claude/normalize.py` — 입력 JSON→정규 스키마 변환 + 자가 필터

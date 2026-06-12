@@ -39,3 +39,45 @@ RED: 0/5 통과   (exit 1)
 
 ### 결과
 - 신규 테스트 17개 전부 green (기준선 0 → 17). 슬라이스 1 검수 통과.
+
+---
+
+## 슬라이스 2 — Claude 어댑터 수직 슬라이스
+
+### 결정/근거
+- **manifest.json 정규형 샘플**: SessionStart·UserPromptSubmit(mode:on, advisory) / PostToolUse+`{action:file_edit}`(runtime fallback, block) / PreToolUse+`{mcp:{linear,create_issue}}`(runtime, block, strict). enforcement(§11.11)·fallback·strict 필드 포함. mcp__·Write|Edit 같은 에이전트 표기 0 (lint·grep으로 K4 확인).
+- **events.json**: 4 정규 이벤트 전부 매핑(claude는 전부 동일명 지원) + `actions.file_edit="Write|Edit"` + `mcp_tool_format="mcp__{server}__{tool}"`. config_file=`~/.claude/settings.json`.
+- **adapter.py sync**: 파싱→번역(translate_event/translate_match)→settings.json upsert. 커맨드는 `<python> "<install>/agents/claude/normalize.py" <script> [args]`로 **반드시 normalize 경유**(§5.1-2, 공통 스크립트 직접 등록 금지). 멱등(직렬화 결과 동일 시 무기록)·제거(소유 훅이지만 wanted에 없으면 삭제)·on/off(mode:on 훅 토글) 구현.
+- **소유권 마커(§5.1-5)**: 단순 `agents/` 부분문자열 금지. 꼬리 `agents/<name>/normalize.py` 일치로 판정 → 사용자의 `my-agents/cool.py`를 오인 삭제하지 않음(적대 테스트로 확인).
+- **mcp 별칭(§5.2-2)**: v0.1 기본 규칙 = 정규 서버명 == 등록 별칭(`resolve_server_alias` 항등). install-mcp 자체는 슬라이스 4+ 범위.
+- **install.py 디스패처(§2 불변식 3)**: 분기 로직 0. `--<agent>`를 `agents/<name>/` 디렉토리 존재로 판정 → adapter CLI에 위임만. codex 디렉토리 없으면 `--codex`는 위임 불가(하드코딩 분기 아님).
+- **teammode.py(엔진 수직 슬라이스)**: on/off만 실배선(배너 렌더+sync+`.acme-active` 마커). context/issue/log 동사는 미구현(exit 127) → 해당 골든 시나리오 RED 유지(후속 슬라이스 인수 테스트).
+
+### 라운드 1 (구현 → 적대적 검수)
+- RED: `tests/test_adapter_claude.py` → `ModuleNotFoundError: adapter` 확인.
+- 구현: adapter.py + events.json + manifest.json → 어댑터 9 테스트 + 디스패처 3 테스트 GREEN.
+- **검수 지적(실 버그 3건, 전부 수정)**:
+  1. `teammode.py` `_adapter()`가 삭제된 `TEAM_ROOT` 전역 참조 → `NameError`로 `on` 크래시(exit 1). 어댑터 team_root는 **설치 위치**(normalize 마커 기준), 메모리 쓰기 팀 루트와 별개 축임을 분리해 수정.
+  2. **실환경 오염 사고**: ambient `LEGACY_TOOL_HOME`(실 acme-toolkit 가리킴)이 엔진에 새어들어 verify가 실 toolkit의 `memory/banner.txt`를 건드림. `SubprocessEngine.run`이 subprocess env의 `LEGACY_TOOL_HOME`을 run root로 고정해 격리(스펙 01 §2.4). 실 toolkit은 `git checkout`으로 원복·git status clean 확인 — 영구 오염 없음.
+  3. 배너/마커 경로가 설치 위치 고정 → cwd(=검사 대상 팀 루트) 기준으로 변경(`_team_root()` 호출시점 해석).
+- **검수 추가 확인(증거 기반)**: K4 정규형 grep 위반 0 / events.json 4이벤트·file_edit 완전 / 소유 마커 false-positive 없음 / fallback 미지원 이벤트 = `[warn]`+drop(무음 스킵 부재, §7) / 멱등 e2e.
+- 재검수: 구현 결함 0건. "수정할 내역 없음".
+
+### 2.7 verify 재실행 — on/off 시나리오 GREEN 전환 (실행 증거)
+실 엔진(teammode.py)으로 verify (env 격리):
+```
+[PASS] 01-on-banner (deterministic)
+[FAIL] 02-context-injection / 03-issue-create (deterministic — 동사 미구현)
+[FAIL] 04-log-accumulate (advisory — 동사 미구현)
+[PASS] 05-off-persist (deterministic)
+RED: 2/5 통과
+```
+슬라이스 1에서 0/5 → 슬라이스 2에서 2/5(on·off) GREEN 전환 확인. 나머지 3개는 후속 슬라이스 인수 테스트로 RED 유지.
+
+### 결과
+- 신규 테스트 12개(어댑터 9 + 디스패처 3) green. 누적 29 테스트 green. 슬라이스 2 검수 통과.
+
+### 슬라이스 2 범위 밖(후속으로 이월) — 결정 기록
+- manifest 중복 (event, script) 금지 lint(§6.2-2 전제) — 현 manifest엔 중복 없음. lint 항목화는 슬라이스 3+(normalize 자가필터와 함께).
+- `enforcement` 필드의 실제 분기(block→Stop 훅 게이트) — normalize/Stop 훅 영역(§11.11), 슬라이스 3+.
+- `install-mcp`/`install-skills` CLI — 슬라이스 4+ (서비스 슬롯·스킬 오버라이드).
