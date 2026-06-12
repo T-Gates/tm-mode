@@ -22,6 +22,14 @@ from datetime import datetime, timedelta, timezone
 
 
 def _team_root() -> str:
+    """런타임 훅의 팀 루트 = 환경변수 TEAMMODE_HOME (없으면 cwd).
+
+    ⚠️ 엔진(teammode.py)과 달리 이 스크립트는 env 를 읽는다 — 이유: 런타임 훅은
+    에이전트 하니스가 발동하므로 `--root` CLI 인자를 받을 통로가 없다. 스펙 01 §1.2가
+    "구현은 팀 루트를 가리키는 환경변수를 제공해야 한다(필수)"라고 명시하며, 이 변수가
+    바로 그것이다. 엔진이 env 를 안 읽는 것(P1)은 의도적 호출(on/off)이 폴더를 추측하지
+    않게 하기 위함이고, read-only 인 런타임 훅은 그 사고 표면이 아니다.
+    """
     return os.environ.get("TEAMMODE_HOME", os.getcwd())
 
 

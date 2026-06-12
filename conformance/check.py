@@ -320,22 +320,26 @@ class SubprocessEngine:
 
     # 격리에 필요한 최소 ambient 변수만 통과시킨다. 그 외(특히 TEAMMODE_HOME·
     # LEGACY_TOOL_HOME 같은 팀 루트 지시 변수)는 절대 상속하지 않는다 — `env -i` 정신.
+    # ※ 엔진은 더 이상 env 로 팀 루트를 받지 않는다(P1) — 팀 루트는 `--root` 로 명시
+    #   전달한다. env 화이트리스트는 2차 방어선(혹 다른 구현이 env 를 읽어도 누수 0).
     _PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
                     "SYSTEMROOT", "PATHEXT", "TZ", "PYTHONPATH", "TERM")
 
     def _isolated_env(self) -> dict:
-        """ambient를 차단하고 필수 변수 + 명시적 TEAMMODE_HOME(run root)만 담은 env."""
-        env = {k: os.environ[k] for k in self._PASSTHROUGH if k in os.environ}
-        # 검사 대상 팀 루트를 명시 주입. ambient에 무엇이 set돼 있든 이 값이 유일 소스.
-        env["TEAMMODE_HOME"] = str(self.root)
-        return env
+        """ambient를 차단하고 필수 변수만 담은 env. 팀 루트 지시 변수는 통과 안 됨."""
+        return {k: os.environ[k] for k in self._PASSTHROUGH if k in os.environ}
 
     def run(self, argv) -> Result:
-        # 엔진을 run root(=검사 대상 팀 루트)에 고정한다. ambient TEAMMODE_HOME/
-        # LEGACY_TOOL_HOME 등이 새어 들어와 실환경을 오염시키지 않도록 강하게 격리한다
-        # (스펙 01 §2.4). dict(os.environ) 복사가 아니라 화이트리스트 env만 쓴다.
+        # 엔진을 run root(=검사 대상 팀 루트)에 고정한다. 팀 루트는 `--root` 명시 인자로
+        # 전달하고(P1: env 비신뢰), env 화이트리스트로 ambient TEAMMODE_HOME/LEGACY_TOOL_HOME
+        # 누수도 차단한다(이중 방어, 스펙 01 §2.4). 첫 토큰(동사) 뒤에 --root 를 끼운다.
+        argv = list(argv)
+        if argv:
+            full = self.engine_cmd + [argv[0], "--root", str(self.root)] + argv[1:]
+        else:
+            full = self.engine_cmd + ["--root", str(self.root)]
         proc = subprocess.run(
-            self.engine_cmd + list(argv),
+            full,
             cwd=str(self.root),
             capture_output=True,
             text=True,
@@ -386,7 +390,14 @@ def main(argv=None) -> int:
     if args.engine is None:
         print("[error] verify/conform에는 --engine 이 필요합니다.", file=sys.stderr)
         return 2
-    engine = SubprocessEngine(args.engine.split(), root)
+    engine_cmd = args.engine.split()
+    # 레퍼런스 엔진(teammode.py)은 settings 경로를 명시로만 받는다(P2). 검수는 실
+    # ~/.claude 를 절대 건드리면 안 되므로, run root 하위 격리 settings 를 주입한다.
+    # --settings 를 모르는 타 구현은 미지 플래그로 무시한다(§2 C2: 플래그 비강제).
+    # 사용자가 이미 --settings 를 넣었으면 덮어쓰지 않는다.
+    if "--settings" not in engine_cmd:
+        engine_cmd = engine_cmd + ["--settings", str(root / ".teammode-settings.json")]
+    engine = SubprocessEngine(engine_cmd, root)
     sdir = Path(args.scenario_dir) if args.scenario_dir else None
     report = run_mode(args.mode, engine, root, scenario_dir=sdir)
     return _print_report(report)
