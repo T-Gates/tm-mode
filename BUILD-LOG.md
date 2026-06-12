@@ -103,3 +103,34 @@ RED: 2/5 통과
 
 ### 결과
 - 신규 테스트 12개 green. 누적 41 green. 슬라이스 3 검수 통과.
+
+---
+
+## 슬라이스 4 — Codex 어댑터 + 폴백 (stretch)
+
+### 결정/근거
+- **codex/events.json**: `PreToolUse: null`(미지원, §4 키 누락 금지 — 명시적 null) / `actions.file_edit="apply_patch"` / `mcp_tool_format="{server}.{tool}"` / config_file=`~/.codex/config.toml`.
+- **codex/adapter.py**: 번역 코어(events.json 기반, 에이전트 무관)는 **Claude Adapter 상속**으로 재사용 — 드리프트 방지. Codex 고유의 TOML 블록 출력 + 폴백·enforcement 축소만 재정의. `if agent=='codex'` 하드코딩 분기 0(§4 규칙 3): PreToolUse skip·apply_patch는 전부 events.json 데이터.
+  - **폴백(§7)**: PreToolUse null → drop + `[warn]`(무음 스킵 금지). enforcement=block이 미지원 이벤트에 걸리면 `[warn]`에 "(block 강제 상실)" 명시 — §11.11 advisory 축소의 정직한 표면화.
+  - **멱등**: TOML 블록을 `# teammode-hooks-start/end` 마커로 교체. 빈 파일에서 선행 개행 추가하던 버그 수정(블록 앞 사용자 콘텐츠 유무로 prefix 결정).
+  - **사용자 config 보존**: 마커 블록만 관리, 나머지 TOML 무접촉.
+- **codex/normalize.py**: Claude normalize 함수 재사용 + `importlib`로 모듈 로드해 함수의 `__globals__`에 Codex 경로 상수 재바인딩(events.json·hooks 위치). `apply_patch`→`file_edit` 역매핑 확인. ⚠️ Codex 실 훅 입력 스키마 미확인(스펙 부록 B 이월) — Claude 유사 형태 가정, BUILD-LOG·코드 주석에 명시.
+
+### 라운드 1 (구현 → 적대적 검수)
+- RED: `tests/test_adapter_codex.py` → adapter.py 부재.
+- 구현: codex events.json + adapter.py(상속) + normalize.py → 7 테스트.
+- **검수 지적(실 버그 2건 + 실환경 오염 1건, 전부 수정)**:
+  1. **멱등 깨짐**: 빈 config에서 첫 sync는 선행 개행 없이, 둘째 sync(블록 매치 경로)는 선행 `\n` 추가 → 재실행 시 파일 달라짐. 블록 앞 콘텐츠 유무로 prefix 결정하도록 수정.
+  2. `codex/normalize.py`가 `runpy.run_path` 반환 dict 변경으로 경로 치환 시도했으나, 함수 `__globals__`는 별개라 무효 → Claude의 events.json을 읽어 FileNotFound. `importlib`로 모듈 객체 로드 후 `_base.EVENTS=...` 속성 재바인딩으로 수정.
+  3. **🔴 실환경 오염**: 검수 중 `~/.codex/config.toml`(+`.codex` 디렉토리)에 teammode 블록 누수 발견(중간 상태에서 발생, 현 테스트로는 재현 안 됨). **정리**: 백업 후 어댑터 uninstall로 블록 제거 → 파일/디렉토리 모두 teammode가 생성한 것(누수 전 `.codex` 부재)이라 디렉토리째 원상복구. **재발 방지**: `tests/conftest.py`에 autouse 가드 추가 — 매 테스트 전후 실 설정 경로(~/.claude/settings.json, ~/.codex/config.toml) 스냅샷 비교, 변화 시 즉시 fail. 가드가 의도적 누수를 잡는 것까지 확인.
+- **검수 추가 확인(증거)**: 실 manifest 4엔트리 → Codex 3엔트리 축소(PreToolUse drop+warn) e2e / apply_patch 매처 / normalize 경유 / 멱등 md5 동일 / uninstall 클린 / 가드 작동.
+- 재검수: 구현 결함 0건. "수정할 내역 없음".
+
+### 4.3 크로스에이전트 (실행 증거)
+같은 manifest가 에이전트별로 다르게 표현됨:
+- Claude: 4엔트리 전부 등록(PreToolUse 포함, Write|Edit 매처)
+- Codex: 3엔트리(PreToolUse/confirm-action drop+`[warn]`, apply_patch 매처)
+공통 스크립트는 양쪽에서 동일 정규 입력을 받음 — normalize가 `Write`(claude)/`apply_patch`(codex)를 똑같이 `file_edit` action으로 변환. 크로스에이전트 호환 실증.
+
+### 결과
+- 신규 테스트 7개 green + conftest 가드. 누적 48 green. 슬라이스 4 검수 통과.

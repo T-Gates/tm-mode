@@ -41,7 +41,8 @@ def test_dispatch_claude_sync_writes_settings(tmp_path):
     assert "normalize.py" in blob
 
 
-def test_dispatch_known_agent_only_via_dir(tmp_path):
-    # codex 디렉토리가 없으면 codex 위임 불가 (분기 하드코딩 아님 — 디렉토리 존재로 판정)
-    rc = _run_dispatch(["--codex", "sync"])
+def test_dispatch_agent_resolved_by_dir_not_hardcode(tmp_path):
+    # 에이전트는 agents/<name>/ 디렉토리 존재로 판정(분기 하드코딩 아님).
+    # 존재하지 않는 에이전트 플래그는 위임 불가 → 에러.
+    rc = _run_dispatch(["--nonexistent-agent", "sync"])
     assert rc == 2

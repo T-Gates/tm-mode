@@ -30,9 +30,9 @@
 - [x] 3.4 검수 통과
 
 ## 슬라이스 4 — Codex 어댑터 + 폴백 (stretch)
-- [ ] 4.1 `infra/agents/codex/{events.json,adapter.py,normalize.py}` (PreToolUse null + fallback)
-- [ ] 4.2 `tests/test_adapter_codex.py` — 폴백·enforcement 축소 검증
-- [ ] 4.3 검수 통과 + 크로스에이전트 시나리오 GREEN
+- [x] 4.1 `infra/agents/codex/{events.json,adapter.py,normalize.py}` (PreToolUse null + fallback)
+- [x] 4.2 `tests/test_adapter_codex.py` — 폴백·enforcement 축소 검증
+- [x] 4.3 검수 통과 + 크로스에이전트 시나리오 GREEN
 
 ## 마감 (사람 몫 — 에이전트 금지)
 - [ ] 푸시/PR 판단 (Jane)
