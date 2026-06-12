@@ -81,3 +81,25 @@ RED: 2/5 통과
 - manifest 중복 (event, script) 금지 lint(§6.2-2 전제) — 현 manifest엔 중복 없음. lint 항목화는 슬라이스 3+(normalize 자가필터와 함께).
 - `enforcement` 필드의 실제 분기(block→Stop 훅 게이트) — normalize/Stop 훅 영역(§11.11), 슬라이스 3+.
 - `install-mcp`/`install-skills` CLI — 슬라이스 4+ (서비스 슬롯·스킬 오버라이드).
+
+---
+
+## 슬라이스 3 — normalize 런타임 + 공통 훅 1종 (stretch)
+
+### 결정/근거
+- **normalize.py(§6 런타임 계약)**: Claude 원어 JSON(stdin) → 정규 스키마(§6.1) 변환 → 공통 스크립트 stdin 전달 → exit/stdout/stderr 전파.
+  - **역매핑**: events.json을 역방향으로 읽어 에이전트 이벤트→정규 이벤트, tool_name→action(Write|Edit 분해 후 멤버십), tool_name→mcp(server,tool)(`mcp_tool_format` 템플릿을 정규식화, server는 non-greedy로 첫 `__` 경계 분리 → `google_calendar`·`slack-tgates` 등 언더스코어/하이픈 서버명 안전).
+  - **자가 필터(§6.2-2)**: `fallback=="runtime"` 엔트리에 한해 (script, 정규이벤트) 조회 → 현재 발동 내용(action 또는 mcp server·tool) 불일치 시 exit 0 무동작. 매처 등록된 훅은 에이전트가 이미 게이트했으므로 필터 생략(올바른 분기).
+  - **시맨틱 전파(§6.2-3)**: subprocess의 exit code·stdout·stderr 그대로 — PreToolUse exit 2 차단 + JSON 결정(stdout) 둘 다 보존.
+  - **실패 정책(§6.2-4)**: 변환 실패 시 비-strict는 exit 0 + stderr 경고(세션 안 막음), strict는 실패 전파. 파싱 실패로 event를 모르므로 "그 script의 어떤 엔트리든 strict면 strict"로 fail-closed(안전 훅 보수적 처리).
+- **공통 훅 이식(3.2)**: `session-log-remind.py`를 정규 스키마 전용으로 재작성. 기존 env-var 의존(CLAUDE_TOOL_INPUT_FILE 등) 제거 → **stdin 정규 JSON만 인지**(에이전트 무지, §6). 출력은 시맨틱 안내문(mcp__·툴명 직표기 0, §8.2). age≥30분 또는 5프롬프트 주기 리마인드(스펙 01 §3.4). auto-commit 대신 이걸 고른 이유: advisory(§11.11 예시)이자 git 부작용 없어 stdin/stdout 계약 검증이 깔끔.
+
+### 라운드 1 (구현 → 적대적 검수)
+- RED: `tests/test_normalize.py` → normalize.py 부재로 fixture 복사 실패.
+- 구현: normalize.py + session-log-remind.py(이식) → 12 테스트 GREEN(변환3·자가필터3·전파1·실패정책2·공통훅3).
+- **검수 지적 1건(테스트 결함)**: fixture가 normalize.py만 복사하고 events.json 누락 → normalize가 events.json 못 찾음. fixture에 events.json 복사 추가(구현 버그 아님).
+- **검수 추가 확인(증거)**: mcp 파싱 언더스코어/하이픈 서버명 정확 / builtin tool None / 자가필터 일치=실행·불일치=무동작·mcp서버불일치=무동작 / block exit2 전파 / strict 분기.
+- 재검수: 구현 결함 0건. "수정할 내역 없음".
+
+### 결과
+- 신규 테스트 12개 green. 누적 41 green. 슬라이스 3 검수 통과.
