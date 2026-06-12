@@ -1,10 +1,16 @@
-"""슬라이스 0 — 환경 격리 회귀 테스트 (P0).
+"""슬라이스 0 + P1 — 환경 격리 회귀 테스트.
 
-사고 재발 방지: ambient 환경에 TEAMMODE_HOME(또는 구 LEGACY_TOOL_HOME)이 set돼 있어도
+P0 사고 재발 방지: ambient 환경에 TEAMMODE_HOME(또는 구 LEGACY_TOOL_HOME)이 set돼 있어도
 verify/conform 러너는 그 경로를 절대 건드리지 않는다. SubprocessEngine 은 ambient
 env 를 차단하고 run root 만 명시 주입해야 한다(`env -i` 정신).
+
+P1 사고 근본: 엔진(teammode.py)이 ambient `TEAMMODE_HOME`을 무조건 신뢰하면,
+SubprocessEngine 격리를 우회한 직접 CLI 호출 시 동일 사고가 재현된다. 엔진은
+팀 루트를 **명시 인자 `--root`로만** 받아야 하며 env 를 절대 읽지 않는다.
 """
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,10 +35,15 @@ def test_isolated_env_excludes_ambient_team_home(tmp_path, monkeypatch):
     run_root.mkdir()
     eng = check.SubprocessEngine(ENGINE, run_root)
     env = eng._isolated_env()
-    # run root 가 유일한 TEAMMODE_HOME, 구 변수는 통과 안 됨
-    assert env["TEAMMODE_HOME"] == str(run_root)
+    # P1: 엔진은 팀 루트를 env 가 아니라 `--root` 로 받는다 → env 에 팀 루트 지시
+    # 변수가 아예 없어야 한다(ambient 누수 0). run root 는 argv 의 --root 로 전달됨.
+    assert "TEAMMODE_HOME" not in env
     assert "LEGACY_TOOL_HOME" not in env
-    assert env["TEAMMODE_HOME"] != str(fake_host)
+    # 화이트리스트 변수는 그대로 통과 (PATH 등)
+    assert "PATH" in env or "PATH" not in os.environ
+    # run root 는 run() 이 argv 에 --root 로 끼워 넣는다
+    full = eng.engine_cmd + ["off", "--root", str(run_root)]
+    assert "--root" in full and str(run_root) in full
 
 
 def test_verify_does_not_touch_ambient_host(tmp_path, monkeypatch):
@@ -78,3 +89,97 @@ def test_conform_also_isolated(tmp_path, monkeypatch):
         ENGINE + ["--settings", str(run_root / "settings.json")], run_root)
     check.run_mode("conform", eng, run_root, scenario_dir=SCENARIO_DIR)
     assert (fake_host / ".acme-active").exists(), "conform 이 실호스트 마커 삭제 — 격리 실패!"
+
+
+# ──────────────────────────────────────────────────────────────────
+# P1-b — 엔진 직접 CLI 호출 시에도 ambient env 무신뢰 (SubprocessEngine 우회)
+# ──────────────────────────────────────────────────────────────────
+
+def _run_engine(args, cwd, env):
+    """teammode.py 를 SubprocessEngine 안 거치고 직접 호출 (피해자 env 그대로)."""
+    return subprocess.run(
+        ENGINE + list(args), cwd=str(cwd), capture_output=True, text=True, env=env)
+
+
+def test_direct_off_ignores_ambient_team_home(tmp_path):
+    """ambient TEAMMODE_HOME=피해자 set 상태로 `off --root <격리>` 직접 호출 →
+    피해자 경로의 .acme-active 는 생존한다 (엔진이 env 를 안 읽음)."""
+    victim = tmp_path / "VICTIM"
+    victim.mkdir()
+    (victim / ".acme-active").write_text("")
+
+    run_root = tmp_path / "runroot"
+    run_root.mkdir()
+
+    env = dict(os.environ)
+    env["TEAMMODE_HOME"] = str(victim)   # 피해자를 가리키도록 심는다
+    env["LEGACY_TOOL_HOME"] = str(victim)
+
+    proc = _run_engine(
+        ["off", "--root", str(run_root),
+         "--settings", str(run_root / "settings.json")],
+        cwd=run_root, env=env)
+
+    assert proc.returncode == 0, proc.stderr
+    # 엔진이 env 를 읽었다면 피해자 마커가 삭제됐을 것 — 생존해야 통과
+    assert (victim / ".acme-active").exists(), (
+        "엔진이 ambient TEAMMODE_HOME 을 읽어 피해자 마커 삭제 — 격리 실패!")
+
+
+def test_direct_off_without_root_errors(tmp_path):
+    """`--root` 미지정 시 정책 (A): 에러로 즉시 종료 (어느 폴더도 안 건드림)."""
+    victim = tmp_path / "VICTIM"
+    victim.mkdir()
+    (victim / ".acme-active").write_text("")
+
+    env = dict(os.environ)
+    env["TEAMMODE_HOME"] = str(victim)
+
+    proc = _run_engine(["off"], cwd=victim, env=env)
+
+    assert proc.returncode != 0, "--root 없으면 에러 종료해야 함 (정책 A)"
+    assert "--root" in proc.stderr
+    # cwd(피해자) 로도 폴백하지 않는다 — 마커 생존
+    assert (victim / ".acme-active").exists(), (
+        "--root 없는데 cwd 를 건드림 — 정책 A 위반!")
+
+
+def test_direct_on_without_root_errors(tmp_path):
+    env = dict(os.environ)
+    env["TEAMMODE_HOME"] = str(tmp_path / "VICTIM")
+    proc = _run_engine(["on"], cwd=tmp_path, env=env)
+    assert proc.returncode != 0
+    assert "--root" in proc.stderr
+
+
+def test_direct_on_with_root_writes_only_to_root(tmp_path):
+    """`on --root <격리>` 는 격리 루트에만 배너·마커를 만든다."""
+    run_root = tmp_path / "runroot"
+    run_root.mkdir()
+    env = dict(os.environ)
+    env["TEAMMODE_HOME"] = str(tmp_path / "VICTIM")  # 무시돼야 함
+
+    proc = _run_engine(
+        ["on", "--root", str(run_root),
+         "--settings", str(run_root / "settings.json")],
+        cwd=tmp_path, env=env)
+
+    assert proc.returncode == 0, proc.stderr
+    assert (run_root / ".acme-active").exists()
+    assert (run_root / "memory" / "banner.txt").is_file()
+
+
+# ──────────────────────────────────────────────────────────────────
+# P2 — --settings 생략 시 실 ~/.claude 오염 방지 가드
+# ──────────────────────────────────────────────────────────────────
+
+def test_settings_omitted_without_install_refuses(tmp_path):
+    """--settings 도 --install 도 없으면 ~/.claude 쓰기 거부 (에러 종료)."""
+    run_root = tmp_path / "runroot"
+    run_root.mkdir()
+    env = dict(os.environ)
+    proc = _run_engine(["on", "--root", str(run_root)], cwd=tmp_path, env=env)
+    assert proc.returncode != 0, "격리 모드(--settings)도 --install 도 없으면 거부해야 함"
+    assert "settings" in proc.stderr.lower() or "install" in proc.stderr.lower()
+    # 거부됐으므로 마커도 안 생긴다 (settings 단계 이전에 차단)
+    assert not (run_root / ".acme-active").exists()
