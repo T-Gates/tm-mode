@@ -168,6 +168,49 @@ def test_context_requires_root(tmp_path):
     assert r.returncode != 0
 
 
+# ── 적대: frontmatter 의 임의 키는 출력에 새지 않는다 (검수 지적 락) ──
+
+def test_context_does_not_leak_arbitrary_frontmatter_keys(tmp_path):
+    # 세션로그가 (심링크 등으로) passwd 류 콜론 라인을 담아도, 엔진은 알려진 3필드
+    # (author/date/summary)만 방출한다 — 임의 키 내용 누수 0.
+    _write_index(tmp_path)
+    d = tmp_path / "memory" / "team" / "sessions" / "jane-doe"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "2026-06-13.md").write_text(
+        "---\nroot:x:0:0:SECRETLEAK:/root:/bin/bash\nsummary: innocuous\n"
+        "date: 2026-06-13\n---\nbody\n", encoding="utf-8")
+    r = _run(tmp_path, "context")
+    assert "SECRETLEAK" not in r.stdout
+    rj = _run(tmp_path, "context", "--json")
+    assert "SECRETLEAK" not in rj.stdout
+    data = json.loads(rj.stdout)
+    jane-doe = next(m for m in data["members"] if m["author"] == "jane-doe")
+    assert jane-doe["summary"] == "innocuous"
+
+
+def test_context_file_in_sessions_not_treated_as_member(tmp_path):
+    # sessions/ 바로 아래 파일(디렉토리 아님)은 멤버로 오인되지 않는다.
+    _write_index(tmp_path)
+    sess = tmp_path / "memory" / "team" / "sessions"
+    sess.mkdir(parents=True, exist_ok=True)
+    (sess / "stray.md").write_text("x", encoding="utf-8")
+    r = _run(tmp_path, "context")
+    assert r.returncode == 0
+
+
+def test_context_summary_with_colon_preserved(tmp_path):
+    # summary 값에 콜론이 있어도 첫 콜론만 분리 — 값 전체 보존.
+    _write_index(tmp_path)
+    d = tmp_path / "memory" / "team" / "sessions" / "bob"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "2026-06-13.md").write_text(
+        "---\nauthor: bob\ndate: 2026-06-13\nsummary: ratio 3:1 and more\n---\n",
+        encoding="utf-8")
+    r = _run(tmp_path, "context", "--json")
+    bob = next(m for m in json.loads(r.stdout)["members"] if m["author"] == "bob")
+    assert bob["summary"] == "ratio 3:1 and more"
+
+
 # ── 멤버 디렉토리에 로그 파일이 0개 ──
 
 def test_context_member_dir_with_no_log(tmp_path):
