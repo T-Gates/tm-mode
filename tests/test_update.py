@@ -205,6 +205,68 @@ def test_update_verb_already_uptodate(team_with_upstream):
     assert "Traceback" not in r.stderr
 
 
+# ── 적대 검수 락: divergent 시 무오염 ──
+
+@pytest.fixture
+def diverged_team(tmp_path):
+    """upstream 1 commit ahead + team 이 자체 커밋으로 divergent(ff 불가)."""
+    upstream = tmp_path / "up.git"
+    seed = tmp_path / "seed"
+    team = tmp_path / "team"
+    _git(tmp_path, "init", "--bare", str(upstream))
+    _git(tmp_path, "clone", str(upstream), str(seed))
+    _git(seed, "config", "user.name", "t")
+    _git(seed, "config", "user.email", "t@t")
+    (seed / "t.txt").write_text("v1\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "v1")
+    _git(seed, "branch", "-M", "main")
+    _git(seed, "push", "-u", "origin", "main")
+    _git(tmp_path, "clone", str(upstream), str(team))
+    _git(team, "config", "user.name", "t")
+    _git(team, "config", "user.email", "t@t")
+    _git(team, "checkout", "main")
+    _git(team, "remote", "add", "upstream", str(upstream))
+    (team / "memory").mkdir(exist_ok=True)
+    # upstream advances
+    (seed / "t.txt").write_text("v2\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "upstream v2")
+    _git(seed, "push")
+    # team diverges
+    (team / "local.txt").write_text("local\n")
+    _git(team, "add", ".")
+    _git(team, "commit", "-m", "team local")
+
+    class D:
+        pass
+    d = D()
+    d.team = team
+    return d
+
+
+def test_on_divergent_does_not_merge_or_corrupt(diverged_team):
+    head_before = _git(diverged_team.team, "rev-parse", "HEAD").stdout.strip()
+    r = _run_engine(diverged_team.team, "on")
+    assert r.returncode == 0, r.stderr  # on 은 막히지 않는다
+    head_after = _git(diverged_team.team, "rev-parse", "HEAD").stdout.strip()
+    assert head_before == head_after, "on 이 divergent 를 자동 merge 함(금지 위반)"
+    # 템플릿 v2 가 안 들어왔다(자동 merge 0)
+    assert (diverged_team.team / "t.txt").read_text() == "v1\n"
+
+
+def test_update_divergent_ff_only_refuses_cleanly(diverged_team):
+    head_before = _git(diverged_team.team, "rev-parse", "HEAD").stdout.strip()
+    r = _run_engine(diverged_team.team, "update")
+    assert r.returncode != 0  # ff 불가 → 비치명 실패
+    assert "Traceback" not in r.stderr
+    head_after = _git(diverged_team.team, "rev-parse", "HEAD").stdout.strip()
+    assert head_before == head_after  # HEAD 불변
+    # 워킹트리 오염 0(merge conflict 잔해·debris 없음)
+    assert _git(diverged_team.team, "status", "--porcelain").stdout.strip() == ""
+    assert (diverged_team.team / "t.txt").read_text() == "v1\n"  # 강제 덮어쓰기 0
+
+
 # ── 오프라인 안전(hang 금지) ──
 
 def test_on_offline_upstream_no_hang(tmp_path):
