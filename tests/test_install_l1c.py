@@ -153,4 +153,7 @@ def test_bootstrap_no_agents_still_ok(tmp_path):
     opts = il.parse_args(["--root", str(team), "--settings", str(iso)])
     rc = mod["bootstrap"](opts, home=home, python_version=(3, 13))
     assert rc == 0
-    assert not iso.exists() or not any(iso.iterdir())
+    # 에이전트 배선은 0이지만, verify(⑦)가 격리 settings 에 on 을 적용하므로
+    # iso 하위엔 verify-settings.json 만 생기고 에이전트별 디렉토리는 없다.
+    assert not (iso / "claude").exists()
+    assert not (iso / "codex").exists()

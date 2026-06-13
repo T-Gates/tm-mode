@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import runpy
 import shutil
@@ -83,6 +84,32 @@ def _git(args, cwd) -> str | None:
         return out.stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+ENGINE = INFRA / "teammode.py"
+
+
+def _engine_capture(argv):
+    """teammode.py 를 subprocess 로 호출해 CompletedProcess 반환(verify 용).
+
+    ⚠️ env 화이트리스트로 ambient TEAMMODE_HOME/LEGACY_TOOL_HOME 누수 차단(check.py 와 동일
+    정신, P1 이중 방어). 팀 루트·settings 는 argv 의 명시 인자로만 전달된다.
+    """
+    passthrough = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+                   "TZ", "PYTHONPATH", "TERM", "XDG_STATE_HOME")
+    env = {k: os.environ[k] for k in passthrough if k in os.environ}
+    return subprocess.run(
+        [sys.executable, str(ENGINE)] + list(argv),
+        capture_output=True, text=True, env=env, timeout=30)
+
+
+def _engine_call(argv) -> int:
+    proc = _engine_capture(argv)
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    return proc.returncode
 
 
 def _resolve_root(opts_root) -> Path | None:
@@ -251,7 +278,34 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
                 f"못 찾을 수 있으니 수동 설정 권장: {il.ENV_VAR}={team_root}")
     else:
         out(f"[env] 셸 미감지 — 수동 설정 권장: {il.ENV_VAR}={team_root}")
-    # L1-F verify 가 여기 이어진다.
+
+    # ⑦ verify (§4⑦·B1) — teammode on(배너+훅+active 마커) 후 context --json 으로
+    # L1 데이터가 읽히는지(수집 가능) 확인. ※ 실제 *맥락 주입*은 다음 세션 SessionStart
+    # 훅이 한다(여기 아님). context 는 기계 수집만 — 요약은 스킬 몫(--json 원자료까지).
+    # settings: 격리(--settings 디렉토리)면 그 하위 verify 파일, 실설치(--yes)면 --install.
+    # ※ settings_override 는 디렉토리(에이전트별 파일을 그 아래 둠) — 엔진 on 은 파일
+    #   경로를 받으므로 격리 모드에선 전용 verify settings 파일을 그 아래 만든다.
+    if settings_override is not None:
+        verify_flag = ["--settings",
+                       str(Path(settings_override) / "verify-settings.json")]
+    else:
+        verify_flag = ["--install"]
+    rc_on = _engine_call(["on", "--root", str(team_root)] + verify_flag)
+    if rc_on != 0:
+        err(f"[error] verify: teammode on 실패(rc={rc_on}).")
+        return 3
+    res_ctx = _engine_capture(["context", "--root", str(team_root), "--json"])
+    if res_ctx.returncode != 0:
+        err(f"[error] verify: teammode context 실패(rc={res_ctx.returncode}).")
+        return 3
+    try:
+        ctx = json.loads(res_ctx.stdout)
+    except (ValueError, json.JSONDecodeError):
+        err("[error] verify: context --json 출력이 JSON 이 아닙니다.")
+        return 3
+    out(f"[verify] L1 데이터 읽힘 — state={ctx.get('state')}, "
+        f"members={len(ctx.get('members', []))}, active 마커·배너 생성됨.")
+    out("[done] L1 부트스트랩 완료. 다음 세션부터 SessionStart 훅이 맥락을 주입합니다.")
     return 0
 
 
