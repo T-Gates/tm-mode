@@ -62,14 +62,14 @@
 - [ ] 푸시/PR 판단 (Jane)
 - [ ] 세션로그·계획서 반영
 
-## 🔶 슬라이스 T — 템플릿 풀 (on 시 upstream fetch, §11.6) [활성 — 다음]
+## 🔶 슬라이스 T — 템플릿 풀 (on 시 upstream fetch, §11.6) [완료 — V.5 로 편입 2026-06-13]
 > Jane: "팀모드 킬때 템플릿 풀도". P1로 엔진 on/off 구조 정리됐으니 그 위에 얹음.
 > ⚠️ 구현 전 Gstack 자동업데이트 메커니즘 조사(ae839f8) 결과 반영 — 같은 문제(매 호출 시 업데이트)를 실전에서 어떻게 푸는지 보고 throttle·실패처리·알림 방식 차용.
-- [ ] T.1 `teammode.py on`에 upstream fetch 단계: ① 자기 레포 git pull ② upstream git fetch(조용히·타임아웃·실패무시) ③ behind 계산→배너 아래 알림 문자열 ④ on 나머지
-- [ ] T.2 안전: fetch만 자동, **merge 절대 자동 금지**. upstream remote 미설정 시 우아한 축소(스킵·무알림). 오프라인 시 조용히 패스(on 막지 않기)
-- [ ] T.3 `teammode update` 동사: 명시적 merge(--allow-unrelated-histories 첫회)+충돌처리+변경요약. 팀당 1회
-- [ ] T.4 회귀 테스트(/tmp 격리): fetch 실패·오프라인·미설정·behind 감지 각 케이스. 네트워크는 로컬 fake remote로 모사
-- [ ] T.5 검수 통과 + Gstack 교훈 반영 확인
+- [x] T.1 `teammode.py on`에 upstream fetch 단계: upstream git fetch(조용히·타임아웃·실패무시) → behind 계산(count_behind) → 변경목록(upstream_changes)+알림 문자열 → on 나머지. [자기 레포 pull 은 별도 pull 동사(V.3)로 분리 — on 의 핵심 경로를 네트워크가 막지 않게]
+- [x] T.2 안전: fetch만 자동, **merge 절대 자동 금지**(_maybe_notify_upstream 은 fetch+알림만). upstream remote 미설정→우아한 축소(_has_remote 가드, 무알림). 오프라인→조용히 패스(예외 삼킴, on 무차단). divergent 시 on 무오염(적대검수 락)
+- [x] T.3 `teammode update` 동사: 명시적 fetch+merge --ff-only+변경요약. ff불가(divergent)→비치명 거부(워킹트리 무오염·사람판단 유도). allow_unrelated 는 라이브러리 옵션(기본 안전 ff-only)
+- [x] T.4 회귀 테스트(/tmp 격리): fetch 실패·오프라인 hang가드·미설정·behind 감지·divergent 무오염 각 케이스. 네트워크는 로컬 fake upstream으로 모사
+- [x] T.5 검수 통과 + Gstack 교훈(fetch만 자동·실패 무차단·throttle 정신) 반영 확인
 
 ## 🔷 슬라이스 V — 엔진 핵심 동사 (활성, 우선순위 순)
 > 어젯밤 "기계적 단계 py화" 조사 = 이 동사들의 설계도. 원칙: 엔진=기계적 재료손질, 스킬=판단(요약·정리). 동사는 재료만 모으고 요약은 에이전트.
@@ -78,8 +78,8 @@
 - [x] V.2 `context` — 전원 세션로그·상태 긁어 JSON으로 모음(요약은 스킬). teammode 간판 "지금 팀 상황". log 다음(연료로 보여줌). [완료: 멤버별 최근1파일+summary/date, INDEX 읽기, .acme-active 상태, --json/텍스트, 구로그 summary 생략. 골든 02 GREEN. 신규 17테스트. 적대검수 0버그(frontmatter 누수 probe 안전 확인+회귀락)→"수정 없음"]
 - [x] V.3 `pull` — git_ops로 통합(auto_pull.do_pull 재사용), 엔진 동사로 노출. [완료: infra/git_ops.py 단일소스(do_pull·killpg·ff-only·타임아웃·자격증명차단), auto_pull 재사용 리팩토링(19테스트 유지·동일객체 단언), pull 동사 비치명실패. 신규 13테스트. 적대검수 0버그(고아누수 회귀락)→"수정 없음"]
 - [x] V.4 `commit` — add/commit/push 묶음, git_ops에 추가. 여러 스킬이 매번 하던 것 흡수. [완료: git_ops.do_commit(add-A→변경검사→commit→선택push), push실패 커밋보존, 변경없음/git아님 비치명, --message필수/--push선택. 신규 17테스트. 적대검수 0버그(arg주입면역·롤백없음 락)→"수정 없음"]
-- [ ] V.5 `update` — 슬라이스 T(템플릿 풀: upstream fetch→변경목록+Y/n→ff머지). 별도 축이나 동사로 편입
-- [ ] V.6 각 동사 golden 시나리오 GREEN 전환 확인 + 검수 통과
+- [x] V.5 `update` — 슬라이스 T(템플릿 풀: upstream fetch→변경목록+Y/n→ff머지). 별도 축이나 동사로 편입. [완료: git_ops fetch_upstream/count_behind/upstream_changes/update_from_upstream. on=fetch만+알림(자동merge금지), update=명시적 ff-only(divergent 무오염 거부). 신규 20테스트. 적대검수 0버그(divergent 무오염 락)→"수정 없음"]
+- [x] V.6 각 동사 golden 시나리오 GREEN 전환 확인 + 검수 통과. [02-context·04-log GREEN(슬라이스 V 직접 인수). 01-on·05-off PASS 유지. 03-issue 는 슬라이스 V 범위 밖(별도 issue 동사). 각 동사 적대검수 1라운드씩(V.1만 실측버그1, 나머지 0버그)+회귀락 후 "수정 없음"]
 
 ## ⏸ 나중 슬라이스 (지금 안 함, 버리지 않음)
 - [ ] (공개 직전) `doctor` — 자가진단(스킬링크·훅·플래그·MCP토큰·버전·config) + 기계적 자동수리/사람조치 안내. 어젯밤 플래그 좀비 같은 불일치 잡는 안전망. + 지원채널(이슈자동생성→슬랙, §11.8)은 외부팀 생긴 후. 점검대상(스킬·MCP)이 먼저 깔려야 가치 있음
