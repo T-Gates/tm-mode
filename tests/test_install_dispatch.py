@@ -46,3 +46,27 @@ def test_dispatch_agent_resolved_by_dir_not_hardcode(tmp_path):
     # 존재하지 않는 에이전트 플래그는 위임 불가 → 에러.
     rc = _run_dispatch(["--nonexistent-agent", "sync"])
     assert rc == 2
+
+
+def test_dispatch_refuses_sync_without_settings_or_install(capsys):
+    """L1-0 P2 가드: --settings 도 --install 도 없으면 실 호스트 오염 거부(exit 2)."""
+    rc = _run_dispatch(["--claude", "sync", "--on"])  # 격리/실설치 의사 없음
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "settings" in err.lower() or "install" in err.lower()
+
+
+def test_dispatch_install_flag_allows_real_install_path(tmp_path, monkeypatch):
+    """--install 은 실설치 의사 — 가드를 통과하되 어댑터엔 넘기지 않는다.
+
+    실 ~/.claude 오염을 피하려고 HOME 을 tmp 로 강제하고, fake HOME 하위
+    .claude/settings.json 에만 쓰이는지 확인한다(실 호스트 무접촉).
+    """
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(Path, "home", lambda: fake_home, raising=False)
+    rc = _run_dispatch(["--claude", "--install", "sync", "--on"])
+    assert rc == 0
+    written = fake_home / ".claude" / "settings.json"
+    assert written.is_file(), "fake HOME 의 .claude/settings.json 에 쓰여야 함"
