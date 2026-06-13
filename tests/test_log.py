@@ -145,6 +145,37 @@ def test_log_rejects_dotdot_segment(tmp_path):
     assert r.returncode != 0
 
 
+def test_log_rejects_leading_dash_author(tmp_path):
+    # 적대 검수 지적: '-rf'·'--root' 류는 다운스트림 git/rm/glob 에서 플래그로 오인.
+    for bad in ("-rf", "--root", "-"):
+        r = _run(tmp_path, "log", "--author", bad, "--text", "x",
+                 "--now", "2026-06-13T10:00:00+09:00")
+        assert r.returncode != 0, f"{bad!r} 가 거부되지 않음"
+    # 선두 dash 디렉토리가 생기지 않았다
+    sess = tmp_path / "memory" / "team" / "sessions"
+    if sess.is_dir():
+        assert not any(p.name.startswith("-") for p in sess.iterdir())
+
+
+def test_log_rejects_null_byte_author():
+    # 널바이트는 subprocess argv 통과 자체가 OS 레벨에서 차단되지만(이중 방어), 엔진
+    # 검증기도 직접 거부하는지 단언한다(다른 진입경로 대비).
+    tm = runpy.run_path(str(ENGINE), run_name="__test_validate__")
+    assert tm["_validate_author"]("a\x00b") is not None
+
+
+def test_log_text_with_newlines_summary_is_first_line_only(tmp_path):
+    # summary 는 한 줄(첫 줄)만 — 여러 줄 본문이 frontmatter 로 새지 않는다(스펙 §3.3).
+    _run(tmp_path, "log", "--author", "jane-doe",
+         "--text", "첫줄요약\n둘째줄상세\n셋째줄", "--now", "2026-06-13T10:00:00+09:00")
+    content = _log_files(tmp_path, "jane-doe")[0].read_text(encoding="utf-8")
+    fm = content.split("---\n")[1]   # frontmatter 블록
+    assert "summary: 첫줄요약" in fm
+    assert "둘째줄상세" not in fm     # 본문은 frontmatter 밖
+    # 본문에는 전체 보존
+    assert "둘째줄상세" in content and "셋째줄" in content
+
+
 # ── 필수 인자 검증 ──
 
 def test_log_requires_root(tmp_path):

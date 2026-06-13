@@ -97,6 +97,10 @@ def _validate_author(author: str) -> str | None:
         return f"author 로 {author!r} 는 허용되지 않습니다."
     if os.path.isabs(author):
         return f"author 는 절대 경로일 수 없습니다: {author!r}"
+    # 선두 '-' 거부: '-rf'·'--root' 같은 이름은 다운스트림 git/rm/glob 에서 플래그로
+    # 오인되는 footgun(적대 검수 지적). members.md 영문 이름은 식별자이지 플래그가 아니다.
+    if author[0] in "-_":
+        return f"author 는 영숫자로 시작해야 합니다: {author!r}"
     # 화이트리스트: members.md 영문 이름 규약(소문자 단일 세그먼트)에 부합하는 문자만
     if not all(c.isalnum() or c in "-_" for c in author):
         return f"author 에 허용되지 않는 문자가 있습니다: {author!r}"
