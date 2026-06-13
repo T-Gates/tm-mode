@@ -137,3 +137,35 @@ def test_pull_verb_offline_no_hang(tmp_path):
     # 타임아웃(do_pull 기본 5s) + 약간의 여유. hang(무한) 아님.
     assert elapsed < 20, f"pull 이 {elapsed:.1f}s 매달림 (hang)"
     assert "Traceback" not in r.stderr
+
+
+def test_do_pull_timeout_no_orphan_grandchild(tmp_path):
+    """역사적 버그 회귀 락: 타임아웃 시 손자 git-remote-http(s) 고아 누수 0.
+
+    do_pull(짧은 timeout) 으로 비라우팅 원격에 pull → killpg 가 손자까지 죽이는지.
+    git_ops 로 이관 후에도 안전장치가 살아있음을 실측한다.
+    """
+    import re
+    import time
+    work = tmp_path / "orphan"
+    _git(tmp_path, "init", str(work))
+    (work / "x").write_text("x")
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "c")
+    _git(work, "remote", "add", "origin", "http://192.0.2.1/r.git")
+    _git(work, "branch", "--set-upstream-to=origin/main", check=False)
+
+    def _count_remote_http():
+        try:
+            out = subprocess.run(["pgrep", "-af", "git-remote-http"],
+                                 capture_output=True, text=True).stdout
+        except OSError:
+            return 0
+        return len([l for l in out.splitlines() if l.strip()])
+
+    before = _count_remote_http()
+    res = go.do_pull(str(work), timeout=2)
+    assert res.ok is False  # 타임아웃 또는 즉시 실패 — 예외 전파 0
+    time.sleep(1.5)  # 고아가 있었다면 이 시점까지 살아있을 것
+    after = _count_remote_http()
+    assert after <= before, f"손자 git-remote-http 고아 누수: before={before} after={after}"
