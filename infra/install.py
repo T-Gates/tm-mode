@@ -142,15 +142,23 @@ def _make_run_adapter():
 
 
 def bootstrap(opts: il.Options, *, home: Path, python_version,
-              out=print, err=None) -> int:
-    """부트스트랩 오케스트레이터 (§4). ①preflight ②detect ③role ④scaffold.
+              shell="__env__", out=print, err=None) -> int:
+    """부트스트랩 오케스트레이터 (§4). ①preflight ②detect ③role ④scaffold ⑤wire ⑥env.
 
-    ⑤wire·⑥env·⑦verify 는 후속 슬라이스(L1-C..F)에서 채운다.
-    값 주입(home·python_version)으로 테스트가 호스트를 건드리지 않게 한다.
+    ⑦verify 는 후속 슬라이스(L1-F)에서 채운다.
+    값 주입(home·python_version·shell)으로 테스트가 호스트를 건드리지 않게 한다.
+    shell 기본값 "__env__" → os.environ["SHELL"] 에서 셸 종류 감지(테스트는 monkeypatch).
     """
     if err is None:
         def err(*a, **k):
             print(*a, file=sys.stderr, **k)
+
+    # 셸 종류 해석 (§9). shell="__env__" → $SHELL 에서(런타임 훅용 env 주입 대상 결정).
+    # ⚠️ 이건 *env 주입 대상 셸* 판단일 뿐 — 팀 루트를 env 에서 읽는 것과 무관(§10).
+    if shell == "__env__":
+        shell = il.detect_shell(os.environ.get("SHELL"))
+    elif shell:
+        shell = il.detect_shell(shell) if "/" in str(shell) else shell
 
     # 팀 루트 (§10, P1 — env 불신뢰·추측 금지)
     team_root = _resolve_root(opts.root)
@@ -228,7 +236,22 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         for agent, why in wire.failed:
             err(f"[error] wire 실패: {agent} — {why}")
         return wire.exit_code  # 부분 실패 exit 3, 성공분은 롤백 안 함(M5)
-    # L1-D 부터 env/verify 가 여기 이어진다.
+
+    # ⑥ env 주입 (§9, m2) — 런타임 훅용 TEAMMODE_HOME 을 셸 프로파일에 멱등 1줄.
+    # 셸은 $SHELL 에서(주입). 미지원/미감지 셸은 경고만(비치명 — L1 핵심은 메모리+훅).
+    if shell:
+        env_res = il.inject_env(shell, home, team_root)
+        if env_res["injected"]:
+            out(f"[env] {env_res['profile']} 에 {il.ENV_VAR} 주입 "
+                f"({env_res['reason']}).")
+        elif env_res["profile"]:
+            out(f"[env] {il.ENV_VAR} 이미 설정됨({env_res['reason']}).")
+        else:
+            out(f"[env] 건너뜀 — {env_res['reason']}. 런타임 훅이 팀루트를 "
+                f"못 찾을 수 있으니 수동 설정 권장: {il.ENV_VAR}={team_root}")
+    else:
+        out(f"[env] 셸 미감지 — 수동 설정 권장: {il.ENV_VAR}={team_root}")
+    # L1-F verify 가 여기 이어진다.
     return 0
 
 
