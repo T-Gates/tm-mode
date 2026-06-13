@@ -401,3 +401,77 @@ def scaffold_memory(team_root: Path, *, member_name: str, role: str,
     added = register_member(members_file, member_name, identity=identity)
 
     return {"member_added": added}
+
+
+# ─────────────────────────── wire (§4⑤·§8, M5) ───────────────────────────
+
+# 에이전트별 settings 쓰기 타깃: 플래그명·실호스트 기본 경로가 다르다.
+#   claude → --settings ~/.claude/settings.json
+#   codex  → --config   ~/.codex/config.toml
+_AGENT_WIRE = {
+    "claude": {"flag": "--settings", "home_rel": ".claude/settings.json"},
+    "codex":  {"flag": "--config",   "home_rel": ".codex/config.toml"},
+}
+
+
+def agent_settings_path(agent: str, *, home: Path, settings_override=None) -> Path:
+    """에이전트의 settings 쓰기 타깃 결정 (§10 M1).
+
+    settings_override(격리 디렉토리) 지정 시 그 하위 에이전트별 파일(격리 테스트·CI).
+    미지정 시 실호스트 기본(home/.claude/settings.json 등).
+    """
+    spec = _AGENT_WIRE[agent]
+    if settings_override is not None:
+        # 격리: <override>/<agent>/<basename> — 에이전트별 독립 파일
+        base = Path(spec["home_rel"]).name
+        return Path(settings_override) / agent / base
+    return Path(home) / spec["home_rel"]
+
+
+@dataclass
+class WireResult:
+    ok: bool
+    exit_code: int
+    wired: list = field(default_factory=list)        # 성공 에이전트
+    failed: list = field(default_factory=list)       # (agent, error) 튜플
+    messages: list = field(default_factory=list)
+
+
+def wire_agents(agents, *, home: Path, settings_override=None,
+                run_adapter=None) -> WireResult:
+    """감지된 에이전트마다 어댑터 sync 호출(훅 등록) — §4⑤·§8.
+
+    **에이전트별 독립(M5)**: 한 에이전트 실패가 다른 배선을 막지 않는다. 하나라도
+    실패 시 exit 3 + 어느 에이전트가 막혔는지. 성공분은 롤백 안 함(멱등 재시도).
+    스킬 심링크 제외(L1-C — infra/skills 없고 L1 은 훅이 주입, M2).
+
+    run_adapter(agent, settings_flag, settings_path) -> int 를 주입받아 실제
+    어댑터 호출을 추상화(테스트가 호스트·subprocess 를 건드리지 않게).
+    """
+    if run_adapter is None:
+        raise ValueError("run_adapter 콜러블이 필요합니다(부작용 추상화).")
+    res = WireResult(ok=True, exit_code=0)
+    for agent in agents:
+        if agent not in _AGENT_WIRE:
+            res.failed.append((agent, "지원하지 않는 에이전트"))
+            res.ok = False
+            continue
+        spec = _AGENT_WIRE[agent]
+        path = agent_settings_path(agent, home=home,
+                                   settings_override=settings_override)
+        try:
+            rc = run_adapter(agent, spec["flag"], str(path))
+            if rc == 0:
+                res.wired.append(agent)
+                res.messages.append(f"[wire] {agent} 훅 동기화 완료 → {path}")
+            else:
+                res.ok = False
+                res.failed.append((agent, f"sync rc={rc}"))
+                res.messages.append(f"[wire] {agent} 실패(rc={rc}) — 다른 배선은 계속")
+        except Exception as e:  # noqa: BLE001 — 한 에이전트 실패가 전체를 막지 않게(M5)
+            res.ok = False
+            res.failed.append((agent, str(e)))
+            res.messages.append(f"[wire] {agent} 예외: {e} — 다른 배선은 계속")
+    if not res.ok:
+        res.exit_code = 3  # 부분 실패 → exit 3(어느 에이전트가 막혔는지 호출부가 출력)
+    return res
