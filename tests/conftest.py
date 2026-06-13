@@ -21,14 +21,35 @@ def _real_state_dir() -> Path:
     return Path(os.path.expanduser("~/.local/state/teammode"))
 
 
+# 셸 프로파일 — install.py ⑥ env 주입(§9)이 실 호스트 프로파일에 1줄 쓰는 사고를
+# 방지(L1-0). 테스트는 monkeypatch HOME=tmp + fake 프로파일로만 env 주입을 검증한다.
+# ⚠️ 주의: `.bashrc` 등 dotfile 은 pathlib 상 .suffix == "" 이다(선두 dot 은 stem).
+# 따라서 과거의 `p.suffix and b != a` 분기로는 절대 안 잡힌다 → 아래 _CONTENT_GUARDED
+# 집합으로 **suffix 무관 내용 변화**를 강제 검사한다(L1-0 실측 버그 수정).
+_SHELL_PROFILES = [
+    Path(os.path.expanduser("~/.bashrc")),
+    Path(os.path.expanduser("~/.zshrc")),
+    Path(os.path.expanduser("~/.profile")),
+    Path(os.path.expanduser("~/.bash_profile")),
+    Path(os.path.expanduser("~/.config/fish/config.fish")),
+]
+
 _GUARDED = [
     Path(os.path.expanduser("~/.claude/settings.json")),
     Path(os.path.expanduser("~/.codex/config.toml")),
     Path(os.path.expanduser("~/.codex")),
     Path(os.path.expanduser("~/.claude")),
+    *_SHELL_PROFILES,
     _real_state_dir() / "last-pull",
     _real_state_dir(),
 ]
+
+# 내용 변화(부재→존재 포함)를 suffix 무관하게 오염으로 보는 경로.
+# 셸 프로파일은 dotfile 이라 suffix 검사로는 못 잡으므로 여기에 명시한다.
+_CONTENT_GUARDED = set(_SHELL_PROFILES) | {
+    Path(os.path.expanduser("~/.claude/settings.json")),
+    Path(os.path.expanduser("~/.codex/config.toml")),
+}
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +90,14 @@ def _no_real_config_pollution():
                 pytest.fail(
                     f"실 auto-pull 상태 오염 감지: {p} (before=absent, after={a[0]}). "
                     f"테스트는 XDG_STATE_HOME 격리를 써야 한다.")
+            continue
+        # 셸 프로파일·핵심 설정파일: suffix 무관(dotfile 포함) 상태/내용 변화 = 오염.
+        # (`.bashrc` 는 .suffix=="" 라 suffix 검사로는 못 잡힌다 — L1-0 핵심.)
+        if p in _CONTENT_GUARDED:
+            if b != a:
+                pytest.fail(
+                    f"실 셸 프로파일/설정 오염 감지: {p} (before={b[0]}, after={a[0]}). "
+                    f"테스트는 monkeypatch HOME=tmp + fake 프로파일만 써야 한다.")
             continue
         # 디렉토리(~/.claude 등)는 다른 도구가 만들 수 있으니 파일 내용 변화만 엄격 검사
         if p.suffix and b != a:
