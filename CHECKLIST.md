@@ -95,6 +95,6 @@
 - [x] **L1-B scaffold** — `memory/INDEX.md`·`memory/team/members.md`·`memory/team/sessions/<member>/`(정확 경로, 엔진 teammode.py:191 단일소스, M1). 도입자 최소 config(빈 서비스 슬롯). `memory/banner.txt`를 team.name으로 선기록(엔진 무수정, M4). 이름은 엔진 `_validate_author` 재사용(m1). **첫 세션로그 안 씀(M2)**. 이름충돌 정책(동일=멱등/오버라이드충돌=exit3, M4).
 - [x] **L1-C wire (훅 sync만)** — install.py가 감지된 에이전트마다 adapter `sync` 호출(훅 등록). **스킬 심링크 제외(M2 — infra/skills 없고 L1은 훅이 주입)**. 에이전트별 독립 실패=exit3+stderr, 성공분 롤백 안 함(M5). 멱등.
 - [x] **L1-D env 주입** — 셸 프로파일 감지(bash/zsh/fish) `TEAMMODE_HOME`(m2) 멱등 1줄. **테스트는 monkeypatch HOME=tmp 강제(B1)**. 멱등·중복금지·셸별.
-- [ ] **L1-E session-start.py 훅 구현 (신규, M3)** — manifest 등록됐으나 teammode-repo에 파일 부재 = L1 진짜 payoff. `infra/hooks/session-start.py`: `.tgates-active` 활성 시 context(멤버별 최근 세션로그) 읽어 SessionStart additionalContext로 주입. normalize 경유 깨지지 않게. 신규테스트.
+- [x] **L1-E session-start.py 훅 구현 (신규, M3)** — manifest 등록됐으나 teammode-repo에 파일 부재 = L1 진짜 payoff. `infra/hooks/session-start.py`: `.tgates-active` 활성 시 context(멤버별 최근 세션로그) 읽어 SessionStart additionalContext로 주입. normalize 경유 깨지지 않게. 신규테스트.
 - [ ] **L1-F verify + 골든** — install.py ⑦(on --install + context --json로 L1 데이터 읽힘 확인; 테스트선 --settings 격리). conformance 골든 I1(빈→L1)·I2(팀원)·I2b(다음세션 주입)·I3(멱등)·I4·I4b(격리)·I-dry. 최종 전체 스위트 166+신규 green.
 - [ ] 마감(사람): 푸시/PR 은수 판단, 세션로그 반영
