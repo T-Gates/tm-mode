@@ -118,6 +118,29 @@ def _detect(team_root: Path, home: Path) -> dict:
     }
 
 
+def _make_run_adapter():
+    """wire 용 run_adapter(agent, flag, path) → 어댑터 main 직접 호출 rc.
+
+    어댑터를 격리 import(runpy)해 main([flag, path, "sync", "--on"]) 실행.
+    경로는 wire_agents 가 격리/실호스트로 이미 해석함 — 여기선 그대로 전달.
+    """
+    def run_adapter(agent, flag, path) -> int:
+        adapter_path = AGENTS / agent / "adapter.py"
+        if not adapter_path.is_file():
+            raise FileNotFoundError(f"{agent} 어댑터 없음: {adapter_path}")
+        # 어댑터의 settings 부모 디렉토리 보장(어댑터는 부모 mkdir 하지만 방어적으로).
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        saved = sys.argv[:]
+        try:
+            argv = [flag, path, "sync", "--on"]
+            sys.argv = [str(adapter_path)] + argv
+            mod = runpy.run_path(str(adapter_path), run_name="__teammode_wire__")
+            return mod["main"](argv)
+        finally:
+            sys.argv = saved
+    return run_adapter
+
+
 def bootstrap(opts: il.Options, *, home: Path, python_version,
               out=print, err=None) -> int:
     """부트스트랩 오케스트레이터 (§4). ①preflight ②detect ③role ④scaffold.
@@ -186,7 +209,26 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         err(f"[error] 이름 충돌(사람이 해소 필요): {e}")
         return 3
     out(f"[scaffold] memory/ 구조·members.md 등재 완료 (role={role}).")
-    # L1-C 부터 wire/env/verify 가 여기 이어진다.
+
+    # ⑤ wire (§4⑤·§8, M5) — 감지된 에이전트마다 어댑터 sync(훅 등록). 스킬 제외(M2).
+    # settings_override: --settings 지정 시 격리 경로. 미지정+실설치 의도면 실호스트.
+    settings_override = opts.settings
+    if settings_override is None and not opts.yes:
+        # 실호스트 쓰기는 명시 의도(--settings 격리 또는 --yes 실설치)에서만(§10, P2 정신).
+        # 무인 안전: --yes 없이 실 ~/.claude 에 쓰지 않는다.
+        out("[wire] 건너뜀 — 실호스트 배선은 --yes(실설치) 또는 --settings(격리) 필요. "
+            "스캐폴드는 완료(메모리는 준비됨).")
+        return 0
+    wire = il.wire_agents(
+        det["agents"], home=home, settings_override=settings_override,
+        run_adapter=_make_run_adapter())
+    for m in wire.messages:
+        out(m)
+    if not wire.ok:
+        for agent, why in wire.failed:
+            err(f"[error] wire 실패: {agent} — {why}")
+        return wire.exit_code  # 부분 실패 exit 3, 성공분은 롤백 안 함(M5)
+    # L1-D 부터 env/verify 가 여기 이어진다.
     return 0
 
 
