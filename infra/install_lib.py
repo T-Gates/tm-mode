@@ -475,3 +475,86 @@ def wire_agents(agents, *, home: Path, settings_override=None,
     if not res.ok:
         res.exit_code = 3  # 부분 실패 → exit 3(어느 에이전트가 막혔는지 호출부가 출력)
     return res
+
+
+# ─────────────────────────── env 주입 (§9, m2) ───────────────────────────
+
+# 변수명은 스펙01 §1.2 reference 값 TEAMMODE_HOME (런타임 훅 코드와 일치, m2).
+# ⚠️ 의도적 호출(install/on/off)은 env 를 신뢰하지 않는다(§10). env 는 런타임 훅 전용.
+ENV_VAR = "TEAMMODE_HOME"
+
+# 셸별 프로파일·export 문법. fish 는 set -gx, posix 계열은 export.
+_SHELL_PROFILES = {
+    "bash": (".bashrc", 'export {var}="{val}"'),
+    "zsh": (".zshrc", 'export {var}="{val}"'),
+    "fish": (".config/fish/config.fish", 'set -gx {var} "{val}"'),
+}
+
+# 멱등 주입을 식별하는 마커(라인 끝 주석). 재실행 시 이 마커로 중복 판정.
+_ENV_MARKER = "# teammode (env injection, §9)"
+
+
+def detect_shell(shell_path) -> str | None:
+    """$SHELL 경로 → 셸 종류(bash/zsh/fish). 미지/미지원 → None.
+
+    값 주입(shell_path) — 호스트 env 를 직접 읽지 않는다.
+    """
+    if not shell_path:
+        return None
+    name = Path(shell_path).name
+    for shell in _SHELL_PROFILES:
+        if shell in name:
+            return shell
+    return None
+
+
+def profile_path_for(shell: str, home: Path) -> Path | None:
+    """셸 → 프로파일 파일 경로(home 기준). 미지원 셸 → None."""
+    spec = _SHELL_PROFILES.get(shell)
+    if spec is None:
+        return None
+    return Path(home) / spec[0]
+
+
+def _env_line(shell: str, team_root: Path) -> str:
+    tmpl = _SHELL_PROFILES[shell][1]
+    return f"{tmpl.format(var=ENV_VAR, val=str(team_root))}  {_ENV_MARKER}"
+
+
+def inject_env(shell: str, home: Path, team_root: Path) -> dict:
+    """셸 프로파일에 TEAMMODE_HOME 멱등 1줄 주입 (§9, m2).
+
+    멱등: 같은 마커 라인이 이미 있으면 추가 안 함. 다른 팀루트로 바뀌었으면 그
+    마커 라인만 교체(중복 금지). 미지원 셸 → {'injected': False, 'reason': ...}.
+
+    ⚠️ 테스트는 monkeypatch HOME=tmp + fake 프로파일로만(B1) — 실 프로파일 무접촉.
+    """
+    profile = profile_path_for(shell, home)
+    if profile is None:
+        return {"injected": False, "reason": f"미지원 셸: {shell}",
+                "profile": None}
+    new_line = _env_line(shell, team_root)
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    existing = profile.read_text(encoding="utf-8") if profile.is_file() else ""
+    lines = existing.splitlines()
+
+    # 기존 teammode 마커 라인 탐색
+    marker_idx = [i for i, ln in enumerate(lines) if _ENV_MARKER in ln]
+    if marker_idx:
+        # 이미 주입돼 있음 — 동일하면 멱등(무변경), 다르면 그 라인만 교체(중복 금지).
+        idx = marker_idx[0]
+        # 마커 라인이 2개 이상이면 첫 줄만 남기고 정리(과거 버그 방어).
+        if lines[idx] == new_line and len(marker_idx) == 1:
+            return {"injected": False, "reason": "이미 최신(멱등)",
+                    "profile": str(profile)}
+        # 모든 마커 라인 제거 후 새 라인 1개만
+        lines = [ln for i, ln in enumerate(lines) if i not in marker_idx]
+        lines.append(new_line)
+        profile.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return {"injected": True, "reason": "갱신(팀루트 변경)",
+                "profile": str(profile)}
+
+    # 신규 주입 — 끝에 1줄 append(기존 내용 보존)
+    body = existing if existing.endswith("\n") or existing == "" else existing + "\n"
+    profile.write_text(body + new_line + "\n", encoding="utf-8")
+    return {"injected": True, "reason": "신규 주입", "profile": str(profile)}
