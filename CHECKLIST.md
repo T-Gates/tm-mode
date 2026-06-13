@@ -75,7 +75,7 @@
 > 어젯밤 "기계적 단계 py화" 조사 = 이 동사들의 설계도. 원칙: 엔진=기계적 재료손질, 스킬=판단(요약·정리). 동사는 재료만 모으고 요약은 에이전트.
 > ⚠️ git 동사는 신규 작성 금지 — 어젯밤 auto_pull.py(do_pull, 손자프로세스 killpg·ff-only·타임아웃 안전장치 포함)를 `infra/git_ops.py` 공통 모듈로 키워 pull/commit/auto-pull 전부 재사용(중복=드리프트 방지).
 - [x] V.1 `log` — 세션로그 파일 생성/이어쓰기(날짜·frontmatter·06시컷 기계적 자동). 매일 쓰는 바닥, 훅이 부름. **먼저**(데이터 연료). [완료: workday.py 06시컷 단일소스, author 화이트리스트+선두dash거부, 하루1파일 append. 골든 04 GREEN. 신규 28테스트(log 20+workday 8). 적대검수 1버그(선두dash) 수정→"수정 없음"]
-- [ ] V.2 `context` — 전원 세션로그·상태 긁어 JSON으로 모음(요약은 스킬). teammode 간판 "지금 팀 상황". log 다음(연료로 보여줌)
+- [x] V.2 `context` — 전원 세션로그·상태 긁어 JSON으로 모음(요약은 스킬). teammode 간판 "지금 팀 상황". log 다음(연료로 보여줌). [완료: 멤버별 최근1파일+summary/date, INDEX 읽기, .acme-active 상태, --json/텍스트, 구로그 summary 생략. 골든 02 GREEN. 신규 17테스트. 적대검수 0버그(frontmatter 누수 probe 안전 확인+회귀락)→"수정 없음"]
 - [ ] V.3 `pull` — git_ops로 통합(auto_pull.do_pull 재사용), 엔진 동사로 노출
 - [ ] V.4 `commit` — add/commit/push 묶음, git_ops에 추가. 여러 스킬이 매번 하던 것 흡수
 - [ ] V.5 `update` — 슬라이스 T(템플릿 풀: upstream fetch→변경목록+Y/n→ff머지). 별도 축이나 동사로 편입
