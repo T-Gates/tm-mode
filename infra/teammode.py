@@ -161,7 +161,7 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
 
 # 값을 받는 옵션 플래그 화이트리스트. 여기 없는 `--flag` 는 부울/무시로 다룬다 —
 # 알 수 없는 플래그의 다음 토큰을 값으로 삼키지 않게 해 verb 손실을 막는다.
-_VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now")
+_VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now", "--message")
 
 
 def cmd_pull(team_root: Path) -> int:
@@ -177,6 +177,23 @@ def cmd_pull(team_root: Path) -> int:
         return 0
     # 비치명: 작업을 막지 않되, 무엇이 안 됐는지 알린다(스킬/사람이 판단).
     print(f"teammode pull — 건너뜀(비치명): {result.detail}", file=sys.stderr)
+    return 1
+
+
+def cmd_commit(team_root: Path, message: str, push: bool) -> int:
+    """git add/commit/(push) 묶음 — git_ops 공통 안전장치 재사용(V.4).
+
+    실패 무해(우아한 축소): 변경 없음·git 아님·push 실패 모두 비치명. push 실패는
+    로컬 커밋을 되돌리지 않는다(커밋 보존). exit code 로 결과를 구분하되 크래시 0.
+    """
+    result = _git_ops.do_commit(str(team_root), message=message, push=push)
+    if result.ok:
+        suffix = " (pushed)" if result.pushed else (
+            " (push 실패·커밋은 보존)" if push else "")
+        print(f"teammode commit — 커밋됨{suffix}: {result.detail}")
+        return 0
+    # 변경 없음/git 아님 등 — 비치명. 작업을 막지 않되 사유를 알린다.
+    print(f"teammode commit — 건너뜀(비치명): {result.detail}", file=sys.stderr)
     return 1
 
 
@@ -288,7 +305,7 @@ def _parse_args(argv):
     (--author/--text/--now 등)도 같은 통로로 모은다.
     """
     verb = None
-    opts: dict = {"install": False, "json": False}
+    opts: dict = {"install": False, "json": False, "push": False}
     it = iter(argv)
     for a in it:
         if a in _VALUE_FLAGS:
@@ -297,6 +314,8 @@ def _parse_args(argv):
             opts["install"] = True
         elif a == "--json":
             opts["json"] = True
+        elif a == "--push":
+            opts["push"] = True
         elif verb is None and not a.startswith("-"):
             verb = a
         # 그 외 토큰(알 수 없는 부울 플래그 등)은 무시
@@ -329,7 +348,7 @@ def _parse_now(now_str):
 # settings(어댑터 sync)를 필요로 하는 동사 — on/off 만. log/context 등 메모리/조회
 # 동사는 ~/.claude 를 건드리지 않으므로 settings 요구가 무의미하다.
 _SETTINGS_VERBS = ("on", "off")
-_KNOWN_VERBS = ("on", "off", "log", "context", "pull")
+_KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit")
 
 
 def main(argv=None) -> int:
@@ -369,6 +388,13 @@ def main(argv=None) -> int:
 
     if verb == "pull":
         return cmd_pull(team_root)
+
+    if verb == "commit":
+        message = opts.get("message")
+        if not message:
+            print("[error] commit: --message <메시지> 가 필요합니다.", file=sys.stderr)
+            return 2
+        return cmd_commit(team_root, message, opts["push"])
 
     # on/off: P2 settings 경로도 명시로만. 둘 다 없으면 실 ~/.claude 추측 오염 거부.
     resolved_settings = _resolve_settings(opts.get("settings"), opts["install"])

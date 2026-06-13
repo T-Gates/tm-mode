@@ -28,6 +28,14 @@ class PullResult:
     detail: str = ""               # 디버그용 메시지(stderr 등 요약)
 
 
+@dataclass
+class CommitResult:
+    ok: bool                       # commit 성공(스테이지된 변경이 커밋됨)
+    committed: bool = False        # 실제 커밋이 생성됐는지(변경 없으면 False)
+    pushed: bool = False           # push 까지 성공했는지(push=True 일 때만 의미)
+    detail: str = ""               # 디버그용 메시지(stderr 등 요약)
+
+
 def git_env() -> dict:
     """git 호출 환경 — 자격증명 프롬프트·SSH 프롬프트 차단(hang 방지)."""
     env = dict(os.environ)
@@ -138,3 +146,74 @@ def do_pull(team_root: str, timeout: int = DEFAULT_TIMEOUT) -> PullResult:
     if rc == 0:
         return PullResult(ok=True, detail=(out or "").strip()[:200])
     return PullResult(ok=False, detail=((err or out) or "").strip()[:200])
+
+
+def _has_staged_changes(team_root: str, timeout: int) -> bool:
+    """스테이지에 커밋할 변경이 있는지(`git diff --cached --quiet` rc!=0 == 변경 있음)."""
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "diff", "--cached", "--quiet"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return rc != 0
+
+
+def do_commit(team_root: str, message: str, push: bool = False,
+              timeout: int = DEFAULT_TIMEOUT) -> CommitResult:
+    """`git add -A && git commit -m` (+ 선택 push). 절대 예외를 전파하지 않는다(철칙).
+
+    auto_pull/do_pull 과 같은 안전장치 재사용(git_env 자격증명 차단·killpg 타임아웃).
+    - 변경 없음 → committed=False, ok=False (비치명: 레포 무손상).
+    - push=True 이고 원격 없음/오프라인 → **커밋은 보존**, push 만 실패(ok 은 commit 성공
+      기준으로 True, pushed=False). push 실패가 로컬 커밋을 되돌리지 않는다.
+    """
+    if not is_git_worktree(team_root):
+        return CommitResult(ok=False, detail="not a git work tree")
+
+    # 1) stage 전부
+    try:
+        rc, _, err = run_git(["-C", team_root, "add", "-A"], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return CommitResult(ok=False, detail="add timeout")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return CommitResult(ok=False, detail=f"add exec error: {exc}")
+    if rc != 0:
+        return CommitResult(ok=False, detail=f"add failed: {(err or '').strip()[:200]}")
+
+    # 2) 변경 없으면 비치명 종료(빈 커밋 만들지 않음)
+    if not _has_staged_changes(team_root, timeout):
+        return CommitResult(ok=False, committed=False,
+                            detail="nothing to commit")
+
+    # 3) commit
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root, "commit", "-m", message], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return CommitResult(ok=False, detail="commit timeout")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return CommitResult(ok=False, detail=f"commit exec error: {exc}")
+    if rc != 0:
+        return CommitResult(ok=False, committed=False,
+                            detail=f"commit failed: {((err or out) or '').strip()[:200]}")
+
+    if not push:
+        return CommitResult(ok=True, committed=True, pushed=False,
+                            detail=(out or "").strip()[:200])
+
+    # 4) push (선택). 실패해도 **커밋은 보존** — ok 은 commit 성공 기준으로 유지.
+    try:
+        prc, pout, perr = run_git(
+            ["-C", team_root, *http_timeout_opts(timeout), "push"],
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return CommitResult(ok=True, committed=True, pushed=False,
+                            detail="committed; push timeout")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return CommitResult(ok=True, committed=True, pushed=False,
+                            detail=f"committed; push exec error: {exc}")
+    if prc == 0:
+        return CommitResult(ok=True, committed=True, pushed=True,
+                            detail="committed and pushed")
+    return CommitResult(ok=True, committed=True, pushed=False,
+                        detail=f"committed; push failed: {((perr or pout) or '').strip()[:200]}")
