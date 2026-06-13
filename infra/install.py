@@ -102,6 +102,7 @@ def _detect(team_root: Path, home: Path) -> dict:
     """detect (§4 ②): git remote·user.name·설치 에이전트·config 존재. 읽기만."""
     remote = _git(["remote", "get-url", "origin"], cwd=team_root)
     user_name = _git(["config", "user.name"], cwd=team_root)
+    user_email = _git(["config", "user.email"], cwd=team_root)
     # 원격 인증: ls-remote 가 빨리 되면 인증 OK. 실패해도 비치명(경고).
     remote_authed = bool(remote) and _git(
         ["ls-remote", "--exit-code", "origin", "HEAD"], cwd=team_root) is not None
@@ -109,6 +110,7 @@ def _detect(team_root: Path, home: Path) -> dict:
         "remote_url": remote,
         "team_name_default": il.repo_name_from_remote(remote),
         "git_user_name": user_name,
+        "git_user_email": user_email,
         "member_name_suggestion": il.suggest_member_name(user_name),
         "agents": il.detect_agents(home),
         "remote_authed": remote_authed,
@@ -118,9 +120,9 @@ def _detect(team_root: Path, home: Path) -> dict:
 
 def bootstrap(opts: il.Options, *, home: Path, python_version,
               out=print, err=None) -> int:
-    """부트스트랩 오케스트레이터 (§4). L1-A: ①preflight ②detect ③role + 계획 출력.
+    """부트스트랩 오케스트레이터 (§4). ①preflight ②detect ③role ④scaffold.
 
-    ④scaffold·⑤wire·⑥env·⑦verify 는 후속 슬라이스(L1-B..F)에서 채운다.
+    ⑤wire·⑥env·⑦verify 는 후속 슬라이스(L1-C..F)에서 채운다.
     값 주입(home·python_version)으로 테스트가 호스트를 건드리지 않게 한다.
     """
     if err is None:
@@ -149,17 +151,42 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     if not det["remote_authed"]:
         err("[warn] git 원격 인증 미확인 — 로컬 L1 은 진행(협업 시 push/pull 막힘).")
 
-    # 계획 출력 (L1-A 단계: 무변경. dry-run 여부 무관하게 아직 부작용 0).
+    # 멤버 이름 결정 (§3·m1): --member-name 우선 → git user.name 제안.
+    # 추측 금지: 이름을 못 정하면 exit 3(신원 추측 금지, §12-3).
     role = det["role"]
+    member_name = opts.member_name or det["member_name_suggestion"]
+    team_name_default = det["team_name_default"] or team_root.name
+
+    # 계획 출력
     out(f"[plan] team_root={team_root}")
-    out(f"[plan] role={role} "
-        f"(team.name 기본='{det['team_name_default']}')")
+    out(f"[plan] role={role} (team.name 기본='{team_name_default}')")
     out(f"[plan] agents={det['agents'] or '(없음)'}")
-    out(f"[plan] member_name="
-        f"{opts.member_name or det['member_name_suggestion'] or '(미정 — --member-name 필요)'}")
+    out(f"[plan] member_name={member_name or '(미정)'}")
+
     if opts.dry_run:
         out("[dry-run] 변경 없음 — 계획만 출력했습니다(settings·memory·env 무접촉).")
-    # L1-B 부터 scaffold/wire/env/verify 가 여기 이어진다(현재는 계획까지).
+        return 0
+
+    if not member_name:
+        err("[error] 멤버 이름을 정할 수 없습니다. --member-name <영문이름> 으로 "
+            "지정하세요(git user.name 도 없어 추측하지 않습니다).")
+        return 3
+
+    # ④ scaffold (§4④·§5·§6, M1·M2·M4) — 멱등. 첫 세션로그 안 씀(M2).
+    try:
+        il.scaffold_memory(team_root, member_name=member_name, role=role,
+                           team_name=team_name_default,
+                           timezone=det.get("timezone"),
+                           locale=det.get("locale"),
+                           identity=det.get("git_user_email"))
+    except il.InvalidNameError as e:
+        err(f"[error] 멤버 이름 거부: {e}")
+        return 3
+    except il.ConflictError as e:
+        err(f"[error] 이름 충돌(사람이 해소 필요): {e}")
+        return 3
+    out(f"[scaffold] memory/ 구조·members.md 등재 완료 (role={role}).")
+    # L1-C 부터 wire/env/verify 가 여기 이어진다.
     return 0
 
 
