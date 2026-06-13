@@ -5,34 +5,36 @@
   UserPromptSubmit 훅이 매 프롬프트마다 팀 레포를 최신화하되,
   ① 스로틀로 과부하를 막고, ② **실패는 절대 작업을 막지 않는다(철칙)**.
 
-훅 본체에 인라인하지 않고 테스트 가능한 순수 함수로 둔다(P1 교훈: 시각·경로·스로틀초를
-전부 인자로 받아 env 무조건 신뢰를 피한다). session-log-remind.py 가 이 모듈의
-`auto_pull()`을 리마인드 판정 **이전에** 호출한다(최신 상태로 리마인드 판단).
+V.3 리팩토링: git 작업 안전장치(do_pull·손자 killpg·ff-only·타임아웃·자격증명 차단)는
+공통 모듈 `infra/git_ops.py` 로 이관됐다. 이 모듈은 스로틀(should_pull)·시각 기록·조립
+(auto_pull)만 담당하고 git 작업은 git_ops 를 **재사용**한다(중복=드리프트 방지). 기존
+공개 API(do_pull/PullResult/DEFAULT_TIMEOUT)는 git_ops 의 것을 re-export 해 호환 유지.
 
 철칙(실패 무해)의 구현 원칙:
   - 외부에 노출되는 do_pull/auto_pull 은 **절대 예외를 전파하지 않는다**. 모든 실패는
-    PullResult(ok=False)로 표현된다. 작업(사용자 프롬프트 처리)을 막을 수 있는 경로 0.
-  - git pull 은 항상 `--ff-only`(충돌 시 워킹트리 오염 회피) + 자격증명 프롬프트 차단
-    (GIT_TERMINAL_PROMPT=0) + 네트워크 타임아웃(기본 5s, hang 방지).
+    결과 객체(ok=False)로 표현된다. 작업(사용자 프롬프트 처리)을 막을 수 있는 경로 0.
 """
 from __future__ import annotations
 
 import os
-import signal
-import subprocess
+import sys
 from dataclasses import dataclass, field
+
+# git 작업 공통 모듈(infra/git_ops.py)을 재사용 — 형제 디렉토리(infra/)에서 import.
+# 훅은 hooks/ 에서 직접 실행될 수도, infra/ 가 sys.path 인 채로 import 될 수도 있어
+# 양쪽 경로를 보강한 뒤 import 한다.
+_INFRA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _INFRA not in sys.path:
+    sys.path.insert(0, _INFRA)
+import git_ops as _git_ops  # noqa: E402
+
+# 공개 API re-export(호환): 기존 호출부·테스트가 auto_pull.do_pull/PullResult 를 쓴다.
+PullResult = _git_ops.PullResult
+do_pull = _git_ops.do_pull
+DEFAULT_TIMEOUT = _git_ops.DEFAULT_TIMEOUT
 
 # 기본 스로틀 — 5분. 호출부가 명시 주입할 수 있다(테스트는 항상 주입).
 DEFAULT_THROTTLE_SECONDS = 300
-# git 네트워크 작업의 기본 타임아웃(초) — hang 으로 프롬프트 처리를 막지 않게 한다.
-DEFAULT_TIMEOUT = 5
-
-
-@dataclass
-class PullResult:
-    ok: bool                       # pull 이 실제로 성공(ff-forward 또는 already up-to-date)
-    attempted: bool = True         # 스로틀 통과해 pull 을 시도했는지
-    detail: str = ""               # 디버그용 메시지(stderr 등 요약)
 
 
 @dataclass
@@ -73,106 +75,10 @@ def _record_pull_time(state_path: str, now: float) -> None:
         pass  # 상태 기록 실패는 작업을 막지 않는다 — 다음 프롬프트에서 재시도될 뿐
 
 
-def _is_git_worktree(team_root: str) -> bool:
-    """team_root 가 git 워킹트리인지 확인(자동 pull 대상이 명확한 레포여야 함, 설계 §5).
-
-    아니면 조용히 스킵하기 위한 가드. 예외 전파 없음.
-    """
-    try:
-        rc, out, _ = _run_git(
-            ["-C", team_root, "rev-parse", "--is-inside-work-tree"],
-            timeout=DEFAULT_TIMEOUT)
-        return rc == 0 and out.strip() == "true"
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _git_env() -> dict:
-    """git 호출 환경 — 자격증명 프롬프트·SSH 프롬프트 차단(hang 방지)."""
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"          # https 자격증명 프롬프트 차단
-    env.setdefault("GIT_SSH_COMMAND",
-                   "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new "
-                   "-oConnectTimeout=5")
-    env.setdefault("GIT_ASKPASS", "true")     # askpass 도 즉시 빈 응답
-    return env
-
-
-def _http_timeout_opts(timeout: int) -> list:
-    """git 자체의 네트워크 타임아웃 옵션(defense-in-depth).
-
-    subprocess timeout 은 직접 자식(git)만 죽일 뿐 git 이 띄운 손자(git-remote-https)는
-    살아남아 비라우팅 호스트에 매달릴 수 있다. git 에게도 저속/무응답을 스스로 끊게 한다.
-    """
-    return [
-        "-c", "http.lowSpeedLimit=1000",
-        "-c", f"http.lowSpeedTime={timeout}",
-    ]
-
-
-def _run_git(args: list, timeout: int):
-    """git 을 **자체 프로세스 그룹**으로 실행하고, 타임아웃 시 그룹 전체를 죽인다.
-
-    이유: `subprocess.run(timeout=)` 은 직접 자식(git)에만 SIGKILL 을 보내, git 이 fork 한
-    git-remote-https 같은 손자가 고아로 남아 네트워크에 매달린다(적대 검수에서 실측). 새
-    세션(setsid)으로 띄워 동일 PGID 로 묶고 타임아웃 시 killpg 로 손자까지 일괄 종료한다.
-    """
-    kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                  stdin=subprocess.DEVNULL, text=True, env=_git_env())
-    if hasattr(os, "setsid"):
-        kwargs["start_new_session"] = True  # 자식을 새 프로세스 그룹 리더로
-    proc = subprocess.Popen(["git", *args], **kwargs)
-    try:
-        out, err = proc.communicate(timeout=timeout)
-        return proc.returncode, out, err
-    except subprocess.TimeoutExpired:
-        _kill_group(proc)
-        try:
-            proc.communicate(timeout=2)
-        except (subprocess.SubprocessError, OSError):
-            pass
-        raise
-
-
-def _kill_group(proc: subprocess.Popen) -> None:
-    """프로세스 그룹 전체(손자 포함)를 종료. 실패해도 예외 전파 없음."""
-    try:
-        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        else:
-            proc.kill()
-    except (ProcessLookupError, OSError):
-        try:
-            proc.kill()
-        except OSError:
-            pass
-
-
-def do_pull(team_root: str, timeout: int = DEFAULT_TIMEOUT) -> PullResult:
-    """`git pull --ff-only` 실행. 절대 예외를 전파하지 않는다(철칙).
-
-    실패(네트워크 없음·ff 불가·충돌·타임아웃·git 아님) → PullResult(ok=False).
-    """
-    if not _is_git_worktree(team_root):
-        return PullResult(ok=False, detail="not a git work tree")
-    try:
-        rc, out, err = _run_git(
-            ["-C", team_root, *_http_timeout_opts(timeout),
-             "pull", "--ff-only", "--no-rebase", "--no-edit"],
-            timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return PullResult(ok=False, detail="timeout")
-    except (OSError, subprocess.SubprocessError) as exc:
-        return PullResult(ok=False, detail=f"exec error: {exc}")
-    if rc == 0:
-        return PullResult(ok=True, detail=(out or "").strip()[:200])
-    return PullResult(ok=False, detail=((err or out) or "").strip()[:200])
-
-
 def auto_pull(team_root: str, state_path: str, now: float,
               throttle_seconds: int = DEFAULT_THROTTLE_SECONDS,
               timeout: int = DEFAULT_TIMEOUT) -> AutoPullResult:
-    """조립: 스로틀 판정 → pull → 성공 시 시각 기록.
+    """조립: 스로틀 판정 → pull(git_ops) → 성공/시도 시각 기록.
 
     **철칙**: 어떤 단계에서 무슨 일이 나도 예외를 전파하지 않는다 — 사용자 프롬프트
     처리를 막을 수 있는 경로를 0으로 만든다. 모든 결과는 AutoPullResult 로 표현.

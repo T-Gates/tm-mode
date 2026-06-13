@@ -30,6 +30,8 @@ INFRA = Path(__file__).resolve().parent       # 설치 위치 (manifest·adapter
 # workday(06시컷) 순수 함수 — 같은 디렉토리 형제 모듈. drift 방지로 컷 계산을 단일 소스화.
 sys.path.insert(0, str(INFRA))
 import workday as _workday  # noqa: E402
+# git 작업 공통 모듈 — pull/commit 동사가 auto_pull 과 같은 안전장치를 재사용(V.3).
+import git_ops as _git_ops  # noqa: E402
 
 
 def _active_marker(team_root: Path) -> Path:
@@ -160,6 +162,22 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
 # 값을 받는 옵션 플래그 화이트리스트. 여기 없는 `--flag` 는 부울/무시로 다룬다 —
 # 알 수 없는 플래그의 다음 토큰을 값으로 삼키지 않게 해 verb 손실을 막는다.
 _VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now")
+
+
+def cmd_pull(team_root: Path) -> int:
+    """팀 레포를 `git pull --ff-only`로 최신화 — git_ops 공통 안전장치 재사용(V.3).
+
+    auto_pull 과 같은 do_pull(손자 killpg·ff-only·타임아웃·자격증명 차단)을 쓴다. 실패는
+    비치명(우아한 축소): git 아님·오프라인·ff불가·타임아웃 → exit 1 + 안내, 크래시 없음.
+    엔진은 절대 워킹트리를 오염시키지 않는다(ff-only).
+    """
+    result = _git_ops.do_pull(str(team_root))
+    if result.ok:
+        print(f"teammode pull — 최신화됨: {result.detail or 'up-to-date'}")
+        return 0
+    # 비치명: 작업을 막지 않되, 무엇이 안 됐는지 알린다(스킬/사람이 판단).
+    print(f"teammode pull — 건너뜀(비치명): {result.detail}", file=sys.stderr)
+    return 1
 
 
 def _is_session_log_name(stem: str) -> bool:
@@ -311,7 +329,7 @@ def _parse_now(now_str):
 # settings(어댑터 sync)를 필요로 하는 동사 — on/off 만. log/context 등 메모리/조회
 # 동사는 ~/.claude 를 건드리지 않으므로 settings 요구가 무의미하다.
 _SETTINGS_VERBS = ("on", "off")
-_KNOWN_VERBS = ("on", "off", "log", "context")
+_KNOWN_VERBS = ("on", "off", "log", "context", "pull")
 
 
 def main(argv=None) -> int:
@@ -348,6 +366,9 @@ def main(argv=None) -> int:
 
     if verb == "context":
         return cmd_context(team_root, opts["json"])
+
+    if verb == "pull":
+        return cmd_pull(team_root)
 
     # on/off: P2 settings 경로도 명시로만. 둘 다 없으면 실 ~/.claude 추측 오염 거부.
     resolved_settings = _resolve_settings(opts.get("settings"), opts["install"])
