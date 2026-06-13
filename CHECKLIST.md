@@ -70,3 +70,17 @@
 - [ ] T.3 `teammode update` 동사: 명시적 merge(--allow-unrelated-histories 첫회)+충돌처리+변경요약. 팀당 1회
 - [ ] T.4 회귀 테스트(/tmp 격리): fetch 실패·오프라인·미설정·behind 감지 각 케이스. 네트워크는 로컬 fake remote로 모사
 - [ ] T.5 검수 통과 + Gstack 교훈 반영 확인
+
+## 🔷 슬라이스 V — 엔진 핵심 동사 (활성, 우선순위 순)
+> 어젯밤 "기계적 단계 py화" 조사 = 이 동사들의 설계도. 원칙: 엔진=기계적 재료손질, 스킬=판단(요약·정리). 동사는 재료만 모으고 요약은 에이전트.
+> ⚠️ git 동사는 신규 작성 금지 — 어젯밤 auto_pull.py(do_pull, 손자프로세스 killpg·ff-only·타임아웃 안전장치 포함)를 `infra/git_ops.py` 공통 모듈로 키워 pull/commit/auto-pull 전부 재사용(중복=드리프트 방지).
+- [ ] V.1 `log` — 세션로그 파일 생성/이어쓰기(날짜·frontmatter·06시컷 기계적 자동). 매일 쓰는 바닥, 훅이 부름. **먼저**(데이터 연료)
+- [ ] V.2 `context` — 전원 세션로그·상태 긁어 JSON으로 모음(요약은 스킬). teammode 간판 "지금 팀 상황". log 다음(연료로 보여줌)
+- [ ] V.3 `pull` — git_ops로 통합(auto_pull.do_pull 재사용), 엔진 동사로 노출
+- [ ] V.4 `commit` — add/commit/push 묶음, git_ops에 추가. 여러 스킬이 매번 하던 것 흡수
+- [ ] V.5 `update` — 슬라이스 T(템플릿 풀: upstream fetch→변경목록+Y/n→ff머지). 별도 축이나 동사로 편입
+- [ ] V.6 각 동사 golden 시나리오 GREEN 전환 확인 + 검수 통과
+
+## ⏸ 나중 슬라이스 (지금 안 함, 버리지 않음)
+- [ ] (공개 직전) `doctor` — 자가진단(스킬링크·훅·플래그·MCP토큰·버전·config) + 기계적 자동수리/사람조치 안내. 어젯밤 플래그 좀비 같은 불일치 잡는 안전망. + 지원채널(이슈자동생성→슬랙, §11.8)은 외부팀 생긴 후. 점검대상(스킬·MCP)이 먼저 깔려야 가치 있음
+- [ ] (install 흡수) `symlink` — 독립 동사 아님, install/update 동사의 내부 함수로 (심링크→정션→복사 사다리)
