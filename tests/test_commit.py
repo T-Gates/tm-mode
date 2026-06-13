@@ -174,6 +174,48 @@ def test_commit_verb_offline_push_no_hang(repo_with_remote):
 
 # ── 자격증명 hang 차단 (auto_pull 패턴 재사용) ──
 
+def test_commit_message_with_leading_dash_not_treated_as_option(local_repo):
+    # 적대 검수 락: '--amend' 류 메시지가 git 옵션으로 오인되지 않는다(list-form argv).
+    (local_repo / "n.txt").write_text("v\n")
+    r = _run_engine(local_repo, "commit", "--message", "--amend evil")
+    assert r.returncode == 0, r.stderr
+    last = _git(local_repo, "log", "-1", "--format=%s").stdout.strip()
+    assert last == "--amend evil"  # 메시지로 보존, amend 안 됨
+
+
+def test_commit_message_author_injection_blocked(local_repo):
+    # '--author=' 주입이 메시지로만 들어가고 author 를 바꾸지 않는다.
+    (local_repo / "o.txt").write_text("v\n")
+    r = _run_engine(local_repo, "commit", "--message",
+                    "normal --author=hacker <h@h>")
+    assert r.returncode == 0
+    info = _git(local_repo, "log", "-1", "--format=%an").stdout.strip()
+    assert info != "hacker"  # author 변조 안 됨
+
+
+def test_commit_push_fail_preserves_local_commit(repo_with_remote):
+    # 적대 검수 락: push 실패해도 로컬 커밋은 절대 롤백되지 않는다.
+    _git(repo_with_remote.clone, "remote", "set-url", "origin",
+         "http://192.0.2.1/r.git")
+    (repo_with_remote.clone / "p.txt").write_text("v\n")
+    before = int(_git(repo_with_remote.clone, "rev-list", "--count",
+                      "HEAD").stdout.strip())
+    res = go.do_commit(str(repo_with_remote.clone), message="preserve me",
+                       push=True, timeout=3)
+    after = int(_git(repo_with_remote.clone, "rev-list", "--count",
+                     "HEAD").stdout.strip())
+    assert after == before + 1, "push 실패가 로컬 커밋을 롤백함(치명 버그)"
+    assert res.committed is True and res.pushed is False
+
+
+def test_commit_empty_message_rejected(local_repo):
+    (local_repo / "q.txt").write_text("v\n")
+    r = _run_engine(local_repo, "commit", "--message", "")
+    assert r.returncode != 0
+    # 빈 메시지 커밋 안 생김
+    assert "init" in _git(local_repo, "log", "-1", "--format=%s").stdout
+
+
 def test_do_commit_uses_git_env_no_credential_prompt(repo_with_remote):
     # push 가 자격증명 프롬프트로 hang 하지 않게 git_env(GIT_TERMINAL_PROMPT=0)를 쓴다.
     # https 인증 필요한 가짜 원격 → 즉시 실패(프롬프트 hang 아님)
