@@ -69,11 +69,68 @@ def _render_banner(team_root: Path) -> str:
     return banner
 
 
+UPSTREAM_REMOTE = "upstream"
+UPSTREAM_REF = "upstream/main"
+
+
+def _maybe_notify_upstream(team_root: Path) -> None:
+    """on 시 upstream(템플릿)을 **fetch 만** 하고 behind 면 알림(슬라이스 T).
+
+    핵심 안전(Jane 합의): **merge 절대 자동 금지** — fetch 만 자동, 적용은 명시적 update.
+    upstream 미설정·오프라인·git 아님 → 조용히 패스(on 을 막지 않음, 우아한 축소).
+    어떤 예외도 삼킨다(on 의 핵심 경로를 fetch 가 막아선 안 된다).
+    """
+    try:
+        res = _git_ops.fetch_upstream(str(team_root), remote=UPSTREAM_REMOTE)
+        if not res.ok:
+            return  # 미설정/오프라인/타임아웃 — 조용히 패스(알림 없음)
+        behind = _git_ops.count_behind(str(team_root), UPSTREAM_REF)
+        if behind <= 0:
+            return
+        changes = _git_ops.upstream_changes(str(team_root), UPSTREAM_REF)
+        print(f"\n[템플릿 풀] upstream 이 {behind}커밋 앞섭니다. "
+              f"`teammode update` 로 적용(merge --ff-only). 변경:")
+        if changes:
+            print(changes)
+    except Exception:  # noqa: BLE001 — fetch/알림은 on 을 절대 막지 않는다
+        pass
+
+
 def cmd_on(team_root: Path, settings_path: str) -> int:
     print(_render_banner(team_root), end="")
     _adapter(settings_path).sync(mode="on")
     _active_marker(team_root).write_text("", encoding="utf-8")
+    # 템플릿 풀: fetch 만 자동, merge 금지(슬라이스 T). 실패는 on 을 막지 않는다.
+    _maybe_notify_upstream(team_root)
     return 0
+
+
+def cmd_update(team_root: Path) -> int:
+    """upstream(템플릿)을 명시적으로 fetch+merge(--ff-only) 적용 — 슬라이스 T.
+
+    on 의 자동 fetch 와 분리된 의도적 적용 단계. ff 불가(divergent)·upstream 미설정·
+    오프라인 → 비치명(워킹트리 무오염). 첫 병합(unrelated histories)은 ff 가 막으므로
+    필요 시 사람이 판단(현 기본은 안전한 --ff-only; allow_unrelated 는 라이브러리 옵션).
+    """
+    fetch = _git_ops.fetch_upstream(str(team_root), remote=UPSTREAM_REMOTE)
+    if not fetch.ok:
+        print(f"teammode update — 건너뜀(비치명): {fetch.detail}", file=sys.stderr)
+        return 1
+    behind = _git_ops.count_behind(str(team_root), UPSTREAM_REF)
+    if behind <= 0:
+        print("teammode update — 이미 최신입니다.")
+        return 0
+    res = _git_ops.update_from_upstream(str(team_root), UPSTREAM_REF)
+    if res.ok and res.merged:
+        print(f"teammode update — {behind}커밋 적용됨(merge --ff-only).")
+        return 0
+    if res.ok:
+        print("teammode update — 이미 최신입니다.")
+        return 0
+    # ff 불가 등 — 비치명. 사람 판단 유도(자동 merge/conflict 강행 금지).
+    print(f"teammode update — ff-only 적용 불가(divergent). 사람 판단 필요: {res.detail}",
+          file=sys.stderr)
+    return 1
 
 
 def cmd_off(team_root: Path, settings_path: str) -> int:
@@ -348,7 +405,7 @@ def _parse_now(now_str):
 # settings(어댑터 sync)를 필요로 하는 동사 — on/off 만. log/context 등 메모리/조회
 # 동사는 ~/.claude 를 건드리지 않으므로 settings 요구가 무의미하다.
 _SETTINGS_VERBS = ("on", "off")
-_KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit")
+_KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit", "update")
 
 
 def main(argv=None) -> int:
@@ -395,6 +452,9 @@ def main(argv=None) -> int:
             print("[error] commit: --message <메시지> 가 필요합니다.", file=sys.stderr)
             return 2
         return cmd_commit(team_root, message, opts["push"])
+
+    if verb == "update":
+        return cmd_update(team_root)
 
     # on/off: P2 settings 경로도 명시로만. 둘 다 없으면 실 ~/.claude 추측 오염 거부.
     resolved_settings = _resolve_settings(opts.get("settings"), opts["install"])

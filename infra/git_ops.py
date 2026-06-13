@@ -36,6 +36,19 @@ class CommitResult:
     detail: str = ""               # 디버그용 메시지(stderr 등 요약)
 
 
+@dataclass
+class FetchResult:
+    ok: bool                       # fetch 성공
+    detail: str = ""               # 디버그용 메시지
+
+
+@dataclass
+class UpdateResult:
+    ok: bool                       # update(merge) 성공 또는 이미 최신
+    merged: bool = False           # 실제 머지가 일어났는지
+    detail: str = ""               # 디버그용 메시지
+
+
 def git_env() -> dict:
     """git 호출 환경 — 자격증명 프롬프트·SSH 프롬프트 차단(hang 방지)."""
     env = dict(os.environ)
@@ -217,3 +230,115 @@ def do_commit(team_root: str, message: str, push: bool = False,
                             detail="committed and pushed")
     return CommitResult(ok=True, committed=True, pushed=False,
                         detail=f"committed; push failed: {((perr or pout) or '').strip()[:200]}")
+
+
+# ──────────────────────────────────────────────────────────────────
+# 슬라이스 T — 템플릿 풀 (upstream fetch + 명시적 update)
+# ──────────────────────────────────────────────────────────────────
+
+def _has_remote(team_root: str, remote: str, timeout: int) -> bool:
+    """remote 가 설정돼 있는지. 예외 전파 없음."""
+    try:
+        rc, out, _ = run_git(["-C", team_root, "remote"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if rc != 0:
+        return False
+    return remote in out.split()
+
+
+def fetch_upstream(team_root: str, remote: str = "upstream",
+                   timeout: int = DEFAULT_TIMEOUT) -> FetchResult:
+    """upstream(템플릿 원본)을 **fetch 만** 한다. 절대 예외 전파 없음(철칙).
+
+    **merge 하지 않는다** — 적용은 명시적 update 동사 몫(Jane 합의: fetch 만 자동).
+    upstream remote 미설정·오프라인·git 아님 → ok=False (우아한 축소, on 막지 않음).
+    """
+    if not is_git_worktree(team_root):
+        return FetchResult(ok=False, detail="not a git work tree")
+    if not _has_remote(team_root, remote, timeout):
+        return FetchResult(ok=False, detail=f"no '{remote}' remote")
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root, *http_timeout_opts(timeout),
+             "fetch", "--quiet", remote],
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return FetchResult(ok=False, detail="fetch timeout")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return FetchResult(ok=False, detail=f"fetch exec error: {exc}")
+    if rc == 0:
+        return FetchResult(ok=True, detail="fetched")
+    return FetchResult(ok=False, detail=((err or out) or "").strip()[:200])
+
+
+def count_behind(team_root: str, upstream_ref: str = "upstream/main",
+                 timeout: int = DEFAULT_TIMEOUT) -> int:
+    """HEAD 가 upstream_ref 대비 몇 커밋 behind 인지. 알 수 없으면 0(보수적·무raise).
+
+    `git rev-list --count HEAD..upstream_ref` — upstream 에만 있는 커밋 수.
+    """
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "rev-list", "--count", f"HEAD..{upstream_ref}"],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    if rc != 0:
+        return 0
+    try:
+        return int((out or "0").strip())
+    except ValueError:
+        return 0
+
+
+def upstream_changes(team_root: str, upstream_ref: str = "upstream/main",
+                     limit: int = 20, timeout: int = DEFAULT_TIMEOUT) -> str:
+    """upstream 에만 있는 들어올 커밋들의 한 줄 로그(변경목록). 무raise(실패 시 빈 문자열).
+
+    엔진은 요약하지 않는다 — git log 원본을 그대로 옮긴다(판단은 스킬/사람).
+    """
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "log", "--oneline", f"--max-count={limit}",
+             f"HEAD..{upstream_ref}"],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if rc != 0:
+        return ""
+    return (out or "").strip()
+
+
+def update_from_upstream(team_root: str, upstream_ref: str = "upstream/main",
+                         allow_unrelated: bool = False,
+                         timeout: int = DEFAULT_TIMEOUT) -> UpdateResult:
+    """upstream_ref 를 **명시적으로** merge 한다(merge --ff-only 우선). 무raise(철칙).
+
+    fetch 와 분리된 의도적 적용 단계(자동 merge 금지 원칙). ff 불가(divergent)면 워킹트리를
+    오염시키지 않고 실패로 알린다. 첫 병합(unrelated histories)은 allow_unrelated 로 옵트인.
+    이미 최신이면 ok=True, merged=False.
+    """
+    if not is_git_worktree(team_root):
+        return UpdateResult(ok=False, detail="not a git work tree")
+
+    behind = count_behind(team_root, upstream_ref, timeout)
+    if behind == 0:
+        # 이미 최신이거나 upstream_ref 를 모름 — 둘 다 비치명. merge 시도 안 함.
+        return UpdateResult(ok=True, merged=False, detail="already up-to-date or no upstream")
+
+    args = ["-C", team_root, "merge", "--ff-only", "--no-edit"]
+    if allow_unrelated:
+        args.append("--allow-unrelated-histories")
+    args.append(upstream_ref)
+    try:
+        rc, out, err = run_git(args, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return UpdateResult(ok=False, detail="merge timeout")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return UpdateResult(ok=False, detail=f"merge exec error: {exc}")
+    if rc == 0:
+        return UpdateResult(ok=True, merged=True, detail=(out or "").strip()[:200])
+    # ff 불가(divergent)·기타 — 워킹트리 무오염, 비치명 실패.
+    return UpdateResult(ok=False, merged=False,
+                        detail=((err or out) or "").strip()[:200])
