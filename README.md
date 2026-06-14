@@ -42,7 +42,7 @@ python infra/install.py --root . --yes
 # 팀원(합류) — 팀 레포 clone 후:
 python infra/install.py --root . --member-name <영문이름> --yes
 
-# (선택) Obsidian 볼트 자동 등록:
+# (선택) Obsidian 볼트 자동 등록 — 온보딩 때 안 했어도 언제든 나중에 실행 가능:
 python infra/install.py --root . --register-obsidian
 ```
 
