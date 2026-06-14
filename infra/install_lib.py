@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -621,6 +623,36 @@ def ensure_obsidian_vault(memory_dir: Path) -> bool:
     return True
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """temp 파일에 쓰고 os.replace 로 원자 교체 — 쓰기 중 실패해도 원본 무손상.
+
+    - 같은 디렉토리에 tmp 생성(→ os.replace 가 같은 파일시스템 내 원자 rename 보장).
+    - flush + fsync 후 os.replace 로 커밋. 실패 시 tmp 정리(원본은 절대 truncate 안 됨).
+    - **심링크 보존**: path 가 심링크면 실타깃에 replace 해 링크 자체를 유지(Case E).
+      tmp 는 실타깃 디렉토리에 만든다(replace 가 cross-device 가 되지 않게).
+    """
+    # 심링크면 실타깃을 대상으로 — replace 는 링크를 끊고 실타깃을 새 파일로 갈음하므로
+    # 실타깃에 직접 replace 해야 링크가 유지된다(Case E: 링크 따라 실타깃 merge·링크 유지).
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    dir_ = target.parent
+    fd, tmp_name = tempfile.mkstemp(prefix=".obsidian-", suffix=".tmp", dir=str(dir_))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp), str(target))
+    except Exception:
+        # 커밋 실패 — tmp 정리 후 재전파(원본은 손대지 않았으므로 무손상).
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
                             vault_id: str, ts: int) -> dict:
     """obsidian.json 에 memory/ 볼트를 merge 등록 (opt-in·host-write, spec/05).
@@ -684,9 +716,9 @@ def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
         vaults[vault_id] = {"path": target_path, "ts": ts, "open": False}
         data["vaults"] = vaults
 
-        config_path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8")
+        _atomic_write_text(
+            config_path,
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         return {"registered": True, "reason": "등록 완료(merge)",
                 "vault_id": vault_id, "path": target_path}
     except Exception as e:  # noqa: BLE001 — 어떤 경우도 install 흐름 안 막음(비치명)

@@ -247,6 +247,116 @@ def test_register_skips_vaults_is_list(tmp_path):
     assert cfg.read_bytes() == original_bytes  # 원본 바이트 그대로 보존
 
 
+# ─────────────────────────── 원자적 쓰기 (truncate 손상 방지) ───────────────────────────
+
+def test_register_write_is_correct(tmp_path):
+    """원자적 쓰기 후 내용이 정확(merge 결과 그대로)."""
+    cfg = tmp_path / ".config" / "obsidian" / "obsidian.json"
+    _write_config(cfg, {"keep000000000000": {"path": "/k", "ts": 1, "open": False}})
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    res = il.register_obsidian_vault(
+        memory, config_path=cfg, vault_id="newnewnewnewnew0", ts=42)
+
+    assert res["registered"] is True
+    data = json.loads(cfg.read_text())
+    assert data["vaults"]["keep000000000000"]["path"] == "/k"
+    assert data["vaults"]["newnewnewnewnew0"]["ts"] == 42
+
+
+def test_register_no_tmp_leftover(tmp_path):
+    """원자 교체 후 임시 파일이 남지 않는다(디렉토리에 obsidian.json 만)."""
+    cfg = tmp_path / ".config" / "obsidian" / "obsidian.json"
+    _write_config(cfg, {})
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    il.register_obsidian_vault(
+        memory, config_path=cfg, vault_id="cccccccccccccccc", ts=3)
+
+    leftovers = [p.name for p in cfg.parent.iterdir() if p.name != "obsidian.json"]
+    assert leftovers == []
+
+
+def test_register_atomic_no_truncation_on_write_failure(tmp_path, monkeypatch):
+    """쓰기 도중 실패해도 원본이 잘리지 않는다(원자성) — tmp 미커밋, 원본 무손상."""
+    cfg = tmp_path / ".config" / "obsidian" / "obsidian.json"
+    _write_config(cfg, {"orig000000000000": {"path": "/o", "ts": 1, "open": False}})
+    original_bytes = cfg.read_bytes()
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    # os.replace 가 실패하도록 패치(tmp→target 커밋 직전 실패 시뮬레이션).
+    import os as _os
+    real_replace = _os.replace
+
+    def boom(src, dst, *a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_os, "replace", boom)
+
+    res = il.register_obsidian_vault(
+        memory, config_path=cfg, vault_id="ddddddddddddddd0", ts=9)
+
+    assert res["registered"] is False  # 비치명
+    assert cfg.read_bytes() == original_bytes  # 원본 무손상(truncate 0)
+    # tmp 잔여 없음
+    monkeypatch.setattr(_os, "replace", real_replace)
+    leftovers = [p.name for p in cfg.parent.iterdir() if p.name != "obsidian.json"]
+    assert leftovers == []
+
+
+# ─────────────────────────── 심링크/read-only 회귀 (Case E·F) ───────────────────────────
+
+def test_register_symlink_follows_to_real_target(tmp_path):
+    """Case E: obsidian.json 이 심링크면 실타깃에 merge, 링크 유지."""
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real_target = real_dir / "obsidian-real.json"
+    _write_config(real_target, {"keep000000000000": {"path": "/k", "ts": 1, "open": True}})
+
+    cfg_dir = tmp_path / ".config" / "obsidian"
+    cfg_dir.mkdir(parents=True)
+    cfg = cfg_dir / "obsidian.json"
+    cfg.symlink_to(real_target)
+
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    res = il.register_obsidian_vault(
+        memory, config_path=cfg, vault_id="symsymsymsymsym0", ts=7)
+
+    assert res["registered"] is True
+    # 링크 유지(심링크 그대로)
+    assert cfg.is_symlink()
+    # 실타깃에 merge(기존 보존 + 신규)
+    data = json.loads(real_target.read_text())
+    assert data["vaults"]["keep000000000000"]["path"] == "/k"
+    assert "symsymsymsymsym0" in data["vaults"]
+
+
+def test_register_read_only_is_non_fatal(tmp_path):
+    """Case F: 설정 파일이 read-only(쓰기 불가) → 비치명 skip, 원본 무손상."""
+    import os
+    cfg = tmp_path / ".config" / "obsidian" / "obsidian.json"
+    _write_config(cfg, {"orig000000000000": {"path": "/o", "ts": 1, "open": False}})
+    original_bytes = cfg.read_bytes()
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    # 디렉토리를 read-only 로 만들어 tmp 생성/replace 를 막는다.
+    os.chmod(cfg.parent, 0o500)
+    try:
+        res = il.register_obsidian_vault(
+            memory, config_path=cfg, vault_id="ro00000000000000", ts=8)
+    finally:
+        os.chmod(cfg.parent, 0o700)
+
+    assert res["registered"] is False  # 비치명
+    assert cfg.read_bytes() == original_bytes  # 원본 무손상
+
+
 # ─────────────────────────── install.py --register-obsidian (CLI) ───────────────────────────
 
 def _run_install(argv):
