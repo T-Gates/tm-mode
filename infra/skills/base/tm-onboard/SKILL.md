@@ -43,6 +43,15 @@ python infra/teammode.py context --root . --json
 - **갓 만든 팀은 세션로그 0** → 요약할 게 없다. "구조는 섰고, 다음 작업부터 자동 기록·주입됩니다"로 내레이션.
 - 팀원은 context로 팀 기존 로그가 보인다. (다음 세션부터는 `session-start.py` 훅이 자동 주입.)
 
+## 팀 personality 커스텀 (opt-in, 키 0)
+배너·시작 멘트·끝맺음 말을 팀색에 맞게 바꿀 수 있다. **물어보고**(기본값으로도 충분) 진행:
+- "배너·시작멘트(greeting)·끝맺음말(farewell) 커스텀할래요? (기본값 그대로 둬도 됩니다)"
+- **예**:
+  - **시작 멘트·끝맺음 말** → `team.config.json`의 `team.greeting`·`team.farewell` 값을 교체(도입자 config엔 기본값 `"<팀>  팀모드 ON"`·`"수고하셨습니다 — <팀>"`이 이미 있다). 엔진 `on`이 배너 직후 greeting을, `off`가 farewell(없으면 "상태 저장됨")을 출력한다.
+  - **배너** → `memory/banner.txt`를 직접 교체(엔진은 파일 있으면 그대로 출력). ASCII 아트 등 자유.
+- **아니오** → 도입자 config의 기본 greeting/farewell + 자동 배너(`<팀> team mode ON`)를 그대로 쓴다. 0 영향.
+- **도입자만** config의 greeting/farewell을 쓴다(팀 스코프, 커밋되면 팀원 공유). 팀원은 읽기만 — 개인이 바꾸지 않는다.
+
 ## Obsidian 뷰 (opt-in, 키 0)
 memory/가 마크다운이라 Obsidian으로 그래프처럼 볼 수 있다. **물어보고** 진행:
 - **예** → `python infra/install.py --root . --register-obsidian`. 이 명령이 `.obsidian/`(dataview·graph) 생성 + `obsidian.json`에 **merge 등록**(기존 볼트 보존·멱등)을 한 번에 한다. **Obsidian 미설치면 둘 다 우아하게 skip**(아무것도 안 만듦) — 안 쓰는 사람 0 영향.
