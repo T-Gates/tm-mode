@@ -34,19 +34,30 @@ _SHELL_PROFILES = [
     Path(os.path.expanduser("~/.config/fish/config.fish")),
 ]
 
+# Obsidian 중앙 설정 — install.py --register-obsidian 이 host-write 하므로, 테스트가
+# 실 obsidian.json 을 건드리면 사용자의 볼트 목록을 오염시킨다(P1 정신). 플랫폼별
+# 실 경로(linux/mac/win 상당)를 전부 가드 — 테스트는 fake HOME + --obsidian-config <tmp> 만.
+_OBSIDIAN_CONFIGS = [
+    Path(os.path.expanduser("~/.config/obsidian/obsidian.json")),       # linux
+    Path(os.path.expanduser(
+        "~/Library/Application Support/obsidian/obsidian.json")),       # mac
+    Path(os.path.expanduser("~/AppData/Roaming/obsidian/obsidian.json")),  # win
+]
+
 _GUARDED = [
     Path(os.path.expanduser("~/.claude/settings.json")),
     Path(os.path.expanduser("~/.codex/config.toml")),
     Path(os.path.expanduser("~/.codex")),
     Path(os.path.expanduser("~/.claude")),
     *_SHELL_PROFILES,
+    *_OBSIDIAN_CONFIGS,
     _real_state_dir() / "last-pull",
     _real_state_dir(),
 ]
 
 # 내용 변화(부재→존재 포함)를 suffix 무관하게 오염으로 보는 경로.
 # 셸 프로파일은 dotfile 이라 suffix 검사로는 못 잡으므로 여기에 명시한다.
-_CONTENT_GUARDED = set(_SHELL_PROFILES) | {
+_CONTENT_GUARDED = set(_SHELL_PROFILES) | set(_OBSIDIAN_CONFIGS) | {
     Path(os.path.expanduser("~/.claude/settings.json")),
     Path(os.path.expanduser("~/.codex/config.toml")),
 }
