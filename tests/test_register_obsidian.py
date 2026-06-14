@@ -211,6 +211,42 @@ def test_register_creates_vault_dir(tmp_path):
     assert (memory / ".obsidian").is_dir()
 
 
+# ─────────────────────────── 비-dict JSON 안전 skip (data-loss 방지) ───────────────────────────
+
+def test_register_skips_top_level_array(tmp_path):
+    """최상위가 배열(유효 JSON 이나 object 아님) → broken-config 처럼 skip(원본 무손상)."""
+    cfg = tmp_path / ".config" / "obsidian" / "obsidian.json"
+    cfg.parent.mkdir(parents=True)
+    raw = json.dumps(["a", "b"])
+    cfg.write_text(raw, encoding="utf-8")
+    original_bytes = cfg.read_bytes()
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    res = il.register_obsidian_vault(
+        memory, config_path=cfg, vault_id="aaaaaaaaaaaaaaaa", ts=1)
+
+    assert res["registered"] is False  # 폐기·덮어쓰기 금지
+    assert cfg.read_bytes() == original_bytes  # 원본 바이트 그대로 보존
+
+
+def test_register_skips_vaults_is_list(tmp_path):
+    """vaults 가 list(유효 JSON·object 이나 vaults 비-dict) → skip(원본 무손상)."""
+    cfg = tmp_path / ".config" / "obsidian" / "obsidian.json"
+    cfg.parent.mkdir(parents=True)
+    raw = json.dumps({"vaults": ["x", "y"], "frame": "hidden"})
+    cfg.write_text(raw, encoding="utf-8")
+    original_bytes = cfg.read_bytes()
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    res = il.register_obsidian_vault(
+        memory, config_path=cfg, vault_id="bbbbbbbbbbbbbbbb", ts=2)
+
+    assert res["registered"] is False  # clobber 금지
+    assert cfg.read_bytes() == original_bytes  # 원본 바이트 그대로 보존
+
+
 # ─────────────────────────── install.py --register-obsidian (CLI) ───────────────────────────
 
 def _run_install(argv):

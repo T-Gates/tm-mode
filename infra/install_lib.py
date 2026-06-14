@@ -647,21 +647,27 @@ def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
 
         target_path = str(memory_dir.resolve())
 
-        # 기존 obsidian.json 읽기(부재/깨짐 → 빈 dict 로 시작, clobber 아님).
+        # 기존 obsidian.json 읽기(부재 → 빈 dict 로 시작, clobber 아님).
         data = {}
         if config_path.is_file():
             try:
                 loaded = json.loads(config_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
             except (ValueError, OSError):
                 # 깨진 설정 — 우리가 덮어쓰면 사용자 데이터 손실 위험. 비치명 skip.
                 return {"registered": False,
                         "reason": "obsidian.json 파싱 실패 — 안전을 위해 skip"}
+            # 유효 JSON 이나 object 가 아님(최상위 배열 등) → broken 과 동일 skip.
+            # 폐기·덮어쓰기(clobber) 금지 — data-loss 비대칭 제거.
+            if not isinstance(loaded, dict):
+                return {"registered": False,
+                        "reason": "obsidian.json 이 object 가 아님 — 안전을 위해 skip"}
+            data = loaded
 
-        vaults = data.get("vaults")
+        vaults = data.get("vaults", {})
+        # vaults 가 dict 가 아니면(예: list) 사용자 데이터일 수 있음 → broken 과 동일 skip.
         if not isinstance(vaults, dict):
-            vaults = {}
+            return {"registered": False,
+                    "reason": "obsidian.json 의 vaults 가 dict 가 아님 — 안전을 위해 skip"}
 
         # 멱등: 같은 path 이미 등록 → skip(중복 0, clobber 0).
         for v in vaults.values():
