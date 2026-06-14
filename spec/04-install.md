@@ -141,7 +141,9 @@ python install.py [--root PATH] [--agent {auto|claude|codex|...}]
 
 - 런타임 훅은 하니스가 발동하므로 인자 통로가 없다 → **팀 루트 env 필요**([스펙 01 §1.2]).
 - **변수명은 스펙01 §1.2 reference 값 `TEAMMODE_HOME`을 따른다**(현행 런타임 훅 코드와 일치). ⚠️ 스펙01 부록A의 `LEGACY_TOOL_HOME` 표기는 자기모순(오기) — 스펙01쪽 정정 필요(M6, 별도 이슈).
-- 셸 프로파일 감지(bash/zsh/…)해 **멱등 1줄** 주입. 중복 금지.
+- **크로스플랫폼 영구 env 주입**:
+  - **POSIX(Linux/macOS)**: 셸 프로파일 감지(bash/zsh/fish)해 **멱등 1줄** 주입(중복 금지).
+  - **Windows**: 셸 프로파일 대신 레지스트리(`HKCU\Environment`) — `setx TEAMMODE_HOME "<절대경로>"`(영구 user env). uninstall 은 `reg delete HKCU\Environment /v TEAMMODE_HOME /f`. setx/reg 부재·실패는 비치명. (reference: `install_lib.inject_env_windows`/`remove_injected_env_windows`, `is_windows` 분기. Windows 분기는 setx/reg subprocess 모킹으로 검증 — 실 Windows 동작은 native 환경 권장.)
 - ⚠️ **의도적 호출(install/on/off)은 env를 신뢰하지 않는다** — `--root` 명시만(§10). env는 *런타임 훅 전용*.
 
 ## 10. 보안·격리 (P1 계승)
