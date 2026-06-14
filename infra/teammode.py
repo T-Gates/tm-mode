@@ -69,6 +69,28 @@ def _render_banner(team_root: Path) -> str:
     return banner
 
 
+def _read_team_field(team_root: Path, field: str) -> str | None:
+    """team.config.json 의 team.<field> 문자열을 읽는다(시작멘트/끝맺음말 — §3.1·§4.4).
+
+    config 읽기는 비치명: 부재·파싱실패·타입불일치면 None(on/off 를 막지 않는다).
+    어떤 예외도 삼킨다 — personality 출력이 핵심 경로(배너·sync·마커)를 막아선 안 됨.
+    """
+    try:
+        cfg_path = team_root / "team.config.json"
+        if not cfg_path.is_file():
+            return None
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            return None
+        team = cfg.get("team")
+        if not isinstance(team, dict):
+            return None
+        value = team.get(field)
+        return value if isinstance(value, str) and value else None
+    except Exception:  # noqa: BLE001 — config 읽기는 on/off 를 절대 막지 않는다
+        return None
+
+
 UPSTREAM_REMOTE = "upstream"
 UPSTREAM_REF = "upstream/main"
 
@@ -98,6 +120,10 @@ def _maybe_notify_upstream(team_root: Path) -> None:
 
 def cmd_on(team_root: Path, settings_path: str) -> int:
     print(_render_banner(team_root), end="")
+    # 시작 멘트(greeting): 배너 직후, config 에 있으면 출력(없으면 미출력 — §3.1).
+    greeting = _read_team_field(team_root, "greeting")
+    if greeting:
+        print(greeting)
     _adapter(settings_path).sync(mode="on")
     _active_marker(team_root).write_text("", encoding="utf-8")
     # 템플릿 풀: fetch 만 자동, merge 금지(슬라이스 T). 실패는 on 을 막지 않는다.
@@ -138,7 +164,9 @@ def cmd_off(team_root: Path, settings_path: str) -> int:
     marker = _active_marker(team_root)
     if marker.exists():
         marker.unlink()
-    print("teammode off — 상태 저장됨")
+    # 끝맺음 말(farewell): config 에 있으면 그걸, 없으면 "상태 저장됨" 폴백(§3.1).
+    farewell = _read_team_field(team_root, "farewell")
+    print(farewell if farewell else "teammode off — 상태 저장됨")
     return 0
 
 
