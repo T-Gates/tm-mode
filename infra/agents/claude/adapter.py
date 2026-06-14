@@ -23,13 +23,43 @@ from pathlib import Path
 from typing import Optional
 
 
+def default_python() -> str:
+    """훅 명령에 쓸 파이썬 인터프리터 (크로스플랫폼, W-B).
+
+    sys.executable(현재 인터프리터의 **절대경로**)을 쓴다 = 가장 견고:
+    - Windows: 'python3' 가 PATH 에 없을 수 있으나 절대경로는 항상 유효.
+    - venv/conda 등 비표준 설치도 정확히 그 인터프리터로 훅 실행(드리프트 0).
+    normalize.py 도 child 실행에 sys.executable 을 쓰므로 체인 전체가 일관.
+    sys.executable 이 비어 있으면(드문 임베드) 플랫폼별 폴백.
+    """
+    if sys.executable:
+        return sys.executable
+    return "python" if os.name == "nt" else "python3"
+
+
+def _quote_arg(s: str) -> str:
+    """셸 명령 토큰 안전 인용 — 공백/특수문자 있으면 따옴표(윈도우 경로 대비).
+
+    이미 따옴표로 감싼 토큰은 그대로. 단순 토큰(공백·따옴표 없음)은 인용 안 함
+    (기존 'python3' 동작·테스트 보존).
+    """
+    if not s:
+        return '""'
+    if s[0] in ('"', "'") and s[-1] == s[0]:
+        return s  # 이미 인용됨
+    if any(c in s for c in ' \t"'):
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
+
+
 class Adapter:
     def __init__(self, agent_dir, manifest_path, settings_path,
-                 python="python3", team_root=None, events=None):
+                 python=None, team_root=None, events=None):
         self.agent_dir = Path(agent_dir)
         self.manifest_path = Path(manifest_path)
         self.settings_path = Path(settings_path)
-        self.python = python
+        # python=None → 설치 시점 인터프리터 절대경로(W-B, python3 하드코딩 제거).
+        self.python = python if python is not None else default_python()
         self.team_root = Path(team_root) if team_root else self.agent_dir.parents[2]
         self.events = events or self._load_events()
         self.normalize_path = self.agent_dir / "normalize.py"
@@ -88,9 +118,9 @@ class Adapter:
     def build_command(self, entry: dict) -> str:
         script = entry["script"]
         parts = [
-            self.python,
-            f'"{self.normalize_path}"',
-            script,
+            _quote_arg(str(self.python)),     # 윈도우 python 경로(공백) 안전 인용
+            _quote_arg(str(self.normalize_path)),
+            _quote_arg(script),
         ]
         if entry.get("args"):
             parts.append(entry["args"])
@@ -270,7 +300,8 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(prog="claude-adapter")
     p.add_argument("--settings", default=os.path.expanduser("~/.claude/settings.json"))
-    p.add_argument("--python", default="python3")
+    # --python 기본 None → 설치 시점 sys.executable(절대경로) 해석 (W-B, 크로스플랫폼)
+    p.add_argument("--python", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("sync")
