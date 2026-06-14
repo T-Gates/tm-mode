@@ -33,6 +33,130 @@ import install_lib as il  # noqa: E402
 
 # ─────────────────────────── 어댑터 디스패치 (보존) ───────────────────────────
 
+# ─────────────────────────── 호스트 되돌리기 (--uninstall, 신규) ───────────────────────────
+#
+# install 이 호스트에 더한 것을 역순·안전·멱등하게 되돌린다. 재사용 우선(신규 중복 금지):
+# off(teammode.cmd_off) + 어댑터 uninstall + env/obsidian 역함수(install_lib).
+# memory/(팀 데이터)는 절대 삭제하지 않는다. 실호스트 게이트는 install 과 동일 시맨틱.
+
+# 값을 받는 옵션 플래그 — 다음 토큰을 값으로 소비한다.
+_UNINSTALL_VALUE_FLAGS = ("--root", "--settings", "--profile", "--obsidian-config")
+
+
+def _parse_uninstall(argv):
+    """--uninstall argv → opts dict. 알 수 없는 부울 플래그는 무시."""
+    opts = {"root": None, "settings": None, "profile": None,
+            "obsidian-config": None, "yes": False}
+    it = iter(argv)
+    for a in it:
+        if a == "--uninstall":
+            continue
+        if a in _UNINSTALL_VALUE_FLAGS:
+            opts[a.lstrip("-")] = next(it, None)
+        elif a == "--yes":
+            opts["yes"] = True
+    return opts
+
+
+def _default_profile() -> Path:
+    """env 주입 셸 프로파일 기본 경로(미지정 시). 실호스트 게이트가 별도로 보호."""
+    return Path(os.path.expanduser("~/.bashrc"))
+
+
+def _default_obsidian_config() -> Path:
+    """obsidian.json 기본 경로(미지정 시). Linux 규약(XDG_CONFIG_HOME 우선)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return Path(base) / "obsidian" / "obsidian.json"
+
+
+def cmd_uninstall(opts) -> int:
+    """install 이 호스트에 더한 것을 역순·안전·멱등 제거 (신규 기능).
+
+    재사용 우선(신규 중복 금지):
+      1. off  — teammode.cmd_off 로 .acme-active 마커 삭제 + 어댑터 sync(off)
+      2. 어댑터 uninstall — settings.json 의 teammode 훅 제거
+      3. env 줄 제거 — install_lib.remove_injected_env (우리 표식 줄만)
+      4. obsidian 등록 해제 — install_lib.unregister_obsidian_vault (해당 볼트만)
+
+    전부 비치명(이미 없는 것 제거 OK, raise 금지). memory/(팀 데이터)는 무삭제.
+    실호스트 쓰기/삭제는 --yes 또는 --settings 게이트(install 과 동일 시맨틱).
+    """
+    root = opts.get("root")
+    if root is None:
+        print("[error] --uninstall: --root <팀루트> 가 필수입니다. 엔진은 작업 폴더를 "
+              "추측하지 않습니다.", file=sys.stderr)
+        return 2
+    team_root = Path(root).resolve()
+
+    settings = opts.get("settings")
+    yes = opts.get("yes")
+    # 실호스트 게이트(install 과 동일): --settings(격리) 또는 --yes 없으면 거부.
+    if settings is None and not yes:
+        print("[error] --uninstall: --settings <경로> (격리 모드) 또는 --yes (실설치 "
+              "되돌리기 확인) 중 하나가 필요합니다. 명시 없이 실 ~/.claude 를 건드리지 "
+              "않습니다.", file=sys.stderr)
+        return 2
+    settings_path = settings or os.path.expanduser("~/.claude/settings.json")
+
+    removed = []
+
+    # 1. off (마커 삭제 + sync off) — teammode.cmd_off 재사용
+    tm = runpy.run_path(str(ENGINE), run_name="__uninstall_off__")
+    marker = team_root / ".acme-active"
+    had_marker = marker.exists()
+    try:
+        tm["cmd_off"](team_root, settings_path)
+    except Exception as e:  # noqa: BLE001 — 되돌리기는 비치명. 다음 단계 계속.
+        print(f"[warn] off 단계 건너뜀(비치명): {e}", file=sys.stderr)
+    if had_marker and not marker.exists():
+        removed.append(".acme-active 마커")
+
+    # 2. 어댑터 uninstall — teammode 훅 제거(기존 adapter.uninstall 재사용)
+    try:
+        ad = runpy.run_path(str(AGENTS / "claude" / "adapter.py"),
+                            run_name="__uninstall_adapter__")
+        Adapter = ad["Adapter"]
+        adapter = Adapter(
+            agent_dir=str(AGENTS / "claude"),
+            manifest_path=str(INFRA / "hooks" / "manifest.json"),
+            settings_path=settings_path,
+            team_root=str(INFRA.parent),
+        )
+        changes = adapter.uninstall()
+        if any(c.startswith("[remove]") for c in changes):
+            removed.append("settings.json teammode 훅")
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] 어댑터 uninstall 건너뜀(비치명): {e}", file=sys.stderr)
+
+    # 3. env 줄 제거 — install_lib.remove_injected_env (우리 표식 줄만)
+    profile = (Path(opts["profile"]) if opts.get("profile")
+               else _default_profile())
+    try:
+        if il.remove_injected_env(profile):
+            removed.append(f"env 주입 줄 ({profile})")
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] env 줄 제거 건너뜀(비치명): {e}", file=sys.stderr)
+
+    # 4. obsidian 등록 해제 — install_lib.unregister_obsidian_vault (해당 볼트만)
+    obs_cfg = (Path(opts["obsidian-config"]) if opts.get("obsidian-config")
+               else _default_obsidian_config())
+    vault_path = team_root / "memory"
+    try:
+        if il.unregister_obsidian_vault(obs_cfg, str(vault_path)):
+            removed.append(f"obsidian 볼트 등록 ({vault_path})")
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] obsidian 해제 건너뜀(비치명): {e}", file=sys.stderr)
+
+    if removed:
+        print("teammode uninstall — 제거됨:")
+        for r in removed:
+            print(f"  - {r}")
+    else:
+        print("teammode uninstall — 되돌릴 호스트 변경 없음(이미 정리됨).")
+    print("  (memory/ 팀 데이터는 보존됩니다.)")
+    return 0
+
+
 def _split_agent(argv):
     """argv 앞쪽 --<agent> 플래그 1개를 떼어내 (agent_name, 나머지 argv)."""
     agent = None
@@ -366,6 +490,10 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+
+    # --uninstall: 호스트 되돌리기 액션(신규). 부트스트랩·디스패치와 별개 분기.
+    if "--uninstall" in argv:
+        return cmd_uninstall(_parse_uninstall(argv))
 
     # 디스패치 모드 판정: 첫 토큰들 중 --<agent>(agents/<name>/ 존재) 가 있으면 위임.
     agent, rest = _split_agent(argv)

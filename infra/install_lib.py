@@ -727,3 +727,91 @@ def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
                 "vault_id": vault_id, "path": target_path}
     except Exception as e:  # noqa: BLE001 — 어떤 경우도 install 흐름 안 막음(비치명)
         return {"registered": False, "reason": f"비치명 오류 — skip: {e}"}
+
+
+# ─────────────────────────── 호스트 되돌리기 (install.py --uninstall, 신규) ───────────────────────────
+#
+# install 이 호스트에 더한 흔적을 **우리 표식만** 골라 안전하게 제거하는 역함수들.
+# 호스트 철칙: 남의 줄·남의 볼트·최상위 키는 절대 건드리지 않는다. 전부 멱등·비치명
+# (이미 없는 것 제거 시도 OK, raise 금지).
+#
+# 설계 대칭:
+#   - remove_injected_env       ↔  inject_env             : 셸 프로파일에서 우리 표식 줄만 제거
+#   - unregister_obsidian_vault ↔  register_obsidian_vault: 해당 path 볼트만 삭제(merge-safe)
+#
+# ⚠️ inject_env 는 마커 라인 끝에 _ENV_MARKER("# teammode (env injection, §9)") 를 붙인다.
+# 역함수는 그 마커의 안정 접두부(_ENV_MARKER_PREFIX)로 우리 줄을 식별한다 — 주석 위치·
+# 앞부분 export 내용·미래의 마커 꼬리 변경에 무관하게 우리 표식 줄만 골라낸다.
+_ENV_MARKER_PREFIX = "# teammode (env injection"
+
+
+def remove_injected_env(profile_path) -> bool:
+    """셸 프로파일에서 teammode 가 주입한 줄만 제거 — inject_env 의 역함수.
+
+    - 우리 마커(_ENV_MARKER_PREFIX)가 든 줄만 삭제. 남의 export/alias 는 무접촉.
+    - 멱등: 마커 없으면 무동작. 파일 없으면 무동작(raise 금지).
+    - 반환: 실제로 변경했으면 True, 아니면 False.
+
+    ⚠️ 테스트는 monkeypatch HOME=tmp + fake 프로파일로만(B1) — 실 프로파일 무접촉.
+    """
+    p = Path(profile_path)
+    try:
+        if not p.is_file():
+            return False
+        original = p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    lines = original.splitlines(keepends=True)
+    kept = [ln for ln in lines if _ENV_MARKER_PREFIX not in ln]
+    if len(kept) == len(lines):
+        return False  # 우리 줄 없음 — 무동작(남의 줄 무접촉)
+
+    try:
+        p.write_text("".join(kept), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def unregister_obsidian_vault(config_path, vault_path) -> bool:
+    """obsidian.json 에서 이 팀 볼트 항목만 제거 — register_obsidian_vault 의 역함수.
+
+    merge-safe: 해당 path 와 일치하는 볼트 항목만 삭제하고, 다른 볼트·최상위 키는
+    전부 보존한다. 미설치(파일 없음)·깨짐·해당 볼트 없음 → 무동작(raise 금지).
+    반환: 실제로 변경했으면 True, 아니면 False.
+    """
+    cfg_path = Path(config_path)
+    try:
+        if not cfg_path.is_file():
+            return False
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return False  # 미설치/깨짐 — 안전을 위해 skip(register 와 동일 정신)
+    if not isinstance(data, dict):
+        return False
+
+    vaults = data.get("vaults")
+    if not isinstance(vaults, dict):
+        return False
+
+    # path 정규화 비교 — 같은 볼트의 표기 차이(끝 슬래시 등) 흡수.
+    target = str(Path(vault_path))
+    to_remove = [
+        vid for vid, v in vaults.items()
+        if isinstance(v, dict) and v.get("path") is not None
+        and str(Path(str(v["path"]))) == target
+    ]
+    if not to_remove:
+        return False  # 해당 볼트 없음 — 무동작(다른 볼트 보존)
+
+    for vid in to_remove:
+        del vaults[vid]
+
+    try:
+        cfg_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+    except OSError:
+        return False
+    return True
