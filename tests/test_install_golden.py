@@ -176,6 +176,12 @@ def test_I4b_settings_isolation(tmp_path):
     assert not (home / ".claude" / "settings.json").exists()
     # 격리 경로에만 배선
     assert (iso / "claude" / "settings.json").is_file()
+    # 격리는 env 까지 격리 — 실 셸 프로파일에 TEAMMODE_HOME 안 샘(도그푸딩 회귀).
+    for name in (".bashrc", ".zshrc", ".profile", ".bash_profile"):
+        p = home / name
+        if p.is_file():
+            assert "TEAMMODE_HOME" not in p.read_text(), \
+                f"격리(--settings)인데 {name} 에 env 가 샜다"
 
 
 # ─────────────────────────── I-dry — dry-run 무접촉 ───────────────────────────

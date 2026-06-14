@@ -313,7 +313,13 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
 
     # ⑥ env 주입 (§9, m2) — 런타임 훅용 TEAMMODE_HOME 을 셸 프로파일에 멱등 1줄.
     # 셸은 $SHELL 에서(주입). 미지원/미감지 셸은 경고만(비치명 — L1 핵심은 메모리+훅).
-    if shell:
+    # ⚠️ 격리(--settings)면 env 주입도 격리 — 실 호스트 셸 프로파일 무접촉(§10 I4b).
+    #   --settings 가 env 격리의 권위: --yes 와 같이 와도 격리 우선(실 프로파일 미접촉).
+    #   실 env 주입은 --settings 없는 실설치(--yes)에서만(훅이 TEAMMODE_HOME 찾으려면 필요).
+    if settings_override is not None:
+        out("[env] 건너뜀 — 격리 모드(--settings): 실 셸 프로파일에 env 주입 안 함. "
+            f"필요시 수동 설정: {il.ENV_VAR}={team_root}")
+    elif shell:
         env_res = il.inject_env(shell, home, team_root)
         if env_res["injected"]:
             out(f"[env] {env_res['profile']} 에 {il.ENV_VAR} 주입 "

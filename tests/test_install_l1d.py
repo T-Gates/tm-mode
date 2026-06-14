@@ -133,8 +133,14 @@ def _git_init(path: Path):
     subprocess.run(["git", "config", "user.email", "f@f"], cwd=str(path), check=True)
 
 
-def test_bootstrap_injects_env_to_fake_home(tmp_path, monkeypatch):
-    """⑥env: fake HOME 의 셸 프로파일에만 주입(실 ~/.bashrc 무접촉, B1)."""
+def test_bootstrap_isolated_settings_skips_env(tmp_path, monkeypatch):
+    """⑥env (격리): --settings 지정 = 격리 모드 → 실 호스트 프로파일에 env 주입 안 함.
+
+    회귀 방지(도그푸딩 버그): --settings 는 *격리 의도*이므로 agent settings 뿐
+    아니라 env 주입까지 실 HOME 프로파일을 건드리면 안 된다(spec/04 §10 I4b).
+    fake HOME 의 .bashrc/.zshrc/.profile/.bash_profile 어디에도 TEAMMODE_HOME 줄이
+    안 생겨야 한다.
+    """
     team = tmp_path / "team"
     team.mkdir()
     _git_init(team)
@@ -143,7 +149,28 @@ def test_bootstrap_injects_env_to_fake_home(tmp_path, monkeypatch):
     iso = tmp_path / "iso"
     monkeypatch.setenv("SHELL", "/bin/bash")
     mod = _load_install()
-    opts = il.parse_args(["--root", str(team), "--settings", str(iso)])
+    opts = il.parse_args(["--root", str(team), "--settings", str(iso), "--yes"])
+    rc = mod["bootstrap"](opts, home=home, python_version=(3, 13))
+    assert rc == 0
+    for name in (".bashrc", ".zshrc", ".profile", ".bash_profile"):
+        p = home / name
+        if p.is_file():
+            assert "TEAMMODE_HOME" not in p.read_text(), \
+                f"격리(--settings)인데 {name} 에 env 가 샜다"
+
+
+def test_bootstrap_real_install_injects_env_to_fake_home(tmp_path, monkeypatch):
+    """⑥env (실설치): --settings 없이 --yes 면 fake HOME 프로파일에 env 주입(정상)."""
+    team = tmp_path / "team"
+    team.mkdir()
+    _git_init(team)
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    # 엔진 verify subprocess 가 실 ~/.claude 를 건드리지 않게 HOME 도 fake 로(B1).
+    monkeypatch.setenv("HOME", str(home))
+    mod = _load_install()
+    opts = il.parse_args(["--root", str(team), "--yes"])
     rc = mod["bootstrap"](opts, home=home, python_version=(3, 13))
     assert rc == 0
     bashrc = home / ".bashrc"
@@ -152,15 +179,15 @@ def test_bootstrap_injects_env_to_fake_home(tmp_path, monkeypatch):
     assert str(team) in bashrc.read_text()
 
 
-def test_bootstrap_env_idempotent(tmp_path, monkeypatch):
+def test_bootstrap_real_install_env_idempotent(tmp_path, monkeypatch):
     team = tmp_path / "team"
     team.mkdir()
     _git_init(team)
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
-    iso = tmp_path / "iso"
     monkeypatch.setenv("SHELL", "/bin/bash")
-    opts = il.parse_args(["--root", str(team), "--settings", str(iso)])
+    monkeypatch.setenv("HOME", str(home))
+    opts = il.parse_args(["--root", str(team), "--yes"])
     _load_install()["bootstrap"](opts, home=home, python_version=(3, 13))
     _load_install()["bootstrap"](opts, home=home, python_version=(3, 13))
     content = (home / ".bashrc").read_text()

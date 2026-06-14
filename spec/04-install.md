@@ -161,7 +161,7 @@ python install.py [--root PATH] [--agent {auto|claude|codex|...}]
 | I2b | I1/I2 직후 **새 에이전트 세션** 시작 | SessionStart 훅이 맥락을 **실제 주입**(B1 — install이 아니라 여기서) |
 | I3 | I1 직후 재실행 | 멱등 — 중복 생성 0, 변경 없음 |
 | I4 | ambient `TEAMMODE_HOME`=실호스트 set 상태로 실행 | 실호스트 무접촉(env 격리, P1 회귀) |
-| I4b | `--settings <격리>` 지정 실행 | 실호스트 `~/.claude/settings.json` 무접촉, 격리 경로에만 씀(M1) |
+| I4b | `--settings <격리>` 지정 실행 | 실호스트 `~/.claude/settings.json` **및 실 셸 프로파일(env 주입) 무접촉**, 격리 경로에만 씀(M1). `--settings`=격리가 env 격리의 권위 — `--yes` 와 같이 와도 격리 우선(실 프로파일 미접촉). 실 env 주입은 `--settings` 없는 실설치(`--yes`)에서만 |
 | I-dry | `--dry-run` | settings.json·memory·env 전부 무접촉 + 계획만 출력(r1) |
 | I5 | `gh` 부재 + 경로 A 시도 | fallback 안내, 본체는 `--root` 있으면 정상 |
 | I6 | Python 하한 미달 / git **바이너리** 부재 | preflight 에러 종료(exit 2), 무변경 |
