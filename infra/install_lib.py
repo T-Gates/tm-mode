@@ -50,9 +50,12 @@ class Options:
     yes: bool = False
     update: bool = False
     dry_run: bool = False
+    register_obsidian: bool = False
+    obsidian_config: str | None = None
 
 
-_VALUE_FLAGS = {"--root", "--agent", "--member-name", "--settings"}
+_VALUE_FLAGS = {"--root", "--agent", "--member-name", "--settings",
+                "--obsidian-config"}
 
 
 def parse_args(argv) -> Options:
@@ -78,6 +81,10 @@ def parse_args(argv) -> Options:
             opts.update = True
         elif a == "--dry-run":
             opts.dry_run = True
+        elif a == "--register-obsidian":
+            opts.register_obsidian = True
+        elif a == "--obsidian-config":
+            opts.obsidian_config = next(it, None)
         # 그 외 토큰은 무시
     return opts
 
@@ -558,3 +565,123 @@ def inject_env(shell: str, home: Path, team_root: Path) -> dict:
     body = existing if existing.endswith("\n") or existing == "" else existing + "\n"
     profile.write_text(body + new_line + "\n", encoding="utf-8")
     return {"injected": True, "reason": "신규 주입", "profile": str(profile)}
+
+
+# ─────────────────────────── Obsidian 볼트 등록 (spec/05, opt-in) ───────────────────────────
+#
+# 스펙 05: Obsidian 뷰 = 키0(메모리 그대로 열기). 자동등록은 opt-in·merge·host-write.
+# 호스트 안전(P1 교훈): 중앙 설정 경로는 *주입 가능*(테스트). id/ts 도 주입(결정적).
+# Date.now/random 을 코드가 직접 호출하지 않는다 — 오케스트레이터가 주입.
+# 어떤 경우도 raise 로 install 흐름을 막지 않는다(비치명). merge 절대 clobber 금지.
+
+# 최소 .obsidian/ 구성(선택) — dataview 커뮤니티 플러그인 + 핵심 그래프/백링크/검색.
+# 없어도 빈 .obsidian/ 만으로 볼트 인식되므로 실패해도 비치명.
+_OBSIDIAN_CORE_PLUGINS = ["graph", "backlink", "global-search"]
+_OBSIDIAN_COMMUNITY_PLUGINS = ["dataview"]
+
+
+def obsidian_config_path(platform: str, *, home: Path, appdata=None) -> Path:
+    """Obsidian 중앙 설정 obsidian.json 경로를 플랫폼별로 해석 (주입 가능, P1).
+
+    - linux : <home>/.config/obsidian/obsidian.json
+    - mac   : <home>/Library/Application Support/obsidian/obsidian.json
+    - win   : <appdata>/obsidian/obsidian.json  (appdata 미지정 시 <home>/AppData/Roaming)
+
+    platform 은 sys.platform 류 문자열(linux/linux2/darwin/win32). 값 주입 — ambient 무신뢰.
+    """
+    home = Path(home)
+    if platform.startswith("darwin"):
+        return home / "Library" / "Application Support" / "obsidian" / "obsidian.json"
+    if platform.startswith("win"):
+        base = Path(appdata) if appdata is not None else home / "AppData" / "Roaming"
+        return base / "obsidian" / "obsidian.json"
+    # linux 및 그 외 posix 기본
+    return home / ".config" / "obsidian" / "obsidian.json"
+
+
+def ensure_obsidian_vault(memory_dir: Path) -> bool:
+    """memory/ 를 Obsidian 볼트화 — .obsidian/ 없으면 생성. 생성했으면 True(멱등).
+
+    최소 구성(core/community plugins)을 동봉하나 쓰기 실패는 비치명(빈 .obsidian/ 라도 OK).
+    """
+    memory_dir = Path(memory_dir)
+    dot = memory_dir / ".obsidian"
+    if dot.is_dir():
+        return False
+    dot.mkdir(parents=True, exist_ok=True)
+    # 최소 구성 동봉(선택) — 실패해도 무시(빈 .obsidian/ 만으로 볼트 인식).
+    try:
+        (dot / "core-plugins.json").write_text(
+            json.dumps(_OBSIDIAN_CORE_PLUGINS, indent=2) + "\n", encoding="utf-8")
+        (dot / "community-plugins.json").write_text(
+            json.dumps(_OBSIDIAN_COMMUNITY_PLUGINS, indent=2) + "\n",
+            encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
+def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
+                            vault_id: str, ts: int) -> dict:
+    """obsidian.json 에 memory/ 볼트를 merge 등록 (opt-in·host-write, spec/05).
+
+    호스트 안전·비치명 보장:
+    - config_path 부모 디렉토리 부재 = Obsidian 미설치 → skip(생성 안 함, 무raise).
+    - 기존 obsidian.json 읽고 → vaults merge → 쓰기. **기존 vaults 전부 보존(clobber 0)**.
+    - 같은 path 이미 등록돼 있으면 skip(멱등) — 신규 항목 추가 안 함.
+    - 깨진 obsidian.json 등 어떤 오류도 raise 하지 않고 registered=False 반환(비치명).
+
+    항목 = {"<16hex id>": {"path": <memory 절대경로>, "ts": <epoch ms>, "open": false}}.
+    id/ts 는 주입(결정적 테스트·Date.now/random 직접 호출 금지).
+    """
+    memory_dir = Path(memory_dir)
+    config_path = Path(config_path)
+    try:
+        # 미설치 판정: obsidian.json 부모 디렉토리 부재 → skip(생성 안 함).
+        if not config_path.parent.is_dir():
+            return {"registered": False,
+                    "reason": "Obsidian 미설치(설정 디렉토리 부재) — skip"}
+
+        # 볼트화(.obsidian/) — 부수효과지만 등록의 일부.
+        ensure_obsidian_vault(memory_dir)
+
+        target_path = str(memory_dir.resolve())
+
+        # 기존 obsidian.json 읽기(부재/깨짐 → 빈 dict 로 시작, clobber 아님).
+        data = {}
+        if config_path.is_file():
+            try:
+                loaded = json.loads(config_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (ValueError, OSError):
+                # 깨진 설정 — 우리가 덮어쓰면 사용자 데이터 손실 위험. 비치명 skip.
+                return {"registered": False,
+                        "reason": "obsidian.json 파싱 실패 — 안전을 위해 skip"}
+
+        vaults = data.get("vaults")
+        if not isinstance(vaults, dict):
+            vaults = {}
+
+        # 멱등: 같은 path 이미 등록 → skip(중복 0, clobber 0).
+        for v in vaults.values():
+            if isinstance(v, dict) and v.get("path") == target_path:
+                return {"registered": False, "reason": "이미 등록됨(멱등) — skip"}
+
+        # clobber 방어: 주입된 vault_id 가 *다른 path* 의 기존 항목과 충돌하면
+        # 그 볼트를 덮어쓰지 않는다(랜덤 16hex 라 실질 0확률이지만 방어). skip.
+        if vault_id in vaults:
+            return {"registered": False,
+                    "reason": "vault_id 충돌(기존 다른 볼트) — clobber 방지 skip"}
+
+        # 신규 항목 merge(기존 전부 보존).
+        vaults[vault_id] = {"path": target_path, "ts": ts, "open": False}
+        data["vaults"] = vaults
+
+        config_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        return {"registered": True, "reason": "등록 완료(merge)",
+                "vault_id": vault_id, "path": target_path}
+    except Exception as e:  # noqa: BLE001 — 어떤 경우도 install 흐름 안 막음(비치명)
+        return {"registered": False, "reason": f"비치명 오류 — skip: {e}"}
