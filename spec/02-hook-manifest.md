@@ -149,7 +149,7 @@ adapter.py uninstall             # 역순 제거
 ### 5.1 `sync`의 의무 (필수)
 
 1. manifest 각 엔트리를 events.json으로 번역해 자기 에이전트 설정에 등록한다. `--on`/`--off`는 `mode: "on"` 엔트리의 활성/비활성을 전환한다.
-2. **등록되는 훅 커맨드는 반드시 normalize 경유로 배선한다**: `<python> agents/<name>/normalize.py <script> [args]`. 공통 스크립트를 직접 등록하는 것은 금지다.
+2. **등록되는 훅 커맨드는 반드시 normalize 경유로 배선한다**: `<python> agents/<name>/normalize.py <script> [args]`. 공통 스크립트를 직접 등록하는 것은 금지다. `<python>`은 **크로스플랫폼**으로 설치 시점 `sys.executable`(인터프리터 절대경로)을 쓴다 — Windows 에서 `python3`가 PATH 에 없거나 venv 여도 견고하며, normalize 도 child 실행에 `sys.executable`을 써서 체인 전체가 동일 인터프리터로 일관된다. 공백 든 경로(예 Windows `C:\Program Files\...\python.exe`)는 따옴표로 안전 인용한다. (reference: `Adapter.default_python`/`build_command`.)
 3. 미지원 이벤트/매처를 만나면 §7 폴백 정책을 적용한다. **무음 스킵 금지** — 등록을 생략하는 경우 `[warn]` 출력 의무.
 4. **멱등성**: 재실행 시 변경이 없으면 설정 파일도 무변경이어야 한다. manifest에서 제거된 훅은 에이전트 설정에서도 제거한다.
 5. **소유권**: teammode가 등록한 항목만 추가·수정·삭제한다. 사용자가 직접 등록한 훅은 건드리지 않는다. 식별 마커: 등록 커맨드가 **팀 루트 하위의 `agents/<name>/normalize.py`를 가리키는지** 여부 (단순 부분문자열 `agents/` 포함 판정 금지 — 사용자의 무관한 경로를 오인 삭제할 수 있다).

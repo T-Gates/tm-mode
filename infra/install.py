@@ -83,8 +83,10 @@ def _default_obsidian_config(platform=None) -> Path:
     return Path(base) / "obsidian" / "obsidian.json"
 
 
-def cmd_uninstall(opts) -> int:
+def cmd_uninstall(opts, *, platform=None) -> int:
     """install 이 호스트에 더한 것을 역순·안전·멱등 제거 (신규 기능).
+
+    platform 미지정 시 sys.platform (W-D: 윈도우는 reg delete, posix 는 셸 프로파일).
 
     재사용 우선(신규 중복 금지):
       1. off  — teammode.cmd_off 로 .tgates-active 마커 삭제 + 어댑터 sync(off)
@@ -101,6 +103,8 @@ def cmd_uninstall(opts) -> int:
               "추측하지 않습니다.", file=sys.stderr)
         return 2
     team_root = Path(root).resolve()
+    if platform is None:
+        platform = sys.platform
 
     settings = opts.get("settings")
     yes = opts.get("yes")
@@ -144,16 +148,22 @@ def cmd_uninstall(opts) -> int:
 
     # 3. env 제거 — install_lib.remove_injected_env (우리 표식만)
     #    Windows: reg delete HKCU\Environment(레지스트리). POSIX: 셸 프로파일 우리 줄.
-    profile = (Path(opts["profile"]) if opts.get("profile")
-               else _default_profile())
-    try:
-        if il.remove_injected_env(profile):
-            if il.is_windows():
-                removed.append(f"env 영구 user env ({il.ENV_VAR}, HKCU\\Environment)")
-            else:
-                removed.append(f"env 주입 줄 ({profile})")
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] env 제거 건너뜀(비치명): {e}", file=sys.stderr)
+    #    ⚠️ 격리(--settings)면 install 도 실 env 를 안 건드렸으므로(bootstrap ⑥ 스킵)
+    #       uninstall 도 실 호스트 env(셸 프로파일/레지스트리)를 건드리지 않는다(대칭·I4b).
+    #       단 --profile 명시는 격리에서도 그 경로(테스트용)만 정리 — 실 호스트 무관.
+    if settings is not None and not opts.get("profile"):
+        print("[env] 건너뜀 — 격리 모드(--settings): 실 호스트 env 무접촉.")
+    else:
+        profile = (Path(opts["profile"]) if opts.get("profile")
+                   else _default_profile(platform=platform))
+        try:
+            if il.remove_injected_env(profile, platform=platform):
+                if il.is_windows(platform):
+                    removed.append(f"env 영구 user env ({il.ENV_VAR}, HKCU\\Environment)")
+                else:
+                    removed.append(f"env 주입 줄 ({profile})")
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] env 제거 건너뜀(비치명): {e}", file=sys.stderr)
 
     # 4. obsidian 등록 해제 — install_lib.unregister_obsidian_vault (해당 볼트만)
     obs_cfg = (Path(opts["obsidian-config"]) if opts.get("obsidian-config")
