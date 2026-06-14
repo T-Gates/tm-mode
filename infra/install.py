@@ -58,13 +58,27 @@ def _parse_uninstall(argv):
     return opts
 
 
-def _default_profile() -> Path:
-    """env 주입 셸 프로파일 기본 경로(미지정 시). 실호스트 게이트가 별도로 보호."""
+def _default_profile(platform=None):
+    """env 주입 셸 프로파일 기본 경로(미지정 시). 실호스트 게이트가 별도로 보호.
+
+    Windows 는 env 가 셸 프로파일이 아니라 레지스트리(setx)에 살아서 대상 파일 없음 → None.
+    platform 미지정 시 sys.platform (W-C: POSIX 가정 제거).
+    """
+    if il.is_windows(platform):
+        return None
     return Path(os.path.expanduser("~/.bashrc"))
 
 
-def _default_obsidian_config() -> Path:
-    """obsidian.json 기본 경로(미지정 시). Linux 규약(XDG_CONFIG_HOME 우선)."""
+def _default_obsidian_config(platform=None) -> Path:
+    """obsidian.json 기본 경로(미지정 시) — 플랫폼별 (W-C).
+
+    - linux: $XDG_CONFIG_HOME 또는 ~/.config 하위
+    - mac/win: il.obsidian_config_path 가 플랫폼별 해석(Library / AppData\\Roaming)
+    platform 미지정 시 sys.platform.
+    """
+    plat = platform if platform is not None else sys.platform
+    if il.is_windows(plat) or plat.startswith("darwin"):
+        return il.obsidian_config_path(plat, home=Path(os.path.expanduser("~")))
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return Path(base) / "obsidian" / "obsidian.json"
 
@@ -363,7 +377,9 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     if shell == "__env__":
         shell = il.detect_shell(os.environ.get("SHELL"))
     elif shell:
-        shell = il.detect_shell(shell) if "/" in str(shell) else shell
+        # 경로(슬래시/백슬래시 포함)면 detect_shell 로 종류 추출, 이미 종류면 그대로.
+        is_path = "/" in str(shell) or "\\" in str(shell)
+        shell = il.detect_shell(shell) if is_path else shell
 
     # 팀 루트 (§10, P1 — env 불신뢰·추측 금지)
     team_root = _resolve_root(opts.root)
