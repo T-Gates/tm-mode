@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -507,6 +508,68 @@ _SHELL_PROFILES = {
 _ENV_MARKER = "# teammode (env injection, §9)"
 
 
+# ─────────────────────── 플랫폼 감지 (W-A, 값 주입) ───────────────────────
+
+def is_windows(platform: str | None = None) -> bool:
+    """현재(또는 주입된) 플랫폼이 Windows 인가.
+
+    platform 미지정 시 sys.platform 사용. 값 주입 가능 — 테스트가 nt 분기를 모킹.
+    win32/cygwin(둘 다 Windows OS 위) → True. linux/darwin → False.
+    """
+    p = platform if platform is not None else sys.platform
+    return p.startswith("win") or p.startswith("cygwin")
+
+
+# Windows 영구 user env 는 셸 프로파일이 아니라 레지스트리(HKCU\Environment)에 산다.
+# 설치: `setx TEAMMODE_HOME "<abs>"` (새 프로세스부터 반영). 제거: reg delete.
+# ⚠️ 실 setx/reg 는 파이(Linux)에 없고 호스트 오염 위험 → runner 주입으로 모킹 테스트.
+def _default_runner(argv, **kwargs):
+    """subprocess.run 기본 러너 — 테스트는 runner 를 주입해 실행을 대체한다."""
+    return subprocess.run(argv, **kwargs)
+
+
+def inject_env_windows(team_root: Path, *, runner=None) -> dict:
+    """Windows: `setx TEAMMODE_HOME "<절대경로>"` 로 영구 user env 주입 (§9).
+
+    - setx 는 HKCU\\Environment 에 영구 기록(새 프로세스부터 반영). 셸 프로파일 무관.
+    - team_root 는 절대경로로 정규화(레지스트리 값은 절대라야 의미).
+    - 비치명: rc!=0 이거나 setx 부재(raise)면 injected False + reason. raise 안 함.
+
+    ⚠️ runner 주입 = 실 setx 실행 안 함(모킹). 합격은 명령·인자 정확성으로 판정.
+    """
+    run = runner if runner is not None else _default_runner
+    abs_root = str(Path(team_root).resolve())
+    try:
+        res = run(["setx", ENV_VAR, abs_root],
+                  capture_output=True, text=True)
+    except Exception as e:  # noqa: BLE001 — setx 부재 등은 비치명(L1 핵심은 메모리+훅)
+        return {"injected": False, "reason": f"setx 실행 실패: {e}",
+                "profile": None}
+    if getattr(res, "returncode", 1) != 0:
+        return {"injected": False,
+                "reason": f"setx 비정상 종료(rc={getattr(res, 'returncode', '?')})",
+                "profile": None}
+    return {"injected": True, "reason": "setx 영구 user env 주입(HKCU\\Environment)",
+            "profile": f"HKCU\\Environment\\{ENV_VAR}"}
+
+
+def remove_injected_env_windows(*, runner=None) -> bool:
+    """Windows: `reg delete HKCU\\Environment /v TEAMMODE_HOME /f` 로 제거 (역함수).
+
+    - 멱등·비치명: 변수가 이미 없으면 reg delete rc!=0 → False(raise 안 함).
+    - reg 부재(raise) 도 흡수 → False.
+    반환: 실제로 제거했으면 True, 아니면 False.
+    """
+    run = runner if runner is not None else _default_runner
+    try:
+        res = run(["reg", "delete", "HKCU\\Environment",
+                   "/v", ENV_VAR, "/f"],
+                  capture_output=True, text=True)
+    except Exception:  # noqa: BLE001 — reg 부재 등 비치명(이미 없는 것 제거는 무동작)
+        return False
+    return getattr(res, "returncode", 1) == 0
+
+
 def detect_shell(shell_path) -> str | None:
     """$SHELL 경로 → 셸 종류(bash/zsh/fish). 미지/미지원 → None.
 
@@ -534,14 +597,21 @@ def _env_line(shell: str, team_root: Path) -> str:
     return f"{tmpl.format(var=ENV_VAR, val=str(team_root))}  {_ENV_MARKER}"
 
 
-def inject_env(shell: str, home: Path, team_root: Path) -> dict:
-    """셸 프로파일에 TEAMMODE_HOME 멱등 1줄 주입 (§9, m2).
+def inject_env(shell: str, home: Path, team_root: Path,
+               *, platform: str | None = None, runner=None) -> dict:
+    """TEAMMODE_HOME 영구 env 주입 (§9, m2) — 플랫폼별 분기.
 
-    멱등: 같은 마커 라인이 이미 있으면 추가 안 함. 다른 팀루트로 바뀌었으면 그
-    마커 라인만 교체(중복 금지). 미지원 셸 → {'injected': False, 'reason': ...}.
+    - Windows(is_windows): `setx TEAMMODE_HOME "<abs>"` (HKCU\\Environment). 셸 프로파일 무관.
+    - POSIX: 셸 프로파일에 멱등 1줄. 같은 마커 라인 있으면 추가 안 함, 팀루트 바뀌면
+      그 라인만 교체(중복 금지). 미지원 셸 → {'injected': False, 'reason': ...}.
 
-    ⚠️ 테스트는 monkeypatch HOME=tmp + fake 프로파일로만(B1) — 실 프로파일 무접촉.
+    platform/runner 는 값 주입(테스트가 nt 분기·subprocess 를 모킹). 미지정 시 sys.platform.
+
+    ⚠️ 테스트는 monkeypatch HOME=tmp + fake 프로파일(POSIX) / runner 주입(Windows) 으로만(B1).
+    실 프로파일·실 setx 무접촉.
     """
+    if is_windows(platform):
+        return inject_env_windows(team_root, runner=runner)
     profile = profile_path_for(shell, home)
     if profile is None:
         return {"injected": False, "reason": f"미지원 셸: {shell}",
@@ -745,15 +815,22 @@ def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
 _ENV_MARKER_PREFIX = "# teammode (env injection"
 
 
-def remove_injected_env(profile_path) -> bool:
-    """셸 프로파일에서 teammode 가 주입한 줄만 제거 — inject_env 의 역함수.
+def remove_injected_env(profile_path, *, platform: str | None = None,
+                        runner=None) -> bool:
+    """teammode 가 주입한 env 제거 — inject_env 의 역함수. 플랫폼별 분기.
 
-    - 우리 마커(_ENV_MARKER_PREFIX)가 든 줄만 삭제. 남의 export/alias 는 무접촉.
-    - 멱등: 마커 없으면 무동작. 파일 없으면 무동작(raise 금지).
+    - Windows(is_windows): `reg delete HKCU\\Environment /v TEAMMODE_HOME /f`.
+      profile_path 는 무시(레지스트리 기반). 변수 없으면 무동작.
+    - POSIX: 셸 프로파일에서 우리 마커(_ENV_MARKER_PREFIX) 든 줄만 삭제.
+      남의 export/alias 무접촉. 마커/파일 없으면 무동작(raise 금지).
     - 반환: 실제로 변경했으면 True, 아니면 False.
 
-    ⚠️ 테스트는 monkeypatch HOME=tmp + fake 프로파일로만(B1) — 실 프로파일 무접촉.
+    platform/runner 는 값 주입(테스트가 nt·subprocess 모킹). 미지정 시 sys.platform.
+
+    ⚠️ 테스트는 fake 프로파일(POSIX) / runner 주입(Windows) 으로만(B1) — 실 호스트 무접촉.
     """
+    if is_windows(platform):
+        return remove_injected_env_windows(runner=runner)
     p = Path(profile_path)
     try:
         if not p.is_file():

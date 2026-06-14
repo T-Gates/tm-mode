@@ -98,3 +98,12 @@
 - [x] **L1-E session-start.py 훅 구현 (신규, M3)** — manifest 등록됐으나 teammode-repo에 파일 부재 = L1 진짜 payoff. `infra/hooks/session-start.py`: `.acme-active` 활성 시 context(멤버별 최근 세션로그) 읽어 SessionStart additionalContext로 주입. normalize 경유 깨지지 않게. 신규테스트.
 - [x] **L1-F verify + 골든** — install.py ⑦(on --install + context --json로 L1 데이터 읽힘 확인; 테스트선 --settings 격리). conformance 골든 I1(빈→L1)·I2(팀원)·I2b(다음세션 주입)·I3(멱등)·I4·I4b(격리)·I-dry. 최종 전체 스위트 166+신규 green.
 - [ ] 마감(사람): 푸시/PR Jane 판단, 세션로그 반영
+
+## 🪟 W — Windows 네이티브 지원 (크로스플랫폼, 2026-06-15 새벽 착수)
+> 스펙(CLAUDE.md 규칙8·SPEC §0)이 Linux/macOS/Windows 요구하나 native 윈도우 미동작 = 스펙 위반/갭. 기준선 301.
+> ⚠️ 파이(Linux)에선 실 윈도우 실행 불가 → Windows 분기는 **sys.platform/os.name 모킹 + subprocess(setx) 모킹**으로 단위 테스트. 합격=모킹 윈도우 테스트 green + Linux 301 무회귀. **실 윈도우 검증=Jane 내일.** 호스트 철칙(fake HOME·실 setx 실행 금지=모킹·실 ~/.claude/~/.bashrc 무접촉) 유지. 푸시 금지.
+- [x] **W-A env 주입 Windows(setx)** — install_lib inject_env에 윈도우 분기: `setx TEAMMODE_HOME "<abs>"`(HKCU\Environment 영구, 새 프로세스 반영). uninstall 역(remove_injected_env Windows: reg delete). 플랫폼 감지(os.name=='nt'/sys.platform 'win'). subprocess 모킹 테스트. [완료: is_windows(값주입) + inject_env_windows/remove_injected_env_windows(runner 주입). inject_env/remove_injected_env에 platform 분기, install.py bootstrap ⑥env·cmd_uninstall ③에 윈도우 라우팅(platform 주입). 신규 13테스트(301→314). 적대검수: nt 분기 실타격·posix 무회귀·실 setx/reg 미실행(runner 주입)·격리 모드 setx 차단 확인]
+- [ ] **W-B 훅 명령 크로스플랫폼** — adapter `python="python3"` 하드코딩 제거 → 설치 시점 적절 파이썬(권장: sys.executable 절대경로, 또는 win=python/posix=python3 감지). build_command·is_owned이 그 명령으로 일관. 윈도우 경로/따옴표 안전. 모킹 테스트.
+- [ ] **W-C POSIX 종속 감사** — install_lib·install.py·hooks·adapter·teammode.py 전수: 하드코딩 `/`·`python3`·$SHELL 가정·POSIX 전용 호출. pathlib·os.sep·플랫폼 분기로 교정. 회귀 테스트.
+- [ ] **W-D verify + SPEC** — 모킹-윈도우 골든/e2e(install→on→context→uninstall 라운드트립을 nt 모킹). SPEC §9(env)·§2(어댑터 명령)에 Windows 반영. 부록 A.3 "Windows 미지원" 제거. 합격=모킹 윈도우 green + Linux 301 무회귀. 실 윈도우 검증은 Jane 내일 표기.
+- [ ] 마감(사람): Jane 내일 native 윈도우 실테스트 → 막히는 점=후속. 푸시 판단.
