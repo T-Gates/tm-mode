@@ -340,6 +340,10 @@ def write_introducer_config(team_root: Path, *, team_name: str,
             "name": team_name,
             "timezone": timezone or "Asia/Seoul",
             "locale": locale or "ko_KR",
+            # 시작 멘트·끝맺음 말 기본값(§4.4·부록 A.3). 엔진 on/off 가 그대로 읽어
+            # 출력한다. 온보딩 opt-in 으로 교체 가능(tm-onboard). 팀 이름을 펼쳐 둠.
+            "greeting": f"{team_name} 팀모드 ON",
+            "farewell": f"수고하셨습니다 — {team_name}",
         },
         "admin_contact": admin_contact,
         "members_file": "memory/team/members.md",
