@@ -21,6 +21,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 INFRA = Path(__file__).resolve().parent
@@ -166,6 +167,52 @@ def _make_run_adapter():
         finally:
             sys.argv = saved
     return run_adapter
+
+
+def register_obsidian(opts: il.Options, *, home: Path, platform: str,
+                      now_ms=None, vault_id=None, out=print, err=None) -> int:
+    """--register-obsidian 액션 (spec/05, opt-in). 비치명 — 항상 exit 0.
+
+    Obsidian 중앙 obsidian.json 에 memory/ 볼트를 merge 등록한다. 미설치·깨짐 등은
+    우아하게 skip(install 흐름 안 막음). 경로는 --obsidian-config 우선, 미지정 시
+    플랫폼 기본(주입된 home·platform 으로 해석 — ambient 무신뢰, P1).
+
+    id/ts 는 호스트의 비결정 소스(os.urandom/time)를 *여기서* 만들어 순수 함수에 주입.
+    테스트는 install_lib 순수 함수를 직접 결정적으로 검증한다.
+    """
+    if err is None:
+        def err(*a, **k):
+            print(*a, file=sys.stderr, **k)
+
+    team_root = _resolve_root(opts.root)
+    if team_root is None:
+        err("[error] --root <팀루트> 가 필요합니다(또는 팀 표식 있는 폴더에서 실행). "
+            "환경변수(TEAMMODE_HOME)는 읽지 않습니다.")
+        return 2
+
+    memory_dir = team_root / "memory"
+
+    # 설정 경로: 명시(--obsidian-config) 우선, 미지정 시 플랫폼 기본(주입 home).
+    if opts.obsidian_config:
+        config_path = Path(opts.obsidian_config)
+    else:
+        config_path = il.obsidian_config_path(platform, home=home)
+
+    # 비결정 소스를 여기서 생성해 순수 함수에 주입(Date.now/random 직접 호출 금지 — 주입).
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    if vault_id is None:
+        vault_id = os.urandom(8).hex()  # 16 hex
+
+    res = il.register_obsidian_vault(
+        memory_dir, config_path=config_path, vault_id=vault_id, ts=now_ms)
+
+    if res["registered"]:
+        out(f"[obsidian] 볼트 등록 완료 → {config_path} ({res['reason']}).")
+        out(f"[obsidian] memory/ 를 Obsidian 으로 열면 팀 메모리를 그대로 볼 수 있습니다.")
+    else:
+        out(f"[obsidian] 등록 건너뜀 — {res['reason']} (비치명, install 계속).")
+    return 0  # 비치명 — 항상 0
 
 
 def bootstrap(opts: il.Options, *, home: Path, python_version,
@@ -328,6 +375,15 @@ def main(argv=None) -> int:
         return 2
 
     opts = il.parse_args(argv)
+
+    # --register-obsidian: 단독 opt-in 액션(부트스트랩과 별개). 비치명.
+    if opts.register_obsidian:
+        return register_obsidian(
+            opts,
+            home=Path(os.path.expanduser("~")),
+            platform=sys.platform,
+        )
+
     return bootstrap(
         opts,
         home=Path(os.path.expanduser("~")),
