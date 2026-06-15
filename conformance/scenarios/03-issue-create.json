@@ -1,16 +1,30 @@
 {
   "id": "03-issue-create",
   "title": "이슈 생성 — 서비스 슬롯(issues)이 동작한다",
-  "spec_refs": ["02 §9"],
+  "spec_refs": ["02 §9", "SPEC §3 (issue 동사)"],
   "tier_signal": "deterministic",
   "steps": [
     {
-      "name": "이슈 트래커 슬롯으로 이슈 생성 요청",
+      "name": "issues 슬롯을 linear 로 연결(03 격리 fixture — 결정성 위해 시나리오에 포함)",
+      "action": {
+        "kind": "fs_write",
+        "path": "team.config.json",
+        "content": "{\"spec_version\":\"0.1\",\"team\":{\"name\":\"conformance\"},\"services\":{\"issues\":{\"provider\":\"linear\",\"scope\":\"personal\"}}}"
+      },
+      "expect": []
+    },
+    {
+      "name": "이슈 트래커 슬롯으로 이슈 생성 요청 — 정규 입력 스키마 echo",
       "action": { "kind": "command", "argv": ["issue", "create", "--title", "테스트 이슈"] },
       "expect": [
         { "kind": "exit_code", "value": 0 },
         { "kind": "stdout_contains", "value": "테스트 이슈" }
       ]
+    },
+    {
+      "name": "fixture 원복(teardown) — 04(log)·05(off) 무회귀(공유 root 오염 방지, P0-2)",
+      "action": { "kind": "fs_delete", "path": "team.config.json" },
+      "expect": []
     }
   ]
 }

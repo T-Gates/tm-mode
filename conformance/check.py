@@ -215,6 +215,21 @@ def _apply_action(action: dict, engine, root: Path, last: Optional[Result]):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(action.get("content", ""), encoding="utf-8")
         return last
+    if kind == "fs_delete":
+        # 시나리오 자체 정리(teardown). 공유 root 순차실행에서 한 시나리오의 fixture 가
+        # 다음 시나리오로 새지 않게 한다(예: 03 이 연결 issues fixture 를 세운 뒤 원복).
+        # root 하위로만 작동(상위 traversal 방지): 정규화 후 root 밖이면 무시.
+        # 경계 일치로 판정한다(문자열 prefix 금지 — `/base/root` 가
+        # 형제 `/base/root-evil` 의 prefix 이기도 한 우회를 막는다).
+        p = (root / action["path"]).resolve()
+        root_r = root.resolve()
+        try:
+            inside = p.relative_to(root_r) is not None
+        except ValueError:
+            inside = False
+        if inside and p.is_file():
+            p.unlink()
+        return last
     if kind == "noop":
         return last
     # 알 수 없는 action — 실패 신호를 위해 비정상 Result

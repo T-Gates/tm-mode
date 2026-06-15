@@ -157,6 +157,54 @@ def test_fs_write_action(tmp_path):
     assert (tmp_path / "memory" / "INDEX.md").read_text() == "hi"
 
 
+def test_fs_delete_action_removes_fixture(tmp_path):
+    # 03 teardown 경로: fs_write 로 세운 fixture 를 fs_delete 가 원복(공유 root 오염 방지).
+    (tmp_path / "team.config.json").write_text("{}", encoding="utf-8")
+    sc = _scenario([
+        {"name": "teardown", "action": {"kind": "fs_delete", "path": "team.config.json"},
+         "expect": []},
+    ])
+    eng = FakeEngine(tmp_path)
+    assert check.run_scenario(sc, eng, tmp_path).passed is True
+    assert not (tmp_path / "team.config.json").exists()
+
+
+def test_fs_delete_action_ignores_traversal(tmp_path):
+    # root 밖(상위 traversal)은 무시 — 시나리오 정리가 호스트를 건드리지 못하게.
+    # base/root 안에서 동작하도록 root 를 한 단계 안으로 둔다.
+    root = tmp_path / "root"
+    root.mkdir()
+    parent_outside = tmp_path / "do-not-delete.txt"
+    parent_outside.write_text("keep", encoding="utf-8")
+    # 형제-prefix 우회: `/base/root` 가 `/base/root-evil` 의 문자열 prefix 이지만
+    # root-evil 은 root 밖이다. 순수 prefix 가드는 이 케이스를 못 막는다(고전 버그).
+    sibling_evil = tmp_path / "root-evil"
+    sibling_evil.mkdir()
+    sibling_secret = sibling_evil / "secret.txt"
+    sibling_secret.write_text("keep", encoding="utf-8")
+    sc = _scenario([
+        {"name": "evil-parent",
+         "action": {"kind": "fs_delete", "path": "../do-not-delete.txt"},
+         "expect": []},
+        {"name": "evil-sibling-prefix",
+         "action": {"kind": "fs_delete", "path": "../root-evil/secret.txt"},
+         "expect": []},
+    ])
+    eng = FakeEngine(root)
+    check.run_scenario(sc, eng, root)
+    assert parent_outside.exists()   # 부모탈출 — 삭제 안 됨
+    assert sibling_secret.exists()   # 형제-prefix — 삭제 안 됨
+
+
+def test_fs_delete_missing_file_is_noop(tmp_path):
+    sc = _scenario([
+        {"name": "del", "action": {"kind": "fs_delete", "path": "nope.json"}, "expect": []},
+    ])
+    eng = FakeEngine(tmp_path)
+    # 없는 파일 삭제는 크래시 없이 통과(빈 expect)
+    assert check.run_scenario(sc, eng, tmp_path).passed is True
+
+
 def test_session_log_single_file_and_contains(tmp_path):
     def write_log(root):
         d = root / "memory" / "team" / "sessions" / "jane-doe"

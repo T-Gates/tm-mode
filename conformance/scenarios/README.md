@@ -30,9 +30,9 @@ teammode의 **실행 가능한 명세**. 스펙 02 §11.12·§11.11 + 스펙 03 
     {
       "name": "단계 한 줄 설명",
       "action": {                       // 엔진에 시키는 1개 동작
-        "kind": "command",              //   "command" = 엔진 CLI 호출 | "fs_write" = 파일 작성
+        "kind": "command",              //   "command"=엔진 CLI | "fs_write"=파일 작성 | "fs_delete"=파일 삭제(teardown)
         "argv": ["on"],                 //   kind=command일 때 엔진에 넘길 인자
-        "path": "...", "content": "..." //   kind=fs_write일 때
+        "path": "...", "content": "..." //   kind=fs_write 는 path+content / fs_delete 는 path (root 하위만, 정리용)
       },
       "expect": [                       // 이 단계가 만족해야 하는 단언 배열 (AND)
         { "kind": "stdout_contains", "value": "배너 텍스트" },
