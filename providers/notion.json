@@ -1,0 +1,19 @@
+{
+  "provider": "notion",
+  "token_guide": {
+    "url": "https://www.notion.so/my-integrations",
+    "steps": [
+      "https://www.notion.so/my-integrations 에서 'New integration' 생성 (도입자 1회)",
+      "Internal Integration Token(secret_…) 복사",
+      "대상 페이지/DB 에서 '...' → Connections → 만든 integration 공유 토글, DB 를 팀 config 에 지정"
+    ]
+  },
+  "default_scope": "team",
+  "auth": "api_key",
+  "services": ["docs"],
+  "resource_fields": ["database_id"],
+  "mcp": {
+    "register_hint": "Notion MCP 서버를 정규 서버명 'notion' 로 등록(integration 토큰 사용, 도입자 1회)."
+  },
+  "action_map": {}
+}

@@ -1,0 +1,19 @@
+{
+  "provider": "linear",
+  "token_guide": {
+    "url": "https://linear.app/settings/api",
+    "steps": [
+      "Linear 설정 → Security & access → Personal API keys 로 이동",
+      "'Create key' 클릭 후 라벨 입력(예: teammode)",
+      "생성된 키를 복사해 붙여넣기 (attribution 이 본인으로 남도록 각자 1회 발급)"
+    ]
+  },
+  "default_scope": "personal",
+  "auth": "api_key",
+  "services": ["issues"],
+  "resource_fields": [],
+  "mcp": {
+    "register_hint": "Linear 공식 MCP 서버를 정규 서버명 'linear' 로 등록(개인 API 키 사용)."
+  },
+  "action_map": {}
+}

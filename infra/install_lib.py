@@ -25,6 +25,7 @@ _INFRA = Path(__file__).resolve().parent
 if str(_INFRA) not in sys.path:
     sys.path.insert(0, str(_INFRA))
 import teammode as _engine  # noqa: E402
+import providers as _providers  # noqa: E402
 
 # Python 버전 하한 (§12-1 미결 — 타깃 머신 분포 근거 나오면 확정).
 # 보수적으로 3.9 로 둔다(현행 런타임 훅·엔진이 3.9+ 문법 사용).
@@ -148,11 +149,21 @@ def load_config(team_root: Path):
         return None
 
 
-def config_is_valid(cfg) -> bool:
-    """필수키(spec_version·team.name) 유효성 (§4 ③, M3).
+def config_is_valid(cfg, *, providers_dir=None) -> bool:
+    """role 판정용 필수키(spec_version·team.name) 유효성 (§4 ③, M3).
 
-    ※ services 채움 여부로 가르지 않는다 — 빈 슬롯은 정상(스펙02 §9.2).
+    ※ **services 스키마/​provider팩 존재에 의존하지 않는다** (적대검수 P1-1).
+      provider 팩이 삭제·미동기화돼도 valid 멤버 config 가 introducer 로 강등돼
+      덮어쓰기 당하는 데이터손실 경로를 끊는다. role 판정(파괴적 분기)은
+      `spec_version` + `team.name` 비-placeholder 만으로 결정한다(원래 M3 의미).
+      services 스키마 위반은 services_are_valid 로 설치/검증 시점에 [warn] 으로만
+      표면화하며 role 을 뒤집거나 config 를 덮어쓰지 않는다.
+
+    ※ services 채움 여부로도 가르지 않는다 — 빈 슬롯은 정상(스펙02 §9.2).
     team.name 이 placeholder/미초기화 표식이면 유효하지 않음(=도입자).
+
+    providers_dir 인자는 호출부 시그니처 호환을 위해 받되 무시한다(이 함수는
+    더 이상 provider 팩에 의존하지 않는다).
     """
     if not isinstance(cfg, dict):
         return False
@@ -166,6 +177,53 @@ def config_is_valid(cfg) -> bool:
         return False
     if name.strip().lower() in _PLACEHOLDER_NAMES:
         return False
+    return True
+
+
+# 정규 역할 어휘 (SPEC §7.1). config services 키는 이 중 하나여야 한다.
+_CANONICAL_ROLES = {"issues", "chat", "docs", "calendar"}
+
+
+def services_are_valid(services, *, providers_dir=None) -> bool:
+    """config `services` 블록 스키마 검증 (B-2, 확장 가능 object).
+
+    규칙(빈 슬롯 = 1급 시민, §7.2):
+    - None / `{}`(키 생략) → valid (빈 슬롯, 부분채움 허용).
+    - 채운 슬롯(역할 키 존재) = object `{provider, scope, <인스턴스 필드…>}`.
+      - 역할 키는 정규 어휘(issues/chat/docs/calendar) 여야 함(오타 거부).
+      - `provider` 필수 + providers/ 에 해당 팩 존재해야 함(미지 provider 거부).
+      - `scope` 있으면 team|personal (없으면 provider팩 default_scope 로 보충 가능 — 여기선 미강제).
+      - **provider팩 resource_fields 가 요구하는 인스턴스 값이 전부 채워져야 함**
+        (notion 인데 database_id 없음 → invalid). 빈 문자열/None 은 누락으로 본다.
+    - **확장 가능**: 선언 안 한 추가 키는 허용(v0.2 무중단).
+
+    호스트 무접촉: providers_dir 미지정 시 레포 기본 providers/. 테스트는 tmp 주입.
+    """
+    if services is None:
+        return True  # 빈 슬롯 — 키 생략
+    if not isinstance(services, dict):
+        return False
+    if not services:
+        return True  # 명시적 {} — 전부 빈 슬롯
+    for role, slot in services.items():
+        if role not in _CANONICAL_ROLES:
+            return False  # 비정규 역할 어휘(오타) 거부
+        if not isinstance(slot, dict):
+            return False
+        provider = slot.get("provider")
+        if not (isinstance(provider, str) and provider.strip()):
+            return False
+        pack = _providers.lookup(provider, providers_dir=providers_dir)
+        if pack is None:
+            return False  # providers/ 에 없는 provider — 추측 금지
+        scope = slot.get("scope")
+        if scope is not None and scope not in _providers.VALID_SCOPE:
+            return False
+        # 채운 슬롯이면 provider팩이 요구하는 인스턴스 필드가 전부 채워져야 함.
+        for field_name in pack.resource_fields:
+            val = slot.get(field_name)
+            if not (isinstance(val, str) and val.strip()):
+                return False
     return True
 
 

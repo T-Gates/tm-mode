@@ -1,0 +1,19 @@
+{
+  "provider": "slack",
+  "token_guide": {
+    "url": "https://api.slack.com/apps",
+    "steps": [
+      "https://api.slack.com/apps 에서 'Create New App' → From scratch (도입자 1회)",
+      "OAuth & Permissions 에서 봇 스코프(chat:write, channels:read 등) 부여 후 워크스페이스 설치",
+      "'Bot User OAuth Token'(xoxb-…) 복사 후 팀 config 에 채널을 지정"
+    ]
+  },
+  "default_scope": "team",
+  "auth": "bot_token",
+  "services": ["chat"],
+  "resource_fields": ["channel_id"],
+  "mcp": {
+    "register_hint": "Slack MCP 서버를 정규 서버명 'slack' 로 등록(봇 토큰 사용, 도입자 1회)."
+  },
+  "action_map": {}
+}

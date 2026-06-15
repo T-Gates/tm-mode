@@ -1,0 +1,39 @@
+{
+  "$comment": "team.config.json 예시 (SPEC §7 · 부록 B-2). 실제 파일명은 team.config.json. services 의 채운 슬롯은 provider팩(providers/<name>.json)이 요구하는 인스턴스 필드를 반드시 포함해야 합니다. 토큰/비밀은 여기에 넣지 마세요 — 평문 추적 금지(린트가 거부).",
+  "$comment_services": "빈 슬롯 = 1급 시민(§7.2). 미연결 역할은 키를 통째로 생략하면 됩니다. 아래 services 는 4역할 채움 예시 — 인스턴스 필드 자리는 provider팩 resource_fields 가 결정합니다.",
+  "spec_version": "0.1",
+  "team": {
+    "name": "your-team-name",
+    "timezone": "Asia/Seoul",
+    "locale": "ko_KR",
+    "greeting": "팀모드 ON",
+    "farewell": "수고하셨습니다"
+  },
+  "admin_contact": "alice",
+  "members_file": "memory/team/members.md",
+  "banner_file": "memory/banner.txt",
+  "services": {
+    "issues": {
+      "provider": "linear",
+      "scope": "personal"
+    },
+
+    "chat": {
+      "provider": "slack",
+      "scope": "team",
+      "channel_id": "C0123ABCDEF"
+    },
+
+    "docs": {
+      "provider": "notion",
+      "scope": "team",
+      "database_id": "00000000000000000000000000000000"
+    },
+
+    "calendar": {
+      "provider": "google",
+      "scope": "personal",
+      "calendar_id": "primary"
+    }
+  }
+}

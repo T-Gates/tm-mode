@@ -70,7 +70,9 @@ def test_member_path_does_not_modify_config(tmp_path):
     cfg = {
         "spec_version": "0.1",
         "team": {"name": "acme", "timezone": "Asia/Seoul", "locale": "ko_KR"},
-        "services": {"linear": {"key": "x"}},
+        # L2-A: services 는 정규 역할(§7.1) + provider팩 스키마(B-2)를 따른다.
+        # linear(resource_fields 없음)만 채운 부분채움 = valid.
+        "services": {"issues": {"provider": "linear", "scope": "personal"}},
     }
     raw = json.dumps(cfg, ensure_ascii=False)
     (tmp_path / "team.config.json").write_text(raw, encoding="utf-8")

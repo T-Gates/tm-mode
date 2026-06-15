@@ -19,6 +19,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -296,10 +297,100 @@ def _lint_manifest_canonical(root: Path) -> tuple:
             f"에이전트 고유 표기 발견: {hits}" if hits else "")
 
 
+# 토큰키 린트 (L2-A A.3, P0-4). .gitignore 는 죽은 방어 — 토큰/비밀을 담은
+# 파일이 추적 트리(팀 루트)에 진입하면 코드 검사가 강제로 막는다.
+#
+# 범위(좁게, 거짓양성 차단): 이 린트는 "config 류 데이터 파일이 평문 비밀을 담는"
+# 사고만 잡는다 — 산문(SPEC.md)·코드(*.py)·BUILD-LOG 등에서 'token'/'secret' 단어를
+# 쓰는 건 정상이므로 검사 대상이 아니다(lint 범위 = config/credentials 데이터 파일).
+#   대상: team.config.json·team.config.*.json(.example 포함) + .gitignore 비밀 패턴
+#         이름을 가진 추적 파일(*credentials*·*.token·*secret*).
+#   판정: 토큰성 키(token/secret/password/api_key/<x>key)에 **비어있지 않은 값**이
+#         붙은 줄. resource_fields 식별자(database_id·calendar_id·channel_id)는
+#         'key' 미포함 + 비밀 아님 → 안 걸린다.
+# 토큰성 키 매칭. `key` 거짓양성(monkey/donkey/turkey 등) 차단을 위해 `key` 는
+# 단어경계(접두 없음)이거나 `_`/`-` 구분자 뒤(api_key·access-key)일 때만 인정한다.
+# apikey 는 명시 어휘로 별도 허용. passphrase 도 비밀 어휘에 포함.
+_SECRET_KEY_RE = re.compile(
+    r'(?:["\']|\b)'                             # 따옴표 또는 단어경계로 키 시작 고정
+    r'(?:'
+    r'(?:[a-z0-9]+[_-])*'                       # 선택 접두 (api_, access_, bot_ …)
+    r'(?:token|secret|password|passwd|passphrase|apikey|api[_-]?key)'
+    r'|'
+    r'(?:[a-z0-9]+[_-])key'                     # …_key / …-key (구분자 필수)
+    r'|key'                                      # 독립 'key'(앞의 \b 가 단어경계 강제)
+    r')'
+    r'["\']?\s*[:=]\s*'                         # JSON ':' 또는 env '='
+    r'["\']?(?P<val>[^"\'\s,}#]+)',             # 비어있지 않은 값
+    re.IGNORECASE,
+)
+# 값이 비밀이 아님이 명백한 placeholder (example/문서용). 키 이름이 비밀이어도
+# 값이 이 화이트리스트면 통과(예시 config 가 비밀 습관을 가르치지 않게 — 단, 빈/문서값만).
+_SECRET_VALUE_ALLOW = {"null", "true", "false", "none", "...", "<...>",
+                       "changeme", "your-token-here", "todo", "placeholder",
+                       "tbd", "example", "redacted", "xxx"}
+
+
+def _secret_hit_line(line: str) -> bool:
+    """라인에 토큰성 키 + 비어있지 않은(비-placeholder) 값이 있는가."""
+    for m in _SECRET_KEY_RE.finditer(line):
+        val = m.group("val").strip().strip("\"'").lower()
+        if val and val not in _SECRET_VALUE_ALLOW:
+            return True
+    return False
+
+
+# 비밀이 절대 들어가면 안 되는 추적 데이터 파일 패턴 (이름 기반).
+_SECRET_TARGET_GLOBS = ("team.config.json", "team.config.*.json",
+                        "*credentials*", "*secret*", "*.token",
+                        ".env", ".env.*")
+
+
+def lint_no_tracked_secrets(root, *, files=None) -> tuple:
+    """config/credentials 데이터 파일에 평문 토큰키가 들어가면 거부 (P0-4).
+
+    .gitignore 보다 강제력 있는 코드 검사. files 주입 시 그 파일들만 검사(테스트 격리).
+    미지정 시 root 하위에서 _SECRET_TARGET_GLOBS 에 매칭되는 추적 파일만 스캔.
+    반환: (검사명, 통과여부, 상세) — _lint_manifest_canonical 과 동일 tuple 형.
+    """
+    root = Path(root)
+    if files is None:
+        candidates = []
+        seen = set()
+        for pat in _SECRET_TARGET_GLOBS:
+            for p in root.rglob(pat):
+                if not p.is_file():
+                    continue
+                if ".git" in p.parts:
+                    continue
+                if p not in seen:
+                    seen.add(p)
+                    candidates.append(p)
+    else:
+        candidates = [Path(f) for f in files]
+
+    hits = []
+    for p in candidates:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if _secret_hit_line(line):
+                try:
+                    rel = p.relative_to(root)
+                except ValueError:
+                    rel = p
+                hits.append(f"{rel}:{i}")
+    return ("토큰키 추적 거부", not hits,
+            f"토큰키 진입 발견(.gitignore 우회 위험): {hits}" if hits else "")
+
+
 def run_lint(root) -> LintReport:
     root = Path(root)
     checks = []
     checks.append(_lint_manifest_canonical(root))
+    checks.append(lint_no_tracked_secrets(root))
     return LintReport(checks=checks)
 
 

@@ -1,0 +1,19 @@
+{
+  "provider": "google",
+  "token_guide": {
+    "url": "https://console.cloud.google.com/apis/credentials",
+    "steps": [
+      "Google Cloud Console → APIs & Services → Credentials 에서 OAuth client ID 생성",
+      "localhost 리디렉트(PKCE)로 동의 화면에서 'Allow' (각자 1회, 사람이 권한 부여)",
+      "연결 후 캘린더 ID 자동조회 → 사용할 캘린더를 config 에 지정"
+    ]
+  },
+  "default_scope": "personal",
+  "auth": "oauth",
+  "services": ["calendar"],
+  "resource_fields": ["calendar_id"],
+  "mcp": {
+    "register_hint": "Google Calendar MCP 서버를 정규 서버명 'google' 로 등록(localhost OAuth/PKCE)."
+  },
+  "action_map": {}
+}
