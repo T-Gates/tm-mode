@@ -355,17 +355,36 @@ def lint_no_tracked_secrets(root, *, files=None) -> tuple:
     """
     root = Path(root)
     if files is None:
+        # gitignore 된 것만 제외하고 스캔 — tracked + untracked-not-ignored.
+        # gitignored 캐시(.codex-ref 등 외부 레퍼런스)는 제외(fs 전체 rglob 금지).
+        # 비-git 디렉토리(tmp 테스트 등)는 rglob fallback.
+        import subprocess, fnmatch
+        scan = []
+        try:
+            for args in (["ls-files", "-z"],
+                         ["ls-files", "--others", "--exclude-standard", "-z"]):
+                out = subprocess.run(["git", "-C", str(root)] + args,
+                                     capture_output=True, text=True, timeout=5)
+                if out.returncode == 0:
+                    scan += [root / rel for rel in out.stdout.split("\0") if rel]
+        except (OSError, subprocess.SubprocessError):
+            scan = []
+        if not scan:  # 비-git: rglob fallback (.git 제외)
+            scan = [p for pat in _SECRET_TARGET_GLOBS
+                    for p in root.rglob(pat) if ".git" not in p.parts]
         candidates = []
         seen = set()
-        for pat in _SECRET_TARGET_GLOBS:
-            for p in root.rglob(pat):
-                if not p.is_file():
-                    continue
-                if ".git" in p.parts:
-                    continue
-                if p not in seen:
-                    seen.add(p)
-                    candidates.append(p)
+        for p in scan:
+            if not p.is_file():
+                continue
+            name = p.name
+            if name.endswith(".example"):
+                continue  # placeholder 관례 (.env.example 등) — 비밀 아님
+            if not any(fnmatch.fnmatch(name, pat) for pat in _SECRET_TARGET_GLOBS):
+                continue
+            if p not in seen:
+                seen.add(p)
+                candidates.append(p)
     else:
         candidates = [Path(f) for f in files]
 

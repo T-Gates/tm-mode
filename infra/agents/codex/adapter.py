@@ -45,12 +45,17 @@ class Adapter(BaseAdapter):
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []
         warnings = []
+        infos = []
         wanted = self._wanted_entries(mode)
+
+        # config services 1회 로드 — 빈 슬롯 우선 규칙(§2.9/§7.2)·install-mcp 선행(§2.7).
+        # None = config 파일 부재 → 빈 슬롯 규칙 미적용(L1 동작 보존). claude 와 동형.
+        services = self._load_services()
 
         toml_entries = []  # (codex_event, matcher_or_None, command, timeout_s)
         for entry in wanted:
             event = self.translate_event(entry["event"])
-            matcher, expressible = self.translate_match(entry.get("match"))
+            match = entry.get("match")
             fallback = entry.get("fallback", "drop")
             enforcement = entry.get("enforcement", "advisory")
 
@@ -61,6 +66,23 @@ class Adapter(BaseAdapter):
                     f"[warn] {entry['script']}: {self.events.get('agent')} "
                     f"미지원(이벤트 {entry['event']}){extra} → 비활성")
                 continue
+
+            # ── MCP 매처 전처리(B.2 / §2.9 빈 슬롯 우선 + §2.7 install-mcp 선행) ──
+            # services 가 dict 로 주어졌을 때만 적용(파일 부재 시 L1 동작 보존).
+            if isinstance(match, dict) and "mcp" in match and isinstance(services, dict):
+                canonical = match["mcp"].get("server")
+                if not self._mcp_server_connected(canonical, services):
+                    infos.append(
+                        f"[info] {entry['script']}: '{canonical}' 역할 슬롯 미연결 "
+                        f"→ MCP 매처 생략(빈 슬롯, 슬롯 연결 후 sync 재실행)")
+                    continue
+                if not self._mcp_alias_guaranteed(canonical):
+                    warnings.append(
+                        f"[warn] {entry['script']}: '{canonical}' MCP 별칭 미보장"
+                        f"(install-mcp 선행 필요) → 이 매처만 생략")
+                    continue
+
+            matcher, expressible = self.translate_match(match)
             if not expressible:
                 if fallback == "runtime":
                     matcher = None
@@ -82,7 +104,9 @@ class Adapter(BaseAdapter):
 
         for w in warnings:
             print(w)
-        if not changed and not warnings:
+        for i in infos:
+            print(i)
+        if not changed and not warnings and not infos:
             changes.append("[ok] 변경 없음")
         return changes
 
@@ -133,14 +157,132 @@ class Adapter(BaseAdapter):
         self.settings_path.write_text(updated, encoding="utf-8")
         return True
 
+    # ── install-mcp (§2.8) — Codex 방식: config.toml [mcp_servers.*] 관리형 블록 ──
+    #
+    # Codex 는 MCP 서버를 ~/.codex/config.toml 의 [mcp_servers.<name>] 섹션으로 등록한다
+    # (claude 의 ~/.claude.json top-level mcpServers 와 다른 포맷 — 이 차이를 어댑터가 흡수).
+    # 훅 블록(# teammode-hooks-*)과 동일 파일이므로 별도 마커 블록(# teammode-mcp-*)으로
+    # 격리해 멱등 교체한다. 등록 항목은 claude 와 동일한 보수적 placeholder(소유 마커 +
+    # register_hint) — teammode 는 MCP 서버 자체를 제작·유지하지 않는다(§7.4).
+    #
+    # ⚠️ Codex 한계 정직 표면화: Codex config.toml 의 [mcp_servers.*] 는 실행 커맨드를
+    # 요구하는 정적 선언이라, 실 커맨드 미고정인 v0.1 에서는 placeholder 만 둔다. 또한
+    # Codex 는 PreToolUse 차단을 표현하지 못하므로(§2.11) MCP 매처 confirm 훅의 강제력은
+    # sync 단계에서 이미 [warn] 으로 상실 표면화된다 — install-mcp 는 서버 등록만 책임.
+
+    MCP_BLOCK_START = "# teammode-mcp-start"
+    MCP_BLOCK_END = "# teammode-mcp-end"
+
+    def _read_mcp_servers(self) -> dict:
+        """config.toml 의 teammode-mcp 블록에서 등록된 정규 서버명 집합을 파싱.
+
+        부모(claude)의 ~/.claude.json 기반 구현을 Codex TOML 블록 기반으로 재정의.
+        값은 부모 _mcp_alias_guaranteed 가 보는 `{"_teammode_managed": True}` 형태로 맞춘다.
+        """
+        existing = self._read_config()
+        pattern = re.compile(
+            re.escape(self.MCP_BLOCK_START) + r"(.*?)" + re.escape(self.MCP_BLOCK_END),
+            re.S)
+        m = pattern.search(existing)
+        servers: dict = {}
+        if not m:
+            return servers
+        for sm in re.finditer(r"\[mcp_servers\.([^\]]+)\]", m.group(1)):
+            name = sm.group(1).strip().strip('"')
+            servers[name] = {"_teammode_managed": True}
+        return servers
+
+    def _render_mcp_block(self, providers_with_packs: list) -> str:
+        """연결 provider 목록 → teammode-mcp TOML 블록 문자열."""
+        lines = [self.MCP_BLOCK_START, ""]
+        for provider, pack in providers_with_packs:
+            hint = pack.mcp.get("register_hint", "") if pack else ""
+            lines.append(f"[mcp_servers.{provider}]")
+            # teammode 소유 마커 + 안내(사람/LLM 이 실 커맨드 채움). 정규명=별칭(항등, §2.8-2).
+            lines.append("_teammode_managed = true")
+            lines.append(f"_canonical_server = {self._toml_str(provider)}")
+            lines.append(f"_register_hint = {self._toml_str(hint)}")
+            lines.append("")
+        lines.append(self.MCP_BLOCK_END)
+        return "\n".join(lines)
+
+    def _write_mcp_block(self, block: str) -> bool:
+        existing = self._read_config()
+        pattern = re.compile(
+            r"\n*" + re.escape(self.MCP_BLOCK_START) + r".*?"
+            + re.escape(self.MCP_BLOCK_END) + r"\n*", re.S)
+        m = pattern.search(existing)
+        if m:
+            prefix = "\n\n" if existing[:m.start()].strip() else ""
+            updated = existing[:m.start()] + prefix + block + "\n" + existing[m.end():]
+        else:
+            base = existing.rstrip()
+            updated = (base + "\n\n" + block + "\n") if base else (block + "\n")
+        if updated == existing:
+            return False
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings_path.write_text(updated, encoding="utf-8")
+        return True
+
+    def install_mcp(self) -> list:
+        """config services 의 연결 provider 를 Codex config.toml [mcp_servers.*] 로 등록. 멱등.
+
+        claude 와 동일 계약(services 읽기·정규명 등록·별칭 항등·멱등·빈 슬롯 [info])이되,
+        등록 포맷만 Codex TOML 블록으로 재정의.
+        """
+        import providers as _prov  # 부모와 동일 모듈(infra/ on sys.path)
+        changes = []
+        services = self._load_services()
+        connected = []
+        if isinstance(services, dict):
+            for slot in services.values():
+                if isinstance(slot, dict):
+                    prov = slot.get("provider")
+                    if isinstance(prov, str) and prov.strip() and prov not in connected:
+                        connected.append(prov)
+
+        providers_with_packs = []
+        for provider in connected:
+            try:
+                pack = _prov.lookup(provider, providers_dir=self.providers_dir)
+            except Exception:
+                pack = None
+            if pack is None:
+                changes.append(f"[info] {provider}: provider 팩 없음 → MCP 등록 생략")
+                continue
+            providers_with_packs.append((self.resolve_server_alias(provider), pack))
+            changes.append(f"[mcp] {self.resolve_server_alias(provider)} 등록")
+
+        if providers_with_packs:
+            block = self._render_mcp_block(providers_with_packs)
+            self._write_mcp_block(block)
+        else:
+            # 연결 provider 없음 → 기존 teammode-mcp 블록 제거(멱등 빈상태).
+            existing = self._read_config()
+            pattern = re.compile(
+                r"\n*" + re.escape(self.MCP_BLOCK_START) + r".*?"
+                + re.escape(self.MCP_BLOCK_END) + r"\n*", re.S)
+            if pattern.search(existing):
+                self.settings_path.write_text(pattern.sub("\n", existing),
+                                              encoding="utf-8")
+                changes.append("[remove-mcp] teammode MCP 블록")
+        if not changes:
+            changes.append("[info] 연결된 MCP provider 없음 (빈 슬롯)")
+        return changes
+
     def uninstall(self) -> list:
         existing = self._read_config()
         pattern = re.compile(
             r"\n?" + re.escape(BLOCK_START) + r".*?" + re.escape(BLOCK_END) + r"\n?",
             re.S)
         updated = pattern.sub("\n", existing)
-        if updated != existing:
-            self.settings_path.write_text(updated, encoding="utf-8")
+        # MCP 블록도 함께 제거(역순 제거 — 등록 흔적 전부)
+        mcp_pattern = re.compile(
+            r"\n?" + re.escape(self.MCP_BLOCK_START) + r".*?"
+            + re.escape(self.MCP_BLOCK_END) + r"\n?", re.S)
+        updated2 = mcp_pattern.sub("\n", updated)
+        if updated2 != existing:
+            self.settings_path.write_text(updated2, encoding="utf-8")
             return ["[remove] teammode 훅 블록"]
         return ["[ok] 제거할 블록 없음"]
 
@@ -163,11 +305,16 @@ def main(argv=None) -> int:
     p.add_argument("--config", default=os.path.expanduser("~/.codex/config.toml"))
     # --python 기본 None → 설치 시점 sys.executable 해석 (W-B, BaseAdapter 와 일관)
     p.add_argument("--python", default=None)
+    # team.config.json·providers/ 경로 — 기본은 team_root 상대, 테스트는 tmp 주입.
+    # (Codex MCP 등록은 --config 의 config.toml 안 블록이므로 별도 --mcp-config 불요.)
+    p.add_argument("--team-config", default=None)
+    p.add_argument("--providers-dir", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("sync")
     sp.add_argument("--on", action="store_true")
     sp.add_argument("--off", action="store_true")
     sub.add_parser("uninstall")
+    sub.add_parser("install-mcp")
     args = p.parse_args(argv)
 
     d = _default_paths()
@@ -177,6 +324,8 @@ def main(argv=None) -> int:
         settings_path=args.config,
         python=args.python,
         team_root=d["team_root"],
+        config_path=args.team_config,
+        providers_dir=args.providers_dir,
     )
     if args.cmd == "sync":
         mode = "on" if args.on else ("off" if args.off else None)
@@ -184,6 +333,9 @@ def main(argv=None) -> int:
             print(c)
     elif args.cmd == "uninstall":
         for c in adapter.uninstall():
+            print(c)
+    elif args.cmd == "install-mcp":
+        for c in adapter.install_mcp():
             print(c)
     return 0
 

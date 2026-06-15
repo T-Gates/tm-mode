@@ -13,3 +13,4 @@ __pycache__/
 *secret*
 team.config.local.json
 .context/
+.codex-ref/
