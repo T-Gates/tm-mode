@@ -172,20 +172,34 @@ def _has_staged_changes(team_root: str, timeout: int) -> bool:
 
 
 def do_commit(team_root: str, message: str, push: bool = False,
-              timeout: int = DEFAULT_TIMEOUT) -> CommitResult:
-    """`git add -A && git commit -m` (+ 선택 push). 절대 예외를 전파하지 않는다(철칙).
+              timeout: int = DEFAULT_TIMEOUT, paths: list | None = None) -> CommitResult:
+    """`git add` + `git commit -m` (+ 선택 push). 절대 예외를 전파하지 않는다(철칙).
 
     auto_pull/do_pull 과 같은 안전장치 재사용(git_env 자격증명 차단·killpg 타임아웃).
     - 변경 없음 → committed=False, ok=False (비치명: 레포 무손상).
     - push=True 이고 원격 없음/오프라인 → **커밋은 보존**, push 만 실패(ok 은 commit 성공
       기준으로 True, pushed=False). push 실패가 로컬 커밋을 되돌리지 않는다.
+
+    스테이징 범위(L2-G P1-4):
+    - `paths=None`(기본) → 종래대로 `add -A`(commit 동사용 — 사용자가 의도적으로 호출).
+    - `paths=[...]` → **지목된 경로만** `add -- <paths>`(자동 훅용 — 무차별 스테이징 금지).
+      auto-commit.py 가 정규스키마의 `files` 만 넘겨 토큰패턴 등 무관 파일 오염을 막는다.
+      빈 리스트(`[]`)는 스테이징할 파일이 없는 것 → 변경 없음으로 우아하게 종료.
     """
     if not is_git_worktree(team_root):
         return CommitResult(ok=False, detail="not a git work tree")
 
-    # 1) stage 전부
+    # 1) stage — paths 지정 시 그 경로만, None 이면 전부(add -A)
+    if paths is None:
+        add_args = ["-C", team_root, "add", "-A"]
+    else:
+        if not paths:
+            return CommitResult(ok=False, committed=False,
+                                detail="no paths to stage")
+        # `--` 로 경로 인자를 옵션과 분리(선두 대시 파일명이 옵션으로 오인되지 않게).
+        add_args = ["-C", team_root, "add", "--", *[str(p) for p in paths]]
     try:
-        rc, _, err = run_git(["-C", team_root, "add", "-A"], timeout=timeout)
+        rc, _, err = run_git(add_args, timeout=timeout)
     except subprocess.TimeoutExpired:
         return CommitResult(ok=False, detail="add timeout")
     except (OSError, subprocess.SubprocessError) as exc:
