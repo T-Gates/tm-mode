@@ -31,8 +31,9 @@ import providers as _providers  # noqa: E402
 # 보수적으로 3.9 로 둔다(현행 런타임 훅·엔진이 3.9+ 문법 사용).
 MIN_PYTHON = (3, 9)
 
-# 팀 데이터가 따르는 스펙 묶음 버전 (스펙 01 §6, 01~03 공통 0.1).
-SPEC_VERSION = "0.1"
+# 팀 데이터가 따르는 스펙 묶음 버전 (SPEC §6, §0.4). 0.2 — issue 동사(§3.5) 추가로
+# 엔진 동사 계약이 minor bump 됨. 이 툴킷은 0.2 계약을 구현한다.
+SPEC_VERSION = "0.2"
 
 # 도입자 판정용 placeholder/미초기화 표식 (§4 ③). team.name 이 이 중 하나면 미초기화.
 _PLACEHOLDER_NAMES = {"", "changeme", "todo", "your-team-name", "team-name",

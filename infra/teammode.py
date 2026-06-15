@@ -32,6 +32,8 @@ sys.path.insert(0, str(INFRA))
 import workday as _workday  # noqa: E402
 # git 작업 공통 모듈 — pull/commit 동사가 auto_pull 과 같은 안전장치를 재사용(V.3).
 import git_ops as _git_ops  # noqa: E402
+# provider 팩 lookup — issue 동사가 issues 슬롯 연결을 확인할 때 사용(추측 금지·미지 reject).
+import providers as _providers  # noqa: E402
 
 
 def _active_marker(team_root: Path) -> Path:
@@ -245,8 +247,10 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
 
 
 # 값을 받는 옵션 플래그 화이트리스트. 여기 없는 `--flag` 는 부울/무시로 다룬다 —
-# 알 수 없는 플래그의 다음 토큰을 값으로 삼키지 않게 해 verb 손실을 막는다.
-_VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now", "--message")
+# 알 수 없는 플래그의 다음 토큰을 값으로 삼키지 않게 해 verb 손실을 막는다(§3:366).
+# issue 동사의 정규 입력 필드(--title/--body/--assignee/--label/--priority)도 값 플래그.
+_VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now", "--message",
+                "--title", "--body", "--assignee", "--label", "--priority")
 
 
 def cmd_pull(team_root: Path) -> int:
@@ -382,6 +386,74 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
     return 0
 
 
+# issue 동사가 받는 정규 입력 스키마 필드 — argv 의 동사별 플래그를 정규 어휘로 모은다.
+# (action_map 해석·페이로드 변환은 여기서 절대 하지 않는다 — 어댑터/스킬 몫, §3 "엔진은
+#  판단 안 함". 엔진은 입력을 정규 스키마로 정리해 echo 할 뿐이다 — B-4 altitude.)
+_ISSUE_INPUT_FLAGS = ("title", "body", "assignee", "label", "priority")
+
+
+def _resolve_issue_provider(team_root: Path):
+    """team.config.json 의 issues 슬롯 연결 provider 를 확인한다(context 동사와 같은 altitude).
+
+    반환: (provider_name | None). 슬롯 부재·config 부재·provider 미지(providers/ 에 팩
+    없음) → None(=빈 슬롯). 엔진은 추측하지 않는다 — 팩이 없으면 연결로 보지 않는다.
+    어떤 예외도 None 으로 흡수한다(조회는 비치명 — issue 동사를 크래시시키지 않음).
+    """
+    try:
+        cfg_path = team_root / "team.config.json"
+        if not cfg_path.is_file():
+            return None
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            return None
+        services = cfg.get("services")
+        if not isinstance(services, dict):
+            return None
+        slot = services.get("issues")
+        if not isinstance(slot, dict):
+            return None
+        provider = slot.get("provider")
+        if not isinstance(provider, str) or not provider:
+            return None
+        # providers/ 에 해당 팩이 실재해야 연결로 인정(미지 provider 추측 금지).
+        if _providers.lookup(provider) is None:
+            return None
+        return provider
+    except Exception:  # noqa: BLE001 — 슬롯 조회는 issue 동사를 막지 않는다
+        return None
+
+
+def cmd_issue(team_root: Path, action: str | None, fields: dict) -> int:
+    """issues 슬롯 연결을 확인하고 정규 입력 스키마를 stdout JSON 으로 echo 한다 — B-4.
+
+    altitude(context 동사와 동일): issues 슬롯 provider 확인 후 **정규 입력 스키마 echo
+    까지만**. action_map 해석·페이로드 변환·실 MCP 호출은 절대 하지 않는다(어댑터/스킬
+    몫 — §3 "엔진은 판단 안 함"). 빈 슬롯이면 `[info]` + exit 0(비치명). 연결 슬롯이면
+    정규 스키마 echo + exit 0.
+
+    인젝션 면역(V.4 회귀락 계승): 사용자 텍스트는 json.dumps 로만 직렬화한다 — 셸/JSON
+    인젝션이 일어나지 않는다(엔진은 페이로드를 셸·다른 JSON 문맥에 보간하지 않음).
+    """
+    provider = _resolve_issue_provider(team_root)
+    # 정규 입력 스키마(echo 대상). action 은 첫 positional(예: create), 나머지는 정규
+    # 어휘 필드. 엔진은 이 스키마를 해석하지 않는다 — 그대로 정리해 내보낸다.
+    schema = {
+        "verb": "issue",
+        "action": action,
+        "service": "issues",
+        "provider": provider,
+        "input": {k: v for k, v in fields.items() if v is not None},
+    }
+    if provider is None:
+        # 빈 슬롯 = 1급 시민(§7.2). 비치명 안내 후 exit 0 — 작업을 막지 않는다.
+        print("[info] issues 슬롯이 연결돼 있지 않습니다. "
+              "team.config.json 의 services.issues 를 연결하세요(tm-connect).")
+        return 0
+    # 연결 슬롯: 정규 입력 스키마를 JSON 으로 echo(action_map 변환 없음 — 어댑터/스킬 몫).
+    print(json.dumps(schema, ensure_ascii=False))
+    return 0
+
+
 def _parse_args(argv):
     """argv → (verb, opts dict). 알 수 없는 플래그는 무시(후속 슬라이스 확장 여지).
 
@@ -390,7 +462,7 @@ def _parse_args(argv):
     (--author/--text/--now 등)도 같은 통로로 모은다.
     """
     verb = None
-    opts: dict = {"install": False, "json": False, "push": False}
+    opts: dict = {"install": False, "json": False, "push": False, "positionals": []}
     it = iter(argv)
     for a in it:
         if a in _VALUE_FLAGS:
@@ -401,8 +473,15 @@ def _parse_args(argv):
             opts["json"] = True
         elif a == "--push":
             opts["push"] = True
-        elif verb is None and not a.startswith("-"):
-            verb = a
+        elif not a.startswith("-"):
+            # 첫 non-flag = verb, 이후 non-flag = positional(서브액션 등). 하니스가
+            # `issue --root <root> create …` 처럼 --root 를 verb 와 서브액션 사이에
+            # 끼워도 정상 파싱된다 — value 플래그는 위에서 토큰쌍으로 소비되므로 그
+            # 다음의 `create` 가 positional 로 남는다(P0-1).
+            if verb is None:
+                verb = a
+            else:
+                opts["positionals"].append(a)
         # 그 외 토큰(알 수 없는 부울 플래그 등)은 무시
     return verb, opts
 
@@ -433,7 +512,7 @@ def _parse_now(now_str):
 # settings(어댑터 sync)를 필요로 하는 동사 — on/off 만. log/context 등 메모리/조회
 # 동사는 ~/.claude 를 건드리지 않으므로 settings 요구가 무의미하다.
 _SETTINGS_VERBS = ("on", "off")
-_KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit", "update")
+_KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit", "update", "issue")
 
 
 def main(argv=None) -> int:
@@ -442,8 +521,8 @@ def main(argv=None) -> int:
 
     if verb not in _KNOWN_VERBS:
         if verb is None:
-            print("usage: teammode.py {on|off|log} --root <팀루트> ...",
-                  file=sys.stderr)
+            print("usage: teammode.py {on|off|log|context|pull|commit|update|issue} "
+                  "--root <팀루트> ...", file=sys.stderr)
             return 2
         # 미구현 동사 — 후속 슬라이스 (시나리오 RED 유지)
         print(f"[unimplemented] {verb}", file=sys.stderr)
@@ -483,6 +562,14 @@ def main(argv=None) -> int:
 
     if verb == "update":
         return cmd_update(team_root)
+
+    if verb == "issue":
+        # 첫 positional = 서브액션(예: create). --root 가 verb 와 서브액션 사이에
+        # 끼워져도 정상 파싱된다(P0-1). 정규 입력 필드(--title 등)를 schema 로 모은다.
+        positionals = opts.get("positionals") or []
+        action = positionals[0] if positionals else None
+        fields = {f: opts.get(f) for f in _ISSUE_INPUT_FLAGS}
+        return cmd_issue(team_root, action, fields)
 
     # on/off: P2 settings 경로도 명시로만. 둘 다 없으면 실 ~/.claude 추측 오염 거부.
     resolved_settings = _resolve_settings(opts.get("settings"), opts["install"])
