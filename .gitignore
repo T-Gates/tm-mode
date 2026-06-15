@@ -8,7 +8,12 @@ __pycache__/
 /memory/
 
 # 방어: 자격증명/토큰/비밀이 팀 루트에 추적되는 사고 방지 (L2-B0, .gitignore는 죽은 방어 — A.3 토큰키 린트가 강제력)
-*credentials*.json
+# P2-2: `*credentials*.json` → `*credentials*` 로 확장 — credentials 이름 데이터파일을
+# 확장자무관 git 백스톱(secret 쪽은 이미 *secret* 로 확장자무관). 단 추적돼야 하는 소스는
+# 아래 `!` 예외로 재포함(infra/credentials.py·tests/test_credentials_l2e.py 는 코드/테스트).
+*credentials*
+!infra/credentials.py
+!tests/test_credentials_l2e.py
 *.token
 *secret*
 team.config.local.json

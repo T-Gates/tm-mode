@@ -340,10 +340,23 @@ def _secret_hit_line(line: str) -> bool:
     return False
 
 
-# 비밀이 절대 들어가면 안 되는 추적 데이터 파일 패턴 (이름 기반).
+# 비밀이 절대 들어가면 안 되는 추적 **데이터** 파일 패턴 (이름 기반).
 _SECRET_TARGET_GLOBS = ("team.config.json", "team.config.*.json",
                         "*credentials*", "*secret*", "*.token",
                         ".env", ".env.*")
+
+# `*credentials*`·`*secret*` 는 이름 부분일치라 소스 코드 모듈(infra/credentials.py 등)까지
+# 과(過)매칭한다. 이 린트의 대상은 평문 토큰이 들어갈 수 있는 **데이터 파일**이지 소스가
+# 아니다. 코드/문서 확장자는 스캔에서 제외해 함수 인자명(`token`/`key`) 같은 정상 식별자를
+# 거짓 양성으로 잡지 않게 한다.
+#   ⚠️ 정정(P2-2): 소스(.py 등)에 **하드코딩된 리터럴 토큰**은 이 린트가 잡지 못한다 —
+#   본 린트는 데이터 파일 한정이고, 마스킹 테스트(tests/test_credentials_l2e.py)는
+#   credentials.py 가 토큰을 *출력/예외/로그에 흘리지 않음*만 강제할 뿐, 임의 소스에
+#   박힌 리터럴 토큰 자체는 검출 대상이 아니다. 즉 소스 하드코딩 토큰에 대한 코드-레벨
+#   백스톱은 **없다**(git 백스톱은 .gitignore `*credentials*`/`*secret*` 가 데이터 위치에
+#   한정). 후속 작업자는 "소스가 보호된다"고 오인하지 말 것.
+_SECRET_TARGET_SKIP_SUFFIXES = (".py", ".pyc", ".pyi", ".md", ".txt", ".rst",
+                                ".ipynb", ".sh", ".toml", ".cfg", ".ini")
 
 
 def lint_no_tracked_secrets(root, *, files=None) -> tuple:
@@ -380,6 +393,8 @@ def lint_no_tracked_secrets(root, *, files=None) -> tuple:
             name = p.name
             if name.endswith(".example"):
                 continue  # placeholder 관례 (.env.example 등) — 비밀 아님
+            if name.endswith(_SECRET_TARGET_SKIP_SUFFIXES):
+                continue  # 소스/문서 — 데이터 파일 린트 대상 아님(부분일치 과매칭 방지)
             if not any(fnmatch.fnmatch(name, pat) for pat in _SECRET_TARGET_GLOBS):
                 continue
             if p not in seen:
