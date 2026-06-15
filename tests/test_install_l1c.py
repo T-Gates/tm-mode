@@ -36,22 +36,89 @@ def test_wire_uses_correct_flag_per_agent(tmp_path):
     """claude→--settings, codex→--config 로 어댑터 호출."""
     calls = []
 
-    def run_adapter(agent, flag, path):
-        calls.append((agent, flag))
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        calls.append((agent, verb, flag))
         return 0
 
     res = il.wire_agents(["claude", "codex"], home=tmp_path,
                          settings_override=tmp_path / "iso",
                          run_adapter=run_adapter)
     assert res.ok and res.exit_code == 0
-    assert ("claude", "--settings") in calls
-    assert ("codex", "--config") in calls
+    assert ("claude", "sync", "--settings") in calls
+    assert ("codex", "sync", "--config") in calls
     assert set(res.wired) == {"claude", "codex"}
+
+
+def test_wire_calls_install_mcp_then_sync_per_agent(tmp_path):
+    """D.1: 에이전트마다 install-mcp → sync 순으로 호출."""
+    calls = []
+
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        calls.append((agent, verb))
+        return 0
+
+    res = il.wire_agents(["claude", "codex"], home=tmp_path,
+                         settings_override=tmp_path / "iso",
+                         run_adapter=run_adapter)
+    assert res.ok and res.exit_code == 0
+    # claude: install-mcp 가 sync 보다 먼저
+    ci = calls.index(("claude", "install-mcp"))
+    cs = calls.index(("claude", "sync"))
+    assert ci < cs
+    # codex 동일
+    xi = calls.index(("codex", "install-mcp"))
+    xs = calls.index(("codex", "sync"))
+    assert xi < xs
+
+
+def test_wire_claude_install_mcp_gets_isolated_mcp_config(tmp_path):
+    """D.1 게이트: 격리 모드에서 claude install-mcp 는 전용 --mcp-config 격리 경로를 받는다.
+
+    sync 의 --settings(settings.json) 경로를 install-mcp 가 암묵 재활용하지 않는다(N3).
+    codex 는 MCP 도 --config(config.toml) 안 블록이라 별도 경로 인자가 없다.
+    """
+    iso = tmp_path / "iso"
+    seen = {}
+
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        seen[(agent, verb)] = (path, list(extra_args or []))
+        return 0
+
+    res = il.wire_agents(["claude", "codex"], home=tmp_path,
+                         settings_override=iso, run_adapter=run_adapter)
+    assert res.ok
+    # claude install-mcp: --mcp-config <iso>/claude/.claude.json, settings.json 아님
+    c_extra = seen[("claude", "install-mcp")][1]
+    assert "--mcp-config" in c_extra
+    mcp_path = c_extra[c_extra.index("--mcp-config") + 1]
+    assert mcp_path == str(iso / "claude" / ".claude.json")
+    assert mcp_path != seen[("claude", "sync")][0]  # settings.json 과 다른 파일
+    # codex install-mcp: 추가 경로 인자 없음(config.toml 블록이 곧 MCP 등록처)
+    assert seen[("codex", "install-mcp")][1] == []
+
+
+def test_wire_install_mcp_failure_skips_sync(tmp_path):
+    """D.2: install-mcp 실패 시 그 에이전트 sync 생략·실패 집계, 다른 에이전트는 계속."""
+    calls = []
+
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        calls.append((agent, verb))
+        if agent == "codex" and verb == "install-mcp":
+            return 2
+        return 0
+
+    res = il.wire_agents(["claude", "codex"], home=tmp_path,
+                         settings_override=tmp_path / "iso",
+                         run_adapter=run_adapter)
+    assert res.ok is False and res.exit_code == 3
+    assert "claude" in res.wired                       # 성공분 보존(롤백 안 함)
+    assert ("codex", "sync") not in calls              # install-mcp 실패 → sync 생략
+    assert any(a == "codex" for a, _ in res.failed)
 
 
 def test_wire_independent_failure_exit3(tmp_path):
     """M5: 한 에이전트 실패가 다른 배선을 막지 않는다. 부분실패 → exit 3."""
-    def run_adapter(agent, flag, path):
+    def run_adapter(agent, verb, flag, path, extra_args=None):
         if agent == "codex":
             raise RuntimeError("codex 어댑터 폭발")
         return 0
@@ -66,9 +133,11 @@ def test_wire_independent_failure_exit3(tmp_path):
 
 
 def test_wire_nonzero_rc_is_failure(tmp_path):
-    """어댑터 rc!=0 → 해당 에이전트 실패로 집계(exit 3)."""
-    def run_adapter(agent, flag, path):
-        return 0 if agent == "claude" else 2
+    """어댑터 sync rc!=0 → 해당 에이전트 실패로 집계(exit 3)."""
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        if verb == "sync":
+            return 0 if agent == "claude" else 2
+        return 0
 
     res = il.wire_agents(["claude", "codex"], home=tmp_path,
                          settings_override=tmp_path / "iso",
@@ -80,7 +149,7 @@ def test_wire_nonzero_rc_is_failure(tmp_path):
 
 def test_wire_empty_agents_ok(tmp_path):
     """감지 에이전트 0 → ok(빈 배선도 정상, 빈 슬롯 1급 시민 정신)."""
-    res = il.wire_agents([], home=tmp_path, run_adapter=lambda *a: 0)
+    res = il.wire_agents([], home=tmp_path, run_adapter=lambda *a, **k: 0)
     assert res.ok is True
     assert res.exit_code == 0
     assert res.wired == []
@@ -90,7 +159,7 @@ def test_wire_unknown_agent_failure(tmp_path):
     """지원하지 않는 에이전트 → 실패 집계(다른 배선은 계속)."""
     res = il.wire_agents(["claude", "weirdagent"], home=tmp_path,
                          settings_override=tmp_path / "iso",
-                         run_adapter=lambda *a: 0)
+                         run_adapter=lambda *a, **k: 0)
     assert res.exit_code == 3
     assert "claude" in res.wired
     assert any(a == "weirdagent" for a, _ in res.failed)

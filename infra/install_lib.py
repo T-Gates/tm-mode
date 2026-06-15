@@ -478,11 +478,25 @@ def scaffold_memory(team_root: Path, *, member_name: str, role: str,
 # ─────────────────────────── wire (§4⑤·§8, M5) ───────────────────────────
 
 # 에이전트별 settings 쓰기 타깃: 플래그명·실호스트 기본 경로가 다르다.
-#   claude → --settings ~/.claude/settings.json
-#   codex  → --config   ~/.codex/config.toml
+#   claude → --settings ~/.claude/settings.json   (MCP 등록은 별도 ~/.claude.json)
+#   codex  → --config   ~/.codex/config.toml       (MCP 등록도 같은 config.toml 블록)
+# mcp_flag/mcp_rel:
+#   install-mcp 가 MCP 서버를 쓰는 실호스트 파일이 sync 의 settings 와 다른 경우만 별도
+#   플래그로 격리 경로를 명시한다(§2.8). claude 는 ~/.claude.json(settings 와 별개 파일)이라
+#   격리 모드에서 sync 의 --settings 경로를 암묵 재활용하면 안 되고(D.1 게이트), 전용
+#   --mcp-config 격리 경로를 줘야 실 ~/.claude.json 을 안 건드린다(N3). codex 는 MCP 도
+#   --config(config.toml) 안 블록이라 mcp_flag 가 없다(sync 와 동일 파일이 정답).
+# cfg_flag: 어댑터가 team.config.json(services) 을 읽는 플래그(에이전트마다 이름 다름).
+#   claude → --config(team config), codex → --team-config(--config 는 codex 에선 settings).
+# install 은 --root 로 팀 루트를 알고 있으므로 어댑터가 자기 __file__ 기준 team_root 를
+# 추정하게 두지 않고 명시 전달(install-mcp/sync 가 올바른 services 를 읽게 — D.1).
 _AGENT_WIRE = {
-    "claude": {"flag": "--settings", "home_rel": ".claude/settings.json"},
-    "codex":  {"flag": "--config",   "home_rel": ".codex/config.toml"},
+    "claude": {"flag": "--settings", "home_rel": ".claude/settings.json",
+               "mcp_flag": "--mcp-config", "mcp_rel": ".claude.json",
+               "cfg_flag": "--config"},
+    "codex":  {"flag": "--config",   "home_rel": ".codex/config.toml",
+               "mcp_flag": None,      "mcp_rel": None,
+               "cfg_flag": "--team-config"},
 }
 
 
@@ -500,6 +514,31 @@ def agent_settings_path(agent: str, *, home: Path, settings_override=None) -> Pa
     return Path(home) / spec["home_rel"]
 
 
+def agent_mcp_path(agent: str, *, home: Path, settings_override=None):
+    """install-mcp 가 MCP 서버를 등록하는 파일 경로(§2.8) — sync settings 와 별개.
+
+    반환:
+      - (mcp_flag, path) 튜플: 에이전트가 별도 MCP 등록 파일을 쓰는 경우(claude).
+      - None: sync 의 settings 파일이 곧 MCP 등록 파일인 경우(codex → config.toml 블록).
+              이 경우 wire 는 install-mcp 에 추가 경로 인자를 주지 않는다(sync 와 동일 게이트).
+
+    **격리 게이트(D.1)**: settings_override 지정 시 MCP 격리 경로도 그 하위로 명시한다.
+    sync 의 --settings 경로를 install-mcp 가 암묵 재활용하지 않게(claude 는 settings.json 과
+    ~/.claude.json 이 서로 다른 파일이므로). 미지정(실호스트)이면 None 을 반환해 어댑터가
+    자기 기본(~/.claude.json)을 쓰게 둔다 — 실설치는 --yes 동의로 이미 게이트 통과.
+    """
+    spec = _AGENT_WIRE[agent]
+    mcp_flag = spec.get("mcp_flag")
+    if mcp_flag is None:
+        return None
+    if settings_override is not None:
+        # 격리: <override>/<agent>/<mcp basename> — sync settings 와 같은 디렉토리지만 다른 파일
+        base = Path(spec["mcp_rel"]).name
+        return (mcp_flag, Path(settings_override) / agent / base)
+    # 실호스트: 경로를 명시하지 않음 → 어댑터 기본(~/.claude.json). --yes 게이트로 진입.
+    return None
+
+
 @dataclass
 class WireResult:
     ok: bool
@@ -510,15 +549,28 @@ class WireResult:
 
 
 def wire_agents(agents, *, home: Path, settings_override=None,
-                run_adapter=None) -> WireResult:
-    """감지된 에이전트마다 어댑터 sync 호출(훅 등록) — §4⑤·§8.
+                run_adapter=None, team_root=None) -> WireResult:
+    """감지된 에이전트마다 어댑터 동사 호출(MCP 등록 → 훅 sync) — §4⑤·§8·§2.7·§2.8.
+
+    **다동사(D.1)**: 에이전트마다 **install-mcp → sync(--on) 순**으로 호출한다.
+    install-skills 는 v0.1 삭제(L2-C) — 호출 안 함. install-mcp 가 services 의 연결
+    provider MCP 서버를 등록(§2.8)하고, 그 뒤 sync 가 MCP 매처의 별칭을 보장된 것으로
+    배선한다(install-mcp 미선행이면 sync 가 해당 매처만 [warn] 생략 — §2.7).
+
+    **동사별 게이트(D.1)**: sync 의 settings 경로(--settings/--config)를 install-mcp 가
+    암묵 재활용하지 않는다. claude 처럼 MCP 등록 파일(~/.claude.json)이 settings.json 과
+    다른 파일이면 install-mcp 는 **전용 격리 경로(--mcp-config)** 로만 호출한다(미지정 격리
+    모드에서 실 ~/.claude.json 무접촉 보장 — N3). codex 는 MCP 도 --config(config.toml)
+    안 블록이라 sync 와 같은 게이트(같은 파일)를 공유한다.
 
     **에이전트별 독립(M5)**: 한 에이전트 실패가 다른 배선을 막지 않는다. 하나라도
     실패 시 exit 3 + 어느 에이전트가 막혔는지. 성공분은 롤백 안 함(멱등 재시도).
-    스킬 심링크 제외(L1-C — infra/skills 없고 L1 은 훅이 주입, M2).
+    한 에이전트 안에서 install-mcp 가 실패하면 그 에이전트는 실패로 집계하고 sync 를
+    건너뛴다(그 에이전트만 — 다른 에이전트는 계속).
 
-    run_adapter(agent, settings_flag, settings_path) -> int 를 주입받아 실제
-    어댑터 호출을 추상화(테스트가 호스트·subprocess 를 건드리지 않게).
+    run_adapter(agent, verb, settings_flag, settings_path, extra_args) -> int 를 주입받아
+    실제 어댑터 호출을 추상화(테스트가 호스트·subprocess 를 건드리지 않게). extra_args 는
+    동사별 추가 글로벌 플래그(예: install-mcp 의 --mcp-config <격리경로>) 리스트.
     """
     if run_adapter is None:
         raise ValueError("run_adapter 콜러블이 필요합니다(부작용 추상화).")
@@ -529,10 +581,30 @@ def wire_agents(agents, *, home: Path, settings_override=None,
             res.ok = False
             continue
         spec = _AGENT_WIRE[agent]
-        path = agent_settings_path(agent, home=home,
-                                   settings_override=settings_override)
+        path = str(agent_settings_path(agent, home=home,
+                                       settings_override=settings_override))
+        # 팀 config 경로 명시 전달(어댑터가 __file__ 기준 추정하지 않게 — D.1).
+        cfg_extra = []
+        if team_root is not None:
+            cfg_extra = [spec["cfg_flag"], str(Path(team_root) / "team.config.json")]
+        # install-mcp 동사의 전용 게이트 경로(claude→--mcp-config 격리, codex→없음).
+        mcp = agent_mcp_path(agent, home=home, settings_override=settings_override)
+        mcp_extra = cfg_extra + ([mcp[0], str(mcp[1])] if mcp is not None else [])
         try:
-            rc = run_adapter(agent, spec["flag"], str(path))
+            # ① install-mcp (§2.8) — services 연결 provider MCP 등록(빈 슬롯이면 [info]만).
+            rc_mcp = run_adapter(agent, "install-mcp", spec["flag"], path, mcp_extra)
+            if rc_mcp != 0:
+                res.ok = False
+                res.failed.append((agent, f"install-mcp rc={rc_mcp}"))
+                res.messages.append(
+                    f"[wire] {agent} install-mcp 실패(rc={rc_mcp}) — sync 생략, 다른 배선은 계속")
+                continue
+            res.messages.append(f"[wire] {agent} MCP 등록 동기화 완료")
+            # ② sync --on (§2.7) — 훅 등록. MCP 매처는 install-mcp 선행 상태로 별칭 보장.
+            #    sync 도 빈 슬롯 우선 규칙(§2.9)·install-mcp 선행 판정에 services 가 필요 →
+            #    같은 팀 config 경로 전달. 단 MCP 별칭 보장 판정은 sync 가 ~/.claude.json(claude)
+            #    을 본다 — 여기선 격리 mcp_extra 를 다시 줘야 install-mcp 가 쓴 격리 파일을 읽는다.
+            rc = run_adapter(agent, "sync", spec["flag"], path, mcp_extra)
             if rc == 0:
                 res.wired.append(agent)
                 res.messages.append(f"[wire] {agent} 훅 동기화 완료 → {path}")
