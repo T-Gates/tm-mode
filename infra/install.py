@@ -299,20 +299,34 @@ def _detect(team_root: Path, home: Path) -> dict:
 
 
 def _make_run_adapter():
-    """wire 용 run_adapter(agent, flag, path) → 어댑터 main 직접 호출 rc.
+    """wire 용 run_adapter(agent, verb, flag, path, extra_args) → 어댑터 main 호출 rc.
 
-    어댑터를 격리 import(runpy)해 main([flag, path, "sync", "--on"]) 실행.
-    경로는 wire_agents 가 격리/실호스트로 이미 해석함 — 여기선 그대로 전달.
+    어댑터를 격리 import(runpy)해 main(argv) 실행. 동사별로 argv 구성:
+      - install-mcp: [flag, path, *extra_args, "install-mcp"]
+      - sync:        [flag, path, "sync", "--on"]
+    extra_args 는 wire_agents 가 동사별 게이트로 해석한 추가 글로벌 플래그(예: claude
+    install-mcp 의 --mcp-config <격리경로>). 경로는 wire_agents 가 이미 해석함 — 여기선
+    그대로 전달하고 argparse 글로벌 플래그(서브커맨드 앞)로 배치한다.
     """
-    def run_adapter(agent, flag, path) -> int:
+    def run_adapter(agent, verb, flag, path, extra_args=None) -> int:
         adapter_path = AGENTS / agent / "adapter.py"
         if not adapter_path.is_file():
             raise FileNotFoundError(f"{agent} 어댑터 없음: {adapter_path}")
+        extra_args = list(extra_args or [])
         # 어댑터의 settings 부모 디렉토리 보장(어댑터는 부모 mkdir 하지만 방어적으로).
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        # install-mcp 격리 경로(--mcp-config 등)의 부모도 보장.
+        for i in range(0, len(extra_args) - 1, 2):
+            if extra_args[i].startswith("--") and "/" in str(extra_args[i + 1]):
+                Path(extra_args[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+        # 글로벌 플래그(서브커맨드 앞) + 동사 + 동사별 플래그.
+        global_flags = [flag, path] + extra_args
+        if verb == "sync":
+            argv = global_flags + ["sync", "--on"]
+        else:
+            argv = global_flags + [verb]
         saved = sys.argv[:]
         try:
-            argv = [flag, path, "sync", "--on"]
             sys.argv = [str(adapter_path)] + argv
             mod = runpy.run_path(str(adapter_path), run_name="__teammode_wire__")
             return mod["main"](argv)
@@ -460,7 +474,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         return 0
     wire = il.wire_agents(
         det["agents"], home=home, settings_override=settings_override,
-        run_adapter=_make_run_adapter())
+        run_adapter=_make_run_adapter(), team_root=team_root)
     for m in wire.messages:
         out(m)
     if not wire.ok:

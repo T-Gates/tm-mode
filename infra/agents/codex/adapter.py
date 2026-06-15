@@ -34,6 +34,7 @@ from typing import Optional
 _CLAUDE_ADAPTER = (Path(__file__).resolve().parents[1] / "claude" / "adapter.py")
 _claude_mod = runpy.run_path(str(_CLAUDE_ADAPTER), run_name="__codex_base__")
 BaseAdapter = _claude_mod["Adapter"]
+_SEALED = _claude_mod["_SEALED"]  # MCP 등록 파일 봉인 센티넬(N3)
 
 BLOCK_START = "# teammode-hooks-start"
 BLOCK_END = "# teammode-hooks-end"
@@ -41,6 +42,15 @@ BLOCK_END = "# teammode-hooks-end"
 
 class Adapter(BaseAdapter):
     """Codex 어댑터 — 번역 코어는 상속, config 포맷·폴백만 재정의."""
+
+    def __init__(self, *args, **kwargs):
+        # N3: Codex 는 MCP 를 ~/.codex/config.toml 의 [mcp_servers.*] 블록으로 등록하므로
+        # 부모(claude)가 상속시키는 mcp_config_path(=~/.claude.json) 를 절대 쓰지 않는다.
+        # 상속된 실경로가 latent footgun 으로 새지 않게 봉인 — 부모 _read_mcp_config/
+        # install_mcp(claude.json 경로)를 잘못 호출하면 무동작/NotImplementedError 로 막힌다.
+        # (codex 는 _read_mcp_servers·install_mcp 를 config.toml 기반으로 전부 재정의함.)
+        kwargs["mcp_config_path"] = _SEALED
+        super().__init__(*args, **kwargs)
 
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []
@@ -242,6 +252,7 @@ class Adapter(BaseAdapter):
                         connected.append(prov)
 
         providers_with_packs = []
+        aliases = []  # N2: 실제 변경과 무관하게 "등록 대상" provider 별칭 추적.
         for provider in connected:
             try:
                 pack = _prov.lookup(provider, providers_dir=self.providers_dir)
@@ -250,14 +261,24 @@ class Adapter(BaseAdapter):
             if pack is None:
                 changes.append(f"[info] {provider}: provider 팩 없음 → MCP 등록 생략")
                 continue
-            providers_with_packs.append((self.resolve_server_alias(provider), pack))
-            changes.append(f"[mcp] {self.resolve_server_alias(provider)} 등록")
+            alias = self.resolve_server_alias(provider)
+            providers_with_packs.append((alias, pack))
+            aliases.append(alias)
 
         if providers_with_packs:
             block = self._render_mcp_block(providers_with_packs)
-            self._write_mcp_block(block)
+            changed = self._write_mcp_block(block)
+            # N2: claude 와 대칭 — 실제 파일 변경 시에만 [mcp] 등록, 멱등 무변경은
+            # [ok]. (_write_mcp_block 의 changed 반환값을 반영, 거짓 등록 보고 금지.)
+            if changed:
+                for alias in aliases:
+                    changes.append(f"[mcp] {alias} 등록")
+            else:
+                changes.append(f"[ok] 변경 없음 ({len(aliases)}개 provider 등록됨)")
         else:
             # 연결 provider 없음 → 기존 teammode-mcp 블록 제거(멱등 빈상태).
+            # 안전(P1-1): 블록이 없으면(부재 config 포함) 파일 무접촉 — pattern.search 가
+            # 없을 때 write 하지 않으므로 빈 슬롯에서 config.toml 을 touch 하지 않는다.
             existing = self._read_config()
             pattern = re.compile(
                 r"\n*" + re.escape(self.MCP_BLOCK_START) + r".*?"
