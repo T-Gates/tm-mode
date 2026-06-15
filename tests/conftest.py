@@ -21,6 +21,17 @@ def _real_state_dir() -> Path:
     return Path(os.path.expanduser("~/.local/state/teammode"))
 
 
+def _real_credentials_dir() -> Path:
+    """credentials 금고(L2-E)의 실 기본 경로 — 테스트가 절대 건드리면 안 된다.
+
+    B-3 결정: 저장 = `$XDG_DATA_HOME/teammode/credentials`(기본 `~/.local/share/teammode/credentials`).
+    last-pull 와 동일 철학으로, ambient XDG 를 무시한 **실 HOME 기준** 경로를 가드 대상으로
+    잡는다(테스트가 XDG_DATA_HOME 격리를 덮어도, 실 경로 자체의 부재→존재 전이를 검사).
+    teammode 전용 비밀 디렉토리라 다른 도구가 만들 일이 없으므로 디렉토리 자체도 엄격 가드.
+    """
+    return Path(os.path.expanduser("~/.local/share/teammode/credentials"))
+
+
 # 셸 프로파일 — install.py ⑥ env 주입(§9)이 실 호스트 프로파일에 1줄 쓰는 사고를
 # 방지(L1-0). 테스트는 monkeypatch HOME=tmp + fake 프로파일로만 env 주입을 검증한다.
 # ⚠️ 주의: `.bashrc` 등 dotfile 은 pathlib 상 .suffix == "" 이다(선두 dot 은 stem).
@@ -44,23 +55,51 @@ _OBSIDIAN_CONFIGS = [
     Path(os.path.expanduser("~/AppData/Roaming/obsidian/obsidian.json")),  # win
 ]
 
+# L2 새 쓰기 표면 (B0 — install-mcp/credentials 가 만들 표면).
+# 무인 빌드 호스트 무오염 전제: L2 어댑터가 실 MCP 등록 파일·실 credentials 금고를
+# 건드리면 즉시 발화하도록 미리 가드를 박는다(과거 dotfile blind spot 동형).
+#
+# ⚠️ 스킬 디렉토리 가드 제거(2026-06-16): install-skills(L2-C)가 v0.2 로 이월돼(L2-PLAN.md:67)
+# v0.1 무인 빌드는 스킬 디렉토리(~/.claude/skills, ~/.codex/skills, ~/.codex/prompts)에
+# 쓰지 않는다. 게다가 codex 스킬 경로는 spec 에 명문화되지 않은 추정 경로라 과(過) 가드
+# (false-positive 위험)였다. → 스킬 경로 가드 전면 제거. claude `~/.claude.json` MCP 가드와
+# credentials 가드는 v0.1 실표면이므로 유지.
+
+# (a) claude MCP 등록 실경로 — install-mcp(§2.8)가 MCP 서버를 등록하는 실제 파일.
+# 근거: spec/05-onboard-skill.md:90 "MCP 등록 방식 차이(`~/.claude.json` vs
+# `~/.codex/config.toml`)". codex 쪽 MCP 섹션은 이미 _GUARDED/_CONTENT_GUARDED 의
+# `~/.codex/config.toml`(파일 전체 내용 비교)로 잡히므로 별도 추가 불요.
+_CLAUDE_MCP_CONFIG = Path(os.path.expanduser("~/.claude.json"))
+
 _GUARDED = [
     Path(os.path.expanduser("~/.claude/settings.json")),
     Path(os.path.expanduser("~/.codex/config.toml")),
     Path(os.path.expanduser("~/.codex")),
     Path(os.path.expanduser("~/.claude")),
+    _CLAUDE_MCP_CONFIG,
     *_SHELL_PROFILES,
     *_OBSIDIAN_CONFIGS,
     _real_state_dir() / "last-pull",
     _real_state_dir(),
+    _real_credentials_dir(),
 ]
 
 # 내용 변화(부재→존재 포함)를 suffix 무관하게 오염으로 보는 경로.
 # 셸 프로파일은 dotfile 이라 suffix 검사로는 못 잡으므로 여기에 명시한다.
+# `~/.claude.json`(MCP 등록 실경로)도 여기에 — install-mcp 가 이 파일에 서버를 쓰며,
+# 실 호스트엔 이미 존재할 수 있으므로 "내용 변화"를 오염으로 본다.
 _CONTENT_GUARDED = set(_SHELL_PROFILES) | set(_OBSIDIAN_CONFIGS) | {
     Path(os.path.expanduser("~/.claude/settings.json")),
     Path(os.path.expanduser("~/.codex/config.toml")),
+    _CLAUDE_MCP_CONFIG,
 }
+
+# credentials 금고는 **디렉토리 내부 엔트리 집합**을 추적해 침투를 잡는다(아래 _snapshot 참조).
+# 과거 _CREATION_GUARDED 는 디렉토리를 ("dir",None) 으로만 봐서 "이미 존재하는 디렉토리 내부
+# 파일 추가"를 dir→dir 로 보고 침묵했다(과거 dotfile blind spot 동형). credentials 는 teammode
+# 전용 비밀 디렉토리라 부재→존재뿐 아니라 **내부에 토큰 파일이 새로 생기는 것**도 오염이다.
+# → 엔트리 집합(sorted 이름) 스냅샷으로 before != after 면 발화한다.
+_ENTRY_TRACKED_DIRS = {_real_credentials_dir()}
 
 
 @pytest.fixture(autouse=True)
@@ -72,12 +111,25 @@ def _isolate_pull_state(tmp_path_factory, monkeypatch):
     """
     state_home = tmp_path_factory.mktemp("xdg-state")
     monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    # credentials 금고(L2-E)는 XDG_DATA_HOME 기반($XDG_DATA_HOME/teammode/credentials, B-3).
+    # 실 `~/.local/share/teammode/credentials` 로 새지 않게 격리 경로를 주입(subprocess 상속).
+    data_home = tmp_path_factory.mktemp("xdg-data")
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
 
 
 def _snapshot():
     snap = {}
     for p in _GUARDED:
-        if p.is_file():
+        if p in _ENTRY_TRACKED_DIRS:
+            # 엔트리 추적 디렉토리: 부재면 ("absent",None), 존재하면 내부 엔트리 이름 집합을
+            # 정렬 튜플로 스냅샷. dir→dir 라도 내부에 토큰 파일이 새로 생기면 before!=after.
+            if p.is_dir():
+                snap[p] = ("dir", tuple(sorted(e.name for e in p.iterdir())))
+            elif p.exists():
+                snap[p] = ("file", p.read_bytes())
+            else:
+                snap[p] = ("absent", None)
+        elif p.is_file():
             snap[p] = ("file", p.read_bytes())
         elif p.is_dir():
             snap[p] = ("dir", None)
@@ -86,32 +138,54 @@ def _snapshot():
     return snap
 
 
+def _pollution_reason(p, b, a):
+    """가드의 순수 판정 함수 — 경로 p 의 before/after 가 오염이면 사유 문자열, 아니면 None.
+
+    fixture 본문에서 분리해 **라이브 판정 로직을 직접 테스트**할 수 있게 한다(test_guard.py).
+    가드가 _GUARDED 에 경로만 넣고 정작 발화 안 하는 blind spot 을 박기 위함.
+    """
+    state_paths = {_real_state_dir() / "last-pull", _real_state_dir()}
+    # auto-pull 상태 경로: suffix 없어도(예: last-pull) 부재→존재 전이를 오염으로 본다.
+    if p in state_paths:
+        if b[0] == "absent" and a[0] != "absent":
+            return (f"실 auto-pull 상태 오염 감지: {p} (before=absent, after={a[0]}). "
+                    f"테스트는 XDG_STATE_HOME 격리를 써야 한다.")
+        return None
+    # credentials 금고: teammode 전용 비밀 디렉토리. 부재→존재뿐 아니라 **내부 엔트리 집합
+    # 변화**(이미 존재하는 디렉토리에 토큰 파일 추가)도 오염으로 본다. _snapshot 이 dir 를
+    # ("dir", sorted 엔트리 튜플)로 잡으므로 dir→dir 라도 내부에 파일이 생기면 b != a.
+    if p in _ENTRY_TRACKED_DIRS:
+        if b != a:
+            return (f"실 credentials 금고 오염 감지: {p} (before={b[0]}, after={a[0]}). "
+                    f"테스트는 monkeypatch HOME=tmp + XDG_DATA_HOME 격리만 써야 한다.")
+        return None
+    # MCP 등록 파일(`~/.claude.json`): suffix 무관(신규생성 포함) 변화 = 오염.
+    # (install-mcp 가 이 파일에 MCP 서버를 등록 — 부재→존재 신규 생성도 흔하다.)
+    if p == _CLAUDE_MCP_CONFIG:
+        if b != a:
+            return (f"실 MCP 등록/설정 파일 오염 감지: {p} (before={b[0]}, after={a[0]}). "
+                    f"테스트는 monkeypatch HOME=tmp + --settings 격리만 써야 한다.")
+        return None
+    # 셸 프로파일·핵심 설정파일: suffix 무관(dotfile/신규생성 포함) 변화 = 오염.
+    # (`.bashrc` 는 .suffix=="" 라 suffix 검사로는 못 잡힌다 — L1-0 핵심.)
+    if p in _CONTENT_GUARDED:
+        if b != a:
+            return (f"실 셸 프로파일/설정 오염 감지: {p} (before={b[0]}, after={a[0]}). "
+                    f"테스트는 monkeypatch HOME=tmp + fake 프로파일만 써야 한다.")
+        return None
+    # 디렉토리(~/.claude 등)는 다른 도구가 만들 수 있으니 파일 내용 변화만 엄격 검사
+    if p.suffix and b != a:
+        return (f"실 설정 파일 오염 감지: {p} (before={b[0]}, after={a[0]}). "
+                f"테스트는 tmp_path 만 사용해야 한다.")
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _no_real_config_pollution():
     before = _snapshot()
     yield
     after = _snapshot()
-    state_paths = {_real_state_dir() / "last-pull", _real_state_dir()}
     for p in _GUARDED:
-        b, a = before[p], after[p]
-        # auto-pull 상태 경로는 suffix 가 없어도(예: last-pull) 부재→존재 전이를 오염으로
-        # 본다 — 다른 도구가 만들 일이 없는 teammode 전용 경로이기 때문.
-        if p in state_paths:
-            if b[0] == "absent" and a[0] != "absent":
-                pytest.fail(
-                    f"실 auto-pull 상태 오염 감지: {p} (before=absent, after={a[0]}). "
-                    f"테스트는 XDG_STATE_HOME 격리를 써야 한다.")
-            continue
-        # 셸 프로파일·핵심 설정파일: suffix 무관(dotfile 포함) 상태/내용 변화 = 오염.
-        # (`.bashrc` 는 .suffix=="" 라 suffix 검사로는 못 잡힌다 — L1-0 핵심.)
-        if p in _CONTENT_GUARDED:
-            if b != a:
-                pytest.fail(
-                    f"실 셸 프로파일/설정 오염 감지: {p} (before={b[0]}, after={a[0]}). "
-                    f"테스트는 monkeypatch HOME=tmp + fake 프로파일만 써야 한다.")
-            continue
-        # 디렉토리(~/.claude 등)는 다른 도구가 만들 수 있으니 파일 내용 변화만 엄격 검사
-        if p.suffix and b != a:
-            pytest.fail(
-                f"실 설정 파일 오염 감지: {p} (before={b[0]}, after={a[0]}). "
-                f"테스트는 tmp_path 만 사용해야 한다.")
+        reason = _pollution_reason(p, before[p], after[p])
+        if reason:
+            pytest.fail(reason)
