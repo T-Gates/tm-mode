@@ -58,6 +58,13 @@
 - A.3 config services 확장 object 스키마(B-2) + `team.config.example.json`(빈 슬롯 + 4역할 + **인스턴스 필드 자리** 주석). **토큰키(token/secret/key/password) 팀루트 추적파일 진입 거부 린트**(P0-4 — .gitignore보다 강제력).
 - A.4 테스트: 스키마검증(정상/누락/오타/항등위반), 4종 로드, 빈슬롯·부분채움 유효성, **"채운 슬롯 인스턴스필드 누락"**(notion인데 database_id 없음) 케이스, 토큰키 린트 발화. lint 범위 = 스킬본문·manifest(providers/*.json은 데이터라 제품명 허용).
 
+### L2-A2 — 멤버 역할 (Jane 결정 2026-06-16: config.members 배열)
+> 부록 B 미결 "members.md 역할 필드(§1.1)"를 config 쪽으로. members.md엔 역할 칸이 선언만 돼있고 실제 미저장(이름+id만)이었음. 의존: A(config 스키마). 착수는 A 안정화 후, 순서 유연(B~H 어디든 config 의존만 충족하면).
+- A2.1 config `members: [{name, role}]` 스키마(확장 object — role 권장어휘 or 자유문자열). config_is_valid에 members 블록 검증(있으면; 빈배열·없음 valid). 비-도입자 키 오염 안 생기게.
+- A2.2 ⚠️ **충돌 해소(착수 전 Jane 확정 필요)**: config는 "도입자 쓰기·팀원 읽기" 원칙인데 멤버 역할은 멤버 속성 → (a) 도입자 일괄 선언 vs (b) 각 멤버 install 시 자기 엔트리만 config.members upsert(원칙 완화). members.md(identity)와의 역할 단일소스 관계도 정리.
+- A2.3 활용(죽은필드 방지): `context` 출력에 멤버별 역할 표시(v0.1 최소가치). 역할별 훅/맞춤주입은 v0.2.
+- A2.4 테스트: members 스키마검증·context 역할표시·충돌해소 동작·기존 config 무회귀.
+
 ### L2-B — install-mcp 어댑터 + 빈슬롯 sync (§2.8 + P0-3)
 - B.1 claude `adapter.py install-mcp`: services 읽어 연결 provider MCP 등록, `resolve_server_alias`(항등). 멱등.
 - B.2 **빈슬롯 sync 교정(P0-3)**: 어댑터 sync가 `team.config.json services`를 읽어 **MCP 매처의 provider 슬롯 미연결 시 등록 생략 + `[info]`**(§2.9/§7.2). install-mcp 미선행 시 해당 매처만 `[warn]` 생략(§2.7, info와 구분). **L1 기존 미준수(linear 빈슬롯 PreToolUse 매처 등록) 동시 교정.**
