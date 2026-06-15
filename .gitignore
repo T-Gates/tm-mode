@@ -6,3 +6,9 @@ __pycache__/
 
 .teammode-settings.json
 /memory/
+
+# 방어: 자격증명/토큰/비밀이 팀 루트에 추적되는 사고 방지 (L2-B0, .gitignore는 죽은 방어 — A.3 토큰키 린트가 강제력)
+*credentials*.json
+*.token
+*secret*
+team.config.local.json
