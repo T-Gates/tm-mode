@@ -4,7 +4,7 @@ teammode SPEC v0.2 — 설치·부트스트랩
 
 ## §4. 설치 · 부트스트랩 (install.py)
 
-> 사람이 에이전트에 치는 첫 한마디 **"이 레포 셋업해줘"** → 에이전트가 `python infra/install.py --root <팀루트> ...`를 대신 실행 → 팀 레포가 감지·스캐폴딩·에이전트 배선·env·훅까지 한 번에 서고, 끝에서 `context --json`으로 **L1 데이터가 읽히는지** 확인한다. install.py의 일반 bootstrap 경로는 **결정적 고정 스크립트**이며 LLM 판단(서비스 선택)은 하지 않는다. 단 `--register-obsidian` 신규 등록 경로는 `time.time()`/`os.urandom()`으로 `ts`/`vault_id`를 생성할 수 있다.
+> 사람이 에이전트에 치는 첫 한마디 **"이 레포 셋업해줘"** → 에이전트가 `python infra/install.py --root <팀루트> ...`를 대신 실행 → 팀 레포가 감지·스캐폴딩·템플릿 추적(`upstream` remote) 등록·에이전트 배선·env·훅까지 한 번에 서고, 끝에서 `context --json`으로 **L1 데이터가 읽히는지** 확인한다. install.py의 일반 bootstrap 경로는 **결정적 고정 스크립트**이며 LLM 판단(서비스 선택)은 하지 않는다. 단 `--register-obsidian` 신규 등록 경로는 `time.time()`/`os.urandom()`으로 `ts`/`vault_id`를 생성할 수 있다.
 >
 > ground truth: 2026-06-16 현재 워킹트리의 `infra/install.py`, `infra/install_lib.py`. 현재 워킹트리에는 `install-skills`/어댑터/테스트 관련 미커밋 변경이 있으며, 이 절은 커밋 여부와 무관하게 **현재 파일 내용**을 반영한다.
 
