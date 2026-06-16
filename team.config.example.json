@@ -12,6 +12,11 @@
   "admin_contact": "alice",
   "members_file": "memory/team/members.md",
   "banner_file": "memory/banner.txt",
+  "$comment_members": "members = [{name, role?}] (SPEC §1.1·부록 B). 각 멤버가 install 시 자기것만 upsert(각자 upsert) — 타인 엔트리는 무접촉. role 은 권장 어휘(developer/pm/designer/...) 또는 자유문자열. 빈 배열·키 생략도 정상.",
+  "members": [
+    { "name": "alice", "role": "pm" },
+    { "name": "bob", "role": "developer" }
+  ],
   "services": {
     "issues": {
       "provider": "linear",

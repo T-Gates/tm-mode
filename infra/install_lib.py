@@ -51,6 +51,7 @@ class Options:
     root: str | None = None
     agent: str = "auto"
     member_name: str | None = None
+    role: str | None = None
     settings: str | None = None
     yes: bool = False
     update: bool = False
@@ -59,7 +60,7 @@ class Options:
     obsidian_config: str | None = None
 
 
-_VALUE_FLAGS = {"--root", "--agent", "--member-name", "--settings",
+_VALUE_FLAGS = {"--root", "--agent", "--member-name", "--role", "--settings",
                 "--obsidian-config"}
 
 
@@ -78,6 +79,8 @@ def parse_args(argv) -> Options:
             opts.agent = next(it, None) or "auto"
         elif a == "--member-name":
             opts.member_name = next(it, None)
+        elif a == "--role":
+            opts.role = next(it, None)
         elif a == "--settings":
             opts.settings = next(it, None)
         elif a == "--yes":
@@ -226,6 +229,131 @@ def services_are_valid(services, *, providers_dir=None) -> bool:
             if not (isinstance(val, str) and val.strip()):
                 return False
     return True
+
+
+# 권장 역할 어휘 (SPEC §1.1·부록 B members.md 역할필드). 권장일 뿐 — config.members
+# 의 role 은 자유문자열도 허용한다(확장 가능 object). 검증은 "있으면 형식만"이며
+# 어휘 위반으로 거부하지 않는다(v0.2 무중단·팀 자율).
+_SUGGESTED_MEMBER_ROLES = {"developer", "pm", "designer", "researcher",
+                           "marketer", "ops", "lead"}
+
+
+def _role_has_control_char(role: str) -> bool:
+    """role 문자열에 개행·제어문자가 있으면 True (P2-1 — context 줄 위조 차단).
+
+    role 은 자유문자열(한글·공백·유니코드 어휘 자유)이되, **개행(`\\n` `\\r`)·널·기타
+    control char 만** 거부한다. 이런 문자가 verbatim 저장되면 `context` 텍스트 출력의
+    멤버 라인을 줄바꿈으로 쪼개 `- FAKE [...] summary: pwned` 같은 가짜 라인을 주입할
+    수 있다(실증된 적대 표면). name 의 _validate_author 처럼 어휘를 좁히지는 않는다 —
+    오직 라인 구조를 깨는 control char 만 막는다.
+    """
+    return any(c == "\x7f" or ord(c) < 0x20 for c in role)
+
+
+def members_are_valid(members) -> bool:
+    """config `members` 블록 스키마 검증 (A2.1, 확장 가능 object).
+
+    ⚠️ **config_is_valid(=role 판정, 파괴적 분기)와 완전 분리** — 이 함수는 role 을
+       뒤집지 않는다(A의 P0-1/P1-1 교훈: provider팩 누락처럼 멤버를 도입자로 강등시키는
+       경로를 원천 차단). members 스키마 위반은 설치/검증 시점 [warn] 발화용일 뿐이다.
+
+    규칙(빈 슬롯 = 1급 시민과 동형):
+    - None / members 키 없음(load 시 None) → valid (기존 0.1/0.2 config 무회귀).
+    - `[]`(빈 배열) → valid (멤버 0명도 정상).
+    - 채운 엔트리 = object `{name 필수, role 선택, <추가 키 허용>}`.
+      - `name` 필수 + 엔진 _validate_author 규약 통과(경로 traversal·선두dash footgun 차단).
+      - `role` 선택 — 있으면 비어있지 않은 str(권장 어휘 or 자유문자열). 어휘 강제 안 함.
+      - **확장 가능**: 선언 안 한 추가 키는 허용(v0.2 무중단).
+    """
+    if members is None:
+        return True  # members 키 없음 — 기존 config 무회귀
+    if not isinstance(members, list):
+        return False
+    if not members:
+        return True  # 빈 배열 — 멤버 0명
+    for entry in members:
+        if not isinstance(entry, dict):
+            return False
+        name = entry.get("name")
+        if not (isinstance(name, str) and name.strip()):
+            return False
+        if _engine._validate_author(name) is not None:
+            return False  # traversal/선두dash 등 — name 은 식별자(footgun 차단)
+        role = entry.get("role")
+        if role is not None:
+            if not (isinstance(role, str) and role.strip()):
+                return False  # role 있으면 비어있지 않은 str(자유문자열 허용, 어휘 미강제)
+            if _role_has_control_char(role):
+                return False  # 개행·제어문자 거부(context 줄 위조 차단, P2-1)
+    return True
+
+
+def upsert_member_role(team_root: Path, name: str, role=None) -> dict:
+    """config.members 에 **자기 {name, role} 엔트리만** upsert (A2.2 — 각자 upsert).
+
+    Jane 결정(2026-06-16): config "도입자 쓰기·팀원 읽기" 원칙을 **"자기 name 엔트리만
+    upsert"로 완화**. 각 멤버가 install 시 자기것만 추가/갱신하고 **타인 name 엔트리는
+    절대 안 건드린다**(register_member identity 충돌판정과 정합: 같은 name=자기갱신,
+    타인 name=무접촉).
+
+    멱등: 같은 name+role 재실행 시 config 무변경(changed=False).
+    안전:
+    - name 은 _validate_author 재사용(경로/footgun 차단) — 위반 시 InvalidNameError.
+    - config 부재/깨짐이면 무작업(role 판정·도입자 config 작성은 호출부 책임 — 여기선
+      members 만 손대며 spec_version/team 등 다른 키는 절대 안 만진다).
+    - role=None 이면 role 키 생략(또는 기존 엔트리의 role 제거).
+
+    반환: {"changed": bool}. config 부재 등으로 못 쓰면 changed=False.
+    """
+    validate_name(name)  # traversal/선두dash 즉시 거부(타 키와 동일 footgun 가드)
+    if role is not None and isinstance(role, str) and _role_has_control_char(role):
+        # role 개행·제어문자 거부(P2-1) — context 줄 위조를 config 진입에서 차단.
+        raise InvalidNameError(f"role 에 개행·제어문자가 포함될 수 없습니다: {role!r}")
+    cfg_path = team_root / "team.config.json"
+    cfg = load_config(team_root)
+    if not isinstance(cfg, dict):
+        return {"changed": False}  # config 없음/깨짐 — members 만 다루므로 무작업
+
+    members = cfg.get("members")
+    if members is None:
+        members = []
+    elif not isinstance(members, list):
+        # 기존 members 가 list 가 아니면(손상) 자기것만 다루는 계약상 덮어쓰지 않는다.
+        return {"changed": False}
+
+    # 자기 엔트리만 찾는다 — 타인 name 엔트리는 인덱스로도 안 건드림.
+    own_idx = None
+    for i, entry in enumerate(members):
+        if isinstance(entry, dict) and entry.get("name") == name:
+            own_idx = i
+            break
+
+    desired = {"name": name}
+    if role is not None and str(role).strip():
+        desired["role"] = role
+
+    if own_idx is None:
+        # 신규 — 추가(타인 엔트리 순서·내용 무변경, append).
+        new_members = list(members) + [desired]
+    else:
+        existing = members[own_idx]
+        # 멱등: 자기 엔트리가 정확히 desired 면(추가 키까지 포함) 무변경.
+        # 추가 키 보존: 기존 엔트리의 다른 키는 살리고 name/role 만 갱신한다.
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged["name"] = name
+        if role is not None and str(role).strip():
+            merged["role"] = role
+        else:
+            merged.pop("role", None)
+        if merged == existing:
+            return {"changed": False}  # 멱등 — 같은 name+role 재실행
+        new_members = list(members)
+        new_members[own_idx] = merged
+
+    cfg["members"] = new_members
+    cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+                        encoding="utf-8")
+    return {"changed": True}
 
 
 def detect_role(team_root: Path) -> str:
@@ -438,7 +566,7 @@ def _write_if_absent(path: Path, content: str):
 
 def scaffold_memory(team_root: Path, *, member_name: str, role: str,
                     team_name: str, timezone=None, locale=None,
-                    identity=None) -> dict:
+                    identity=None, member_role=None) -> dict:
     """memory/ 구조·config·members·banner 스캐폴딩 (§4④·§5·§6).
 
     멱등(§7, I3). 세션 경로는 엔진 단일소스 memory/team/sessions/<author>/ (M1).
@@ -473,7 +601,13 @@ def scaffold_memory(team_root: Path, *, member_name: str, role: str,
     members_file = team_root / "memory" / "team" / "members.md"
     added = register_member(members_file, member_name, identity=identity)
 
-    return {"member_added": added}
+    # config.members 자기 엔트리만 upsert (A2.2 — 각자 upsert, Jane 결정).
+    # 도입자도 자기것 upsert(도입자 config 작성 직후라 유효 config 존재). 팀원은
+    # 도입자가 만든 유효 config 에 자기것만 추가 — 타인 엔트리는 무접촉.
+    # config 부재/깨짐이면 upsert 가 무작업(role 판정에 영향 0).
+    role_upsert = upsert_member_role(team_root, member_name, role=member_role)
+
+    return {"member_added": added, "role_upserted": role_upsert["changed"]}
 
 
 # ─────────────────────────── wire (§4⑤·§8, M5) ───────────────────────────

@@ -76,16 +76,35 @@ def test_introducer_config_is_valid_for_role(tmp_path):
     assert il.detect_role(tmp_path) == "member"
 
 
-def test_member_does_not_write_config(tmp_path):
-    """팀원 경로: config 작성 안 함(읽기만, §6-1). 기존 config 무수정."""
+def test_member_only_upserts_own_members_entry(tmp_path):
+    """팀원 경로(L2-A2 완화, Jane 결정): config 코어키는 무수정, **자기 members
+    엔트리만** upsert. spec_version/team/admin_contact/services 등 다른 키 불변."""
     cfg = {"spec_version": "0.1", "team": {"name": "acme"},
-           "admin_contact": "founder"}
+           "admin_contact": "founder", "services": {}}
     (tmp_path / "team.config.json").write_text(json.dumps(cfg))
-    before = (tmp_path / "team.config.json").read_text()
     il.scaffold_memory(tmp_path, member_name="bob", role="member",
-                       team_name="acme")
-    after = (tmp_path / "team.config.json").read_text()
-    assert before == after  # 무수정
+                       team_name="acme", member_role="developer")
+    after = json.loads((tmp_path / "team.config.json").read_text())
+    # 코어 키 무수정.
+    assert after["spec_version"] == "0.1"
+    assert after["team"] == {"name": "acme"}
+    assert after["admin_contact"] == "founder"
+    assert after["services"] == {}
+    # 자기 members 엔트리만 추가.
+    assert after["members"] == [{"name": "bob", "role": "developer"}]
+
+
+def test_member_does_not_touch_other_members_entries(tmp_path):
+    """팀원 install 이 타인 members 엔트리를 절대 안 건드림(각자 upsert 정합)."""
+    cfg = {"spec_version": "0.1", "team": {"name": "acme"},
+           "admin_contact": "founder", "services": {},
+           "members": [{"name": "founder", "role": "pm"}]}
+    (tmp_path / "team.config.json").write_text(json.dumps(cfg))
+    il.scaffold_memory(tmp_path, member_name="bob", role="member",
+                       team_name="acme", member_role="developer")
+    members = json.loads((tmp_path / "team.config.json").read_text())["members"]
+    assert {"name": "founder", "role": "pm"} in members  # 타인 무접촉
+    assert {"name": "bob", "role": "developer"} in members
 
 
 # ─────────────────────────── members.md 충돌정책 (§6-2, M4) ───────────────────────────

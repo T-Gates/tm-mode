@@ -79,7 +79,7 @@ memory/
 ```
 
 - **INDEX.md (필수)** — 폴더별 "여기에 넣는 것" 설명을 표로 유지. 새 폴더를 만들면 INDEX.md 갱신이 필수. 등재되지 않은 폴더는 주입·탐색 대상에서 누락된다. (install.py가 스캐폴딩하는 기본 INDEX.md 표는 `install_lib._INDEX_MD` 참조.)
-- **members.md (필수)** — 멤버 영문 이름은 시스템 계정명(`$USER`)이 아니라 이 파일에 등재된 이름이다. 코드·훅·스킬은 이름을 하드코딩하지 말고 이 파일을 참조해야 한다(필수). 영문 이름은 **소문자·팀 내 고유**(폴더명·frontmatter가 이 이름을 그대로 쓴다). 멤버 항목 라인 포맷(reference 구현, §4.4와 정합): `- <name>  <!-- id: <identity> -->`. `id` 주석은 install.py가 동일인/타인을 결정적으로 가르는 데 쓰며(§4.4 충돌 정책) 없어도 호환된다. members.md의 추가 필드(역할·연락) 상세 포맷은 v0.2 확정(예약).
+- **members.md (필수)** — 멤버 영문 이름은 시스템 계정명(`$USER`)이 아니라 이 파일에 등재된 이름이다. 코드·훅·스킬은 이름을 하드코딩하지 말고 이 파일을 참조해야 한다(필수). 영문 이름은 **소문자·팀 내 고유**(폴더명·frontmatter가 이 이름을 그대로 쓴다). 멤버 항목 라인 포맷(reference 구현, §4.4와 정합): `- <name>  <!-- id: <identity> -->`. `id` 주석은 install.py가 동일인/타인을 결정적으로 가르는 데 쓰며(§4.4 충돌 정책) 없어도 호환된다. 멤버 **역할(role)**은 members.md가 아니라 `team.config.json`의 `members` 배열에 둔다(L2-A2, Jane 결정 2026-06-16): `members: [{name, role?}]` — 각 멤버가 install 시 자기 `name` 엔트리만 upsert(각자 upsert)하며 타인 엔트리는 무접촉. `role`은 권장 어휘(developer/pm/designer/…) 또는 자유문자열, 생략 가능. 빈 배열·`members` 키 없음도 valid(기존 0.1/0.2 config 무회귀). ⚠️ `members` 블록은 role **판정**(`config_is_valid`)과 완전 분리 — 스키마 위반은 `[warn]`만 발화하고 도입자/팀원 판정을 뒤집지 않는다. members.md의 연락 필드 상세 포맷은 v0.2 확정(예약).
 - **sessions/<이름>/** — 세션로그(`YYYY-MM-DD.md`) 외 보조 파일을 둘 수 있다(주입·검사 대상 아님). 단 **`YYYY-MM-DD`로 시작하는 `.md` 파일명은 세션로그 네임스페이스로 예약**되어 보조 파일에 쓸 수 없다(`-late` 등 분할 파일은 §1.3 위반 검사 대상). 네임스페이스 판정: stem 길이 ≥10, `stem[:4]` 숫자, `stem[4]=='-'`, `stem[7]=='-'` (reference: `teammode._is_session_log_name`).
 - **decisions/** — "확정된" 결정만. 논의 중인 사안은 세션로그·회의록에 머문다.
 
@@ -383,8 +383,9 @@ verbs: on | off | log | context | pull | commit | update | issue
 
 - 전원 세션로그·INDEX·active 상태를 긁어 출력. **요약 안 함** — frontmatter의 summary/date를 그대로 옮길 뿐.
 - `_collect_members`: 멤버별 최근 1파일(파일명=작업일 사전식 정렬)에서 `{author, date, summary, file}`. 로그 0개 멤버는 건너뜀. summary 없는 구 로그는 summary=""(전문 폴백 금지, §1.6).
-- **텍스트 모드**: `=== teammode context ===` / `state: on (active)|off` / `--- INDEX ---` / `--- members … ---`(멤버별 summary 라인 + file 경로).
-- **`--json` 모드**: `{"state": "on"|"off", "index": <INDEX.md 전문>, "members": [{author,date,summary,file}, …]}`. 스킬·install verify가 파싱하는 구조화 출력. exit 0.
+- **역할 보강(L2-A2)**: `team.config.json`의 `members` 배열에서 `author`로 매칭한 `role`을 각 멤버에 보강한다(config 미등재·role 생략 시 `role=None`). config 부재·손상이어도 무크래시(role 전부 None).
+- **텍스트 모드**: `=== teammode context ===` / `state: on (active)|off` / `--- INDEX ---` / `--- members … ---`(멤버별 summary 라인 + file 경로). role 있으면 멤버 식별자를 `이름(role)`로 표기, 없으면 이름만.
+- **`--json` 모드**: `{"state": "on"|"off", "index": <INDEX.md 전문>, "members": [{author,date,summary,file,role}, …]}`(`role`은 string 또는 null). 스킬·install verify가 파싱하는 구조화 출력. exit 0.
 
 ### 3.4 pull / commit / update (git 동기화 — `--root` 필수)
 
@@ -769,7 +770,7 @@ provider별 상수 스키마 상세는 v0.2 확정(예약).
 - [ ] 동일 provider 다중 인스턴스·역할 중복 provider의 정규 서버명 표현(정규 서버명=provider 식별자 결정의 잔여 한계).
 - [ ] `team.config.json services`의 provider별 상수 스키마(§7.1).
 - [ ] `providers/<name>.json` 매핑표 스키마(§7.3).
-- [ ] members.md 상세 포맷(역할·연락 필드, §1.1).
+- [x] 멤버 역할 필드 — `team.config.json` `members: [{name, role?}]`로 확정(L2-A2, 각자 upsert). members.md 연락 필드 포맷은 여전히 v0.2 예약.
 - [ ] install role의 `--json` 출력 스키마(§5.2 우회 해소).
 - [ ] tm-onboard L2를 별도 스킬(`tm-connect`?)로 더 쪼갤지.
 

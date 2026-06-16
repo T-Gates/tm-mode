@@ -341,6 +341,46 @@ def _collect_members(team_root: Path) -> list:
     return members
 
 
+def _sanitize_line(text: str) -> str:
+    """한 줄 표기용 새니타이즈 — 개행·제어문자를 공백으로 치환(P2-1 방어 이중화).
+
+    role 같은 자유문자열을 context 텍스트 라인에 박을 때, `\\n`/`\\r`/널 등 control char 가
+    남아 있으면 멤버 라인을 쪼개 가짜 라인(`- FAKE [...] summary: ...`)을 주입할 수 있다.
+    어휘(한글·공백)는 보존하고 라인 구조를 깨는 문자만 공백으로 바꾼다.
+    """
+    return "".join(" " if (c == "\x7f" or ord(c) < 0x20) else c for c in str(text))
+
+
+def _member_roles(team_root: Path) -> dict:
+    """team.config.json 의 members 배열 → {name: role} (A2.3 — context 역할 표시).
+
+    config 읽기는 비치명: 부재·파싱실패·타입불일치·members 키 없음이면 빈 dict.
+    엔진은 추측·검증하지 않는다 — 형식이 이상하면 그 엔트리만 건너뛴다(context 동사는
+    role 판정과 무관, 출력 보강일 뿐). 어떤 예외도 삼킨다.
+    """
+    try:
+        cfg_path = team_root / "team.config.json"
+        if not cfg_path.is_file():
+            return {}
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            return {}
+        members = cfg.get("members")
+        if not isinstance(members, list):
+            return {}
+        roles = {}
+        for entry in members:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            role = entry.get("role")
+            if isinstance(name, str) and isinstance(role, str) and role.strip():
+                roles[name] = role
+        return roles
+    except Exception:  # noqa: BLE001 — config 읽기는 context 수집을 막지 않는다
+        return {}
+
+
 def _read_index(team_root: Path) -> str:
     """INDEX.md 내용을 그대로 읽는다(없으면 빈 문자열). 스펙 §2.1 단일 진입점."""
     index = team_root / "memory" / "INDEX.md"
@@ -360,6 +400,11 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
     """
     index_text = _read_index(team_root)
     members = _collect_members(team_root)
+    # config.members 의 role 을 author 로 매칭해 보강 (A2.3 — 죽은필드 방지).
+    # role 없는 멤버(config 미등재 or role 생략)는 role=None — 출력에서 생략된다.
+    roles = _member_roles(team_root)
+    for m in members:
+        m["role"] = roles.get(m["author"])
     active = (team_root / ".acme-active").exists()
     state = "on (active)" if active else "off"
 
@@ -378,7 +423,12 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
     if members:
         for m in members:
             summ = m["summary"] if m["summary"] else "(summary 없음 — 구로그)"
-            lines.append(f"- {m['author']} [{m['date']}] summary: {summ}")
+            # role 있으면 "이름(role)" 표기 (A2.3) — 없으면 이름만(무회귀).
+            # role 을 한 줄로 새니타이즈(개행·제어문자 → 공백): config 검증을 우회한
+            # role 이라도 텍스트 출력에서 가짜 멤버 라인을 주입하지 못하게 방어 이중화(P2-1).
+            who = (f"{m['author']}({_sanitize_line(m['role'])})"
+                   if m.get("role") else m["author"])
+            lines.append(f"- {who} [{m['date']}] summary: {summ}")
             lines.append(f"    file: {m['file']}")
     else:
         lines.append("(세션로그 없음 — summary 수집 대상 0)")
