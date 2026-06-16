@@ -1,0 +1,67 @@
+{
+  "_note": "team.config.json 초안 v0.1-draft (2026-06-12 새벽). Acme fixture 기준 — public example엔 placeholder로 치환. 빈 슬롯은 키 자체를 생략하면 됨 (1급 시민).",
+  "spec_version": "0.1",
+
+  "team": {
+    "name": "Acme",
+    "description": "팀 17기 3인 팀 — 매장 에어컨 온도 최적화(Acme)",
+    "locale": "ko",
+    "timezone": "Asia/Seoul",
+    "admin_contact": "Jane (CTO)",
+    "members_file": "memory/team/members.md"
+  },
+
+  "product": {
+    "name": "acme"
+  },
+
+  "groups": null,
+
+  "services": {
+
+    "issues": {
+      "provider": "linear",
+      "url": "https://linear.app/acme/team/T/active",
+      "issue_prefix": "TG",
+      "states": {
+        "_note": "워크플로 상태 UUID — acme-create-tasks/SKILL.md:28-30에서 이관 (6/22)",
+        "backlog": "TODO-uuid",
+        "in_progress": "TODO-uuid",
+        "done": "TODO-uuid"
+      }
+    },
+
+    "chat": {
+      "provider": "slack",
+      "bot_name": "Acme Bot",
+      "channels": {
+        "announce": "C0B70642P3L",
+        "alerts": "C0B71DQ6K8U",
+        "agent": "C0B6GBBC3HV",
+        "daily": "C0B71DG9E76",
+        "knowledge": "C0B91G9NN0K"
+      }
+    },
+
+    "docs": {
+      "provider": "notion",
+      "docs_db": "33c3c9d7-2e50-809e-bcaf-fac2c5ff70fb",
+      "key_db": "3563c9d7-2e50-8038-9866-fed525f605ca",
+      "secret_page": "TODO-acme-credentials/SKILL.md:12에서 이관",
+      "account_db": "TODO-동일"
+    },
+
+    "calendar": {
+      "provider": "google",
+      "key_name": "ACME_GCAL_ID",
+      "categories": [
+        { "name": "팀", "colorId": "TODO" },
+        { "name": "팀", "colorId": "TODO" },
+        { "name": "개인", "colorId": "TODO" }
+      ]
+    }
+  },
+
+  "persona_file": "infra/persona.md",
+  "banner_file": "memory/banner.txt"
+}
