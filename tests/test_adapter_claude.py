@@ -218,12 +218,13 @@ def test_args_passed_through(env):
     assert "acme-allow" in cmd
 
 
-# ── timeout 단위 변환 (manifest ms → settings.json 초) ──
+# ── timeout 단위 — manifest 초 → settings.json 초 (변환 없음) ──
 #
-# P0 hook hang 버그: manifest 의 timeout 은 밀리초(5000=5초). Claude Code 의 hook
-# timeout 은 **초** 해석이므로 어댑터가 ms→s 변환해서 settings.json 에 써야 한다(codex
-# 어댑터와 대칭). 변환 누락 시 5000 이 그대로 들어가 5000초(83분) → git hang 시 훅이
-# 안 끊긴다.
+# manifest.timeout 은 이제 **초** 단위. Claude Code hook timeout 도 초이므로
+# 어댑터가 변환 없이 그대로 settings.json 에 쓴다(드리프트 원천 차단).
+#
+# P1 회귀: 기존 settings.json 에 다른 timeout 값이 박혀 있어도 sync 가 manifest
+# 새 값으로 갱신(upsert)한다. command 매칭만 보고 timeout 변경을 놓치던 버그 방지.
 
 def _timeout_for(settings, event):
     for entry in settings["hooks"].get(event, []):
@@ -233,38 +234,79 @@ def _timeout_for(settings, event):
     return None
 
 
-def test_timeout_converted_ms_to_seconds(env):
+def test_timeout_written_as_seconds(env):
+    """manifest timeout=3(초) → settings.json 에 3이 그대로 기록된다."""
     env.write_manifest([
         {"event": "SessionStart", "script": "session-start.py",
-         "timeout": 5000, "mode": "on"},
+         "timeout": 3, "mode": "on"},
     ])
     env.make_adapter().sync(mode="on")
     settings = _load(env.settings)
-    # 5000ms → 5s (초로 기록돼야 함, 5000 그대로면 버그)
-    assert _timeout_for(settings, "SessionStart") == 5
+    assert _timeout_for(settings, "SessionStart") == 3
 
 
-def test_timeout_sub_second_floors_to_min_1s(env):
-    # 3000ms → 3s; 작은 값도 최소 1초 보장(max(1, ms//1000))
+def test_timeout_various_values(env):
+    """manifest timeout=2(초) → settings.json 에 2가 그대로 기록된다."""
     env.write_manifest([
         {"event": "PreToolUse",
          "match": {"mcp": {"server": "linear", "tool": "create_issue"}},
          "script": "confirm-action.py", "args": "allow",
-         "timeout": 3000, "fallback": "runtime"},
+         "timeout": 2, "fallback": "runtime"},
     ])
     env.make_adapter().sync(mode="on")
     settings = _load(env.settings)
-    assert _timeout_for(settings, "PreToolUse") == 3
+    assert _timeout_for(settings, "PreToolUse") == 2
 
 
 def test_no_timeout_when_manifest_omits(env):
-    # timeout 미지정이면 settings 에도 timeout 키 없음(종전 동작 보존)
+    """timeout 미지정이면 settings 에도 timeout 키 없음(종전 동작 보존)."""
     env.write_manifest([
         {"event": "SessionStart", "script": "session-start.py", "mode": "on"},
     ])
     env.make_adapter().sync(mode="on")
     settings = _load(env.settings)
     assert _timeout_for(settings, "SessionStart") is None
+
+
+def test_timeout_upserted_when_existing_differs(env):
+    """P1 회귀: 기존 settings.json 에 timeout=5000 이 박혀 있을 때
+    sync 가 manifest 새 값(3초)으로 갱신한다(command 동일이어도 upsert)."""
+    # 먼저 timeout=5000 짜리 훅을 직접 심어둔다 (구버전 설치 시뮬레이션)
+    env.write_manifest([
+        {"event": "SessionStart", "script": "session-start.py",
+         "timeout": 3, "mode": "on"},
+    ])
+    a = env.make_adapter()
+    a.sync(mode="on")
+    # 저장된 settings 에서 timeout 을 5000 으로 강제로 교체 (구버전 잔존 시뮬레이션)
+    settings = _load(env.settings)
+    for entry in settings["hooks"].get("SessionStart", []):
+        for h in entry.get("hooks", []):
+            h["timeout"] = 5000
+    env.settings.write_text(json.dumps(settings, indent=2) + "\n")
+
+    # 재sync → timeout 이 3 으로 갱신돼야 한다
+    env.make_adapter().sync(mode="on")
+    settings2 = _load(env.settings)
+    assert _timeout_for(settings2, "SessionStart") == 3
+
+
+def test_timeout_removed_when_manifest_drops(env):
+    """manifest 에서 timeout 이 사라지면 기존 settings 의 timeout 키도 제거된다."""
+    # 먼저 timeout 있는 훅 등록
+    env.write_manifest([
+        {"event": "SessionStart", "script": "session-start.py",
+         "timeout": 3, "mode": "on"},
+    ])
+    env.make_adapter().sync(mode="on")
+    assert _timeout_for(_load(env.settings), "SessionStart") == 3
+
+    # timeout 없는 manifest 로 재sync
+    env.write_manifest([
+        {"event": "SessionStart", "script": "session-start.py", "mode": "on"},
+    ])
+    env.make_adapter().sync(mode="on")
+    assert _timeout_for(_load(env.settings), "SessionStart") is None
 
 
 # ── off 모드: mode:"on" 훅 비활성 ──

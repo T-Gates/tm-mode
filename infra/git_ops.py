@@ -18,7 +18,8 @@ import subprocess
 from dataclasses import dataclass
 
 # git 네트워크 작업의 기본 타임아웃(초) — hang 으로 작업을 막지 않게 한다.
-DEFAULT_TIMEOUT = 5
+# 2초: pull/fetch 가 2초 초과면 비치명 실패(로컬 commit/checkout 도 2초 충분).
+DEFAULT_TIMEOUT = 2
 
 
 @dataclass
