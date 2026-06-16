@@ -107,13 +107,19 @@ _run_git = run_git
 
 
 def kill_group(proc: subprocess.Popen) -> None:
-    """프로세스 그룹 전체(손자 포함)를 종료. 실패해도 예외 전파 없음."""
+    """프로세스 그룹/트리 전체(손자 포함)를 종료. 실패해도 예외 전파 없음."""
     try:
-        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        if os.name == "nt":
+            # 윈도우: setsid/killpg 부재. git 이 띄운 손자(git-remote-https·credential
+            # helper)가 stdout 파이프를 잡은 채 남으면 communicate 가 hang(윈도우 도그푸딩서
+            # UserPromptSubmit 훅 7분 멈춤으로 실측). PID 트리 전체(/T)를 강제 종료한다.
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=5)
+        elif hasattr(os, "killpg") and hasattr(os, "getpgid"):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         else:
             proc.kill()
-    except (ProcessLookupError, OSError):
+    except (ProcessLookupError, OSError, subprocess.SubprocessError):
         try:
             proc.kill()
         except OSError:
