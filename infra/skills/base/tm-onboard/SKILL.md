@@ -31,9 +31,10 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 - **멤버 이름**: 세션로그에 author로 남는 영문 이름. `git config user.name`을 *제안값*으로 보여주되 **반드시 사용자 확인 후** `--member-name`에 넣는다. ⚠️ git 설정·계정명·이메일(예: `bob`)이 사용자가 원하는 팀 멤버명(예: `jane-doe`)과 다를 수 있다 — 추론값을 임의 확정 금지.
 - **팀명**(도입자만): 기본은 repo명. "팀 이름 이대로 쓸까요?" 확인. (현재 install.py는 team.name 인자가 없어 repo명 자동 → 바꾸려면 셋업 후 `team.config.json`의 `team.name` 수정. 백로그: `--team-name`.)
 - **org/레포 위치**(도입자가 레포를 **새로 만드는** 경우만): 어느 GitHub org·계정에 만들지 **반드시 확인**한다 — 개인 계정 vs 팀 org(예: `Acme`). 임의 선택 금지. `gh repo create`/template 단계라 install 이전이지만, 온보딩이 레포 생성부터 하면 여기서 같이 확인한다.
+- **역할·직군**(`team.config.json` members 에 저장): 팀 내 **직책**(팀장/팀원)과 **직군**(developer/pm/designer 등)을 묻고 `--role` 로 저장한다. ⚠️ install 의 **도입자/팀원 자동판정**(config 유효성 = 팀을 셋업했나/합류했나)과는 **다른 축**이다 — 그건 role 판정용이고, 이건 *사람의 직책·직군*이다. 한 문자열로 합쳐도 된다(예: `팀장/개발`, `팀원/디자인`). 초기 단계라 단일 자유필드(직책·직군 분리 스키마는 백로그).
 
 ```bash
-python infra/install.py --root . --member-name <영문이름> --yes
+python infra/install.py --root . --member-name <영문이름> --role <직책/직군> --yes
 ```
 - install.py가 함: preflight → 감지 → role 자동 → scaffold(`memory/INDEX.md`·`memory/team/members.md`·`memory/team/sessions/<이름>/`·도입자면 빈 services config) → 훅 sync(**실 settings.json에 write**) → env 주입 → verify(`on` → active 마커).
 - `--member-name`: 권장. 생략 시 git user.name 제안. **팀원은 이름 충돌 회피 위해 명시 권장.**
