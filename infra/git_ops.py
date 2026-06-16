@@ -100,7 +100,8 @@ def run_git(args: list, timeout: int):
     세션(setsid)으로 띄워 동일 PGID 로 묶고 타임아웃 시 killpg 로 손자까지 일괄 종료한다.
     """
     kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                  stdin=subprocess.DEVNULL, text=True, env=git_env())
+                  stdin=subprocess.DEVNULL, text=True,
+                  encoding="utf-8", errors="replace", env=git_env())
     if hasattr(os, "setsid"):
         kwargs["start_new_session"] = True  # 자식을 새 프로세스 그룹 리더로
     # credential.interactive=false: 자격증명 helper 의 **대화형 프롬프트**만 끈다(helper
@@ -307,6 +308,23 @@ def fetch_upstream(team_root: str, remote: str = "upstream",
     if rc == 0:
         return FetchResult(ok=True, detail="fetched")
     return FetchResult(ok=False, detail=((err or out) or "").strip()[:200])
+
+
+def has_common_ancestor(team_root: str, upstream_ref: str = "upstream/main",
+                        timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """HEAD 와 upstream_ref 사이에 공통 조상이 있는지 확인. 알 수 없으면 True(보수적).
+
+    `git merge-base --is-ancestor` 대신 `git merge-base HEAD <ref>` 를 써서 exit code 로
+    판정한다 — exit 0 = 공통 조상 있음, exit 1 = 없음(unrelated histories).
+    GitHub template 으로 생성한 레포는 upstream 과 공통 조상이 0이라 False.
+    """
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "merge-base", "HEAD", upstream_ref],
+            timeout=timeout)
+        return rc == 0
+    except (OSError, subprocess.SubprocessError):
+        return True  # 알 수 없으면 보수적으로 True(억제 안 함)
 
 
 def count_behind(team_root: str, upstream_ref: str = "upstream/main",

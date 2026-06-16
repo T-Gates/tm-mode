@@ -107,7 +107,7 @@ def _run_engine(root, *argv, env=None):
 def test_git_ops_exposes_fetch_and_sync():
     for name in ("fetch_upstream", "count_behind", "upstream_changes",
                  "sync_from_upstream", "detect_default_branch", "diff_paths",
-                 "SYNC_PATHS"):
+                 "has_common_ancestor", "SYNC_PATHS"):
         assert hasattr(go, name), f"git_ops 에 {name} 없음"
 
 
@@ -236,11 +236,53 @@ def test_sync_non_git_no_raise(tmp_path):
 
 # ── on 동사: fetch 자동, merge/sync 금지 ──
 
-def test_on_fetches_upstream_and_notifies(team_with_upstream):
+def test_on_fetches_upstream_no_misleading_behind_for_unrelated(team_with_upstream):
+    """unrelated histories(GitHub template 도입 레포) 에서 on 이 성공하고
+    "N커밋 앞섭니다" 오알림을 발화하지 않아야 한다 (P2 버그 수정).
+
+    공통 조상이 없으면 git rev-list HEAD..upstream 이 upstream 의 모든 커밋을 반환해
+    뻥튀기된 behind 카운트가 찍혔다. has_common_ancestor() 가 False 면 알림을 억제한다.
+    team_with_upstream fixture 는 의도적으로 unrelated histories 로 구성됐으므로
+    이 fixture 에서 "커밋 앞섭니다" 메시지가 없어야 한다.
+    """
     r = _run_engine(team_with_upstream.team, "on")
     assert r.returncode == 0, r.stderr
     combined = r.stdout + r.stderr
-    assert "update" in combined.lower() or "템플릿" in combined
+    # unrelated histories → 오알림 억제
+    assert "앞섭니다" not in combined, (
+        "unrelated histories 인데 'N커밋 앞섭니다' 알림이 발화됨 — P2 수정 확인")
+
+
+def test_has_common_ancestor_false_for_unrelated(team_with_upstream):
+    """unrelated histories(GitHub template 레포) 에서 has_common_ancestor 가 False."""
+    # fetch 먼저(refs/remotes/upstream/main 생성)
+    go.fetch_upstream(str(team_with_upstream.team), remote="upstream")
+    result = go.has_common_ancestor(str(team_with_upstream.team), "upstream/main")
+    assert result is False, (
+        "unrelated histories 인데 has_common_ancestor=True — P2 수정 확인")
+
+
+def test_has_common_ancestor_true_for_related(tmp_path):
+    """공통 조상이 있으면 has_common_ancestor 가 True."""
+    # 단일 레포 안에서 HEAD 와 로컬 ref 가 공통 조상을 가지는 경우를 모사.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "checkout", "-b", "main")
+    (repo / "a.txt").write_text("v1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    # 로컬 브랜치 하나 더 만들어 공통 조상을 공유하게 함
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("v2\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "feature ahead")
+    # main 을 "upstream/main" 처럼 사용: HEAD=feature, ref=main
+    _git(repo, "checkout", "main")
+    result = go.has_common_ancestor(str(repo), "feature")
+    assert result is True, "related histories 인데 has_common_ancestor=False"
 
 
 def test_on_does_NOT_auto_sync(team_with_upstream):

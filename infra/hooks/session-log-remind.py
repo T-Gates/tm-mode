@@ -22,6 +22,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -77,10 +78,10 @@ def main() -> int:
     # 프롬프트 카운터 (에이전트별 임시 파일)
     agent = data.get("agent", "unknown")
     counter_file = os.path.join(
-        os.environ.get("TMPDIR", "/tmp"), f"teammode-prompt-counter-{agent}")
+        tempfile.gettempdir(), f"teammode-prompt-counter-{agent}")
     try:
         count = int(open(counter_file).read().strip())
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError, OSError):
         count = 0
     count += 1
 
@@ -92,7 +93,7 @@ def main() -> int:
 
     base_guide = (
         " 세션 로그를 팀 루트의 memory/team/sessions/<이름>/ 에 기록하세요. "
-        "<이름>은 members.md의 영문 이름($USER 아님). "
+        "<이름>은 members.md의 영문 이름(OS 사용자명 아님). "
         "파일은 하루 하나(YYYY-MM-DD.md, -late 등 분리 금지), "
         "frontmatter(author/date/summary) 필수. "
         "날짜는 06시 컷 — 위 시각이 00~06시면 전날 파일, 06시 이후면 오늘 파일. "
@@ -108,8 +109,11 @@ def main() -> int:
         context = time_line + "\n" + base_guide.lstrip()
         count = 0
 
-    with open(counter_file, "w") as f:
-        f.write(str(count))
+    try:
+        with open(counter_file, "w") as f:
+            f.write(str(count))
+    except OSError:
+        pass  # 카운터 파일 쓰기 실패는 무해 — 리마인드 로직을 막지 않는다
 
     if context:
         print(json.dumps({

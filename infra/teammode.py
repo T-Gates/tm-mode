@@ -110,6 +110,11 @@ def _maybe_notify_upstream(team_root: Path) -> None:
         res = _git_ops.fetch_upstream(str(team_root), remote=UPSTREAM_REMOTE)
         if not res.ok:
             return  # 미설정/오프라인/타임아웃 — 조용히 패스(알림 없음)
+        # GitHub template 으로 생성한 레포는 upstream 과 공통 조상이 없어(unrelated
+        # histories) `git rev-list HEAD..upstream` 이 upstream 의 모든 커밋을 반환한다.
+        # behind 숫자가 실제 "뒤처진 커밋 수"를 뜻하지 않으므로 알림을 억제한다.
+        if not _git_ops.has_common_ancestor(str(team_root), UPSTREAM_REF):
+            return  # unrelated histories — 파일 동기화(update)가 올바른 방법임
         behind = _git_ops.count_behind(str(team_root), UPSTREAM_REF)
         if behind <= 0:
             return
