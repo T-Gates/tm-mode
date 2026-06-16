@@ -239,6 +239,17 @@ class Adapter(BaseAdapter):
 
         claude 와 동일 계약(services 읽기·정규명 등록·별칭 항등·멱등·빈 슬롯 [info])이되,
         등록 포맷만 Codex TOML 블록으로 재정의.
+
+        ⚠️ v0.1 한계 (N6, §7.4 — 의도된 범위 제약):
+          여기서 쓰는 [mcp_servers.<name>] 블록은 `_teammode_managed`·`_canonical_server`·
+          `_register_hint` 만 담은 **command 없는 placeholder** 다. Codex 런타임이 이 항목을
+          실 MCP 서버로 띄우려 하면 실행 command 부재로 에러날 수 있다(거부 가능).
+            - teammode 는 MCP 서버를 제작·유지하지 않는다(§7.4) → 실 command 는 데이터로 안 둔다.
+            - wire(install.py) 가 install-mcp 를 실 적용에 노출하더라도, **wire 는 등록(별칭 보장,
+              정규명==별칭 항등)까지만** 책임진다. **실행 command 는 v0.1 미보장** — Codex 로 실제
+              서버를 띄우려면 사용자가 이 블록에 `command`/`args` 를 직접 보강해야 한다(v0.2 이월).
+          즉 이 메서드의 계약은 "별칭 슬롯이 config.toml 에 멱등 존재함" 까지이며, 그 슬롯이
+          기동 가능한 서버 정의인지는 v0.1 범위 밖이다(register_hint 가 사람/LLM 에게 안내).
         """
         import providers as _prov  # 부모와 동일 모듈(infra/ on sys.path)
         changes = []

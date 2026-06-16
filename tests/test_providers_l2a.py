@@ -373,3 +373,141 @@ def test_run_lint_includes_secret_check():
     report = CHECK.run_lint(_REPO_ROOT)
     names = [c[0] for c in report.checks]
     assert "토큰키 추적 거부" in names
+
+
+# ─────────── N4: lint git-scan 분기 명시 회귀테스트 ───────────
+#
+# lint_no_tracked_secrets 의 files=None 경로는 다섯 분기를 가진다. 기존엔
+# test_secret_lint_passes_clean_repo(실 레포 GREEN)로만 암묵 커버 → 각 분기를
+# 명시 잠금한다. tmp git repo 격리(실 레포·실 HOME 무접촉).
+#
+# 각 테스트는 해당 분기를 보정 전(제거)으로 돌리면 RED 되게 설계(mutation 의미):
+#   ① git tracked 스캔 제거 → ① 테스트 RED
+#   ② others --exclude-standard 스캔 제거 → ② 테스트 RED
+#   ③ --exclude-standard 제거(gitignored 포함) → ③ 테스트 RED
+#   ④ rglob fallback 제거 → ④ 테스트 RED
+#   ⑤ tracked 스캔 제거(force-add 는 tracked 분기로 잡힘) → ⑤ 테스트 RED
+import subprocess as _sp
+
+
+def _git(root, *args):
+    _sp.run(["git", "-C", str(root)] + list(args),
+            check=True, capture_output=True, text=True)
+
+
+def _git_init(root):
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@example.test")
+    _git(root, "config", "user.name", "tester")
+
+
+_PLAINTEXT_SECRET = '{"api_token": "xoxb-REAL-SECRET-abc123"}'
+
+
+def test_secret_lint_branch1_git_tracked(tmp_path):
+    """① git tracked secret 파일 → 발화.
+
+    mutation: ls-files(tracked) 스캔 분기 제거 시 이 파일이 후보에서 빠져 RED.
+    ⚠️ rglob fallback(분기 ④)이 가리지 않게, untracked-not-ignored 무해 파일을
+    하나 둬서 scan 이 비지 않게 한다(others 스캔이 README.md 를 잡음 → `if not scan`
+    거짓 → fallback 미진입). 그러면 secret 발화의 유일 경로는 tracked 스캔뿐 →
+    tracked 분기 제거가 곧 RED 가 된다.
+    """
+    _git_init(tmp_path)
+    (tmp_path / "README.md").write_text("hi\n", encoding="utf-8")  # untracked, 무해
+    f = tmp_path / "team.config.local.json"
+    f.write_text(_PLAINTEXT_SECRET, encoding="utf-8")
+    _git(tmp_path, "add", "team.config.local.json")  # tracked(staged)
+    # tracked 스캔에만 잡힘을 명시: others 에는 secret 이 안 보인다.
+    others = _sp.run(["git", "-C", str(tmp_path), "ls-files",
+                      "--others", "--exclude-standard"],
+                     capture_output=True, text=True).stdout
+    assert "team.config.local.json" not in others
+    name, ok, detail = CHECK.lint_no_tracked_secrets(tmp_path)
+    assert not ok
+    assert "team.config.local.json" in detail
+
+
+def test_secret_lint_branch2_untracked_not_ignored(tmp_path):
+    """② untracked-not-ignored secret → 발화.
+
+    mutation: ls-files --others --exclude-standard 스캔 분기 제거 시,
+    아직 add 안 된(=tracked 아닌) 이 파일이 후보에서 빠져 RED.
+    """
+    _git_init(tmp_path)
+    # tracked 무해 파일 하나 — scan 이 비지 않게 해 rglob fallback(분기 ④)이
+    # 이 케이스를 가리지 않게 한다. 그러면 secret 발화의 유일 경로는 others 스캔뿐.
+    (tmp_path / "README.md").write_text("hi\n", encoding="utf-8")
+    _git(tmp_path, "add", "README.md")
+    # add 하지 않음(untracked) + .gitignore 에도 없음(not-ignored).
+    f = tmp_path / "team-credentials.json"
+    f.write_text(_PLAINTEXT_SECRET, encoding="utf-8")
+    # tracked 스캔에는 안 잡힘을 명시 — others 분기에서만 잡혀야 한다.
+    tracked = _sp.run(["git", "-C", str(tmp_path), "ls-files"],
+                      capture_output=True, text=True).stdout
+    assert "team-credentials.json" not in tracked
+    name, ok, detail = CHECK.lint_no_tracked_secrets(tmp_path)
+    assert not ok
+    assert "team-credentials.json" in detail
+
+
+def test_secret_lint_branch3_gitignored_excluded(tmp_path):
+    """③ gitignored secret → 무발화(제외 확인).
+
+    mutation: --exclude-standard 제거(gitignored 포함)하면 이 파일이 후보에
+    들어와 RED(=잘못 발화). 즉 gitignore 된 외부 캐시(.codex-ref 등) 제외 보장.
+    """
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text("*credentials*\n", encoding="utf-8")
+    f = tmp_path / "my-credentials.json"
+    f.write_text(_PLAINTEXT_SECRET, encoding="utf-8")  # gitignored, not force-added
+    # tracked·others 둘 다에서 빠짐을 명시.
+    tracked = _sp.run(["git", "-C", str(tmp_path), "ls-files"],
+                      capture_output=True, text=True).stdout
+    others = _sp.run(["git", "-C", str(tmp_path), "ls-files",
+                      "--others", "--exclude-standard"],
+                     capture_output=True, text=True).stdout
+    assert "my-credentials.json" not in tracked
+    assert "my-credentials.json" not in others
+    name, ok, detail = CHECK.lint_no_tracked_secrets(tmp_path)
+    assert ok, f"gitignored secret 이 잘못 발화: {detail}"
+
+
+def test_secret_lint_branch4_non_git_rglob_fallback(tmp_path):
+    """④ 비-git tmp dir + secret → rglob fallback 발화.
+
+    mutation: rglob fallback 제거 시 비-git 디렉토리에서 후보가 비어 RED.
+    """
+    # .git 없음 — ls-files 가 비-0 종료 → scan 빈 채로 fallback.
+    assert not (tmp_path / ".git").exists()
+    f = tmp_path / "nested" / "team-credentials.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(_PLAINTEXT_SECRET, encoding="utf-8")
+    name, ok, detail = CHECK.lint_no_tracked_secrets(tmp_path)
+    assert not ok
+    assert "team-credentials.json" in detail
+
+
+def test_secret_lint_branch5_force_added_ignored(tmp_path):
+    """⑤ gitignore 됐지만 force-add(git add -f)된 secret → 발화.
+
+    tracked 는 ignore 무관 — ls-files 가 force-add 된 파일을 나열하므로 잡힌다.
+    mutation: tracked(ls-files) 스캔 분기 제거 시, 이 파일은 others(ignored 라
+    제외)에도 안 잡혀 후보에서 완전히 빠져 RED.
+    """
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text("*secret*.json\n", encoding="utf-8")
+    f = tmp_path / "team-secret.json"
+    f.write_text(_PLAINTEXT_SECRET, encoding="utf-8")
+    _git(tmp_path, "add", "-f", "team-secret.json")  # ignore 무시 강제 추적
+    # tracked 에는 있고 others 에는 없음(ignored)을 명시.
+    tracked = _sp.run(["git", "-C", str(tmp_path), "ls-files"],
+                      capture_output=True, text=True).stdout
+    others = _sp.run(["git", "-C", str(tmp_path), "ls-files",
+                      "--others", "--exclude-standard"],
+                     capture_output=True, text=True).stdout
+    assert "team-secret.json" in tracked
+    assert "team-secret.json" not in others
+    name, ok, detail = CHECK.lint_no_tracked_secrets(tmp_path)
+    assert not ok
+    assert "team-secret.json" in detail

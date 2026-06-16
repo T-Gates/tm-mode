@@ -111,9 +111,9 @@
 - ✅ N1 (D 해소) claude install-mcp 멱등 시 `[ok] 변경없음(N provider)` / 빈슬롯만 `[info]`.
 - ✅ N2 (D 해소) codex install-mcp changed 반환값 반영 — 변경 시만 `[mcp] 등록`, claude와 대칭.
 - ✅ N3 (D 해소) codex `mcp_config_path=_SEALED` 봉인 + 유닛테스트(부모 install_mcp→NotImplementedError, _read_mcp_config→{}).
-- N4 lint 신규 분기(git-scan/.codex-ref제외/비-git fallback/force-add포착) 명시 회귀테스트 부재 → git init+force-add·비-git·gitignored 각 케이스 잠금.
+- ✅ N4 (해소) lint 신규 분기(git-scan/.codex-ref제외/비-git fallback/force-add포착) 명시 회귀테스트 추가 — `tests/test_providers_l2a.py` 의 5개 `test_secret_lint_branchN_*`. 각 분기를 보정 전(제거)으로 mutation 하면 해당 테스트가 RED 됨을 실증(① tracked ② untracked-not-ignored ③ gitignored 제외 ④ 비-git rglob fallback ⑤ force-add tracked). rglob fallback 가림 방지를 위해 ①②는 무해 tracked/untracked 동반 파일로 scan 비지 않게 격리.
 - N5 codex MCP 빈슬롯`[info]`/별칭`[warn]`은 현 manifest(linear/PreToolUse=event-None drop)서 dead code → 문서화(PostToolUse MCP매처 생기면 활성).
-- N6 codex 등록 TOML이 command없는 placeholder → Codex 런타임 거부 가능(§7.4 의도된 v0.1 한계). ⚠️ D wire가 실 적용 노출하니 D에서 "wire는 등록까지만, 실행커맨드는 v0.1 미보장" 명시.
+- ✅ N6 (해소) codex 등록 TOML이 command없는 placeholder → Codex 런타임 거부 가능(§7.4 의도된 v0.1 한계). `infra/agents/codex/adapter.py` `install_mcp` docstring 에 "wire는 등록(별칭 보장)까지만, 실행커맨드는 v0.1 미보장 — Codex 로 띄우려면 사용자가 command 보강 필요" 명시. 코드 변경 없음(문서화).
 
 ## L2 범위 밖 (의도적 이월 — 부록 A.3 중 안 닫는 것)
 - 주입 스케일 분기(§1.6 ~4인/5인+) — v0.1 자동검사 대상 아님, L2 비범위.
