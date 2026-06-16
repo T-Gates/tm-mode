@@ -233,7 +233,7 @@ def _git(args, cwd) -> str | None:
         env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
         out = subprocess.run(
             ["git", *args], cwd=str(cwd), capture_output=True, text=True,
-            timeout=5, env=env)
+            encoding="utf-8", errors="replace", timeout=5, env=env)
         if out.returncode != 0:
             return None
         return out.stdout.strip() or None
@@ -251,11 +251,19 @@ def _engine_capture(argv):
     정신, P1 이중 방어). 팀 루트·settings 는 argv 의 명시 인자로만 전달된다.
     """
     passthrough = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
-                   "TZ", "PYTHONPATH", "TERM", "XDG_STATE_HOME")
+                   "TZ", "PYTHONPATH", "TERM", "XDG_STATE_HOME",
+                   # Windows 필수 — 없으면 python subprocess 기동·동작 실패.
+                   # (TEAMMODE_HOME/TGATES_HOME 만 차단하면 누수 방어 목적은 유지)
+                   "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT", "COMSPEC",
+                   "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "USERPROFILE",
+                   "HOMEDRIVE", "HOMEPATH")
     env = {k: os.environ[k] for k in passthrough if k in os.environ}
+    # encoding 명시: 자식(teammode.py)은 UTF-8 출력인데 부모가 Windows locale(cp949)로
+    # decode 하면 한글 배너/greeting 에서 UnicodeDecodeError → _readerthread 크래시.
     return subprocess.run(
         [sys.executable, str(ENGINE)] + list(argv),
-        capture_output=True, text=True, env=env, timeout=30)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=env, timeout=30)
 
 
 def _engine_call(argv) -> int:
