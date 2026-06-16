@@ -17,7 +17,14 @@ python infra/install.py --root . --register-obsidian
 ```
 
 - **install.py 가 기계적인 건 다 한다. 에이전트는 그걸 호출하고 결과를 사람 말로 옮긴다 — 단계를 손으로 재현하지 말 것.**
-- L1(세션로그·맥락주입)을 먼저 보여주고, 서비스 연결(Linear·Slack…)은 **나중**(L2, 아직 준비 중)이라고 안내.
+- L1(세션로그·맥락주입)을 먼저 보여주고, 서비스 연결(이슈 트래커·채팅·문서·캘린더)은 **나중**에 사람이 원할 때.
+
+## 서비스 연결: "연결해줘" / "서비스 붙여줘"
+역할 슬롯(issues / chat / docs / calendar)에 서비스를 붙이려면 **`tm-connect` 스킬**을 따른다(`infra/skills/base/tm-connect/SKILL.md`). tm-onboard 는 첫 가치 직후 연결을 *제안*만 하고, 실제 연결(토큰 안내·금고 저장·config 슬롯 기록·재배선)은 tm-connect 가 한다.
+
+- 발급 링크·단계·연결방식은 `providers/<provider>.json` 의 `token_guide`·`auth`·`default_scope`·`resource_fields` 를 **데이터로 읽어** 안내한다(하드코딩 금지).
+- **각자 입력(v0.1)**: 각 멤버가 자기 토큰을 직접 입력 → 로컬 금고(`infra/credentials.py`, 0600). 팀 자동공유 없음.
+- ⚠️ 평문 금고이므로 **동기화 폴더(Syncthing/Dropbox 등) 금지.**
 
 ## 안전 (필수)
 - 팀 루트는 **`--root` 명시로만.** 환경변수(`TEAMMODE_HOME` 등)를 신뢰하지 않는다.

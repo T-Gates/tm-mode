@@ -331,3 +331,93 @@ def test_lint_mode_runs_without_engine(tmp_path):
     report = check.run_lint(tmp_path)
     assert hasattr(report, "checks")
     assert isinstance(report.checks, list)
+
+
+# ──────────────────────────────────────────────────────────────────
+# 5. 스킬 본문 정규형 린트 (K7 — SPEC §2.12·§7.3, L2-H H.3)
+# ──────────────────────────────────────────────────────────────────
+
+def _write_skill(root, name, body):
+    d = root / "infra" / "skills" / "base" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(body, encoding="utf-8")
+    return d / "SKILL.md"
+
+
+def test_skill_lint_passes_on_role_vocabulary(tmp_path):
+    _write_skill(tmp_path, "good",
+                 "# good\n이슈 트래커 MCP 에서 조회하고 채팅에 알린다.\n")
+    name, ok, detail = check.lint_skill_canonical(tmp_path)
+    assert ok is True, detail
+
+
+def test_skill_lint_rejects_mcp_direct_notation(tmp_path):
+    _write_skill(tmp_path, "bad_mcp",
+                 "# bad\nmcp__linear__list_issues 로 조회한다.\n")
+    name, ok, detail = check.lint_skill_canonical(tmp_path)
+    assert ok is False
+    assert "mcp__" in detail
+
+
+def test_skill_lint_rejects_product_name_from_providers(tmp_path):
+    # providers/ 에 있는 provider 이름(= 제품 식별자)이 스킬 본문에 박히면 위반.
+    pdir = tmp_path / "providers"
+    pdir.mkdir()
+    (pdir / "linear.json").write_text('{"provider": "linear"}', encoding="utf-8")
+    _write_skill(tmp_path, "bad_prod",
+                 "# bad\nLinear 의 이슈를 만든다.\n")
+    name, ok, detail = check.lint_skill_canonical(tmp_path)
+    assert ok is False
+    assert "linear" in detail.lower()
+
+
+def test_skill_lint_word_boundary_no_false_positive(tmp_path):
+    # 'googler' 같은 부분일치는 거짓양성으로 잡지 않는다.
+    _write_skill(tmp_path, "boundary",
+                 "# ok\ngoogler 라는 단어는 제품명이 아니다.\n")
+    name, ok, detail = check.lint_skill_canonical(tmp_path)
+    assert ok is True, detail
+
+
+def test_skill_lint_clean_on_real_repo():
+    # 실 레포의 스킬 본문(tm-onboard·tm-reset·tm-connect)은 정규형을 지킨다.
+    report = check.lint_skill_canonical(REPO)
+    assert report[1] is True, report[2]
+    # tm-connect 가 실제로 검사 대상에 들어왔는지(빈 통과가 아님) 확인.
+    connect = REPO / "infra" / "skills" / "base" / "tm-connect" / "SKILL.md"
+    assert connect.is_file()
+
+
+def test_lint_report_includes_skill_check():
+    report = check.run_lint(REPO)
+    names = [c[0] for c in report.checks]
+    assert "스킬 본문 정규형" in names
+    assert report.ok is True
+
+
+# ──────────────────────────────────────────────────────────────────
+# 6. tm-connect frontmatter — tm-onboard 포맷 일관 (L2-H H.3)
+# ──────────────────────────────────────────────────────────────────
+
+def _frontmatter(skill_path):
+    text = skill_path.read_text(encoding="utf-8")
+    assert text.startswith("---\n"), f"{skill_path} 는 YAML frontmatter 로 시작해야 함"
+    end = text.index("\n---", 4)
+    block = text[4:end]
+    fm = {}
+    for raw in block.splitlines():
+        if ":" in raw and not raw.startswith(" "):
+            k, _, v = raw.partition(":")
+            fm[k.strip()] = v.strip()
+    return fm
+
+
+def test_tm_connect_frontmatter_matches_onboard_format():
+    onboard = REPO / "infra" / "skills" / "base" / "tm-onboard" / "SKILL.md"
+    connect = REPO / "infra" / "skills" / "base" / "tm-connect" / "SKILL.md"
+    fm_on = _frontmatter(onboard)
+    fm_co = _frontmatter(connect)
+    # 같은 필드 집합(name·description) + 트리거 문구 포함 — tm-onboard 포맷 일관.
+    assert set(fm_co) == set(fm_on) == {"name", "description"}
+    assert fm_co["name"] == "tm-connect"
+    assert "Triggers" in fm_co["description"] or "Trigger" in fm_co["description"]

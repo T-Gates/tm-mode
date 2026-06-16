@@ -435,11 +435,80 @@ def lint_no_tracked_secrets(root, *, files=None) -> tuple:
             f"토큰키 진입 발견(.gitignore 우회 위험): {hits}" if hits else "")
 
 
+# ── 스킬 본문 정규형 린트 (K7, SPEC §2.12·§7.3) ──
+#
+# 스킬 본문(SKILL.md)은 **시맨틱/역할 어휘만** 쓴다(§7.3): "이슈 트래커 MCP 에서 조회"
+# 처럼. 두 가지를 거부한다:
+#   (a) `mcp__*` 직표기 — 에이전트 고유 툴명 형식(§2.12 lint 대상).
+#   (b) 제품명 직표기 — 역할 슬롯은 도구 중립 어휘(issues/chat/docs/calendar)로만
+#       말해야 하므로, 본문에 특정 제품명(linear·slack·notion·google …)을 박으면 위반.
+#
+# 제품명 목록은 **데이터로** 끌어온다(하드코딩 최소화 — providers/<name>.json 의
+# provider 값 = 정규 서버명 == 제품 식별자). 새 provider 팩이 추가되면 그 이름도
+# 자동으로 금지어가 된다. 더해 팩에 없을 수 있는 흔한 경쟁 제품명도 소수 고정으로 막는다.
+_SKILL_EXTRA_PRODUCTS = (
+    "jira", "asana", "trello", "discord", "teams",
+)
+
+
+def _provider_product_names(root: Path) -> set:
+    """providers/<name>.json 의 provider 값(= 제품 식별자) 집합 + 흔한 경쟁 제품명."""
+    names = set(_SKILL_EXTRA_PRODUCTS)
+    pdir = Path(root) / "providers"
+    if pdir.is_dir():
+        for f in sorted(pdir.glob("*.json")):
+            # stem(파일명) == provider(항등 불변식, §2.5) — JSON 파싱 없이 안전하게 stem.
+            names.add(f.stem.lower())
+    return names
+
+
+def lint_skill_canonical(root, *, files=None) -> tuple:
+    """스킬 본문에 `mcp__*`·제품명 직표기가 없는지 (K7, SPEC §2.12·§7.3).
+
+    files 주입 시 그 파일들만 검사(테스트 격리). 미지정 시 infra/skills/**/SKILL.md.
+    반환: (검사명, 통과여부, 상세) — 다른 lint 함수와 동일 tuple 형.
+    """
+    root = Path(root)
+    if files is None:
+        candidates = sorted((root / "infra" / "skills").rglob("SKILL.md"))
+    else:
+        candidates = [Path(f) for f in files]
+
+    products = _provider_product_names(root)
+    # 제품명은 단어경계로 매칭(대소문자 무시) — 'googler' 같은 부분일치 거짓양성 차단.
+    prod_re = re.compile(
+        r"(?<![A-Za-z])(" + "|".join(re.escape(p) for p in sorted(products)) + r")(?![A-Za-z])",
+        re.IGNORECASE,
+    ) if products else None
+
+    hits = []
+    for p in candidates:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        # frontmatter 의 트리거 예문에도 제품명/mcp__ 가 새지 않게 본문 전체를 검사한다
+        # (프롬프트로 주입되는 description 도 본문의 일부 — §2.12 의 시맨틱 참조 원칙 적용).
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            rel = p
+        for i, line in enumerate(text.splitlines(), 1):
+            if "mcp__" in line:
+                hits.append(f"{rel}:{i} (mcp__ 직표기)")
+            if prod_re is not None:
+                for m in prod_re.finditer(line):
+                    hits.append(f"{rel}:{i} (제품명 '{m.group(1)}')")
+    return ("스킬 본문 정규형", not hits,
+            f"역할어휘 위반(mcp__·제품명 직표기): {hits}" if hits else "")
+
+
 def run_lint(root) -> LintReport:
     root = Path(root)
     checks = []
     checks.append(_lint_manifest_canonical(root))
     checks.append(lint_no_tracked_secrets(root))
+    checks.append(lint_skill_canonical(root))
     return LintReport(checks=checks)
 
 
