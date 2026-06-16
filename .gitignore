@@ -5,7 +5,6 @@ __pycache__/
 *.egg-info/
 
 .teammode-settings.json
-/memory/
 
 # 로컬 전용 머신 상태(팀원마다 다르고 churn — 절대 추적 금지):
 #  - .acme-active: teammode on 시 팀 루트에 쓰는 활성 마커(cmd_on/off 가 생성·삭제).
