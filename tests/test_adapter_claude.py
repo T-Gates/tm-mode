@@ -218,6 +218,55 @@ def test_args_passed_through(env):
     assert "acme-allow" in cmd
 
 
+# ── timeout 단위 변환 (manifest ms → settings.json 초) ──
+#
+# P0 hook hang 버그: manifest 의 timeout 은 밀리초(5000=5초). Claude Code 의 hook
+# timeout 은 **초** 해석이므로 어댑터가 ms→s 변환해서 settings.json 에 써야 한다(codex
+# 어댑터와 대칭). 변환 누락 시 5000 이 그대로 들어가 5000초(83분) → git hang 시 훅이
+# 안 끊긴다.
+
+def _timeout_for(settings, event):
+    for entry in settings["hooks"].get(event, []):
+        for h in entry.get("hooks", []):
+            if "timeout" in h:
+                return h["timeout"]
+    return None
+
+
+def test_timeout_converted_ms_to_seconds(env):
+    env.write_manifest([
+        {"event": "SessionStart", "script": "session-start.py",
+         "timeout": 5000, "mode": "on"},
+    ])
+    env.make_adapter().sync(mode="on")
+    settings = _load(env.settings)
+    # 5000ms → 5s (초로 기록돼야 함, 5000 그대로면 버그)
+    assert _timeout_for(settings, "SessionStart") == 5
+
+
+def test_timeout_sub_second_floors_to_min_1s(env):
+    # 3000ms → 3s; 작은 값도 최소 1초 보장(max(1, ms//1000))
+    env.write_manifest([
+        {"event": "PreToolUse",
+         "match": {"mcp": {"server": "linear", "tool": "create_issue"}},
+         "script": "confirm-action.py", "args": "allow",
+         "timeout": 3000, "fallback": "runtime"},
+    ])
+    env.make_adapter().sync(mode="on")
+    settings = _load(env.settings)
+    assert _timeout_for(settings, "PreToolUse") == 3
+
+
+def test_no_timeout_when_manifest_omits(env):
+    # timeout 미지정이면 settings 에도 timeout 키 없음(종전 동작 보존)
+    env.write_manifest([
+        {"event": "SessionStart", "script": "session-start.py", "mode": "on"},
+    ])
+    env.make_adapter().sync(mode="on")
+    settings = _load(env.settings)
+    assert _timeout_for(settings, "SessionStart") is None
+
+
 # ── off 모드: mode:"on" 훅 비활성 ──
 
 def test_off_removes_on_hooks_keeps_base(env):

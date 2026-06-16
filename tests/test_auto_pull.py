@@ -223,17 +223,20 @@ def test_auto_pull_unwritable_state_dir_does_not_raise(cloned_repo, tmp_path):
     assert (cloned_repo.clone / "b.txt").exists()
 
 
-# ── 훅 통합: session-log-remind 가 pull 을 먼저 돌리고, 실패해도 작업을 안 막음 ──
+# ── 훅 통합 (2026-06-17 P0 hook hang 수정 후) ──────────────────────────────
+#
+# 의도 변경: 레포 최신화는 "상시(매 프롬프트, UserPromptSubmit)"에서 "세션 시작 1회
+# (SessionStart)"로 옮겼다. UserPromptSubmit 동기 블로킹 훅의 매 프롬프트 git pull 이
+# hang 시 작업을 막던 트리거였기 때문. 따라서:
+#   - session-log-remind.py(UserPromptSubmit): pull 안 함, 리마인더만.
+#   - session-start.py(SessionStart): 세션당 1회 pull(auto_pull 모듈 재사용·throttle).
 
-HOOK = REPO / "infra" / "hooks" / "session-log-remind.py"
+REMIND_HOOK = REPO / "infra" / "hooks" / "session-log-remind.py"
+START_HOOK = REPO / "infra" / "hooks" / "session-start.py"
 
 
-def _run_hook(team_root, state_dir, prompt="hi"):
-    """session-log-remind 를 정규 JSON stdin 으로 호출. TEAMMODE_HOME=team_root.
-
-    XDG_STATE_HOME 을 격리 디렉토리로 주입해 실 ~/.local/state 무접촉.
-    카운터 TMPDIR 도 격리.
-    """
+def _run_remind(team_root, state_dir, prompt="hi"):
+    """session-log-remind(UserPromptSubmit)를 정규 JSON stdin 으로 호출(격리 env)."""
     import json
     env = {
         **os.environ,
@@ -244,60 +247,114 @@ def _run_hook(team_root, state_dir, prompt="hi"):
     }
     canonical = {"event": "UserPromptSubmit", "prompt": prompt, "agent": "claude"}
     return subprocess.run(
-        [sys.executable, str(HOOK)], input=json.dumps(canonical),
+        [sys.executable, str(REMIND_HOOK)], input=json.dumps(canonical),
         capture_output=True, text=True, env=env, cwd=str(team_root))
 
 
-def test_hook_pulls_when_team_active(cloned_repo, tmp_path):
-    """팀 모드 활성 + 1 behind 클론 → 훅 호출이 ff-pull 을 수행한다."""
+def _run_start(team_root, state_dir):
+    """session-start(SessionStart)를 정규 JSON stdin 으로 호출(격리 env)."""
+    import json
+    env = {
+        **os.environ,
+        "TEAMMODE_HOME": str(team_root),
+        "XDG_STATE_HOME": str(state_dir),
+        "TMPDIR": str(state_dir),
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    canonical = {"event": "SessionStart", "agent": "claude"}
+    return subprocess.run(
+        [sys.executable, str(START_HOOK)], input=json.dumps(canonical),
+        capture_output=True, text=True, env=env, cwd=str(team_root))
+
+
+# ── session-log-remind: pull 분리(매 프롬프트 pull 금지), 리마인더는 유지 ──
+
+def test_remind_does_NOT_pull_when_team_active(cloned_repo, tmp_path):
+    """핵심 회귀: UserPromptSubmit 훅은 더 이상 pull 하지 않는다(매 프롬프트 hang 트리거 제거)."""
     (cloned_repo.clone / ".acme-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    proc = _run_hook(cloned_repo.clone, state_dir)
+    proc = _run_remind(cloned_repo.clone, state_dir)
     assert proc.returncode == 0
-    assert (cloned_repo.clone / "b.txt").exists()  # 최신화됨
-
-
-def test_hook_does_not_pull_when_team_inactive(cloned_repo, tmp_path):
-    """.acme-active 없으면 pull 도 리마인드도 안 함(exit 0)."""
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    proc = _run_hook(cloned_repo.clone, state_dir)
-    assert proc.returncode == 0
+    # 1 behind 인데도 pull 안 함 → b.txt 미반영(상시 최신화 제거 확인)
     assert not (cloned_repo.clone / "b.txt").exists()
+    # pull 상태 파일도 안 만든다(pull 시도 자체가 없음)
+    assert not (state_dir / "teammode" / "last-pull").exists()
 
 
-def test_hook_never_blocks_on_pull_failure(tmp_path):
-    """팀 루트가 git 레포가 아니어도(=pull 실패) 훅은 exit 0 + 리마인드 발화."""
+def test_remind_still_reminds_when_team_active(tmp_path):
+    """pull 을 떼도 리마인더 로직은 그대로 동작한다(세션로그 전무 → 발화)."""
     import json
     team = tmp_path / "team"
     (team / "memory" / "team" / "sessions").mkdir(parents=True)
     (team / ".acme-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    proc = _run_hook(team, state_dir)
+    proc = _run_remind(team, state_dir)
     assert proc.returncode == 0  # 작업 절대 차단 금지
-    # 세션로그 전무 → age 9999 → 리마인드 발화(pull 실패가 리마인드를 막지 않음)
     out = json.loads(proc.stdout)
     assert "additionalContext" in out["hookSpecificOutput"]
 
 
-def test_hook_throttles_second_call(cloned_repo, tmp_path):
-    """첫 호출 pull 성공 → 상태 기록 → 둘째 호출은 스로틀로 pull 스킵."""
+def test_remind_inactive_no_remind(cloned_repo, tmp_path):
+    """.acme-active 없으면 무동작(exit 0, 출력 없음)."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    proc = _run_remind(cloned_repo.clone, state_dir)
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == ""
+
+
+# ── session-start: 세션당 1회 pull(auto_pull 재사용·throttle) ──
+
+def test_start_pulls_when_team_active(cloned_repo, tmp_path):
+    """팀 모드 활성 + 1 behind → SessionStart 훅이 ff-pull 을 수행한다."""
     (cloned_repo.clone / ".acme-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    p1 = _run_hook(cloned_repo.clone, state_dir)
+    proc = _run_start(cloned_repo.clone, state_dir)
+    assert proc.returncode == 0
+    assert (cloned_repo.clone / "b.txt").exists()  # 최신화됨
+    assert (state_dir / "teammode" / "last-pull").exists()  # 시각 기록됨
+
+
+def test_start_does_not_pull_when_team_inactive(cloned_repo, tmp_path):
+    """.acme-active 없으면 pull 도 주입도 안 함(exit 0)."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    proc = _run_start(cloned_repo.clone, state_dir)
+    assert proc.returncode == 0
+    assert not (cloned_repo.clone / "b.txt").exists()
+
+
+def test_start_never_blocks_on_pull_failure(tmp_path):
+    """팀 루트가 git 레포 아니어도(=pull 실패) SessionStart 훅은 exit 0 + 맥락 주입."""
+    import json
+    team = tmp_path / "team"
+    (team / "memory" / "team" / "sessions").mkdir(parents=True)
+    (team / ".acme-active").write_text("")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    proc = _run_start(team, state_dir)
+    assert proc.returncode == 0  # 세션 절대 차단 금지
+    out = json.loads(proc.stdout)
+    assert "additionalContext" in out["hookSpecificOutput"]
+
+
+def test_start_throttles_rapid_restart(cloned_repo, tmp_path):
+    """첫 SessionStart pull 성공 → 상태 기록 → throttle 창 안 둘째 호출은 pull 스킵."""
+    (cloned_repo.clone / ".acme-active").write_text("")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    p1 = _run_start(cloned_repo.clone, state_dir)
     assert p1.returncode == 0
-    state_file = state_dir / "teammode" / "last-pull"
-    assert state_file.exists()  # pull 시각 기록됨
-    mtime1 = state_file.stat().st_mtime
+    assert (state_dir / "teammode" / "last-pull").exists()
     # upstream 에 또 새 커밋
     (cloned_repo.work / "c.txt").write_text("v3\n")
     _git(cloned_repo.work, "add", ".")
     _git(cloned_repo.work, "commit", "-m", "c3")
     _git(cloned_repo.work, "push", "origin", "main")
-    p2 = _run_hook(cloned_repo.clone, state_dir)
+    p2 = _run_start(cloned_repo.clone, state_dir)
     assert p2.returncode == 0
-    # 스로틀(기본 300s) 안이라 둘째 pull 안 함 → c.txt 미반영
+    # throttle(기본 300s) 안이라 둘째 pull 안 함 → c.txt 미반영(재시작 폭주 가드)
     assert not (cloned_repo.clone / "c.txt").exists()

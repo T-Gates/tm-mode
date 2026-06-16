@@ -509,7 +509,12 @@ class Adapter:
                     continue
 
             command = self.build_command(entry)
-            timeout = entry.get("timeout")
+            # manifest 의 timeout 은 **밀리초**(5000=5초). Claude Code 의 hook timeout 은
+            # **초** 단위로 해석되므로 ms→s 변환해서 settings.json 에 쓴다(codex 어댑터와
+            # 대칭, adapter.py:124). 변환을 빼면 5000 이 그대로 들어가 5000초(83분)로
+            # 해석돼 git hang 시 UserPromptSubmit 훅이 안 끊긴다(P0 hook hang 버그).
+            timeout_ms = entry.get("timeout")
+            timeout = max(1, timeout_ms // 1000) if timeout_ms else None
             desired.append((event, matcher, command, timeout))
 
         wanted_commands = {d[2] for d in desired}

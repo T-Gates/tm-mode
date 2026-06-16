@@ -10,6 +10,11 @@
 출력: Claude 의 additionalContext 형식 JSON(stdout) — 시각 + 세션로그 갱신 안내.
 30분 이상 미갱신 또는 5프롬프트 주기마다 리마인드(스펙 01 §3.4 권장).
 에이전트 무지를 유지하기 위해 출력은 시맨틱 안내문이며 mcp__·툴명 직표기 없음(§8.2).
+
+⚠️ 레포 최신화는 더 이상 여기서(매 프롬프트) 하지 않는다 — 의도가 "상시 최신화"에서
+"세션 시작 1회"로 바뀌었다(2026-06-17, P0 hook hang). UserPromptSubmit 은 동기 블로킹
+훅이라 매 프롬프트 git pull 이 hang 시 작업을 막는 트리거였다. 세션당 1회 pull 은
+session-start.py(SessionStart)가 담당하고, 세션 중 최신화는 `teammode pull` 수동이다.
 """
 from __future__ import annotations
 
@@ -19,12 +24,6 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-
-# auto_pull 은 같은 hooks/ 디렉토리의 형제 모듈 — 상시 레포 최신화(슬라이스 U).
-try:
-    import auto_pull as _auto_pull  # type: ignore
-except ImportError:  # 모듈 부재여도 리마인드는 동작해야 한다(실패 무해)
-    _auto_pull = None
 
 # stdout UTF-8 보장 — 한글 리마인더 json 이 Windows cp949 stdout 에서 크래시 방지.
 try:
@@ -50,38 +49,6 @@ def _team_root() -> str:
     return os.environ.get("TEAMMODE_HOME", os.getcwd())
 
 
-def _pull_state_path() -> str:
-    """마지막 auto-pull 시각 상태 파일 — **팀 루트 밖** 사용자 상태 디렉토리에 둔다.
-
-    팀 루트(memory/ 등)를 오염시키지 않기 위해 $XDG_STATE_HOME 또는 ~/.teammode 사용.
-    환경변수 미주입 시 합리적 기본값으로 폴백한다(런타임 훅은 인자 통로가 없으므로 env
-    참조가 정당 — 엔진과 달리 read-only/상태격리 목적이라 P1 사고 표면 아님).
-    """
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "state")
-    return os.path.join(base, "teammode", "last-pull")
-
-
-def _maybe_auto_pull(team_root: str) -> None:
-    """리마인드 판정 **이전에** 팀 레포를 최신화한다(최신 상태로 리마인드 판단).
-
-    실패는 절대 작업을 막지 않는다(철칙) — auto_pull 은 예외를 전파하지 않으며, 여기서도
-    어떤 예외도 삼킨다. 느린 네트워크는 auto_pull 내부 타임아웃으로 가드된다.
-    """
-    if _auto_pull is None:
-        return
-    try:
-        throttle = int(os.environ.get("TEAMMODE_PULL_THROTTLE",
-                                      _auto_pull.DEFAULT_THROTTLE_SECONDS))
-        result = _auto_pull.auto_pull(
-            team_root, _pull_state_path(), now=time.time(),
-            throttle_seconds=throttle)
-        for w in getattr(result, "warnings", []):
-            sys.stderr.write(w + "\n")
-    except Exception:  # noqa: BLE001 — 철칙: 무슨 일이 있어도 리마인드·작업을 막지 않는다
-        pass
-
-
 def main() -> int:
     _ensure_utf8_io()  # 한글 json 출력이 Windows cp949 stdout 에서 크래시 방지
     try:
@@ -97,8 +64,8 @@ def main() -> int:
     if not os.path.isfile(os.path.join(root, ".acme-active")):
         return 0
 
-    # 상시 레포 최신화 — 리마인드 판정 전에 최신화(실패 무해, 슬라이스 U).
-    _maybe_auto_pull(root)
+    # (레포 최신화는 여기서 하지 않는다 — SessionStart 훅이 세션당 1회 담당. 위 모듈
+    #  docstring 참조. 매 프롬프트 git pull 이 hang 시 작업을 막던 트리거를 제거.)
 
     sessions = glob.glob(
         os.path.join(root, "memory", "team", "sessions", "**", "*.md"),

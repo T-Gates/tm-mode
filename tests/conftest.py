@@ -15,7 +15,7 @@ import pytest
 def _real_state_dir() -> Path:
     """auto-pull 상태(last-pull)의 실 기본 경로 — 테스트가 절대 건드리면 안 된다.
 
-    session-log-remind 의 _pull_state_path() 와 동일 규칙($XDG_STATE_HOME/teammode 또는
+    session-start 의 _pull_state_path() 와 동일 규칙($XDG_STATE_HOME/teammode 또는
     ~/.local/state/teammode). 여기서는 ambient XDG 를 무시한 **실 HOME 기준** 경로를 가드
     대상으로 잡는다(테스트가 XDG_STATE_HOME 을 격리로 덮어도, 실 경로 자체의 변화를 검사).
     """
@@ -131,7 +131,7 @@ _ENTRY_TRACKED_DIRS = {_real_credentials_dir()}
 def _isolate_pull_state(tmp_path_factory, monkeypatch):
     """모든 테스트에 격리 XDG_STATE_HOME 주입 — auto-pull 상태가 실 경로에 새지 않게.
 
-    session-log-remind 가 subprocess 로 띄워져도 상속받도록 os.environ 에 박는다.
+    session-start 가 subprocess 로 띄워져도 상속받도록 os.environ 에 박는다.
     (개별 테스트가 _run_hook 등으로 다시 덮어쓰는 것도 허용 — 그쪽도 격리 경로다.)
     """
     state_home = tmp_path_factory.mktemp("xdg-state")

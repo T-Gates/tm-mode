@@ -175,17 +175,20 @@ def cmd_update(team_root: Path, dry_run: bool = False) -> int:
               file=sys.stderr)
         return 1
 
-    if not res.changed:
-        if dry_run:
-            print("teammode update [dry-run] — 이미 최신입니다(변경 없음).")
+    # dry-run: sync 가 changed=False(적용 스킵) + diff(있으면 채움)로 돌려주므로
+    # changed 가 아니라 **diff 유무**로 분기한다. (changed 로 분기하면 변경이 있어도
+    # "이미 최신"으로 잘못 출력되는 P2 버그가 난다 — 적대검수 발견.)
+    if dry_run:
+        if res.diff:
+            print(f"teammode update [dry-run] — 동기화하면 바뀔 파일({paths}):")
+            print(res.diff)
+            print("  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)")
         else:
-            print("teammode update — 이미 최신입니다.")
+            print("teammode update [dry-run] — 이미 최신입니다(변경 없음).")
         return 0
 
-    if dry_run:
-        print(f"teammode update [dry-run] — 동기화하면 바뀔 파일({paths}):")
-        print(res.diff)
-        print("  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)")
+    if not res.changed:
+        print("teammode update — 이미 최신입니다.")
         return 0
 
     # 적용됨(staged) — 무엇이 바뀌었나 사람이 읽는 요약. push·commit 안 함.

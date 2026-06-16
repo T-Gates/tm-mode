@@ -53,13 +53,22 @@ class SyncResult:
 
 
 def git_env() -> dict:
-    """git 호출 환경 — 자격증명 프롬프트·SSH 프롬프트 차단(hang 방지)."""
+    """git 호출 환경 — 자격증명 프롬프트·SSH 프롬프트 차단(hang 방지).
+
+    ⚠️ credential.helper 는 절대 끄지 않는다 — 끄면 캐시된 정상 자격증명까지 깨져
+    멀쩡한 인증이 실패한다. 여기서 막는 건 **대화형 GUI 대기**(윈도우 GCM 팝업·터미널
+    프롬프트·SSH 프롬프트)뿐이다. 목표: "인증 막혀도 즉시 실패 + 정상 인증은 동작".
+    """
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"          # https 자격증명 프롬프트 차단
     env.setdefault("GIT_SSH_COMMAND",
                    "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new "
                    "-oConnectTimeout=5")
     env.setdefault("GIT_ASKPASS", "true")     # askpass 도 즉시 빈 응답
+    # 윈도우 Git Credential Manager(GCM) 의 GUI 인증 대기 차단(hang 방지). credential.helper
+    # 자체는 건드리지 않으므로 캐시된 정상 자격증명은 그대로 쓰인다 — 막히면 즉시 실패만.
+    env["GCM_INTERACTIVE"] = "0"
+    env["GCM_GUI_PROMPT"] = "0"
     return env
 
 
@@ -93,7 +102,11 @@ def run_git(args: list, timeout: int):
                   stdin=subprocess.DEVNULL, text=True, env=git_env())
     if hasattr(os, "setsid"):
         kwargs["start_new_session"] = True  # 자식을 새 프로세스 그룹 리더로
-    proc = subprocess.Popen(["git", *args], **kwargs)
+    # credential.interactive=false: 자격증명 helper 의 **대화형 프롬프트**만 끈다(helper
+    # 자체는 유지 — 캐시된 정상 자격증명은 그대로). git_env 의 GCM_* 차단과 이중 방어로
+    # "인증 막혀도 즉시 실패 + 정상 인증 동작"을 보장한다. 모든 git 호출에 선행 적용.
+    proc = subprocess.Popen(
+        ["git", "-c", "credential.interactive=false", *args], **kwargs)
     try:
         out, err = proc.communicate(timeout=timeout)
         return proc.returncode, out, err

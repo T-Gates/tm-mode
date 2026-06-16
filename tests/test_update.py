@@ -321,6 +321,41 @@ def test_update_verb_dry_run_no_changes(team_with_upstream):
     assert not (team / "infra" / "newfeature.py").exists()
 
 
+def test_update_verb_dry_run_with_changes_shows_preview(team_with_upstream):
+    """P2 회귀: dry-run 인데 upstream 에 실제 변경이 있으면 **미리보기**를 출력해야 한다.
+
+    버그: cmd_update 가 res.changed 를 먼저 검사했는데 sync 는 dry_run 시 changed=False
+    (diff 만 채움)로 돌려줘, 변경이 있어도 "이미 최신"으로 잘못 출력하고 미리보기에 도달
+    못 했다. 수정 후 diff 유무로 분기 → 미리보기(바뀔 파일 목록) 출력 + 실제 변경 0.
+    """
+    team = team_with_upstream.team
+    r = _run_engine(team, "update", "--dry-run")
+    assert r.returncode == 0, r.stderr
+    out = r.stdout + r.stderr
+    # 미리보기 도달: "동기화하면 바뀔 파일" + 변경 파일명이 보여야 한다
+    assert "바뀔 파일" in out, out
+    assert "engine.py" in out, out
+    # "이미 최신" 으로 오출력하면 안 됨(버그 재현 방지)
+    assert "이미 최신" not in out, out
+    # 실제 변경 0(미리보기만) — working tree 무손상
+    assert (team / "infra" / "engine.py").read_text() == "team-old\n"
+    assert not (team / "infra" / "newfeature.py").exists()
+
+
+def test_update_verb_dry_run_uptodate_says_latest(team_with_upstream):
+    """dry-run + 실제 변경 없음 → "이미 최신"(diff 빈 분기). 위 케이스의 대칭."""
+    team = team_with_upstream.team
+    # 먼저 동기화 적용 + 커밋 → upstream 과 동일 상태로 만든다
+    _run_engine(team, "update")
+    _git(team, "add", "-A")
+    _git(team, "commit", "-m", "applied")
+    r = _run_engine(team, "update", "--dry-run")
+    assert r.returncode == 0, r.stderr
+    out = r.stdout + r.stderr
+    assert "이미 최신" in out, out
+    assert "바뀔 파일" not in out, out
+
+
 def test_update_verb_dirty_guard_blocks(team_with_upstream):
     team = team_with_upstream.team
     (team / "infra" / "engine.py").write_text("LOCAL EDIT\n")
