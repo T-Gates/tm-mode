@@ -29,6 +29,8 @@ AGENTS = INFRA / "agents"
 
 sys.path.insert(0, str(INFRA))
 import install_lib as il  # noqa: E402
+# stdout/stderr UTF-8 보장 — Windows native 인코딩(cp949 등)에서 한글 print 깨짐·크래시 방지.
+from io_encoding import ensure_utf8_io  # noqa: E402
 
 
 # ─────────────────────────── 어댑터 디스패치 (보존) ───────────────────────────
@@ -552,6 +554,9 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
 # ─────────────────────────── 엔트리 ───────────────────────────
 
 def main(argv=None) -> int:
+    # 한글 메시지·verify 가 호출하는 context json 이 비-UTF8 stdout(Windows)에서 깨지거나
+    # 크래시하지 않도록 진입 즉시 UTF-8 보장(io_encoding 참조 — 크로스플랫폼 안전).
+    ensure_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
 
     # --uninstall: 호스트 되돌리기 액션(신규). 부트스트랩·디스패치와 별개 분기.

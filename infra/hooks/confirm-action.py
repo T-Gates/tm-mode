@@ -49,6 +49,17 @@ import os
 import sys
 import time
 
+# stdout UTF-8 보장 — 한글 차단 사유 json 이 Windows cp949 stdout 에서 크래시 방지.
+try:
+    from pathlib import Path as _Path
+    _infra = str(_Path(__file__).resolve().parent.parent)
+    if _infra not in sys.path:
+        sys.path.insert(0, _infra)
+    from io_encoding import ensure_utf8_io as _ensure_utf8_io  # type: ignore
+except ImportError:
+    def _ensure_utf8_io() -> None:  # 모듈 부재여도 훅은 동작(보정만 스킵)
+        return
+
 
 # allow 신호 파일의 신선도 한계(초). acme-toolkit 원형의 confirm TTL 과 동일.
 CONFIRM_TTL_SECONDS = 300
@@ -99,6 +110,7 @@ def _deny(reason: str) -> None:
 
 
 def main() -> int:
+    _ensure_utf8_io()  # 한글 차단 사유 json 출력이 Windows cp949 stdout 에서 크래시 방지
     # allow marker = 어댑터가 넘긴 첫 인자(manifest args). 없을 수도 있다.
     marker = sys.argv[1] if len(sys.argv) > 1 else ""
 

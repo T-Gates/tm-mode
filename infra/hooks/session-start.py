@@ -31,6 +31,12 @@ try:
     import teammode as _engine  # type: ignore
 except ImportError:
     _engine = None
+# stdout UTF-8 보장 — 한글 additionalContext json 이 Windows cp949 stdout 에서 크래시 방지.
+try:
+    from io_encoding import ensure_utf8_io as _ensure_utf8_io  # type: ignore
+except ImportError:
+    def _ensure_utf8_io() -> None:  # 모듈 부재여도 훅은 동작(보정만 스킵)
+        return
 
 
 def _team_root() -> str:
@@ -73,6 +79,7 @@ def _build_context(root: Path) -> str | None:
 
 
 def main() -> int:
+    _ensure_utf8_io()  # 한글 json 출력이 Windows cp949 stdout 에서 크래시 방지
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:

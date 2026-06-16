@@ -36,6 +36,18 @@ _claude_mod = runpy.run_path(str(_CLAUDE_ADAPTER), run_name="__codex_base__")
 BaseAdapter = _claude_mod["Adapter"]
 _SEALED = _claude_mod["_SEALED"]  # MCP 등록 파일 봉인 센티넬(N3)
 
+# stdout UTF-8 보장 — sync() 가 한글 [warn]/[ok] print. install.py 디스패치(in-process)
+# 는 install.py main 이 이미 보정하나, `python adapter.py sync` 직접 실행 시 cp949 콘솔
+# 크래시 방어(일관·방어). infra 미발견 시 no-op(다른 훅과 동일 가드 패턴).
+_INFRA_DIR = Path(__file__).resolve().parents[2]
+if str(_INFRA_DIR) not in sys.path:
+    sys.path.insert(0, str(_INFRA_DIR))
+try:
+    from io_encoding import ensure_utf8_io as _ensure_utf8_io  # type: ignore
+except ImportError:
+    def _ensure_utf8_io() -> None:  # 모듈 부재여도 어댑터는 동작(보정만 스킵)
+        return
+
 BLOCK_START = "# teammode-hooks-start"
 BLOCK_END = "# teammode-hooks-end"
 
@@ -332,6 +344,7 @@ def _default_paths():
 
 
 def main(argv=None) -> int:
+    _ensure_utf8_io()  # 한글 [warn]/[ok] print 가 cp949 콘솔에서 크래시 방지(직접 실행 방어)
     argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(prog="codex-adapter")
     p.add_argument("--config", default=os.path.expanduser("~/.codex/config.toml"))

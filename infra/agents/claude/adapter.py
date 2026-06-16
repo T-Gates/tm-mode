@@ -33,6 +33,15 @@ try:
 except Exception:  # pragma: no cover - providers 부재 시에도 sync 는 동작
     _providers = None
 
+# stdout UTF-8 보장 — sync() 가 한글 [warn]/[ok] print. install.py 디스패치(in-process)
+# 는 install.py main 이 이미 보정하나, `python adapter.py sync` 직접 실행 시 cp949 콘솔
+# 크래시 방어(일관·방어). infra 미발견 시 no-op(다른 훅과 동일 가드 패턴).
+try:
+    from io_encoding import ensure_utf8_io as _ensure_utf8_io  # type: ignore
+except ImportError:
+    def _ensure_utf8_io() -> None:  # 모듈 부재여도 어댑터는 동작(보정만 스킵)
+        return
+
 
 # MCP 등록 파일 봉인 센티넬(N3). mcp_config_path=_SEALED 면 이 어댑터는 ~/.claude.json
 # 류 실경로를 절대 읽지/쓰지 않는다 — codex 처럼 부모 경로를 안 쓰는 서브클래스가 상속된
@@ -52,6 +61,21 @@ def default_python() -> str:
     if sys.executable:
         return sys.executable
     return "python" if os.name == "nt" else "python3"
+
+
+def _to_slash(s: str) -> str:
+    """윈도우 백슬래시 경로 → forward slash (훅 escape 버그 방지).
+
+    윈도우 Claude Code 가 훅 커맨드를 **Git Bash(bash)** 로 실행하면 백슬래시가
+    escape 처리돼 경로가 깨진다(`C:\\Users\\...\\python.exe` → `C:Users...python.exe`
+    → command not found). slash 경로(`C:/Users/.../python.exe`)는 bash·cmd·PowerShell
+    모두 윈도우에서 정상 인식하고 escape 문제가 없으므로, 커맨드를 만드는 시점에
+    백슬래시를 아예 안 내보낸다.
+
+    Linux/macOS 경로엔 백슬래시가 없어 무영향(이미 slash). 공백 대응 따옴표는
+    이후 _quote_arg 가 별도로 처리(슬래시로 바꿔도 공백 경로는 여전히 따옴표 필요).
+    """
+    return s.replace("\\", "/")
 
 
 def _quote_arg(s: str) -> str:
@@ -224,10 +248,12 @@ class Adapter:
 
     def build_command(self, entry: dict) -> str:
         script = entry["script"]
+        # 슬래시 정규화 우선(백슬래시를 아예 안 내보냄), 그 다음 공백 따옴표.
+        # sys.executable·normalize.py·스크립트 경로 셋 다 적용 — 윈도우 bash escape 방지.
         parts = [
-            _quote_arg(str(self.python)),     # 윈도우 python 경로(공백) 안전 인용
-            _quote_arg(str(self.normalize_path)),
-            _quote_arg(script),
+            _quote_arg(_to_slash(str(self.python))),
+            _quote_arg(_to_slash(str(self.normalize_path))),
+            _quote_arg(_to_slash(script)),
         ]
         if entry.get("args"):
             parts.append(entry["args"])
@@ -240,9 +266,13 @@ class Adapter:
         """
         if not command:
             return False
-        marker = str(self.normalize_path)
+        # 슬래시 정규화 후 비교 — build_command 가 slash 경로를 내보내므로(윈도우 bash
+        # escape 방지) 마커도 동일 정규화. 기존 백슬래시로 등록된 훅도 같은 정규화로
+        # 인식돼 재sync 시 slash 경로로 갱신된다(마이그레이션 일관).
+        command = _to_slash(command)
+        marker = _to_slash(str(self.normalize_path))
         # 절대경로 또는 상대형 둘 다 허용 — agents/<name>/normalize.py 꼬리 일치
-        tail = os.path.join("agents", self.events.get("agent", ""), "normalize.py")
+        tail = _to_slash(os.path.join("agents", self.events.get("agent", ""), "normalize.py"))
         return marker in command or tail in command
 
     # ── install-mcp (§2.8) ──
@@ -565,6 +595,7 @@ def _default_paths():
 
 
 def main(argv=None) -> int:
+    _ensure_utf8_io()  # 한글 [warn]/[ok] print 가 cp949 콘솔에서 크래시 방지(직접 실행 방어)
     argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(prog="claude-adapter")
     p.add_argument("--settings", default=os.path.expanduser("~/.claude/settings.json"))

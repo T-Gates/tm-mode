@@ -31,6 +31,17 @@ HOOKS_DIR = INFRA / "hooks"
 MANIFEST = HOOKS_DIR / "manifest.json"
 EVENTS = HERE / "events.json"
 
+# stdout/stderr UTF-8 보장 — 이 래퍼는 내부 훅 stdout/stderr 를 자기 stdout/stderr 로
+# 재방출(아래 main)하므로, 한글·이모지 additionalContext 가 Windows cp949 콘솔에서
+# 크래시하지 않도록 보정한다. infra 미발견 시 no-op(다른 훅과 동일 가드 패턴).
+if str(INFRA) not in sys.path:
+    sys.path.insert(0, str(INFRA))
+try:
+    from io_encoding import ensure_utf8_io as _ensure_utf8_io  # type: ignore
+except ImportError:
+    def _ensure_utf8_io() -> None:  # 모듈 부재여도 normalize 는 동작(보정만 스킵)
+        return
+
 
 def _load_events() -> dict:
     return json.loads(EVENTS.read_text(encoding="utf-8"))
@@ -132,6 +143,7 @@ def _lookup_entry(manifest: list, script: str, event: str):
 
 
 def main(argv=None) -> int:
+    _ensure_utf8_io()  # 내부 훅 stdout/stderr 재방출(아래)이 cp949 콘솔에서 크래시 방지
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         sys.stderr.write("[normalize] script 인자 필요\n")

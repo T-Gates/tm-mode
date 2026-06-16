@@ -26,6 +26,17 @@ try:
 except ImportError:  # 모듈 부재여도 리마인드는 동작해야 한다(실패 무해)
     _auto_pull = None
 
+# stdout UTF-8 보장 — 한글 리마인더 json 이 Windows cp949 stdout 에서 크래시 방지.
+try:
+    from pathlib import Path as _Path
+    _infra = str(_Path(__file__).resolve().parent.parent)
+    if _infra not in sys.path:
+        sys.path.insert(0, _infra)
+    from io_encoding import ensure_utf8_io as _ensure_utf8_io  # type: ignore
+except ImportError:
+    def _ensure_utf8_io() -> None:  # 모듈 부재여도 훅은 동작(보정만 스킵)
+        return
+
 
 def _team_root() -> str:
     """런타임 훅의 팀 루트 = 환경변수 TEAMMODE_HOME (없으면 cwd).
@@ -72,6 +83,7 @@ def _maybe_auto_pull(team_root: str) -> None:
 
 
 def main() -> int:
+    _ensure_utf8_io()  # 한글 json 출력이 Windows cp949 stdout 에서 크래시 방지
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:

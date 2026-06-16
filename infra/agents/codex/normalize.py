@@ -34,6 +34,10 @@ _base.HOOKS_DIR = HERE.parents[1] / "hooks"
 _base.MANIFEST = HERE.parents[1] / "hooks" / "manifest.json"
 _base.EVENTS = HERE / "events.json"
 
+# stdout/stderr UTF-8 보장 — Claude normalize main 을 그대로 재사용하며, 그 main 은
+# 진입부에서 _ensure_utf8_io() 를 호출한다. _ensure_utf8_io 는 Claude 모듈
+# 네임스페이스(io_encoding 가드 임포트 포함)에서 해석되므로 Codex 재방출도 동일하게
+# 보정된다(내부 훅 stdout/stderr 재방출의 cp949 크래시 방지, 다른 훅과 동일 가드 패턴).
 main = _base.main
 
 

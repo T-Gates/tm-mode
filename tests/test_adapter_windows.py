@@ -103,11 +103,15 @@ WIN_PY = r"C:\Program Files\Python\python.exe"  # 공백 포함 윈도우 경로
 
 
 def test_build_command_quotes_windows_python_path(env):
-    """공백 든 윈도우 python 경로 → 따옴표로 감싸 셸 안전."""
+    """공백 든 윈도우 python 경로 → slash 정규화 + 따옴표로 감싸 셸 안전.
+
+    백슬래시는 slash 로 정규화(bash escape 방지)하되, 공백은 여전히 따옴표 필요.
+    """
     ad = _make(env, python=WIN_PY)
     cmd = ad.build_command({"script": "auto-commit.py"})
-    # 공백 경로는 따옴표로 보호돼야 함(안 그러면 셸이 토큰 분리)
-    assert f'"{WIN_PY}"' in cmd
+    # slash 정규화된 공백 경로가 따옴표로 보호돼야 함(백슬래시 노출 금지)
+    assert '"' + WIN_PY.replace("\\", "/") + '"' in cmd
+    assert "\\" not in cmd
 
 
 def test_build_command_no_quotes_for_simple_python(env):
@@ -132,6 +136,124 @@ def test_is_owned_rejects_foreign(env):
     ad = _make(env, python=None)
     assert ad.is_owned("my-own-script.sh") is False
     assert ad.is_owned("") is False
+
+
+# ─────────────────── 윈도우 백슬래시 → slash 정규화 (bash escape 버그) ───────────────────
+#
+# 버그: 윈도우 Claude Code 가 훅 커맨드를 Git Bash(bash) 로 실행하면 백슬래시가
+# escape 처리돼 경로가 깨진다(`C:\Users\...\python.exe` → `C:Users...python.exe`
+# → command not found). 수정: 커맨드 생성 시 백슬래시를 전부 forward slash 로 정규화.
+
+# 백슬래시 윈도우 경로 — sys.executable·normalize.py 둘 다 모킹
+WIN_PY_BS = r"C:\Users\bob\AppData\Local\Programs\Python\Python312\python.exe"
+
+
+def _bash_escape(s: str) -> str:
+    """Git Bash 가 따옴표 없는 토큰의 백슬래시 escape 를 소실시키는 동작 시뮬.
+
+    `\\U` `\\g` `\\A` 등 인식 못하는 escape 시퀀스는 백슬래시가 사라진다.
+    """
+    return s.replace("\\", "")
+
+
+def test_build_command_no_backslash_in_windows_path(env, monkeypatch):
+    """윈도우 백슬래시 경로(sys.executable·normalize.py 둘 다) → 커맨드에 백슬래시 0개.
+
+    보정 전(RED): str(python)/str(normalize_path) 가 백슬래시 노출.
+    보정 후(GREEN): 전부 slash. mutation 의미.
+    """
+    # normalize.py 경로를 백슬래시로 보이게 → agent_dir 가 백슬래시 윈도우 경로인 척
+    ad = _make(env, python=WIN_PY_BS)
+    # normalize_path 를 윈도우 백슬래시 경로로 모킹(스크립트 경로도 정규화 대상)
+    ad.normalize_path = type(ad.normalize_path)(
+        r"C:\Users\bob\team\infra\agents\claude\normalize.py")
+    cmd = ad.build_command({"script": "auto-commit.py"})
+    assert "\\" not in cmd, f"커맨드에 백슬래시 노출(bash escape 깨짐): {cmd!r}"
+    # slash 경로가 들어있어야
+    assert "C:/Users/bob/AppData/Local/Programs/Python/Python312/python.exe" in cmd
+    assert "C:/Users/bob/team/infra/agents/claude/normalize.py" in cmd
+
+
+def test_windows_command_survives_bash_escape(env):
+    """slash 정규화된 커맨드는 bash escape 를 거쳐도 경로가 안 깨진다(실측 버그 재현)."""
+    ad = _make(env, python=WIN_PY_BS)
+    cmd = ad.build_command({"script": "auto-commit.py"})
+    escaped = _bash_escape(cmd)
+    # slash 경로엔 백슬래시가 없으므로 escape 가 아무것도 소실시키지 않음
+    assert escaped == cmd
+    # 실측 깨짐 문자열이 나오면 안 됨
+    assert "C:UsersbobAppData" not in escaped
+
+
+def test_is_owned_recognizes_slash_normalized_command(env):
+    """is_owned 가 slash 경로 커맨드를 소유 인식(빌드 결과와 일관)."""
+    ad = _make(env, python=WIN_PY_BS)
+    ad.normalize_path = type(ad.normalize_path)(
+        r"C:\Users\bob\team\infra\agents\claude\normalize.py")
+    cmd = ad.build_command({"script": "auto-commit.py"})
+    assert ad.is_owned(cmd) is True
+
+
+def test_is_owned_migrates_legacy_backslash_command(env):
+    """기존 백슬래시로 등록된 훅도 소유 인식(재sync 시 slash 로 갱신되도록)."""
+    ad = _make(env, python=WIN_PY_BS)
+    ad.normalize_path = type(ad.normalize_path)(
+        r"C:\Users\bob\team\infra\agents\claude\normalize.py")
+    legacy = (r'C:\Users\bob\AppData\python.exe '
+              r'C:\Users\bob\team\infra\agents\claude\normalize.py auto-commit.py')
+    assert ad.is_owned(legacy) is True
+
+
+def test_is_owned_idempotent_slash(env):
+    """slash 커맨드 멱등 — 같은 입력 두 번 동일 판정."""
+    ad = _make(env, python=WIN_PY_BS)
+    cmd = ad.build_command({"script": "auto-commit.py"})
+    assert ad.is_owned(cmd) is ad.is_owned(cmd) is True
+
+
+def test_linux_macos_no_regression(env):
+    """Linux/macOS slash 경로는 무회귀 — 백슬래시 0개, 정규화가 no-op."""
+    ad = _make(env, python="/usr/bin/python3")
+    cmd = ad.build_command({"script": "auto-commit.py"})
+    assert "\\" not in cmd
+    assert "/usr/bin/python3" in cmd
+    assert ad.is_owned(cmd) is True
+
+
+def test_to_slash_helper():
+    """_to_slash: 백슬래시 → slash, slash·단순 토큰 무영향."""
+    assert claude_adapter._to_slash(r"C:\a\b") == "C:/a/b"
+    assert claude_adapter._to_slash("/usr/bin/python3") == "/usr/bin/python3"
+    assert claude_adapter._to_slash("python3") == "python3"
+
+
+def test_windows_path_with_space_still_quoted(env):
+    """슬래시로 바꿔도 공백 경로는 여전히 따옴표 필요(둘 다 적용)."""
+    ad = _make(env, python=r"C:\Program Files\Python\python.exe")
+    cmd = ad.build_command({"script": "auto-commit.py"})
+    assert "\\" not in cmd
+    # slash + 공백 → 따옴표
+    assert '"C:/Program Files/Python/python.exe"' in cmd
+
+
+def test_codex_inherits_slash_normalization(env, tmp_path):
+    """codex 어댑터도 상속으로 slash 정규화 — 백슬래시 0개."""
+    import runpy
+    codex_path = REPO / "infra" / "agents" / "codex" / "adapter.py"
+    mod = runpy.run_path(str(codex_path), run_name="__codex_slash_test__")
+    CodexAdapter = mod["Adapter"]
+    ad = CodexAdapter(
+        agent_dir=str(REPO / "infra" / "agents" / "codex"),
+        manifest_path=str(env.hooks_dir / "manifest.json"),
+        settings_path=str(tmp_path / "config.toml"),
+        python=WIN_PY_BS,
+        team_root=str(REPO),
+    )
+    ad.normalize_path = type(ad.normalize_path)(
+        r"C:\Users\bob\team\infra\agents\codex\normalize.py")
+    cmd = ad.build_command({"script": "auto-commit.py"})
+    assert "\\" not in cmd, f"codex 커맨드 백슬래시 노출: {cmd!r}"
+    assert ad.is_owned(cmd) is True
 
 
 # ─────────────────── codex 어댑터도 동일(상속) ───────────────────

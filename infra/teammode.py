@@ -34,6 +34,8 @@ import workday as _workday  # noqa: E402
 import git_ops as _git_ops  # noqa: E402
 # provider 팩 lookup — issue 동사가 issues 슬롯 연결을 확인할 때 사용(추측 금지·미지 reject).
 import providers as _providers  # noqa: E402
+# stdout/stderr UTF-8 보장 — Windows native 인코딩(cp949 등)에서 한글 print 크래시 방지.
+from io_encoding import ensure_utf8_io  # noqa: E402
 
 
 def _active_marker(team_root: Path) -> Path:
@@ -566,6 +568,9 @@ _KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit", "update", "issu
 
 
 def main(argv=None) -> int:
+    # 한글 출력(에러 메시지·context json)이 비-UTF8 stdout(Windows cp949)에서 크래시하지
+    # 않도록 진입 즉시 UTF-8 보장. Linux/macOS·테스트 캡처엔 무영향(io_encoding 참조).
+    ensure_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
     verb, opts = _parse_args(argv)
 

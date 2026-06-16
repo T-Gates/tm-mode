@@ -576,7 +576,25 @@ def _print_report(report: Report) -> int:
     return 0 if report.green else 1
 
 
+def _ensure_utf8_io() -> None:
+    """stdout/stderr UTF-8 보장 — Windows native 인코딩(cp949)에서 한글 print 크래시 방지.
+
+    infra/io_encoding 을 재사용(단일 소스)하되, conformance 를 infra 에 강결합하지 않도록
+    경로 추가는 lazy. 못 찾으면 조용히 무동작(검수가 import 실패로 깨지지 않게).
+    """
+    try:
+        infra = Path(__file__).resolve().parent.parent / "infra"
+        if str(infra) not in sys.path:
+            sys.path.insert(0, str(infra))
+        from io_encoding import ensure_utf8_io
+        ensure_utf8_io()
+    except Exception:
+        pass
+
+
 def main(argv=None) -> int:
+    # 한글 PASS/FAIL·에러 메시지가 비-UTF8 stdout(Windows)에서 크래시하지 않도록 진입 즉시 보정.
+    _ensure_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog="teammode check", description=__doc__)
     parser.add_argument("mode", choices=["lint", "verify", "conform"])
