@@ -125,3 +125,20 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
 ### 8. 범위 밖 (이월)
 - 지속 자동 동기화(노션 변경 주기 반영) — 변경추적·충돌 복잡, v0.2+.
 - 노션 외 docs provider(구글독스 등) 지식 업로드 — provider팩 확장 시.
+
+---
+
+## 신규 백로그 (2026-06-17 새벽 — Jane 구상 + 윈도우 실셋업 도그푸딩)
+
+### 기능 (Jane 구상, 우선순위 순)
+1. **메모리 스켈레톤 + 채우기 유도** — 메모리 폴더 뼈대를 미리 깔고(얇게, acme-toolkit의 `team/`·`product/`·`decisions/` 구조를 제품특정 빼고 범용화), 에이전트가 칸을 채우도록 유도. ⚠️ 빈 깡통 남발 금지(`.gitkeep`·INDEX 안내 위주), 유도는 ②가이드라인 주입으로(강제 X).
+2. **팀모드 가이드라인 파일 세션 시작 주입** — 세션 시작에 "팀모드 잘 쓰는 법" 강령을 INDEX·최근활동과 함께 주입(6/16 AI강령 3계층의 ①). 범용 강령=`infra/`(upstream 소유·update로 갱신) vs 팀 커스텀=`memory/`(팀 소유) **분리**, 매 세션이라 **얇게**, AGENTS.md(셋업 진입점)와 **채널 구분**. session-start.py가 ②③ 이미 주입 → ①만 추가.
+3. **툴킷 강력 스킬 이식** — acme-toolkit의 검증된 스킬을 teammode로. **on/off 토글 스킬 포함**(엔진 `on`/`off` 동사는 있으나 사용자용 스킬 래퍼 부재): on=pull+맥락주입+배너 / off=세션로그+커밋+push. 어느 스킬을 이식할지 선별 필요.
+4. **statusline 팀명** — on 시 상태줄에 팀명 표시. ⚠️ 에이전트별 표면 다름(claude=`settings.json` statusLine command, codex=대안/스킵) → **어댑터 레이어가 처리**(크로스에이전트 어댑터의 좋은 쓰임새). 팀명은 `team.config.json`에서, `--yes` 게이트. **③(on 스킬) 이후** 자연스러움.
+   - ✅ **배너 picker 구현 완료**(23886a9): `infra/banners/` 6종(ansi_shadow·slant·chunky·cyberlarge·larry3d·speed) 정적 렌더 + 온보딩 personality에서 선택→`cp`로 `memory/banner.txt` 적용. pyfiglet은 빌드타임만(런타임 의존성 0).
+
+### 도그푸딩 발견 (수정 필요)
+- **install cp949 잔존 경로** — 190bfca(`_engine_capture`·`_git`)가 일부만 덮음. 윈도우 `install --yes` verify서 `_readerthread` 트레이스백 재발(비치명, state=on). 남은 subprocess decode 경로 추적·수정.
+- **윈도우 Git Bash 경로변환 주의** — 에이전트가 `git show upstream/main:.gitignore` 류에서 MSYS 경로변환(`/`→`\`, `:`→`;`)에 막혀 오판. 문서(AGENTS/SKILL)에 윈도우 Git Bash 주의(`MSYS_NO_PATHCONV=1`) 한 줄.
+- **`--team-name` 인자** — install이 team.name을 repo명으로 자동. 팀명 직접 지정 인자 부재(현재는 셋업 후 config 수정).
+- **직책/직군 분리 스키마** — 현재 `--role`은 단일 자유필드(예 `팀장/개발`). 직책(팀장/팀원)·직군(dev/pm/design) 분리 스키마.
