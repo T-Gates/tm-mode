@@ -82,14 +82,17 @@ def test_I1_introducer_full_run(tmp_path):
 
 # ─────────────────────────── I2 — 유효 config 레포 (팀원) ───────────────────────────
 
-def test_I2_member_does_not_modify_config(tmp_path):
+def test_I2_member_only_upserts_own_config_entry(tmp_path):
+    """L2-A2 완화(은수 결정): 팀원 install 은 config **코어 키 무수정** + **자기
+    members 엔트리만** upsert. spec_version/team/admin_contact/services 불변,
+    타인 members 엔트리 무접촉."""
     team = tmp_path / "team"
     team.mkdir()
     _git_init(team, name="Ivan", email="ivan@x.com")
     cfg = {"spec_version": "0.1", "team": {"name": "preset-team"},
-           "admin_contact": "founder", "services": {}}
+           "admin_contact": "founder", "services": {},
+           "members": [{"name": "founder", "role": "pm"}]}
     (team / "team.config.json").write_text(json.dumps(cfg, indent=2))
-    before = (team / "team.config.json").read_text()
     # 기존 팀원 1명 등재된 상태
     md = team / "memory" / "team"
     md.mkdir(parents=True)
@@ -97,11 +100,18 @@ def test_I2_member_does_not_modify_config(tmp_path):
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     iso = tmp_path / "iso"
-    proc = _run_install(team, home, ["--settings", str(iso)])
+    proc = _run_install(team, home, ["--settings", str(iso), "--role", "developer"])
     assert proc.returncode == 0, proc.stderr
-    # config 무수정(팀원 경로)
-    assert (team / "team.config.json").read_text() == before
-    # 본인 이름 등재
+    after = json.loads((team / "team.config.json").read_text())
+    # 코어 키 무수정.
+    assert after["spec_version"] == "0.1"
+    assert after["team"] == {"name": "preset-team"}
+    assert after["admin_contact"] == "founder"
+    assert after["services"] == {}
+    # 타인(founder) 엔트리 무접촉 + 자기(ivan) 엔트리만 추가.
+    assert {"name": "founder", "role": "pm"} in after["members"]
+    assert {"name": "ivan", "role": "developer"} in after["members"]
+    # members.md 본인 이름 등재
     assert "ivan" in (md / "members.md").read_text()
     assert "[verify] L1 데이터 읽힘" in proc.stdout
 

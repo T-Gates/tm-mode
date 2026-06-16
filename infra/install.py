@@ -454,7 +454,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
                            team_name=team_name_default,
                            timezone=det.get("timezone"),
                            locale=det.get("locale"),
-                           identity=det.get("git_user_email"))
+                           identity=det.get("git_user_email"),
+                           member_role=opts.role)
     except il.InvalidNameError as e:
         err(f"[error] 멤버 이름 거부: {e}")
         return 3
@@ -462,6 +463,12 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         err(f"[error] 이름 충돌(사람이 해소 필요): {e}")
         return 3
     out(f"[scaffold] memory/ 구조·members.md 등재 완료 (role={role}).")
+    # config.members 스키마 비치명 점검 (A2.1) — 위반은 [warn] 만, role 판정 무영향.
+    _cfg_after = il.load_config(team_root)
+    if isinstance(_cfg_after, dict) and not il.members_are_valid(
+            _cfg_after.get("members")):
+        err("[warn] team.config.json 의 members 블록 형식이 스펙과 다릅니다 "
+            "(엔트리는 {name, role?} object). 설치는 진행 — role 판정엔 영향 없습니다.")
 
     # ⑤ wire (§4⑤·§8, M5) — 감지된 에이전트마다 어댑터 sync(훅 등록). 스킬 제외(M2).
     # settings_override: --settings 지정 시 격리 경로. 미지정+실설치 의도면 실호스트.
