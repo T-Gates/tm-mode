@@ -5,6 +5,8 @@
 ## 첫 접촉: "셋업해줘" / "온보딩"
 사용자가 팀모드를 켜달라고 하면 **`tm-onboard` 스킬**을 따른다(`infra/skills/base/tm-onboard/SKILL.md`). 스킬이 없거나 못 쓰는 환경이면 아래를 직접 실행한다:
 
+> **국면 0 — 도입자가 아직 팀 레포가 없으면 (install 보다 먼저).** 레포를 만들기 전에 ① 어느 GitHub **org·계정**에 만들지 **반드시 묻는다**(개인 계정 vs 팀 org 예 `Acme` — 임의 선택·자동 진행 금지) → ② 그 org에 레포 생성(template / `gh repo create`) → ③ clone → 그다음 아래 install. **레포가 이미 있으면 이 국면은 건너뛴다.**
+
 ```bash
 # 1) 상태 판별: team.config.json(또는 memory/) 있으면 팀원, 없으면 도입자
 # 2) 부트스트랩 (결정적 — install.py 가 스캐폴드·훅·env·verify 를 다 한다)
