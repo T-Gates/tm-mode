@@ -30,6 +30,7 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 **먼저 확인 (필수) — 멋대로 정하지 말 것:**
 - **멤버 이름**: 세션로그에 author로 남는 영문 이름. `git config user.name`을 *제안값*으로 보여주되 **반드시 사용자 확인 후** `--member-name`에 넣는다. ⚠️ git 설정·계정명·이메일(예: `bob`)이 사용자가 원하는 팀 멤버명(예: `jane-doe`)과 다를 수 있다 — 추론값을 임의 확정 금지.
 - **팀명**(도입자만): 기본은 repo명. "팀 이름 이대로 쓸까요?" 확인. (현재 install.py는 team.name 인자가 없어 repo명 자동 → 바꾸려면 셋업 후 `team.config.json`의 `team.name` 수정. 백로그: `--team-name`.)
+- **org/레포 위치**(도입자가 레포를 **새로 만드는** 경우만): 어느 GitHub org·계정에 만들지 **반드시 확인**한다 — 개인 계정 vs 팀 org(예: `Acme`). 임의 선택 금지. `gh repo create`/template 단계라 install 이전이지만, 온보딩이 레포 생성부터 하면 여기서 같이 확인한다.
 
 ```bash
 python infra/install.py --root . --member-name <영문이름> --yes
