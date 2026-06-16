@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""teammode check — 단일 검수 도구 3-in-1 (스펙 02 §11.12).
+"""teammode check — 단일 검수 도구 3-in-1 (docs/spec/internals.md §6.2).
 
   lint    — 정적: manifest 정규형·events.json 완전성 등 (엔진 실행 없음)
   verify  — 동적: 골든 시나리오를 우리 툴킷에 실행 (독푸딩 검수)
   conform — 동적+Tier: 같은 골든 시나리오를 임의 구현에 실행 + advisory 순응률로 Tier 산출
-            (스펙 03 §3 conformance kit의 실물)
+            (docs/spec/internals.md §6 conformance kit의 실물)
 
 verify와 conform은 같은 골든 시나리오 정의(conformance/scenarios/)를 공유한다 —
 시나리오 = 실행 가능한 스펙. 빈 엔진(no-op)에 돌리면 전부 RED = 엔진의 인수 테스트.
 
 엔진은 argv를 받아 Result(exit_code, stdout, stderr)를 돌려주고 root 아래에
-파일 부작용을 내는 하니스 인터페이스만 만족하면 된다 (스펙 03 §2 C2 주의:
+파일 부작용을 내는 하니스 인터페이스만 만족하면 된다 (docs/spec/internals.md §6:
 파일 배치·언어 비강제).
 """
 from __future__ import annotations
@@ -141,7 +141,7 @@ def _session_log_files(root: Path, author: str) -> list:
     d = _sessions_dir(root, author)
     if not d.is_dir():
         return []
-    # 세션로그 네임스페이스: YYYY-MM-DD 로 시작하는 .md (스펙 01 §2.1)
+    # 세션로그 네임스페이스: YYYY-MM-DD 로 시작하는 .md (docs/spec/internals.md §1.3)
     out = []
     for p in d.glob("*.md"):
         stem = p.stem
@@ -301,7 +301,7 @@ def run_mode(mode: str, engine, root, scenario_dir=None) -> Report:
 # ── lint (정적) ──
 
 def _lint_manifest_canonical(root: Path) -> tuple:
-    """manifest.json에 에이전트 고유 표기(mcp__, Write|Edit 등)가 없는지 (스펙 02 §3, K4)."""
+    """manifest.json에 에이전트 고유 표기(mcp__, Write|Edit 등)가 없는지 (docs/spec/internals.md §2, K4)."""
     manifest_path = Path(root) / "infra" / "hooks" / "manifest.json"
     if not manifest_path.is_file():
         return ("manifest 정규형", True, "manifest 없음 — 건너뜀")
@@ -316,7 +316,7 @@ def _lint_manifest_canonical(root: Path) -> tuple:
 # 파일이 추적 트리(팀 루트)에 진입하면 코드 검사가 강제로 막는다.
 #
 # 범위(좁게, 거짓양성 차단): 이 린트는 "config 류 데이터 파일이 평문 비밀을 담는"
-# 사고만 잡는다 — 산문(SPEC.md)·코드(*.py)·BUILD-LOG 등에서 'token'/'secret' 단어를
+# 사고만 잡는다 — 산문(docs/spec/)·코드(*.py)·BUILD-LOG 등에서 'token'/'secret' 단어를
 # 쓰는 건 정상이므로 검사 대상이 아니다(lint 범위 = config/credentials 데이터 파일).
 #   대상: team.config.json·team.config.*.json(.example 포함) + .gitignore 비밀 패턴
 #         이름을 가진 추적 파일(*credentials*·*.token·*secret*).
@@ -541,7 +541,7 @@ class SubprocessEngine:
     def run(self, argv) -> Result:
         # 엔진을 run root(=검사 대상 팀 루트)에 고정한다. 팀 루트는 `--root` 명시 인자로
         # 전달하고(P1: env 비신뢰), env 화이트리스트로 ambient TEAMMODE_HOME/LEGACY_TOOL_HOME
-        # 누수도 차단한다(이중 방어, 스펙 01 §2.4). 첫 토큰(동사) 뒤에 --root 를 끼운다.
+        # 누수도 차단한다(이중 방어, docs/spec/internals.md §1.2). 첫 토큰(동사) 뒤에 --root 를 끼운다.
         argv = list(argv)
         if argv:
             full = self.engine_cmd + [argv[0], "--root", str(self.root)] + argv[1:]

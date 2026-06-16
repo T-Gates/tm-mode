@@ -304,8 +304,9 @@ def _make_run_adapter():
     """wire 용 run_adapter(agent, verb, flag, path, extra_args) → 어댑터 main 호출 rc.
 
     어댑터를 격리 import(runpy)해 main(argv) 실행. 동사별로 argv 구성:
-      - install-mcp: [flag, path, *extra_args, "install-mcp"]
-      - sync:        [flag, path, "sync", "--on"]
+      - install-mcp:    [flag, path, *extra_args, "install-mcp"]
+      - install-skills: [flag, path, *extra_args, "install-skills"]
+      - sync:           [flag, path, "sync", "--on"]
     extra_args 는 wire_agents 가 동사별 게이트로 해석한 추가 글로벌 플래그(예: claude
     install-mcp 의 --mcp-config <격리경로>). 경로는 wire_agents 가 이미 해석함 — 여기선
     그대로 전달하고 argparse 글로벌 플래그(서브커맨드 앞)로 배치한다.
@@ -472,7 +473,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         err("[warn] team.config.json 의 members 블록 형식이 스펙과 다릅니다 "
             "(엔트리는 {name, role?} object). 설치는 진행 — role 판정엔 영향 없습니다.")
 
-    # ⑤ wire (§4⑤·§8, M5) — 감지된 에이전트마다 어댑터 sync(훅 등록). 스킬 제외(M2).
+    # ⑤ wire (§4⑤·§8, M5) — 감지된 에이전트마다 어댑터 install-mcp→sync→install-skills.
     # settings_override: --settings 지정 시 격리 경로. 미지정+실설치 의도면 실호스트.
     settings_override = opts.settings
     if settings_override is None and not opts.yes:

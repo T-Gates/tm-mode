@@ -628,10 +628,12 @@ def scaffold_memory(team_root: Path, *, member_name: str, role: str,
 _AGENT_WIRE = {
     "claude": {"flag": "--settings", "home_rel": ".claude/settings.json",
                "mcp_flag": "--mcp-config", "mcp_rel": ".claude.json",
-               "cfg_flag": "--config"},
+               "cfg_flag": "--config",
+               "skills_flag": "--skills-dir", "skills_rel": ".claude/skills"},
     "codex":  {"flag": "--config",   "home_rel": ".codex/config.toml",
                "mcp_flag": None,      "mcp_rel": None,
-               "cfg_flag": "--team-config"},
+               "cfg_flag": "--team-config",
+               "skills_flag": "--skills-dir", "skills_rel": ".codex/skills"},
 }
 
 
@@ -674,6 +676,26 @@ def agent_mcp_path(agent: str, *, home: Path, settings_override=None):
     return None
 
 
+def agent_skills_path(agent: str, *, home: Path, settings_override=None):
+    """install-skills 가 스킬 심링크를 거는 디렉토리(§2.7 L2-C) — 에이전트별로 다름.
+
+    반환:
+      - (skills_flag, path) 튜플: wire 가 어댑터에 명시 전달할 격리/실 스킬경로.
+      - 실호스트 모드(settings_override 미지정)에서도 wire 는 경로를 **명시 전달**한다
+        (home 기준 .claude/skills · .codex/skills). 어댑터 기본(os.path.expanduser)도
+        같은 값이지만, wire 가 주입한 home 을 권위로 삼아 테스트 monkeypatch HOME 이
+        그대로 반영되게 한다(실 ~/.claude/skills 무접촉 실증 — N3 동형).
+
+    **격리 게이트(D.1)**: settings_override 지정 시 그 하위 <override>/<agent>/skills 로.
+    sync 의 settings 경로를 install-skills 가 암묵 재활용하지 않는다(동사별 게이트).
+    """
+    spec = _AGENT_WIRE[agent]
+    flag = spec["skills_flag"]
+    if settings_override is not None:
+        return (flag, Path(settings_override) / agent / "skills")
+    return (flag, Path(home) / spec["skills_rel"])
+
+
 @dataclass
 class WireResult:
     ok: bool
@@ -687,10 +709,11 @@ def wire_agents(agents, *, home: Path, settings_override=None,
                 run_adapter=None, team_root=None) -> WireResult:
     """감지된 에이전트마다 어댑터 동사 호출(MCP 등록 → 훅 sync) — §4⑤·§8·§2.7·§2.8.
 
-    **다동사(D.1)**: 에이전트마다 **install-mcp → sync(--on) 순**으로 호출한다.
-    install-skills 는 v0.1 삭제(L2-C) — 호출 안 함. install-mcp 가 services 의 연결
-    provider MCP 서버를 등록(§2.8)하고, 그 뒤 sync 가 MCP 매처의 별칭을 보장된 것으로
-    배선한다(install-mcp 미선행이면 sync 가 해당 매처만 [warn] 생략 — §2.7).
+    **다동사(D.1)**: 에이전트마다 **install-mcp → sync(--on) → install-skills 순**으로
+    호출한다. install-mcp 가 services 의 연결 provider MCP 서버를 등록(§2.8)하고, 그 뒤
+    sync 가 MCP 매처의 별칭을 보장된 것으로 배선하며(install-mcp 미선행이면 sync 가 해당
+    매처만 [warn] 생략 — §2.7), install-skills 가 스킬 디렉토리에 심링크(폴백 복사)한다
+    (L2-C). install-skills 는 어댑터 동사이고 wire 는 호출만 한다(직접 심링크 금지).
 
     **동사별 게이트(D.1)**: sync 의 settings 경로(--settings/--config)를 install-mcp 가
     암묵 재활용하지 않는다. claude 처럼 MCP 등록 파일(~/.claude.json)이 settings.json 과
@@ -740,13 +763,28 @@ def wire_agents(agents, *, home: Path, settings_override=None,
             #    같은 팀 config 경로 전달. 단 MCP 별칭 보장 판정은 sync 가 ~/.claude.json(claude)
             #    을 본다 — 여기선 격리 mcp_extra 를 다시 줘야 install-mcp 가 쓴 격리 파일을 읽는다.
             rc = run_adapter(agent, "sync", spec["flag"], path, mcp_extra)
-            if rc == 0:
-                res.wired.append(agent)
-                res.messages.append(f"[wire] {agent} 훅 동기화 완료 → {path}")
-            else:
+            if rc != 0:
                 res.ok = False
                 res.failed.append((agent, f"sync rc={rc}"))
                 res.messages.append(f"[wire] {agent} 실패(rc={rc}) — 다른 배선은 계속")
+                continue
+            res.messages.append(f"[wire] {agent} 훅 동기화 완료 → {path}")
+            # ③ install-skills (§2.7 L2-C) — 스킬 디렉토리에 심링크(폴백 복사). 동사별
+            #    게이트(--skills-dir <격리/실 경로>)를 cfg_extra 와 함께 전달 — sync 의 settings
+            #    경로 암묵 재활용 금지. 각 어댑터가 자기 스킬경로(claude=~/.claude/skills,
+            #    codex=~/.codex/skills)에 직접 심링크하고, wire 는 호출만 한다(install-mcp 동형).
+            skills = agent_skills_path(agent, home=home,
+                                       settings_override=settings_override)
+            skills_extra = cfg_extra + [skills[0], str(skills[1])]
+            rc_sk = run_adapter(agent, "install-skills", spec["flag"], path, skills_extra)
+            if rc_sk == 0:
+                res.wired.append(agent)
+                res.messages.append(f"[wire] {agent} 스킬 심링크 완료 → {skills[1]}")
+            else:
+                res.ok = False
+                res.failed.append((agent, f"install-skills rc={rc_sk}"))
+                res.messages.append(
+                    f"[wire] {agent} install-skills 실패(rc={rc_sk}) — 다른 배선은 계속")
         except Exception as e:  # noqa: BLE001 — 한 에이전트 실패가 전체를 막지 않게(M5)
             res.ok = False
             res.failed.append((agent, str(e)))

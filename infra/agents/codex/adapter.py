@@ -55,6 +55,11 @@ BLOCK_END = "# teammode-hooks-end"
 class Adapter(BaseAdapter):
     """Codex 어댑터 — 번역 코어는 상속, config 포맷·폴백만 재정의."""
 
+    # install-skills(L2-C): Codex 스킬 경로는 spec 에 명문화돼 있지 않다 — claude 의
+    # ~/.claude/skills 와 대칭으로 ~/.codex/skills 를 가정한다(주석으로 추정 명시).
+    # 실 경로가 다르면 v0.2 에서 이 상수만 고치면 된다(install_skills 로직은 부모 상속).
+    DEFAULT_SKILLS_DIR = "~/.codex/skills"
+
     def __init__(self, *args, **kwargs):
         # N3: Codex 는 MCP 를 ~/.codex/config.toml 의 [mcp_servers.*] 블록으로 등록하므로
         # 부모(claude)가 상속시키는 mcp_config_path(=~/.claude.json) 를 절대 쓰지 않는다.
@@ -354,12 +359,15 @@ def main(argv=None) -> int:
     # (Codex MCP 등록은 --config 의 config.toml 안 블록이므로 별도 --mcp-config 불요.)
     p.add_argument("--team-config", default=None)
     p.add_argument("--providers-dir", default=None)
+    # install-skills 스킬 디렉토리 — 기본 None(실호스트 ~/.codex/skills), 격리/테스트는 tmp.
+    p.add_argument("--skills-dir", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("sync")
     sp.add_argument("--on", action="store_true")
     sp.add_argument("--off", action="store_true")
     sub.add_parser("uninstall")
     sub.add_parser("install-mcp")
+    sub.add_parser("install-skills")
     args = p.parse_args(argv)
 
     d = _default_paths()
@@ -371,6 +379,7 @@ def main(argv=None) -> int:
         team_root=d["team_root"],
         config_path=args.team_config,
         providers_dir=args.providers_dir,
+        skills_dir=args.skills_dir,
     )
     if args.cmd == "sync":
         mode = "on" if args.on else ("off" if args.off else None)
@@ -379,8 +388,13 @@ def main(argv=None) -> int:
     elif args.cmd == "uninstall":
         for c in adapter.uninstall():
             print(c)
+        for c in adapter.uninstall_skills():
+            print(c)
     elif args.cmd == "install-mcp":
         for c in adapter.install_mcp():
+            print(c)
+    elif args.cmd == "install-skills":
+        for c in adapter.install_skills():
             print(c)
     return 0
 
