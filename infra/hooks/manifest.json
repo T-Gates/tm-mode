@@ -2,33 +2,37 @@
   {
     "event": "SessionStart",
     "script": "session-start.py",
-    "timeout": 5000,
+    "timeout": 3,
     "mode": "on",
-    "enforcement": "advisory"
+    "enforcement": "advisory",
+    "_timeout_unit": "seconds"
   },
   {
     "event": "UserPromptSubmit",
     "script": "session-log-remind.py",
-    "timeout": 5000,
+    "timeout": 2,
     "mode": "on",
-    "enforcement": "advisory"
+    "enforcement": "advisory",
+    "_timeout_unit": "seconds"
   },
   {
     "event": "PostToolUse",
     "match": { "action": "file_edit" },
     "script": "auto-commit.py",
-    "timeout": 5000,
+    "timeout": 3,
     "fallback": "runtime",
-    "enforcement": "block"
+    "enforcement": "block",
+    "_timeout_unit": "seconds"
   },
   {
     "event": "PreToolUse",
     "match": { "mcp": { "server": "linear", "tool": "create_issue" } },
     "script": "confirm-action.py",
     "args": "tgates-linear-create-allow",
-    "timeout": 3000,
+    "timeout": 2,
     "fallback": "runtime",
     "enforcement": "block",
-    "strict": true
+    "strict": true,
+    "_timeout_unit": "seconds"
   }
 ]

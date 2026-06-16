@@ -158,7 +158,7 @@ infra/
   "match": { "action": "file_edit" },     // 선택. 정규 매처 (§2.5). 생략 = 전체 매칭
   "script": "auto-commit.py",             // 필수. hooks/ 하위 공통 스크립트
   "args": "",                             // 선택. 기본 ""
-  "timeout": 5000,                        // 선택. ms. 기본값은 구현 정의
+  "timeout": 3,                            // 선택. 초(seconds). 기본값은 구현 정의
   "mode": "on",                           // 선택. 생략 = base(상시) / "on" = 팀 모드 켜진 동안만
   "fallback": "runtime",                  // 선택. "runtime" | "drop". 기본 "drop" (§2.9)
   "strict": false,                        // 선택. 기본 false. normalize 변환 실패 정책 (§2.10)
@@ -169,7 +169,7 @@ infra/
 - `event`·`script`는 필수다. 어댑터는 값 검증기를 따로 두지 않고 접근한다. 키가 없으면 현재 구현은 `KeyError`로 실패할 수 있다.
 - `match` 생략 또는 falsy 값은 전체 매칭이다. 지원 키는 현 구현상 `action`, `mcp`뿐이다. 알 수 없는 match 키는 어댑터 번역 단계에서 표현 불가로 취급하고, normalize 런타임 필터에서는 `True`로 통과한다(unknown match를 런타임에서 막지 않음). `match`가 정확히 하나의 키만 갖는지는 현재 lint/conformance에서 검사하지 않는다.
 - `args`는 문자열 그대로 커맨드 끝에 붙는다. 리스트 파싱이나 shell escaping 재해석은 하지 않는다. 예: manifest의 `"args": "tgates-linear-create-allow"`는 `confirm-action.py`의 첫 positional 인자로 들어간다.
-- `timeout`은 ms 단위 선언이다. Claude settings에는 값이 truthy일 때 그대로 ms로 들어간다. Codex TOML에는 `max(1, timeout_ms // 1000)` 초로 내림 변환된다. 생략 시 Claude는 timeout 필드를 쓰지 않고, Codex는 5000ms 기본값을 써서 `timeout = 5`가 된다.
+- `timeout`은 **초(seconds)** 단위 선언이다. Claude settings.json 과 Codex config.toml 모두 초 단위 hook timeout 을 사용하므로 어댑터가 변환 없이 그대로 기록한다(변환 드리프트 원천 차단). 생략 시 양쪽 모두 timeout 필드를 기록하지 않는다.
 - `mode` 생략은 base 엔트리다. `"on"`은 `sync --on`일 때만 base와 함께 등록된다. `sync --off` 또는 플래그 없는 `sync`는 base만 등록한다. 현재 구현에는 "마지막 on/off 상태 기억"이 없다.
 - `fallback` 기본값은 `"drop"`이다. `"runtime"`은 이벤트는 지원하지만 매처가 표현 불가할 때 무매처로 등록하고 normalize 자가 필터에 맡기는 모드다. 이벤트 자체가 `null`이면 runtime이어도 등록할 수 없어 drop된다.
 - `strict`는 normalize 변환 실패 시 종료코드를 결정한다. 같은 `script`를 가진 manifest 엔트리 중 하나라도 `strict: true`면, 해당 script로 호출된 normalize 변환 실패가 exit 1이 된다. 아니면 exit 0이다.
@@ -309,7 +309,7 @@ adapter.py [global-options] install-skills      # infra/skills/base/* 설치
    - 사용자 훅은 삭제·수정하지 않는다.
 7. 멱등:
    - Claude는 JSON settings를 읽어 `hooks` object를 upsert/delete한 뒤 `json.dumps(indent=2, ensure_ascii=False) + "\n"` 결과가 원문과 다를 때만 쓴다. 깨진 JSON은 `{}`로 취급한다.
-   - Claude는 같은 event/matcher에 소유 훅이 있으면 첫 hook command만 갱신한다. timeout은 새 entry에 truthy timeout이 있을 때만 설정·갱신한다.
+   - Claude는 같은 event/matcher에 소유 훅이 있으면 첫 hook command 와 timeout 을 upsert 한다. command 또는 timeout 이 다르면 갱신하고 `[update]`를 반환한다. manifest 에 timeout 이 없으면 기존 timeout 키를 제거한다(기존 5000 잔존 방지).
    - Claude는 manifest 대상 command 집합에 없는 소유 훅을 제거한다. event 배열이 비면 event key도 삭제한다.
    - Codex는 TOML 파서를 쓰지 않고 `# teammode-hooks-start`부터 `# teammode-hooks-end`까지의 관리 블록을 통째로 렌더·교체한다. 블록이 없으면 파일 끝에 append한다.
    - Codex hook 블록은 event마다 `[[hooks.<event>]]`, 선택적 `matcher = "..."`, `[[hooks.<event>.hooks]]`, `type = "command"`, `command = ...`, `timeout = <seconds>`를 쓴다. command 문자열은 작은따옴표 literal을 우선 사용하고, command에 작은따옴표가 있으면 큰따옴표 TOML 문자열로 escape한다.
@@ -666,7 +666,7 @@ python infra/teammode.py context --root <팀루트> [--json]
 
 공통 git 안전장치:
 
-- 기본 timeout은 `DEFAULT_TIMEOUT = 5`초다.
+- 기본 timeout은 `DEFAULT_TIMEOUT = 2`초다(pull/fetch 2초 초과 시 비치명 실패, 로컬 commit/checkout 도 충분).
 - `git_env()`는 현재 환경을 복사한 뒤 `GIT_TERMINAL_PROMPT=0`을 강제하고, `GIT_SSH_COMMAND`가 없으면 `ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new -oConnectTimeout=5`를 넣으며, `GIT_ASKPASS`가 없으면 `true`를 넣는다. HTTPS/SSH credential prompt로 멈추지 않게 하는 목적이다.
 - 네트워크성 git 호출에는 `-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=<timeout>`을 붙인다. 적용 대상은 pull, fetch, push다. merge에는 붙지 않는다.
 - `run_git(args, timeout)`은 `git <args>`를 stdout/stderr pipe, stdin DEVNULL, text mode로 실행한다. POSIX에서 `start_new_session=True`로 새 프로세스 그룹을 만들고, `subprocess.TimeoutExpired`가 나면 `kill_group()`으로 프로세스 그룹 전체를 SIGKILL한다. 실패해도 kill 예외는 흡수한다.

@@ -179,6 +179,33 @@ def test_user_config_preserved(env):
 
 # ── 7. 크로스에이전트: 같은 manifest 가 Codex 에선 축소되어 표현 ──
 
+# ── 8. Codex timeout — manifest 초 → TOML 에 초로 그대로 ──
+
+def test_codex_timeout_written_as_seconds(env):
+    """manifest timeout=3(초) → config.toml 에 'timeout = 3' 이 그대로 기록된다(변환 없음)."""
+    env.write_manifest([
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime", "timeout": 3},
+    ])
+    env.make_adapter().sync(mode="on")
+    text = env.config.read_text()
+    assert "timeout = 3" in text
+
+
+def test_codex_no_timeout_when_manifest_omits(env):
+    """manifest 에 timeout 없으면 TOML 에도 'timeout = ...' 행 없음."""
+    env.write_manifest([
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+    ])
+    env.make_adapter().sync(mode="on")
+    text = env.config.read_text()
+    # 'timeout = <숫자>' 패턴이 없어야 한다(경로 안에 'timeout' 문자열이 있을 수 있으므로
+    # 단순 포함 검사 대신 패턴 검사).
+    import re
+    assert not re.search(r'^timeout\s*=', text, re.MULTILINE)
+
+
 def test_same_manifest_reduced_on_codex(env, capsys):
     # 슬라이스 2 와 동일한 manifest 를 Codex 에 — PreToolUse 만 빠지고 나머지 등록
     env.write_manifest([

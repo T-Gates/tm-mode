@@ -120,8 +120,9 @@ class Adapter(BaseAdapter):
                     continue
 
             command = self.build_command(entry)
-            timeout_ms = entry.get("timeout", 5000)
-            timeout_s = max(1, timeout_ms // 1000)
+            # manifest 의 timeout 은 **초** 단위(직접 기록). Codex config.toml 도 초 단위이므로
+            # 변환 없이 그대로 쓴다. 미지정이면 None → TOML 에 timeout 행 생략.
+            timeout_s = entry.get("timeout") or None
             toml_entries.append((event, matcher, command, timeout_s))
 
         block = self._render_block(toml_entries)
@@ -148,7 +149,8 @@ class Adapter(BaseAdapter):
             lines.append('type = "command"')
             # 커맨드는 normalize 경유(§5.1-2). TOML 문자열로 그대로.
             lines.append(f"command = {self._toml_str(command)}")
-            lines.append(f"timeout = {timeout_s}")
+            if timeout_s is not None:
+                lines.append(f"timeout = {timeout_s}")
             lines.append("")
         lines.append(BLOCK_END)
         return "\n".join(lines)

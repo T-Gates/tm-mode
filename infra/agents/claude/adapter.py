@@ -509,12 +509,9 @@ class Adapter:
                     continue
 
             command = self.build_command(entry)
-            # manifest 의 timeout 은 **밀리초**(5000=5초). Claude Code 의 hook timeout 은
-            # **초** 단위로 해석되므로 ms→s 변환해서 settings.json 에 쓴다(codex 어댑터와
-            # 대칭, adapter.py:124). 변환을 빼면 5000 이 그대로 들어가 5000초(83분)로
-            # 해석돼 git hang 시 UserPromptSubmit 훅이 안 끊긴다(P0 hook hang 버그).
-            timeout_ms = entry.get("timeout")
-            timeout = max(1, timeout_ms // 1000) if timeout_ms else None
+            # manifest 의 timeout 은 **초** 단위(직접 기록). Claude Code hook timeout 도
+            # 초 단위이므로 변환 없이 그대로 settings.json 에 쓴다(변환 드리프트 제거).
+            timeout = entry.get("timeout") or None
             desired.append((event, matcher, command, timeout))
 
         wanted_commands = {d[2] for d in desired}
@@ -533,10 +530,20 @@ class Adapter:
                 inner = entry_obj.get("hooks", [])
                 # 소유 훅만 갱신 대상
                 if inner and self.is_owned(inner[0].get("command", "")):
+                    needs_update = False
                     if inner[0].get("command") != command:
                         inner[0]["command"] = command
-                        if timeout:
-                            inner[0]["timeout"] = timeout
+                        needs_update = True
+                    # P1: timeout 변경도 갱신(기존 5000 잔존 방지 — command 동일이어도
+                    # desired timeout 과 다르면 upsert 한다).
+                    existing_timeout = inner[0].get("timeout")
+                    if timeout and existing_timeout != timeout:
+                        inner[0]["timeout"] = timeout
+                        needs_update = True
+                    elif not timeout and "timeout" in inner[0]:
+                        del inner[0]["timeout"]
+                        needs_update = True
+                    if needs_update:
                         changes.append(f"[update] {event}")
                     found = True
                     break
