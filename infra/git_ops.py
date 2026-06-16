@@ -315,14 +315,19 @@ def has_common_ancestor(team_root: str, upstream_ref: str = "upstream/main",
     """HEAD 와 upstream_ref 사이에 공통 조상이 있는지 확인. 알 수 없으면 True(보수적).
 
     `git merge-base --is-ancestor` 대신 `git merge-base HEAD <ref>` 를 써서 exit code 로
-    판정한다 — exit 0 = 공통 조상 있음, exit 1 = 없음(unrelated histories).
-    GitHub template 으로 생성한 레포는 upstream 과 공통 조상이 0이라 False.
+    판정한다 — exit 0 = 공통 조상 있음, exit 1 = 없음(unrelated histories), 그 외(bad
+    ref·git 오류 등) = **알 수 없음 → 보수적으로 True**(억제 안 함). GitHub template 으로
+    생성한 레포는 upstream 과 공통 조상이 0이라 exit 1 → False.
     """
     try:
         rc, _, _ = run_git(
             ["-C", team_root, "merge-base", "HEAD", upstream_ref],
             timeout=timeout)
-        return rc == 0
+        if rc == 0:
+            return True   # 공통 조상 있음
+        if rc == 1:
+            return False  # unrelated histories(공통 조상 없음) — template 레포
+        return True       # bad ref·기타 git 오류 → 알 수 없음, 보수적으로 억제 안 함
     except (OSError, subprocess.SubprocessError):
         return True  # 알 수 없으면 보수적으로 True(억제 안 함)
 

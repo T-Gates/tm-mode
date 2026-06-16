@@ -95,6 +95,59 @@ def test_normalize_emoji_korean_roundtrip(normalize_env):
     assert out["prompt"] == prompt
 
 
+def test_normalize_korean_safe_when_child_decodes_cp949(normalize_env):
+    """자식 훅이 stdin 을 cp949 로 디코드해도 한글이 안전하다 — ensure_ascii(ASCII escape) 효과 (P0).
+
+    ⭐ codex 적대검수가 잡은 진짜 P0 시나리오: 부모가 stdin 에 UTF-8 로 써도(encoding="utf-8"),
+    자식 Python 의 sys.stdin.read() 는 자기 locale(Windows cp949)로 디코드한다. normalize 가
+    한글을 UTF-8 바이트(ensure_ascii=False)로 보내면 cp949 자식이 그 멀티바이트를 디코드하다
+    UnicodeDecodeError/mojibake. → normalize 가 ASCII escape(\\uXXXX)로 보내면 어떤 locale
+    자식이든 안전(자식 json.loads 가 원복). PYTHONIOENCODING=cp949 로 자식 디코드를 강제해
+    실제 Windows 상황을 재현한다(이 테스트는 ensure_ascii=False 회귀 시 실패한다).
+    """
+    korean = "안녕하세요 팀모드 한글 — 세션로그 리마인더"
+    raw = {"hook_event_name": "UserPromptSubmit", "prompt": korean}
+
+    # 자식 훅(echo-stub)이 stdin 을 **cp949 로 디코드**하도록 격리 재현 — Windows
+    # 한국어 locale 의 자식 sys.stdin 을 흉내낸다(env 가 아니라 raw bytes decode 로
+    # 강제해, normalize 자신의 stdin 읽기는 건드리지 않는다 = 실제 상황: normalize→자식
+    # 쓰기만 문제였던 원 제보 _writerthread EncodeError 와 일치).
+    (normalize_env / "infra" / "hooks" / "echo-stub.py").write_text(
+        "import sys\n"
+        "d = sys.stdin.buffer.read().decode('cp949')\n"   # 자식 = cp949 locale
+        "sys.stdout.buffer.write(d.encode('utf-8'))\n"
+        "sys.exit(0)\n",
+        encoding="utf-8")
+
+    proc = subprocess.run(
+        [PY, str(normalize_env / "infra" / "agents" / "claude" / "normalize.py"),
+         "echo-stub.py"],
+        input=json.dumps(raw, ensure_ascii=False),
+        capture_output=True, text=True,
+        encoding="utf-8",
+        cwd=str(normalize_env),
+        env={**os.environ, "TEAMMODE_HOME": str(normalize_env)},
+    )
+
+    # ensure_ascii=False 회귀 시: normalize 가 한글 UTF-8 바이트를 보내 자식 cp949
+    # decode 가 0xec 에서 터진다. ASCII escape 면 자식 locale 무관하게 통과.
+    assert proc.returncode == 0, f"cp949 자식에서 normalize crash: {proc.stderr}"
+    out = json.loads(proc.stdout)
+    assert out["prompt"] == korean, f"cp949 자식서 한글 손실: got={out['prompt']!r}"
+
+
+def test_normalize_source_has_no_ensure_ascii_false():
+    """normalize.py 가 ensure_ascii=False 로 stdin 을 보내지 않는다 — P0 회귀 고정.
+
+    ensure_ascii=False 면 한글이 UTF-8 멀티바이트로 자식 stdin 에 가 cp949 자식서 깨진다.
+    기본(ensure_ascii=True)으로 ASCII escape 를 보내야 OS 무관 안전.
+    """
+    src = NORMALIZE.read_text(encoding="utf-8")
+    assert "ensure_ascii=False" not in src, (
+        "normalize.py 가 자식 stdin 에 ensure_ascii=False 로 보낸다 — "
+        "cp949 자식 디코드가 깨진다(P0). ensure_ascii 기본(ASCII)으로 보내야 한다.")
+
+
 # ── 2. P1#4: counter 파일이 tempfile.gettempdir() 를 사용한다 ──
 
 def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
