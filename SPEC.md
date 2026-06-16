@@ -779,6 +779,8 @@ provider별 상수 스키마 상세는 v0.2 확정(예약).
 ## 부록 C. 버전 이력 · 01~05 대비 변경점
 
 - **0.2** — **engine 동사 계약 변경(minor bump, §0.4)**: 8번째 엔진 동사 `issue` 추가(§3.5). `issues` 슬롯 provider 확인 후 정규 입력 스키마를 stdout JSON으로 echo까지만(action_map 해석·페이로드 변환 금지 — 어댑터/스킬 몫). 값 화이트리스트에 `--title --body --assignee --label --priority` 추가, positional 서브액션 파싱 명문화(§3). conformance 03 닫힘(RED→GREEN). 하니스 `fs_delete` 액션(시나리오 자체 teardown) 추가.
+  - **L2(서비스 연결) 빌드**: provider 팩(`providers/{linear,slack,notion,google}.json` — token_guide·auth·default_scope·resource_fields, §7) + config `services` 확장 object 스키마(§7.1) + 어댑터 `install-mcp`(§2.8, 빈슬롯 sync 교정 §2.9) + `install.py` wire 다동사 통합(§4) + credentials 금고(`infra/credentials.py`, 각자입력 0600, §5.4·§7.5) + 미구현 훅 2개(auto-commit·confirm-action) 실재화 + `tm-connect` 스킬(§5.4) + K7 스킬 lint(§2.12). `install-skills`는 v0.2 이월(문서 포인터 발견).
+  - **config.members 멤버 역할(§1.1, L2-A2)**: `members:[{name, role?}]`, 각자 upsert(타인 무접촉). `context` 동사 출력에 `role` 필드 추가(§3.3 — additive, 미등재/생략 시 null·하위호환). members 블록은 role 판정(`config_is_valid`)과 분리. role 개행/제어문자 거부(어휘는 자유).
 - **0.1 (이 문서)** — 흩어진 spec 01(정식)·02(정식)·03(정식)·04(0.1-draft)·05(0.1-draft)를 단일 권위 문서로 통합. spec_version·용어·표기 규약 단일화. 04/05 draft를 빌드 기준 closed로 승격(부록 A.1). 코드에만 있던 엔진 동사(§3)·`enforcement` 필드·install 디스패치 모드를 명문화. 잔여 갭을 부록 A.3에 명시.
 
 **01~05 → SPEC 대비 주요 변경점:**
