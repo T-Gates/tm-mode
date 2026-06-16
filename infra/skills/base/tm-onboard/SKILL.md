@@ -81,7 +81,12 @@ python infra/teammode.py context --root . --json
 - "배너·시작멘트(greeting)·끝맺음말(farewell) 커스텀할래요? (기본값 그대로 둬도 됩니다)"
 - **예**:
   - **시작 멘트·끝맺음 말** → `team.config.json`의 `team.greeting`·`team.farewell` 값을 교체(도입자 config엔 기본값 `"<팀>  팀모드 ON"`·`"수고하셨습니다 — <팀>"`이 이미 있다). 엔진 `on`이 배너 직후 greeting을, `off`가 farewell(없으면 "상태 저장됨")을 출력한다.
-  - **배너** → `memory/banner.txt`를 직접 교체(엔진은 파일 있으면 그대로 출력). ASCII 아트 등 자유.
+  - **배너(picker)** → `infra/banners/` 에 6종의 폰트(ansi_shadow·slant·chunky·cyberlarge·larry3d·speed)로 렌더된 ASCII 아트 배너가 미리 준비돼 있다. 아래 순서로 진행:
+    1. 각 후보를 순서대로 보여준다: `cat infra/banners/<폰트명>.txt`
+    2. 사용자가 폰트명을 고르면 해당 파일을 복사해 적용한다: `cp infra/banners/<폰트명>.txt memory/banner.txt`
+    3. 엔진은 `memory/banner.txt`가 있으면 그 내용을 그대로 출력한다.
+    - 배너는 TEAM/MODE 텍스트 고정이다. 팀명은 엔진이 배너 아래 greeting으로 동적 출력하므로 배너에 팀명을 따로 넣을 필요가 없다.
+    - 6종 중 마음에 드는 게 없으면 `memory/banner.txt`를 직접 작성해도 된다(임의 ASCII 아트 자유).
 - **아니오** → 도입자 config의 기본 greeting/farewell + 자동 배너(`<팀> team mode ON`)를 그대로 쓴다. 0 영향.
 - **도입자만** config의 greeting/farewell을 쓴다(팀 스코프, 커밋되면 팀원 공유). 팀원은 읽기만 — 개인이 바꾸지 않는다.
 
