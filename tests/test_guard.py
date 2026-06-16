@@ -73,19 +73,62 @@ def test_claude_mcp_config_is_guarded():
     assert p == conftest._CLAUDE_MCP_CONFIG, "MCP 등록 실경로 상수와 불일치"
 
 
-def test_claude_mcp_config_content_change_detected():
-    """가드가 ~/.claude.json 의 'before≠after(MCP 등록 신규 파일)'를 실제로 발화한다.
+def _claude_snap(raw: bytes):
+    """_snapshot 이 ~/.claude.json 에 대해 만드는 ('claude-json', footprint) 튜플을 재현."""
+    return ("claude-json", conftest._claude_json_footprint(raw))
 
-    실 파일 무접촉 — conftest 의 라이브 판정 함수 _pollution_reason 을 직접 호출.
-    MCP 등록은 흔히 파일 신규 생성(부재→존재)이라 suffix 검사로는 통과해 버리므로,
-    전용 _CLAUDE_MCP_CONFIG 분기(suffix 무관 before != after)가 필수다.
+
+def test_claude_mcp_config_teammode_marker_injection_detected():
+    """teammode 가 실 ~/.claude.json 에 _teammode_managed 마커를 주입하면 가드가 발화한다.
+
+    실 파일 무접촉 — conftest 의 라이브 판정 함수 _pollution_reason 을 footprint 스냅샷으로
+    직접 호출. install-mcp 의 _build_mcp_entry 가 남기는 소유 마커(_teammode_managed:true)가
+    실 파일에 새로 등장하면 = teammode 발 오염 → 반드시 잡아야 한다(빌드안전 핵심).
     """
     p = Path(os.path.expanduser("~/.claude.json"))
-    reason = conftest._pollution_reason(
-        p, ("absent", None), ("file", b'{"mcpServers": {"linear": {}}}'))
-    assert reason is not None, "가드가 MCP 등록 파일의 부재→존재를 오염으로 봐야 한다"
-    # 오분류 방지: MCP/설정 경로 메시지여야 한다(셸 프로파일 오분류 아님).
-    assert "MCP" in reason, f"MCP 등록 파일 오염 메시지가 MCP/설정 분류가 아님: {reason}"
+    before = _claude_snap(b'{"mcpServers": {"existing": {}}, "projects": {"/a": {}}}')
+    after = _claude_snap(
+        b'{"mcpServers": {"existing": {}, "linear": {"_teammode_managed": true}}, '
+        b'"projects": {"/a": {}}}')
+    reason = conftest._pollution_reason(p, before, after)
+    assert reason is not None, "teammode _teammode_managed 마커 주입을 가드가 잡아야 한다"
+    assert "MCP" in reason or "오염 감지" in reason, (
+        f"MCP 등록 파일 오염 메시지가 MCP/설정 분류가 아님: {reason}")
+
+
+def test_claude_mcp_config_normalize_hook_injection_detected():
+    """teammode normalize.py 경로 훅이 실 ~/.claude.json 본문에 새로 등장하면 발화한다.
+
+    방어적 가드 — 어댑터는 보통 settings 에 훅을 쓰지만, 만에 하나 ~/.claude.json 본문에
+    normalize.py 경로가 새로 들어오면 teammode 발 오염으로 본다(footprint has_hook 전이).
+    """
+    p = Path(os.path.expanduser("~/.claude.json"))
+    before = _claude_snap(b'{"mcpServers": {}}')
+    after = _claude_snap(
+        b'{"hooks": {"PreToolUse": [{"command": "infra/agents/claude/normalize.py x"}]}}')
+    reason = conftest._pollution_reason(p, before, after)
+    assert reason is not None, "normalize.py 훅 주입(footprint has_hook 전이)을 가드가 잡아야 한다"
+
+
+def test_claude_mcp_config_live_session_unrelated_change_silent():
+    """라이브 Claude 세션의 무관한 ~/.claude.json 갱신은 가드가 무시한다(플레이크 제거).
+
+    이 머신에서 라이브 세션 MCP 가 ~/.claude.json 의 projects·타 mcpServers 항목을 주기적으로
+    갱신한다. teammode footprint(_teammode_managed 항목·normalize.py 훅)는 그대로면, 전체
+    byte 가 달라져도 발화하면 안 된다 — 과거 전체 byte 비교가 만든 teardown ERROR 의 정체.
+    """
+    p = Path(os.path.expanduser("~/.claude.json"))
+    before = _claude_snap(
+        b'{"mcpServers": {"linear": {"_teammode_managed": true}, "user_srv": {"cmd": "x"}}, '
+        b'"projects": {"/old": {}}}')
+    # 라이브 세션이 무관 항목만 변경: projects 갱신 + 사용자 MCP 서버 추가/변경.
+    after = _claude_snap(
+        b'{"mcpServers": {"linear": {"_teammode_managed": true}, "user_srv": {"cmd": "y"}, '
+        b'"another_user_srv": {}}, "projects": {"/old": {}, "/new": {"sessions": 5}}}')
+    reason = conftest._pollution_reason(p, before, after)
+    assert reason is None, (
+        "라이브 세션의 무관 갱신(projects·타 mcpServers)에 false-positive 발생 "
+        "— teammode footprint 가 동일하면 무발화해야 한다")
 
 
 # (b) credentials 실경로 = $XDG_DATA_HOME/teammode/credentials
@@ -154,11 +197,19 @@ def test_xdg_data_home_isolated():
 ABSENT = ("absent", None)
 
 
-def test_live_logic_fires_on_mcp_config_change():
-    """가드가 ~/.claude.json 의 부재→존재(MCP 등록 신규 파일)를 실제로 발화한다."""
+def test_live_logic_fires_on_mcp_config_teammode_write():
+    """가드가 ~/.claude.json 에 teammode 소유 항목이 새로 생기는 것을 실제로 발화한다.
+
+    부재(footprint 없음) → teammode _teammode_managed 항목 등장(footprint 변화)이면 오염.
+    (빈 mcpServers 신규 생성처럼 teammode 흔적이 없는 변화는 footprint 동일이라 무발화 —
+    그건 라이브 세션도 일으키는 무관 변화이므로 정상.)
+    """
     p = Path(os.path.expanduser("~/.claude.json"))
-    reason = conftest._pollution_reason(p, ABSENT, ("file", b'{"mcpServers":{}}'))
-    assert reason is not None, "MCP 등록 파일 신규 생성을 가드가 못 잡음"
+    before = ("claude-json", conftest._claude_json_footprint(None))  # 부재
+    after = ("claude-json", conftest._claude_json_footprint(
+        b'{"mcpServers": {"linear": {"_teammode_managed": true}}}'))
+    reason = conftest._pollution_reason(p, before, after)
+    assert reason is not None, "teammode 소유 MCP 항목 신규 등록을 가드가 못 잡음"
     assert "오염 감지" in reason
 
 

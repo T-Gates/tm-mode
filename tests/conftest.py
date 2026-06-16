@@ -6,6 +6,7 @@
 이 conftest 는 매 테스트 전후로 실 설정 경로의 존재/내용을 스냅샷해, 테스트가
 실수로 실 파일을 생성·변경하면 즉시 실패시킨다. (과거 누수 재발 방지)
 """
+import json
 import os
 from pathlib import Path
 
@@ -86,13 +87,26 @@ _GUARDED = [
 
 # 내용 변화(부재→존재 포함)를 suffix 무관하게 오염으로 보는 경로.
 # 셸 프로파일은 dotfile 이라 suffix 검사로는 못 잡으므로 여기에 명시한다.
-# `~/.claude.json`(MCP 등록 실경로)도 여기에 — install-mcp 가 이 파일에 서버를 쓰며,
-# 실 호스트엔 이미 존재할 수 있으므로 "내용 변화"를 오염으로 본다.
+#
+# ⚠️ `~/.claude.json` 은 _CONTENT_GUARDED 에서 **제외**(2026-06-16): 이 파일은 라이브
+# Claude Code 세션이 MCP·projects 등으로 끊임없이 갱신하는 살아있는 파일이다. 전체 byte
+# 비교로 가드하면, 테스트 실행 중 라이브 세션이 이 파일을 건드릴 때마다 그 순간 돌던
+# (무관한) 테스트에 teardown ERROR 가 무작위로 붙는다(환경 아티팩트 = false-positive).
+# → `~/.claude.json` 은 **teammode 가 등록한 흔적**(_teammode_managed 마커 mcpServers 항목,
+#    또는 normalize.py 경로 훅 주입)만 추출해 before≠after 를 보는 전용 footprint 가드로
+#    좁힌다(_claude_json_footprint / _CLAUDE_MCP_CONFIG 분기). teammode 코드의 실 오염은
+#    여전히 잡고(빌드안전), 라이브 세션의 무관 갱신은 무시(플레이크 제거).
 _CONTENT_GUARDED = set(_SHELL_PROFILES) | set(_OBSIDIAN_CONFIGS) | {
     Path(os.path.expanduser("~/.claude/settings.json")),
     Path(os.path.expanduser("~/.codex/config.toml")),
-    _CLAUDE_MCP_CONFIG,
 }
+
+# teammode 가 실 ~/.claude.json 에 남기는 소유 흔적 식별자.
+#   - mcpServers 항목의 `_teammode_managed: True` 마커(install-mcp, adapter._build_mcp_entry).
+#   - normalize.py 경로 훅 주입 흔적(어댑터가 settings 에 쓰지만, 방어적으로 ~/.claude.json
+#     본문에 이 문자열이 새로 등장하는 것도 teammode 발 오염으로 본다).
+_TEAMMODE_MANAGED_KEY = "_teammode_managed"
+_TEAMMODE_HOOK_NEEDLE = "normalize.py"
 
 # credentials 금고는 **디렉토리 내부 엔트리 집합**을 추적해 침투를 잡는다(아래 _snapshot 참조).
 # 과거 _CREATION_GUARDED 는 디렉토리를 ("dir",None) 으로만 봐서 "이미 존재하는 디렉토리 내부
@@ -117,10 +131,47 @@ def _isolate_pull_state(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
 
 
+def _claude_json_footprint(raw: bytes):
+    """`~/.claude.json` 내용에서 **teammode 소유 흔적만** 추출한다(라이브 무관 갱신 무시).
+
+    반환은 비교 가능한 정렬 튜플 — 부재면 빈 footprint(()). teammode 가 이 파일을
+    오염시키면(_teammode_managed mcpServers 항목 추가, 또는 normalize.py 경로 훅 주입)
+    footprint 가 달라져 before≠after 로 발화한다. 라이브 세션의 무관한 mcpServers·projects
+    갱신은 footprint 에 영향 없어 무발화(false-positive 제거).
+
+    파싱 실패해도 normalize.py needle 의 존재 여부는 raw 텍스트로 본다(방어적).
+    """
+    if raw is None:
+        return ()
+    managed_servers = ()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        data = None
+    if isinstance(data, dict):
+        servers = data.get("mcpServers")
+        if isinstance(servers, dict):
+            managed_servers = tuple(sorted(
+                name for name, entry in servers.items()
+                if isinstance(entry, dict)
+                and entry.get(_TEAMMODE_MANAGED_KEY) is True))
+    has_hook = _TEAMMODE_HOOK_NEEDLE.encode("utf-8") in raw
+    return (managed_servers, has_hook)
+
+
 def _snapshot():
     snap = {}
     for p in _GUARDED:
-        if p in _ENTRY_TRACKED_DIRS:
+        if p == _CLAUDE_MCP_CONFIG:
+            # ~/.claude.json: 전체 byte 가 아니라 teammode 소유 footprint 만 스냅샷.
+            # 라이브 Claude Code 세션이 무관한 항목(다른 mcpServers·projects)을 갱신해도
+            # footprint 가 동일하면 before==after → 무발화(플레이크 제거). teammode 가
+            # _teammode_managed 항목·normalize.py 훅을 주입하면 footprint 가 달라져 발화.
+            if p.is_file():
+                snap[p] = ("claude-json", _claude_json_footprint(p.read_bytes()))
+            else:
+                snap[p] = ("claude-json", _claude_json_footprint(None))
+        elif p in _ENTRY_TRACKED_DIRS:
             # 엔트리 추적 디렉토리: 부재면 ("absent",None), 존재하면 내부 엔트리 이름 집합을
             # 정렬 튜플로 스냅샷. dir→dir 라도 내부에 토큰 파일이 새로 생기면 before!=after.
             if p.is_dir():
@@ -159,12 +210,16 @@ def _pollution_reason(p, b, a):
             return (f"실 credentials 금고 오염 감지: {p} (before={b[0]}, after={a[0]}). "
                     f"테스트는 monkeypatch HOME=tmp + XDG_DATA_HOME 격리만 써야 한다.")
         return None
-    # MCP 등록 파일(`~/.claude.json`): suffix 무관(신규생성 포함) 변화 = 오염.
-    # (install-mcp 가 이 파일에 MCP 서버를 등록 — 부재→존재 신규 생성도 흔하다.)
+    # MCP 등록 파일(`~/.claude.json`): 전체 byte 가 아니라 **teammode 소유 footprint**만
+    # 비교한다. b/a 는 ("claude-json", footprint) 형태(_snapshot). footprint 가 달라졌을
+    # 때만 = teammode 가 _teammode_managed 항목·normalize.py 훅을 주입했을 때만 발화.
+    # 라이브 세션의 무관 갱신(다른 mcpServers·projects)은 footprint 동일 → 무발화(플레이크 제거).
     if p == _CLAUDE_MCP_CONFIG:
-        if b != a:
-            return (f"실 MCP 등록/설정 파일 오염 감지: {p} (before={b[0]}, after={a[0]}). "
-                    f"테스트는 monkeypatch HOME=tmp + --settings 격리만 써야 한다.")
+        if b[1] != a[1]:
+            return (f"실 MCP 등록/설정 파일 오염 감지: {p} "
+                    f"(teammode footprint before={b[1]}, after={a[1]}). "
+                    f"teammode 가 실 ~/.claude.json 에 _teammode_managed 항목/normalize.py 훅을 "
+                    f"주입했다 — 테스트는 monkeypatch HOME=tmp + --settings 격리만 써야 한다.")
         return None
     # 셸 프로파일·핵심 설정파일: suffix 무관(dotfile/신규생성 포함) 변화 = 오염.
     # (`.bashrc` 는 .suffix=="" 라 suffix 검사로는 못 잡힌다 — L1-0 핵심.)
