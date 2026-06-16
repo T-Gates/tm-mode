@@ -40,4 +40,4 @@ python infra/install.py --root . --register-obsidian
 - 엔진: `infra/teammode.py` (동사 on/off/log/context/pull/commit/update)
 - 셋업: `infra/install.py` (+ `install_lib.py`)
 - 훅: `infra/hooks/` · 어댑터: `infra/agents/<name>/` · 스킬: `infra/skills/`
-- 동작이 예상과 다르면 설계 스펙(`spec/04-install.md`·`spec/05-onboard-skill.md`) 확인.
+- 동작이 예상과 다르면 설계 스펙([설치·부트스트랩](docs/spec/onboarding.md) · [온보딩 스킬](docs/spec/skills.md)) 확인.

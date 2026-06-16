@@ -60,11 +60,15 @@ _OBSIDIAN_CONFIGS = [
 # 무인 빌드 호스트 무오염 전제: L2 어댑터가 실 MCP 등록 파일·실 credentials 금고를
 # 건드리면 즉시 발화하도록 미리 가드를 박는다(과거 dotfile blind spot 동형).
 #
-# ⚠️ 스킬 디렉토리 가드 제거(2026-06-16): install-skills(L2-C)가 v0.2 로 이월돼(L2-PLAN.md:67)
-# v0.1 무인 빌드는 스킬 디렉토리(~/.claude/skills, ~/.codex/skills, ~/.codex/prompts)에
-# 쓰지 않는다. 게다가 codex 스킬 경로는 spec 에 명문화되지 않은 추정 경로라 과(過) 가드
-# (false-positive 위험)였다. → 스킬 경로 가드 전면 제거. claude `~/.claude.json` MCP 가드와
-# credentials 가드는 v0.1 실표면이므로 유지.
+# ⚠️ 스킬 디렉토리 가드 부활(2026-06-16): install-skills(L2-C)가 v0.1 로 복귀(Jane 결정).
+# install-skills 가 스킬 심링크/복사를 거는 실호스트 디렉토리(~/.claude/skills,
+# ~/.codex/skills)를 가드 대상으로 다시 박는다. 테스트는 monkeypatch HOME=tmp +
+# --skills-dir 격리로만 install-skills 를 검증해야 하며, 실 스킬 디렉토리 내부 엔트리
+# 집합이 변하면(심링크·복사본 추가) 즉시 발화한다(엔트리 추적, credentials 동형).
+# codex 스킬 경로는 spec 미명문 추정(~/.codex/skills)이지만, install-skills 가 실제로
+# 그 경로를 쓰므로 무접촉 실증을 위해 가드에 포함한다.
+_CLAUDE_SKILLS_DIR = Path(os.path.expanduser("~/.claude/skills"))
+_CODEX_SKILLS_DIR = Path(os.path.expanduser("~/.codex/skills"))
 
 # (a) claude MCP 등록 실경로 — install-mcp(§2.8)가 MCP 서버를 등록하는 실제 파일.
 # 근거: spec/05-onboard-skill.md:90 "MCP 등록 방식 차이(`~/.claude.json` vs
@@ -78,12 +82,19 @@ _GUARDED = [
     Path(os.path.expanduser("~/.codex")),
     Path(os.path.expanduser("~/.claude")),
     _CLAUDE_MCP_CONFIG,
+    _CLAUDE_SKILLS_DIR,
+    _CODEX_SKILLS_DIR,
     *_SHELL_PROFILES,
     *_OBSIDIAN_CONFIGS,
     _real_state_dir() / "last-pull",
     _real_state_dir(),
     _real_credentials_dir(),
 ]
+
+# install-skills 가 남기는 teammode 소유 스킬명(infra/skills/base/<name>). 실 스킬 디렉토리에
+# 이 이름의 심링크/복사본이 새로 등장하면 = install-skills 가 실호스트를 오염시킨 것.
+# 사용자/딴 플러그인의 무관 스킬(다른 이름)은 footprint 에 영향 없어 무발화(플레이크 제거).
+_TEAMMODE_SKILL_NAMES = {"tm-onboard", "tm-connect", "tm-reset"}
 
 # 내용 변화(부재→존재 포함)를 suffix 무관하게 오염으로 보는 경로.
 # 셸 프로파일은 dotfile 이라 suffix 검사로는 못 잡으므로 여기에 명시한다.
@@ -159,9 +170,32 @@ def _claude_json_footprint(raw: bytes):
     return (managed_servers, has_hook)
 
 
+_SKILLS_DIRS = {_CLAUDE_SKILLS_DIR, _CODEX_SKILLS_DIR}
+
+
+def _skills_footprint(d: Path):
+    """스킬 디렉토리에서 **teammode 소유 스킬 흔적만** 추출(무관 스킬 무시).
+
+    teammode 스킬명(tm-onboard 등)의 엔트리가 존재하면 그 이름을 footprint 에 담는다.
+    install-skills 가 실호스트에 심링크/복사를 만들면 footprint 가 달라져 발화. 사용자·딴
+    플러그인의 무관 스킬은 footprint 에 안 들어가 무발화(false-positive 제거).
+    """
+    if not d.is_dir():
+        return ()
+    found = []
+    for name in _TEAMMODE_SKILL_NAMES:
+        entry = d / name
+        if entry.is_symlink() or entry.exists():
+            found.append(name)
+    return tuple(sorted(found))
+
+
 def _snapshot():
     snap = {}
     for p in _GUARDED:
+        if p in _SKILLS_DIRS:
+            snap[p] = ("skills", _skills_footprint(p))
+            continue
         if p == _CLAUDE_MCP_CONFIG:
             # ~/.claude.json: 전체 byte 가 아니라 teammode 소유 footprint 만 스냅샷.
             # 라이브 Claude Code 세션이 무관한 항목(다른 mcpServers·projects)을 갱신해도
@@ -195,6 +229,15 @@ def _pollution_reason(p, b, a):
     fixture 본문에서 분리해 **라이브 판정 로직을 직접 테스트**할 수 있게 한다(test_guard.py).
     가드가 _GUARDED 에 경로만 넣고 정작 발화 안 하는 blind spot 을 박기 위함.
     """
+    # 스킬 디렉토리: teammode 소유 스킬 footprint 만 비교. install-skills 가 실
+    # ~/.claude/skills·~/.codex/skills 에 tm-* 심링크/복사를 남기면 발화(무관 스킬 무시).
+    if p in _SKILLS_DIRS:
+        if b[1] != a[1]:
+            return (f"실 스킬 디렉토리 오염 감지: {p} "
+                    f"(teammode footprint before={b[1]}, after={a[1]}). "
+                    f"install-skills 가 실호스트 스킬 경로에 심링크/복사를 남겼다 — "
+                    f"테스트는 monkeypatch HOME=tmp + --skills-dir 격리만 써야 한다.")
+        return None
     state_paths = {_real_state_dir() / "last-pull", _real_state_dir()}
     # auto-pull 상태 경로: suffix 없어도(예: last-pull) 부재→존재 전이를 오염으로 본다.
     if p in state_paths:
