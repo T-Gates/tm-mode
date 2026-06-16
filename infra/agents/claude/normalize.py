@@ -180,7 +180,11 @@ def main(argv=None) -> int:
     script_path = HOOKS_DIR / script
     proc = subprocess.run(
         [sys.executable, str(script_path)] + extra_args,
-        input=json.dumps(canonical, ensure_ascii=False),
+        # ensure_ascii(기본 True): stdin 을 순수 ASCII(\uXXXX 이스케이프)로 보내,
+        # 자식이 어떤 locale(Windows cp949 등)로 sys.stdin 을 디코드해도 안전하다
+        # (자식 json.loads 가 원복). 부모 encoding 만 UTF-8 로 맞춰선 자식 디코드가
+        # locale 이라 한글에서 깨진다 — ASCII 로 보내는 게 OS 무관 정답(P0).
+        input=json.dumps(canonical),
         capture_output=True, text=True,
         encoding="utf-8", errors="replace",
     )
