@@ -844,7 +844,8 @@ def inject_env_windows(team_root: Path, *, runner=None) -> dict:
     abs_root = str(Path(team_root).resolve())
     try:
         res = run(["setx", ENV_VAR, abs_root],
-                  capture_output=True, text=True)
+                  capture_output=True, text=True,
+                  encoding="utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001 — setx 부재 등은 비치명(L1 핵심은 메모리+훅)
         return {"injected": False, "reason": f"setx 실행 실패: {e}",
                 "profile": None}
@@ -867,7 +868,8 @@ def remove_injected_env_windows(*, runner=None) -> bool:
     try:
         res = run(["reg", "delete", "HKCU\\Environment",
                    "/v", ENV_VAR, "/f"],
-                  capture_output=True, text=True)
+                  capture_output=True, text=True,
+                  encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001 — reg 부재 등 비치명(이미 없는 것 제거는 무동작)
         return False
     return getattr(res, "returncode", 1) == 0

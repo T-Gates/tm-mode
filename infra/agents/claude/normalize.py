@@ -182,6 +182,7 @@ def main(argv=None) -> int:
         [sys.executable, str(script_path)] + extra_args,
         input=json.dumps(canonical, ensure_ascii=False),
         capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     )
     if proc.stdout:
         sys.stdout.write(proc.stdout)
