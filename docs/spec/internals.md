@@ -737,30 +737,37 @@ CLI:
 python infra/teammode.py update --root <팀루트>
 ```
 
-`update`는 template upstream 적용 동사다. 상수는 `UPSTREAM_REMOTE = "upstream"`, `UPSTREAM_REF = "upstream/main"`이다. CLI로 remote/ref/allow-unrelated를 바꿀 수 없다.
+`update`는 template upstream 적용 동사다. **merge 가 아니라 파일 동기화**로 동작한다. 상수는 `UPSTREAM_REMOTE = "upstream"`이고, 동기화 대상은 모듈 상수 `git_ops.SYNC_PATHS = ["infra"]`(엔진 경로)다. CLI로 remote/branch/paths를 바꿀 수 없다. 플래그는 `--dry-run`(미리보기) 하나를 받는다.
+
+**왜 merge 가 아닌가**: 도입 레포는 GitHub *template* 으로 생성돼 upstream(`T-Gates/teammode`)과 공통 조상이 0인 **unrelated histories**다. 그래서 `git merge`/`pull --ff-only` 는 영원히 `fatal: refusing to merge unrelated histories` 로 막힌다. 따라서 merge 를 버리고 upstream 의 **엔진 경로만** `git checkout` 으로 working tree 에 덮어쓰는 파일 동기화로 구현한다. 히스토리 관계(공통 조상)와 무관하게 동작한다.
+
+**동기화 대상·보호 대상**: `SYNC_PATHS`(`infra/`)만 덮어쓴다. ⚠️ `memory/`·`team.config.json`·`.git`·기타 팀 소유 파일은 **절대** 건드리지 않는다(checkout 의 pathspec 이 `infra/` 로 한정됨). 새 엔진 디렉토리를 추가할 땐 `SYNC_PATHS` 만 확장한다.
+
+엔진 `cmd_update(team_root, dry_run)`는 `git_ops.sync_from_upstream(team_root, remote="upstream", dry_run=...)` 한 번에 위임한다. `sync_from_upstream` 의 단계:
 
 - 1단계 fetch:
-  - `git_ops.fetch_upstream(team_root, remote="upstream")`를 호출한다.
-  - git worktree가 아니면 `not a git work tree`.
-  - `git remote` 목록에 `upstream`이 없으면 `no 'upstream' remote`.
+  - `git_ops.fetch_upstream(team_root, remote="upstream")`를 재사용한다(자격증명 차단·killpg·http 타임아웃 안전장치 공유).
+  - git worktree가 아니면 `not a git work tree`로 `ok=False`.
+  - `git remote` 목록에 `upstream`이 없으면 `no 'upstream' remote`로 `ok=False`.
   - 실제 fetch 명령은 `git -C <team_root> -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=5 fetch --quiet upstream`.
-  - timeout detail은 `fetch timeout`, 실행 예외는 `fetch exec error: ...`, rc non-zero는 stderr 또는 stdout 앞 200자.
-  - fetch 실패 시 engine은 `teammode update — 건너뜀(비치명): <detail>`을 stderr에 쓰고 exit 1.
-- 2단계 behind 계산:
-  - fetch 성공 후 `git rev-list --count HEAD..upstream/main`을 실행한다.
-  - 예외·rc non-zero·정수 파싱 실패는 0으로 본다.
-  - behind <= 0이면 `teammode update — 이미 최신입니다.` stdout, exit 0.
-- 3단계 merge:
-  - `git_ops.update_from_upstream(team_root, "upstream/main")`를 호출한다.
-  - 이 함수도 내부에서 worktree 확인과 behind 재계산을 한다. behind가 0이면 `ok=True, merged=False, detail="already up-to-date or no upstream"`.
-  - 실제 merge 명령은 `git -C <team_root> merge --ff-only --no-edit upstream/main`.
-  - 라이브러리에는 `allow_unrelated` 옵션이 있으나 기본 false이고 engine CLI는 이를 켜지 않는다. 따라서 첫 병합/unrelated histories도 자동 허용하지 않는다.
-  - timeout detail은 `merge timeout`, 실행 예외는 `merge exec error: ...`, rc non-zero는 stderr 또는 stdout 앞 200자다.
-- engine merge 결과:
-  - `res.ok and res.merged`이면 `teammode update — <behind>커밋 적용됨(merge --ff-only).` stdout, exit 0.
-  - `res.ok and not res.merged`이면 `teammode update — 이미 최신입니다.` stdout, exit 0.
-  - `not res.ok`이면 `teammode update — ff-only 적용 불가(divergent). 사람 판단 필요: <detail>` stderr, exit 1. 메시지는 timeout 등 다른 merge 실패에도 같은 prefix를 쓴다.
-- update는 fetch+ff-only merge 외의 conflict 해결, rebase, non-ff merge, push를 하지 않는다.
+  - fetch 실패 시 `SyncResult(ok=False, detail="fetch 실패: <detail>")`. engine 은 stderr 에 `teammode update — 건너뜀(비치명): ...` + 수동 `git remote add upstream <UPSTREAM_URL>` 안내를 쓰고 exit 1.
+- 2단계 기본 브랜치 감지:
+  - `detect_default_branch(team_root, remote="upstream")` — 전부 로컬 ref만 본다(네트워크·hang 없음). `git remote show`는 쓰지 않는다.
+  - 순서: ① `git symbolic-ref refs/remotes/upstream/HEAD` 의 끝 세그먼트 → ② `refs/remotes/upstream/main` 존재 시 `main` → ③ 폴백 `main`.
+  - `ref = "upstream/<branch>"`. ref 가 실재하지 않으면 `ok=False, detail="upstream 브랜치를 찾을 수 없습니다: <ref>"`.
+- 3단계 변경 유무(멱등):
+  - `git diff --name-status <ref> -- infra` 가 비어 있으면 `ok=True, changed=False, detail="이미 최신"`. engine 은 `teammode update — 이미 최신입니다.` stdout, exit 0.
+- 4단계 dirty 가드(필수):
+  - `git status --porcelain -- infra` 가 비어 있지 않으면(대상 경로에 커밋 안 된 staged/unstaged/untracked 변경) **중단**한다: `ok=False, blocked=True`. 덮어쓰기로 유실되기 때문이다.
+  - engine 은 stderr 에 "중단: ... 먼저 변경을 커밋하거나 되돌린 뒤 다시 실행하세요(사람 판단 필요)" + diff 를 쓰고 exit 1. teammode 원칙(막히면 추측 수리 금지).
+  - status 조회가 실패/예외면 보수적으로 dirty 로 보고 중단한다.
+- 5단계 dry-run:
+  - `--dry-run` 이면 4단계까지만 하고 `git diff --name-status <ref> -- infra` 결과를 `SyncResult.diff` 로 채워 `ok=True, changed=False` 로 반환한다. **실제 변경 0.** engine 은 `teammode update [dry-run] — 동기화하면 바뀔 파일(infra):` + diff 를 출력하고 exit 0.
+- 6단계 적용(checkout):
+  - 실제 명령은 `git -C <team_root> checkout <ref> -- infra`. working tree 를 덮어쓰고 변경은 **staged** 된다.
+  - timeout detail은 `checkout timeout`, 실행 예외는 `checkout exec error: ...`, rc non-zero는 `checkout 실패: <앞 200자>`.
+  - 성공 시 `ok=True, changed=True, detail="동기화 완료(staged)"`. engine 은 `teammode update — 엔진 파일 동기화 완료(infra, staged). 바뀐 파일:` + diff + 사람이 직접 커밋하라는 안내를 stdout 에 쓰고 exit 0.
+- **자동 commit·push 절대 안 함**: checkout 은 staged 상태까지만 만든다. engine 도 commit/push 를 하지 않는다 — 무엇이 바뀌었는지 사람이 검토 후 직접 커밋한다. update 는 conflict 해결·rebase·merge 를 하지 않으므로 unrelated histories 와 무관하다.
 
 ### 3.5 issue (서비스 슬롯 동사 — `--root` 필수, 첫 positional = 서브액션)
 

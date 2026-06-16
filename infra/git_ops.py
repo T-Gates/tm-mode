@@ -43,10 +43,13 @@ class FetchResult:
 
 
 @dataclass
-class UpdateResult:
-    ok: bool                       # update(merge) 성공 또는 이미 최신
-    merged: bool = False           # 실제 머지가 일어났는지
-    detail: str = ""               # 디버그용 메시지
+class SyncResult:
+    ok: bool                       # 동기화 성공(덮어쓰기 완료) 또는 이미 최신
+    changed: bool = False          # 실제로 working tree 가 바뀌었는지
+    paths: tuple = ()              # 동기화 대상 경로(SYNC_PATHS)
+    diff: str = ""                 # 변경 미리보기(dry-run) 또는 적용된 변경 요약
+    detail: str = ""               # 사람이 읽는 메시지/사유
+    blocked: bool = False          # dirty 가드 등으로 중단됐는지(사람 판단 필요)
 
 
 def git_env() -> dict:
@@ -330,35 +333,171 @@ def upstream_changes(team_root: str, upstream_ref: str = "upstream/main",
     return (out or "").strip()
 
 
-def update_from_upstream(team_root: str, upstream_ref: str = "upstream/main",
-                         allow_unrelated: bool = False,
-                         timeout: int = DEFAULT_TIMEOUT) -> UpdateResult:
-    """upstream_ref 를 **명시적으로** merge 한다(merge --ff-only 우선). 무raise(철칙).
+# ──────────────────────────────────────────────────────────────────
+# 슬라이스 T2 — 파일 동기화 기반 update (merge 대체)
+# ──────────────────────────────────────────────────────────────────
+#
+# 왜 merge 가 아니라 파일 동기화인가:
+#   도입 레포는 GitHub *template* 으로 생성돼 upstream(T-Gates/teammode)과 공통 조상이
+#   0이다(unrelated histories). 그래서 `git merge`/`pull --ff-only` 는 영원히
+#   `fatal: refusing to merge unrelated histories` 로 막힌다. → merge 를 버리고
+#   upstream 에서 **엔진 파일만** `git checkout` 으로 덮어쓰는 파일 동기화로 바꾼다.
+#   히스토리 관계(공통 조상)와 무관하게 동작한다.
 
-    fetch 와 분리된 의도적 적용 단계(자동 merge 금지 원칙). ff 불가(divergent)면 워킹트리를
-    오염시키지 않고 실패로 알린다. 첫 병합(unrelated histories)은 allow_unrelated 로 옵트인.
-    이미 최신이면 ok=True, merged=False.
+# 동기화 대상 = 엔진 경로만. ⚠️ memory/·team.config.json·.git·팀 소유 파일은 절대 제외.
+# 나중에 확장 가능하게 모듈 상수로 둔다(예: 새 엔진 디렉토리 추가 시 여기만 고친다).
+SYNC_PATHS = ["infra"]
+
+
+def detect_default_branch(team_root: str, remote: str = "upstream",
+                          timeout: int = DEFAULT_TIMEOUT) -> str:
+    """upstream 의 기본 브랜치명을 감지(로컬 ref 우선·네트워크 없음). 폴백 'main'.
+
+    탐지 순서(전부 로컬·무raise — hang 금지):
+      1. `git symbolic-ref refs/remotes/<remote>/HEAD` → `refs/remotes/<remote>/main`
+         (clone/fetch 가 설정해두는 origin/HEAD 류). 끝 세그먼트가 브랜치명.
+      2. 그래도 모르면 `refs/remotes/<remote>/main` 이 존재하면 'main'.
+      3. 둘 다 실패 → 'main' 폴백(Jane 결정: main 가정하되 가능하면 감지).
+    `git remote show`(네트워크·hang 위험)는 쓰지 않는다.
     """
-    if not is_git_worktree(team_root):
-        return UpdateResult(ok=False, detail="not a git work tree")
-
-    behind = count_behind(team_root, upstream_ref, timeout)
-    if behind == 0:
-        # 이미 최신이거나 upstream_ref 를 모름 — 둘 다 비치명. merge 시도 안 함.
-        return UpdateResult(ok=True, merged=False, detail="already up-to-date or no upstream")
-
-    args = ["-C", team_root, "merge", "--ff-only", "--no-edit"]
-    if allow_unrelated:
-        args.append("--allow-unrelated-histories")
-    args.append(upstream_ref)
+    # 1) symbolic-ref (로컬, clone 이 설정)
     try:
-        rc, out, err = run_git(args, timeout=timeout)
+        rc, out, _ = run_git(
+            ["-C", team_root, "symbolic-ref",
+             f"refs/remotes/{remote}/HEAD"], timeout=timeout)
+        if rc == 0:
+            ref = (out or "").strip()
+            # refs/remotes/upstream/main → main
+            prefix = f"refs/remotes/{remote}/"
+            if ref.startswith(prefix):
+                branch = ref[len(prefix):]
+                if branch:
+                    return branch
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # 2) main ref 존재 확인
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "rev-parse", "--verify", "--quiet",
+             f"refs/remotes/{remote}/main"], timeout=timeout)
+        if rc == 0:
+            return "main"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # 3) 폴백
+    return "main"
+
+
+def _paths_dirty(team_root: str, paths: list, timeout: int) -> bool:
+    """대상 경로에 커밋 안 된 로컬 변경(staged+unstaged+untracked)이 있는지.
+
+    `git status --porcelain -- <paths>` 가 비어 있지 않으면 dirty. 덮어쓰기로 유실될
+    변경을 사전에 잡는 가드용. 예외/실패는 보수적으로 dirty 로 본다(중단이 안전).
+    """
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "status", "--porcelain", "--",
+             *[str(p) for p in paths]], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return True  # 알 수 없으면 보수적으로 dirty 취급(덮어쓰기 막음)
+    if rc != 0:
+        return True
+    return bool((out or "").strip())
+
+
+def diff_paths(team_root: str, ref: str, paths: list,
+               timeout: int = DEFAULT_TIMEOUT) -> str:
+    """working tree(HEAD) 대비 <ref> 의 대상 경로 변경 요약(name-status). 무raise.
+
+    `git diff --name-status <ref> -- <paths>` — 어떤 파일이 추가/수정/삭제되는지.
+    dry-run 미리보기와 적용 후 요약에 함께 쓴다(엔진은 요약 안 함 — git 원본 전달).
+    """
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "diff", "--name-status", ref, "--",
+             *[str(p) for p in paths]], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if rc != 0:
+        return ""
+    return (out or "").strip()
+
+
+def sync_from_upstream(team_root: str, remote: str = "upstream",
+                       branch: str | None = None,
+                       paths: list | None = None,
+                       dry_run: bool = False,
+                       timeout: int = DEFAULT_TIMEOUT) -> SyncResult:
+    """upstream 의 엔진 경로(SYNC_PATHS)를 working tree 로 덮어써 동기화. 무raise(철칙).
+
+    merge 를 쓰지 않으므로 unrelated histories 와 무관하게 동작한다. 흐름:
+      1. fetch <remote> (fetch_upstream 재사용 — 안전장치 공유).
+      2. 기본 브랜치 감지(branch 미지정 시 detect_default_branch).
+      3. diff 로 변경 유무 판단 — 없으면 멱등(ok=True, changed=False, "이미 최신").
+      4. dirty 가드: 대상 경로에 커밋 안 된 로컬 변경이 있으면 **중단**
+         (blocked=True, ok=False) — 덮어쓰기로 유실되므로 사람 판단 요청.
+      5. dry_run 이면 diff 만 채워 반환(실제 변경 0).
+      6. `git checkout <remote>/<branch> -- <paths>` 로 덮어쓰기(staged 됨).
+         ※ 자동 commit/push 는 하지 않는다 — staged 로 두고 사람 검토(상위 정책).
+    """
+    if paths is None:
+        paths = SYNC_PATHS
+
+    if not is_git_worktree(team_root):
+        return SyncResult(ok=False, paths=tuple(paths),
+                          detail="not a git work tree")
+
+    # 1) fetch — 재사용(자격증명 차단·killpg·http 타임아웃 등 안전장치 공유)
+    fr = fetch_upstream(team_root, remote=remote, timeout=timeout)
+    if not fr.ok:
+        return SyncResult(ok=False, paths=tuple(paths),
+                          detail=f"fetch 실패: {fr.detail}")
+
+    # 2) 기본 브랜치 감지
+    if branch is None:
+        branch = detect_default_branch(team_root, remote=remote, timeout=timeout)
+    ref = f"{remote}/{branch}"
+
+    # ref 가 실재하는지 확인(감지 폴백이 빗나갔을 수 있음)
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "rev-parse", "--verify", "--quiet", ref],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        rc = 1
+    if rc != 0:
+        return SyncResult(ok=False, paths=tuple(paths),
+                          detail=f"upstream 브랜치를 찾을 수 없습니다: {ref}")
+
+    # 3) 변경 유무 — 없으면 멱등 종료
+    diff = diff_paths(team_root, ref, paths, timeout=timeout)
+    if not diff:
+        return SyncResult(ok=True, changed=False, paths=tuple(paths),
+                          detail="이미 최신")
+
+    # 4) dirty 가드 — 덮어쓰기로 유실될 로컬 변경 차단(사람 판단 요청)
+    if _paths_dirty(team_root, paths, timeout):
+        return SyncResult(ok=False, blocked=True, paths=tuple(paths), diff=diff,
+                          detail="대상 경로에 커밋 안 된 로컬 변경이 있습니다")
+
+    # 5) dry-run — 미리보기만, 실제 변경 0
+    if dry_run:
+        return SyncResult(ok=True, changed=False, paths=tuple(paths), diff=diff,
+                          detail="dry-run: 변경 미리보기")
+
+    # 6) checkout 덮어쓰기(staged). 자동 commit/push 없음.
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root, "checkout", ref, "--",
+             *[str(p) for p in paths]], timeout=timeout)
     except subprocess.TimeoutExpired:
-        return UpdateResult(ok=False, detail="merge timeout")
+        return SyncResult(ok=False, paths=tuple(paths), detail="checkout timeout")
     except (OSError, subprocess.SubprocessError) as exc:
-        return UpdateResult(ok=False, detail=f"merge exec error: {exc}")
-    if rc == 0:
-        return UpdateResult(ok=True, merged=True, detail=(out or "").strip()[:200])
-    # ff 불가(divergent)·기타 — 워킹트리 무오염, 비치명 실패.
-    return UpdateResult(ok=False, merged=False,
-                        detail=((err or out) or "").strip()[:200])
+        return SyncResult(ok=False, paths=tuple(paths),
+                          detail=f"checkout exec error: {exc}")
+    if rc != 0:
+        return SyncResult(ok=False, paths=tuple(paths),
+                          detail=f"checkout 실패: {((err or out) or '').strip()[:200]}")
+
+    return SyncResult(ok=True, changed=True, paths=tuple(paths), diff=diff,
+                      detail="동기화 완료(staged)")

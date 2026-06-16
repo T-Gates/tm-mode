@@ -115,7 +115,7 @@ def _maybe_notify_upstream(team_root: Path) -> None:
             return
         changes = _git_ops.upstream_changes(str(team_root), UPSTREAM_REF)
         print(f"\n[템플릿 풀] upstream 이 {behind}커밋 앞섭니다. "
-              f"`teammode update` 로 적용(merge --ff-only). 변경:")
+              f"`teammode update` 로 엔진 파일을 동기화하세요. 변경:")
         if changes:
             print(changes)
     except Exception:  # noqa: BLE001 — fetch/알림은 on 을 절대 막지 않는다
@@ -135,32 +135,77 @@ def cmd_on(team_root: Path, settings_path: str) -> int:
     return 0
 
 
-def cmd_update(team_root: Path) -> int:
-    """upstream(템플릿)을 명시적으로 fetch+merge(--ff-only) 적용 — 슬라이스 T.
+def cmd_update(team_root: Path, dry_run: bool = False) -> int:
+    """upstream(템플릿)의 엔진 파일을 **파일 동기화**로 적용 — 슬라이스 T2.
 
-    on 의 자동 fetch 와 분리된 의도적 적용 단계. ff 불가(divergent)·upstream 미설정·
-    오프라인 → 비치명(워킹트리 무오염). 첫 병합(unrelated histories)은 ff 가 막으므로
-    필요 시 사람이 판단(현 기본은 안전한 --ff-only; allow_unrelated 는 라이브러리 옵션).
+    왜 merge 가 아닌가: 도입 레포는 GitHub *template* 으로 생성돼 upstream 과 공통
+    조상이 0(unrelated histories)이라 `git merge`/`pull --ff-only` 가 영원히
+    `refusing to merge unrelated histories` 로 막힌다. → merge 를 버리고 upstream 의
+    **엔진 경로(SYNC_PATHS=infra/)만** `git checkout` 으로 덮어쓴다. 히스토리 관계와
+    무관하게 동작한다. ⚠️ memory/·team.config.json·팀 소유 파일은 동기화 대상이 아니다.
+
+    동작(git_ops.sync_from_upstream 에 위임 — 모든 git 안전장치 재사용):
+      - upstream remote 미등록 → 안내 후 중단(exit 1, install 이 등록함·수동 등록법).
+      - 변경 없음 → "이미 최신" 후 exit 0(멱등).
+      - dirty 가드: 대상 경로에 커밋 안 된 로컬 변경이 있으면 덮어쓰기로 유실되므로
+        경고 후 중단(exit 1, 사람 판단 요청).
+      - --dry-run: 변경 미리보기만 출력, 실제 변경 0(exit 0).
+      - 적용 시 working tree 덮어쓰기(staged). **자동 commit·push 절대 안 함** —
+        무엇이 바뀌었는지 사람이 검토 후 직접 커밋한다.
     """
-    fetch = _git_ops.fetch_upstream(str(team_root), remote=UPSTREAM_REMOTE)
-    if not fetch.ok:
-        print(f"teammode update — 건너뜀(비치명): {fetch.detail}", file=sys.stderr)
+    res = _git_ops.sync_from_upstream(
+        str(team_root), remote=UPSTREAM_REMOTE, dry_run=dry_run)
+    paths = ", ".join(res.paths) if res.paths else "infra"
+
+    # dirty 가드 — 사람 판단 요청(추측 수리 금지)
+    if res.blocked:
+        print(f"teammode update — 중단: {res.detail}.\n"
+              f"  동기화 대상({paths})에 커밋 안 된 변경이 있습니다. 덮어쓰면 유실됩니다.\n"
+              f"  먼저 변경을 커밋하거나 되돌린 뒤 다시 실행하세요(사람 판단 필요).",
+              file=sys.stderr)
+        if res.diff:
+            print(res.diff, file=sys.stderr)
         return 1
-    behind = _git_ops.count_behind(str(team_root), UPSTREAM_REF)
-    if behind <= 0:
-        print("teammode update — 이미 최신입니다.")
+
+    if not res.ok:
+        # upstream 미등록·오프라인·git 아님 등 — 비치명. install 이 upstream 을 등록한다.
+        print(f"teammode update — 건너뜀(비치명): {res.detail}.\n"
+              f"  upstream remote 가 없으면 install.py 가 등록합니다. 수동 등록:\n"
+              f"  git remote add {UPSTREAM_REMOTE} {_install_upstream_url()}",
+              file=sys.stderr)
+        return 1
+
+    if not res.changed:
+        if dry_run:
+            print("teammode update [dry-run] — 이미 최신입니다(변경 없음).")
+        else:
+            print("teammode update — 이미 최신입니다.")
         return 0
-    res = _git_ops.update_from_upstream(str(team_root), UPSTREAM_REF)
-    if res.ok and res.merged:
-        print(f"teammode update — {behind}커밋 적용됨(merge --ff-only).")
+
+    if dry_run:
+        print(f"teammode update [dry-run] — 동기화하면 바뀔 파일({paths}):")
+        print(res.diff)
+        print("  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)")
         return 0
-    if res.ok:
-        print("teammode update — 이미 최신입니다.")
-        return 0
-    # ff 불가 등 — 비치명. 사람 판단 유도(자동 merge/conflict 강행 금지).
-    print(f"teammode update — ff-only 적용 불가(divergent). 사람 판단 필요: {res.detail}",
-          file=sys.stderr)
-    return 1
+
+    # 적용됨(staged) — 무엇이 바뀌었나 사람이 읽는 요약. push·commit 안 함.
+    print(f"teammode update — 엔진 파일 동기화 완료({paths}, staged). 바뀐 파일:")
+    print(res.diff)
+    print("  변경은 스테이지됨(자동 커밋·push 안 함). 검토 후 직접 커밋하세요:\n"
+          "  git commit -m 'chore: sync teammode engine from upstream'")
+    return 0
+
+
+def _install_upstream_url() -> str:
+    """install.py 의 UPSTREAM_URL 을 읽어 수동 등록 안내에 쓴다(상수 단일 소스).
+
+    실패(import 불가 등)는 비치명 — 일반 안내 URL 폴백.
+    """
+    try:
+        import install as _install  # noqa: PLC0415 — 안내용 lazy import
+        return _install.UPSTREAM_URL
+    except Exception:  # noqa: BLE001
+        return "https://github.com/T-Gates/teammode.git"
 
 
 def cmd_off(team_root: Path, settings_path: str) -> int:
@@ -514,7 +559,8 @@ def _parse_args(argv):
     (--author/--text/--now 등)도 같은 통로로 모은다.
     """
     verb = None
-    opts: dict = {"install": False, "json": False, "push": False, "positionals": []}
+    opts: dict = {"install": False, "json": False, "push": False,
+                  "dry_run": False, "positionals": []}
     it = iter(argv)
     for a in it:
         if a in _VALUE_FLAGS:
@@ -525,6 +571,8 @@ def _parse_args(argv):
             opts["json"] = True
         elif a == "--push":
             opts["push"] = True
+        elif a == "--dry-run":
+            opts["dry_run"] = True
         elif not a.startswith("-"):
             # 첫 non-flag = verb, 이후 non-flag = positional(서브액션 등). 하니스가
             # `issue --root <root> create …` 처럼 --root 를 verb 와 서브액션 사이에
@@ -616,7 +664,7 @@ def main(argv=None) -> int:
         return cmd_commit(team_root, message, opts["push"])
 
     if verb == "update":
-        return cmd_update(team_root)
+        return cmd_update(team_root, dry_run=opts["dry_run"])
 
     if verb == "issue":
         # 첫 positional = 서브액션(예: create). --root 가 verb 와 서브액션 사이에
