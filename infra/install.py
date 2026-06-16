@@ -145,6 +145,14 @@ def cmd_uninstall(opts, *, platform=None) -> int:
         changes = adapter.uninstall()
         if any(c.startswith("[remove]") for c in changes):
             removed.append("settings.json teammode 훅")
+        # 스킬(정션/심링크/복사) 제거 — install 의 install_skills 역(대칭). 안 하면 정션이
+        # 고아로 남아 dangling(윈도우 도그푸딩서 uninstall 후 tm-* 정션 잔존 실측).
+        try:
+            skill_changes = adapter.uninstall_skills()
+            if any(c.startswith("[remove-skill]") for c in skill_changes):
+                removed.append("스킬 심링크/정션")
+        except Exception as e:  # noqa: BLE001 — 비치명, 다음 단계 계속.
+            print(f"[warn] 스킬 제거 건너뜀(비치명): {e}", file=sys.stderr)
     except Exception as e:  # noqa: BLE001
         print(f"[warn] 어댑터 uninstall 건너뜀(비치명): {e}", file=sys.stderr)
 
