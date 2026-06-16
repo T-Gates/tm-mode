@@ -17,6 +17,20 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 - **progressive**: L1 가치(맥락 주입)를 *먼저* 보여주고, 서비스 연결은 사람이 원할 때만.
 - **호스트 안전**: `--yes`는 **실 `~/.claude/settings.json`에 훅을 배선(write)** 한다. 격리만 원하면 `--settings <경로>`, 변경 없이 보려면 `--dry-run`. `--yes`/`--settings` 둘 다 없으면 install은 wire를 건너뛰고 끝난다(실호스트 무접촉).
 
+## 진입: 현재 상태 점검 (호출마다 먼저)
+이 스킬이 호출되면 **먼저 현재 온보딩 상태를 감지**해 체크표로 보여주고, **안 된 것·다시 할 것만** 진행한다. 상태는 **저장하지 않고 매번 환경에서 감지**한다 — 저장 플래그는 stale 위험(env 무신뢰 원칙과 같은 결).
+
+| 단계 | 됨 판정 (이렇게 감지 — 저장 X) |
+|------|------------------------------|
+| 설치·훅 배선 | `teammode.py context --root . --json` 의 `state == "on"` |
+| upstream 추적 | `git -C . remote` 에 `upstream` 있음 |
+| 서비스 연결(L2) | `team.config.json` 의 `services` 슬롯이 빈 슬롯이 아님 |
+| 팀 personality | `team.config.json` 의 `greeting`/`farewell` 이 기본값과 다름 |
+| Obsidian 뷰 | 레포에 `.obsidian/` 존재 |
+
+- 체크표를 사람에게 제시: "여기까진 됐고, 다음/다시 할 것을 고르세요." **이미 된 단계는 기본 건너뛴다**(사람이 "다시"라 하면 재실행 — install 류는 멱등).
+- ⚠️ 이 체크표·진행상태를 **파일로 저장하지 않는다**(매번 감지). 캐시가 꼭 필요하면 `.context/`(gitignored)에만 — **`memory/`(팀 공유)엔 절대 두지 않는다**(팀원마다 진행이 달라 충돌·churn).
+
 ## 0. 도입자/팀원은 install.py가 자동 판정
 **경로는 `--member-name`이 아니라 `team.config.json` 유효성으로 install.py가 자동으로 가른다**:
 - config 없음/미초기화 → **팀 셋업**(도입자) — config를 새로 쓴다.
