@@ -99,30 +99,50 @@ UPSTREAM_REMOTE = "upstream"
 UPSTREAM_REF = "upstream/main"
 
 
+def _read_local_notice(team_root: Path) -> str:
+    """로컬 NOTICE.md 내용을 읽는다(없으면 빈 문자열). 예외 전파 없음."""
+    notice_path = team_root / "NOTICE.md"
+    try:
+        if notice_path.is_file():
+            return notice_path.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return ""
+
+
 def _maybe_notify_upstream(team_root: Path) -> None:
-    """on 시 upstream(템플릿)을 **fetch 만** 하고 behind 면 알림(슬라이스 T).
+    """on 시 upstream(템플릿)을 fetch 하고 NOTICE.md 가 갱신됐으면 알림(슬라이스 T3).
 
     핵심 안전(Jane 합의): **merge 절대 자동 금지** — fetch 만 자동, 적용은 명시적 update.
     upstream 미설정·오프라인·git 아님 → 조용히 패스(on 을 막지 않음, 우아한 축소).
     어떤 예외도 삼킨다(on 의 핵심 경로를 fetch 가 막아선 안 된다).
+
+    왜 git 커밋 비교를 안 하나:
+      GitHub template 생성 레포는 upstream 과 공통 조상이 0(unrelated histories)이라
+      behind 숫자가 실제 "뒤처진 커밋 수"를 뜻하지 않는다. 대신 upstream 의 NOTICE.md
+      파일을 `git show` 로 직접 읽어 로컬과 비교 — 공통 조상 없어도 동작.
     """
     try:
         res = _git_ops.fetch_upstream(str(team_root), remote=UPSTREAM_REMOTE)
         if not res.ok:
             return  # 미설정/오프라인/타임아웃 — 조용히 패스(알림 없음)
-        # GitHub template 으로 생성한 레포는 upstream 과 공통 조상이 없어(unrelated
-        # histories) `git rev-list HEAD..upstream` 이 upstream 의 모든 커밋을 반환한다.
-        # behind 숫자가 실제 "뒤처진 커밋 수"를 뜻하지 않으므로 알림을 억제한다.
-        if not _git_ops.has_common_ancestor(str(team_root), UPSTREAM_REF):
-            return  # unrelated histories — 파일 동기화(update)가 올바른 방법임
-        behind = _git_ops.count_behind(str(team_root), UPSTREAM_REF)
-        if behind <= 0:
-            return
-        changes = _git_ops.upstream_changes(str(team_root), UPSTREAM_REF)
-        print(f"\n[템플릿 풀] upstream 이 {behind}커밋 앞섭니다. "
-              f"`teammode update` 로 엔진 파일을 동기화하세요. 변경:")
-        if changes:
-            print(changes)
+        upstream_notice = _git_ops.read_upstream_notice(
+            str(team_root), remote=UPSTREAM_REMOTE)
+        if not upstream_notice:
+            return  # upstream 에 NOTICE.md 없음 — 조용히 패스
+        local_notice = _read_local_notice(team_root)
+        if upstream_notice == local_notice:
+            return  # 동일 — 이미 본 공지, 도배 방지
+        # upstream 에 새 공지가 있다 — 첫 번째 불릿(## 날짜 줄 아래 요약) 추출해 표시
+        first_bullet = ""
+        for line in upstream_notice.splitlines():
+            line = line.strip()
+            if line.startswith("- ") or line.startswith("* "):
+                first_bullet = line[2:].strip()
+                break
+        summary = first_bullet[:80] if first_bullet else upstream_notice.strip()[:80]
+        print(f"\n[공지] teammode 최신 업데이트: {summary} — "
+              f"받으려면 `teammode update`")
     except Exception:  # noqa: BLE001 — fetch/알림은 on 을 절대 막지 않는다
         pass
 

@@ -34,7 +34,9 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 
 2. **팀모드 켜기**: `python infra/teammode.py on --root . --install`
    - 엔진이 배너 출력, greeting 출력(team.config.json에 있으면), adapter sync(mode=on),
-     `.acme-active` 마커 생성, upstream fetch 알림까지 한다.
+     `.acme-active` 마커 생성, upstream fetch + NOTICE 비교 알림까지 한다.
+   - NOTICE 알림: upstream `NOTICE.md`가 로컬과 다르면 `[공지] teammode 최신 업데이트: …
+     — 받으려면 \`teammode update\`` 를 출력. 같으면 조용히 생략(매번 도배 방지).
    - 스킬은 이 동사를 호출하고 출력을 그대로 사용자에게 보여준다.
 
 3. **맥락 주입**: `python infra/teammode.py context --root . --json`

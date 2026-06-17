@@ -543,3 +543,38 @@ def sync_from_upstream(team_root: str, remote: str = "upstream",
 
     return SyncResult(ok=True, changed=True, paths=tuple(paths), diff=diff,
                       detail="동기화 완료(staged)")
+
+
+# ──────────────────────────────────────────────────────────────────
+# 슬라이스 T3 — upstream NOTICE 읽기 (공지 파일 기반 알림)
+# ──────────────────────────────────────────────────────────────────
+#
+# 왜 git 커밋 비교를 안 하나:
+#   GitHub template 생성 레포는 upstream 과 공통 조상이 0(unrelated histories)이라
+#   `git rev-list HEAD..upstream` 이 upstream 의 모든 커밋을 반환한다. behind 숫자가
+#   실제 "뒤처진 커밋 수"를 뜻하지 않으므로 대신 upstream 에 있는 NOTICE.md 파일을
+#   직접 읽어 비교한다 — `git show <remote>/<branch>:NOTICE.md`. 공통 조상 없어도 동작.
+
+def read_upstream_notice(team_root: str, remote: str = "upstream",
+                         branch: str | None = None,
+                         timeout: int = DEFAULT_TIMEOUT) -> str:
+    """upstream 의 NOTICE.md 내용을 읽는다. 무raise(없거나 오류면 빈 문자열).
+
+    `git show <remote>/<branch>:NOTICE.md` 를 사용한다 — `git checkout`(파일 수정) 없이
+    upstream 의 파일 내용만 읽는다. unrelated histories 와 무관하게 동작한다.
+    fetch 는 호출부 책임(fetch_upstream 재사용). 파일 없음·오류는 조용히 빈 문자열 반환.
+    """
+    try:
+        if not is_git_worktree(team_root):
+            return ""
+        if branch is None:
+            branch = detect_default_branch(team_root, remote=remote, timeout=timeout)
+        ref = f"{remote}/{branch}:NOTICE.md"
+        rc, out, _ = run_git(
+            ["-C", team_root, "show", ref],
+            timeout=timeout)
+        if rc != 0:
+            return ""
+        return (out or "")
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        return ""
