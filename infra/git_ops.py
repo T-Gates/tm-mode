@@ -386,9 +386,12 @@ def upstream_changes(team_root: str, upstream_ref: str = "upstream/main",
 #   upstream 에서 **엔진 파일만** `git checkout` 으로 덮어쓰는 파일 동기화로 바꾼다.
 #   히스토리 관계(공통 조상)와 무관하게 동작한다.
 
-# 동기화 대상 = 엔진 경로만. ⚠️ memory/·team.config.json·.git·팀 소유 파일은 절대 제외.
+# 동기화 대상 = 엔진 경로(infra/) + 업스트림 소유 공지(NOTICE.md).
+# ⚠️ memory/·team.config.json·.git·팀 소유 파일은 절대 제외.
+# NOTICE.md 는 **업스트림(템플릿) 소유** 파일 — update 가 갱신해야 로컬 NOTICE 가 upstream 과
+# 같아져 tm ON 의 "최신 업데이트" 알림이 (받은 뒤) 조용해진다. 빠지면 영구 도배(P1).
 # 나중에 확장 가능하게 모듈 상수로 둔다(예: 새 엔진 디렉토리 추가 시 여기만 고친다).
-SYNC_PATHS = ["infra"]
+SYNC_PATHS = ["infra", "NOTICE.md"]
 
 
 def detect_default_branch(team_root: str, remote: str = "upstream",
@@ -465,6 +468,20 @@ def diff_paths(team_root: str, ref: str, paths: list,
     return (out or "").strip()
 
 
+def _path_in_ref(team_root: str, ref: str, path: str, timeout: int) -> bool:
+    """<ref> 에 <path>(파일/디렉토리)가 존재하는지. `git cat-file -e <ref>:<path>`. 무raise.
+
+    NOTICE.md 등은 옛 upstream 엔 없을 수 있다. 없는 pathspec 으로 checkout 하면 "did
+    not match" 에러가 나므로, 동기화 전에 실재 경로만 골라 옛 upstream 과도 호환시킨다.
+    """
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "cat-file", "-e", f"{ref}:{path}"], timeout=timeout)
+        return rc == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def sync_from_upstream(team_root: str, remote: str = "upstream",
                        branch: str | None = None,
                        paths: list | None = None,
@@ -510,6 +527,14 @@ def sync_from_upstream(team_root: str, remote: str = "upstream",
     if rc != 0:
         return SyncResult(ok=False, paths=tuple(paths),
                           detail=f"upstream 브랜치를 찾을 수 없습니다: {ref}")
+
+    # 2.5) upstream 에 실재하는 경로만 동기화 — NOTICE.md 등은 옛 upstream 에 없을 수
+    #      있고, 없는 pathspec 으로 checkout 하면 매칭 0 에러가 난다. 존재 경로만 골라
+    #      옛 upstream 과도 호환(infra 는 받고, 없는 NOTICE 는 조용히 건너뜀).
+    paths = [p for p in paths if _path_in_ref(team_root, ref, p, timeout)]
+    if not paths:
+        return SyncResult(ok=True, changed=False, paths=(),
+                          detail="이미 최신")
 
     # 3) 변경 유무 — 없으면 멱등 종료
     diff = diff_paths(team_root, ref, paths, timeout=timeout)
