@@ -34,7 +34,7 @@ _CODEX = runpy.run_path(str(REPO / "infra" / "agents" / "codex" / "adapter.py"),
 ClaudeAdapter = _CLAUDE["Adapter"]
 CodexAdapter = _CODEX["Adapter"]
 
-SKILL_NAMES = {"tm-onboard", "tm-connect", "tm-reset", "tm"}
+SKILL_NAMES = {"tm-onboard", "tm-connect", "tm-reset", "tm", "tm-context"}
 
 
 def _scaffold(tmp_path):
