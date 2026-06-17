@@ -280,6 +280,49 @@ def test_commit_no_paths_stages_all(tmp_path):
     )
 
 
+def test_commit_paths_excludes_pre_staged_outside(tmp_path):
+    """tm off: 사용자가 미리 staged 한 외부 경로(코드)는 commit --paths 에서 제외된다 (P1).
+
+    codex 적대검수가 잡은 엣지 — add 만 한정하면 이미 index 에 있던 outside 가 함께
+    커밋된다. commit 에도 pathspec(`commit -- memory/`)을 줘서 pre-staged 를 제외한다.
+    """
+    import git_ops
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    (repo / "memory").mkdir()
+    (repo / "memory" / "log.md").write_text("세션로그")
+    (repo / "infra").mkdir()
+    (repo / "infra" / "code.py").write_text("# 미완성 코드 — 커밋되면 안 됨")
+
+    # 사용자가 tm off 전에 코드를 미리 stage (수동 git add)
+    subprocess.run(["git", "-C", str(repo), "add", "infra/code.py"],
+                   check=True, capture_output=True)
+
+    # tm off → memory/ 만 커밋
+    result = git_ops.do_commit(str(repo), message="session: test", paths=["memory/"])
+    assert result.ok, f"commit 실패: {result.detail}"
+
+    r = subprocess.run(
+        ["git", "-C", str(repo), "show", "--stat", "HEAD"],
+        capture_output=True, text=True)
+    assert r.returncode == 0
+    assert "infra/code.py" not in r.stdout, (
+        "pre-staged 코드가 세션로그 커밋에 휩쓸렸다 — commit pathspec 미작동 (P1)"
+    )
+    assert "memory/log.md" in r.stdout, "세션로그가 커밋되지 않음"
+
+    # pre-staged 코드는 여전히 index 에 보존(커밋 안 됨, 사용자 것 그대로)
+    r2 = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+        capture_output=True, text=True)
+    assert "infra/code.py" in r2.stdout, (
+        "pre-staged 코드가 사라졌다 — 커밋만 제외하고 staged 상태는 보존해야 함"
+    )
+
+
 # ── 엔진 _KNOWN_VERBS · _VALUE_FLAGS 정합 ──
 
 def _load_teammode():

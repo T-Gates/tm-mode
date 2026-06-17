@@ -206,7 +206,10 @@ def do_commit(team_root: str, message: str, push: bool = False,
 
     스테이징 범위(L2-G P1-4):
     - `paths=None`(기본) → 종래대로 `add -A`(commit 동사용 — 사용자가 의도적으로 호출).
-    - `paths=[...]` → **지목된 경로만** `add -- <paths>`(자동 훅용 — 무차별 스테이징 금지).
+    - `paths=[...]` → **지목된 경로만** `add -- <paths>` + **`commit -- <paths>`(pathspec
+      partial commit)**. add 로 그 경로만 스테이징할 뿐 아니라, commit 도 pathspec 으로
+      한정해 **사용자가 미리 staged 해 둔 다른 경로(코드 등)는 커밋에서 제외**한다
+      (tm off 가 "세션로그만 커밋"을 보장 — 의도 안 한 워킹트리 휩쓸기 방지).
       auto-commit.py 가 정규스키마의 `files` 만 넘겨 토큰패턴 등 무관 파일 오염을 막는다.
       빈 리스트(`[]`)는 스테이징할 파일이 없는 것 → 변경 없음으로 우아하게 종료.
     """
@@ -236,10 +239,12 @@ def do_commit(team_root: str, message: str, push: bool = False,
         return CommitResult(ok=False, committed=False,
                             detail="nothing to commit")
 
-    # 3) commit
+    # 3) commit — paths 지정 시 pathspec partial commit(미리 staged 된 다른 경로 제외).
+    commit_args = ["-C", team_root, "commit", "-m", message]
+    if paths:
+        commit_args += ["--", *[str(p) for p in paths]]
     try:
-        rc, out, err = run_git(
-            ["-C", team_root, "commit", "-m", message], timeout=timeout)
+        rc, out, err = run_git(commit_args, timeout=timeout)
     except subprocess.TimeoutExpired:
         return CommitResult(ok=False, detail="commit timeout")
     except (OSError, subprocess.SubprocessError) as exc:
