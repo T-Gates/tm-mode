@@ -57,10 +57,11 @@ description: Use when the user wants to enable or disable team mode. Triggers on
    - `<내용>`: 세션 작업 내역 요약 (아래 "세션 로그 형식" 참고).
    - 이름 확인이 안 됐으면 먼저 묻는다(`git config user.name`을 제안값으로).
 
-2. **커밋**: 세션로그를 팀 레포에 커밋한다.
+2. **커밋**: 세션로그(memory/ 디렉터리만)를 팀 레포에 커밋한다.
    ```bash
-   python infra/teammode.py commit --root . --message "session: <이름> <날짜>"
+   python infra/teammode.py commit --root . --paths "memory/" --message "session: <이름> <날짜>"
    ```
+   - `--paths memory/` 로 스테이징 범위를 세션로그 디렉터리에 한정한다 — 작업 중인 코드(infra/ 등) **전체 워킹트리를 휩쓸지 않는다**.
    - **push 는 하지 않는다** — commit 까지만. push 는 사람이 직접 결정.
 
 3. **팀모드 끄기**: `python infra/teammode.py off --root . --install`
@@ -90,7 +91,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 | ON — 배선·배너 | `teammode.py on --root . --install` | 배너·greeting·sync·마커 |
 | ON — 맥락 | `teammode.py context --root . --json` | 스킬이 파싱해 요약 |
 | OFF — 세션로그 | `teammode.py log --root . --author <이름> --text <내용>` | 하루 1파일 append |
-| OFF — 커밋 | `teammode.py commit --root . --message <메시지>` | push 절대 금지 |
+| OFF — 커밋 | `teammode.py commit --root . --paths "memory/" --message <메시지>` | memory/ 만 stage · push 절대 금지 |
 | OFF — 훅 해제 | `teammode.py off --root . --install` | sync=off·마커 삭제 |
 
 ## Common Mistakes
@@ -103,7 +104,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 | ON 할 때 pull 생략 | 항상 최신화 먼저(실패해도 계속) |
 | `TEAMMODE_HOME` 환경변수로 레포 경로 추측 | `--root .` 명시 필수(엔진 정책 A) |
 | 이슈 트래커·캘린더·채팅 등 L2 서비스 조회 | tm 은 L1 토글만. L2 는 연결 후 다른 스킬이 처리 |
-| 팀원 이모지 출력 | members.md 이모지는 후속 인프라(session-start 훅) — tm 에선 미구현 |
+| 멤버 표시 장식 출력 | 멤버 표시 장식(이모지 등)은 tm 범위 밖 — members.md 이름·team.config.json members.role 이 멤버 기준이며, 시각 장식은 후속 인프라(session-start 훅)가 담당 |
 | context 결과를 그대로 dump | 스킬이 파싱해 "지금 팀 상황: …"으로 사람 말로 요약 |
 
 ---

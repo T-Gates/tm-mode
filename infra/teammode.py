@@ -305,7 +305,7 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
 # 알 수 없는 플래그의 다음 토큰을 값으로 삼키지 않게 해 verb 손실을 막는다(§3:366).
 # issue 동사의 정규 입력 필드(--title/--body/--assignee/--label/--priority)도 값 플래그.
 _VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now", "--message",
-                "--title", "--body", "--assignee", "--label", "--priority")
+                "--title", "--body", "--assignee", "--label", "--priority", "--paths")
 
 
 def cmd_pull(team_root: Path) -> int:
@@ -324,13 +324,17 @@ def cmd_pull(team_root: Path) -> int:
     return 1
 
 
-def cmd_commit(team_root: Path, message: str, push: bool) -> int:
+def cmd_commit(team_root: Path, message: str, push: bool,
+               paths: list | None = None) -> int:
     """git add/commit/(push) 묶음 — git_ops 공통 안전장치 재사용(V.4).
 
     실패 무해(우아한 축소): 변경 없음·git 아님·push 실패 모두 비치명. push 실패는
     로컬 커밋을 되돌리지 않는다(커밋 보존). exit code 로 결과를 구분하되 크래시 0.
+
+    paths: 스테이징 범위 한정 경로 목록. None이면 git add -A(전체), 지정하면 해당
+    경로만 stage(세션로그 단독 커밋 등 안전 모드). do_commit 의 paths 인자로 그대로 전달.
     """
-    result = _git_ops.do_commit(str(team_root), message=message, push=push)
+    result = _git_ops.do_commit(str(team_root), message=message, push=push, paths=paths)
     if result.ok:
         suffix = " (pushed)" if result.pushed else (
             " (push 실패·커밋은 보존)" if push else "")
@@ -669,7 +673,11 @@ def main(argv=None) -> int:
         if not message:
             print("[error] commit: --message <메시지> 가 필요합니다.", file=sys.stderr)
             return 2
-        return cmd_commit(team_root, message, opts["push"])
+        # --paths "memory/ docs/" 형태(공백 구분 문자열)를 리스트로 분리.
+        # 미지정 시 None → do_commit 이 add -A(전체 워킹트리) 처리.
+        paths_raw = opts.get("paths")
+        paths = paths_raw.split() if paths_raw else None
+        return cmd_commit(team_root, message, opts["push"], paths=paths)
 
     if verb == "update":
         return cmd_update(team_root, dry_run=opts["dry_run"])
