@@ -238,3 +238,132 @@ def test_engine_json_flag_in_value_flags():
     assert opts.get("json") is True, (
         "--json 플래그가 opts['json']=True 로 파싱되지 않는다"
     )
+
+
+# ── cmd_context 실제 JSON 계약 검증 ──
+
+def _make_team_root(tmp_path) -> Path:
+    """테스트용 최소 팀 루트 — sessions 디렉토리만 생성."""
+    root = tmp_path / "teamroot"
+    root.mkdir()
+    return root
+
+
+def _write_session(team_root: Path, author: str, date_str: str, summary: str,
+                   body: str = "") -> Path:
+    """멤버 세션로그 파일을 작성하고 경로를 반환한다."""
+    sessions_dir = team_root / "memory" / "team" / "sessions" / author
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    log_path = sessions_dir / f"{date_str}.md"
+    log_path.write_text(
+        f"---\nauthor: {author}\ndate: {date_str}\nsummary: {summary}\n---\n{body}",
+        encoding="utf-8",
+    )
+    return log_path
+
+
+def _run_context_json(team_root: Path) -> dict:
+    """cmd_context(as_json=True)를 직접 호출해 stdout을 JSON으로 파싱한다."""
+    import io
+    import contextlib
+    import json as _json
+
+    mod = _load_teammode()
+    cmd_context = mod["cmd_context"]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cmd_context(team_root, as_json=True)
+    assert rc == 0, f"cmd_context 가 exit {rc} 를 반환했다"
+    return _json.loads(buf.getvalue())
+
+
+def test_cmd_context_json_top_level_keys(tmp_path):
+    """cmd_context --json 출력의 최상위 키가 state/index/members 세 가지여야 한다."""
+    root = _make_team_root(tmp_path)
+    data = _run_context_json(root)
+    assert set(data.keys()) == {"state", "index", "members"}, (
+        f"최상위 키 불일치. 실제: {set(data.keys())}"
+    )
+
+
+def test_cmd_context_json_member_fields(tmp_path):
+    """members 배열 원소가 author/date/summary/file/role 필드를 가져야 한다."""
+    root = _make_team_root(tmp_path)
+    _write_session(root, "alice", "2026-06-17", "MQTT 연동 테스트 중")
+    data = _run_context_json(root)
+    assert len(data["members"]) == 1, (
+        f"세션로그 1개 있는 멤버가 members 에 없다. members={data['members']}"
+    )
+    m = data["members"][0]
+    expected_keys = {"author", "date", "summary", "file", "role"}
+    assert expected_keys.issubset(m.keys()), (
+        f"멤버 필드 누락. 실제 키: {set(m.keys())}"
+    )
+    assert m["author"] == "alice"
+    assert m["summary"] == "MQTT 연동 테스트 중"
+    assert "alice" in m["file"]
+
+
+def test_cmd_context_json_no_sessions_returns_empty_members(tmp_path):
+    """세션로그 0개 팀 루트에서 members 가 빈 배열이고 exit 0 이어야 한다.
+
+    L1 요약 경로가 세션로그 없어도 정상 종료되는지 확인 (SKILL.md 계약).
+    """
+    root = _make_team_root(tmp_path)
+    data = _run_context_json(root)
+    assert data["members"] == [], (
+        f"세션로그 0개인데 members 가 비어있지 않다: {data['members']}"
+    )
+    assert data["state"] in ("on", "off")
+
+
+def test_cmd_context_json_no_services_does_not_crash(tmp_path):
+    """team.config.json 에 services 슬롯이 없어도 cmd_context 가 exit 0 이어야 한다.
+
+    L2 미연결 시 L1 경로가 막히지 않는지 확인 (graceful skip 계약).
+    """
+    root = _make_team_root(tmp_path)
+    # services 없는 최소 config
+    (root / "team.config.json").write_text(
+        '{"team": {"name": "test-team"}}', encoding="utf-8"
+    )
+    _write_session(root, "bob", "2026-06-17", "테스트 작업 중")
+    data = _run_context_json(root)
+    # L1 은 정상 동작해야 한다
+    assert len(data["members"]) == 1
+    assert data["members"][0]["author"] == "bob"
+
+
+def test_cmd_context_json_member_role_from_config(tmp_path):
+    """team.config.json 의 members[].role 이 JSON 멤버 필드에 반영된다."""
+    root = _make_team_root(tmp_path)
+    (root / "team.config.json").write_text(
+        '{"members": [{"name": "carol", "role": "Backend"}]}', encoding="utf-8"
+    )
+    _write_session(root, "carol", "2026-06-17", "API 개발")
+    data = _run_context_json(root)
+    assert len(data["members"]) == 1
+    assert data["members"][0]["role"] == "Backend", (
+        f"role 필드가 config 에서 읽어지지 않았다: {data['members'][0]}"
+    )
+
+
+def test_skill_md_no_issue_verb_call():
+    """SKILL.md 에 `issue --root . --json` 호출 지시가 없어야 한다.
+
+    cmd_issue 는 MCP 조회를 하지 않으므로 이슈 조회 용도로 쓰면 안 된다(P1-2).
+    """
+    text = SKILL_MD.read_text(encoding="utf-8")
+    # 단순 `issue --root . --json` 형태의 bash 호출이 없어야 함
+    assert "issue --root . --json" not in text, (
+        "SKILL.md 에 `issue --root . --json` 호출 지시가 남아 있다 — P1-2 미반영"
+    )
+
+
+def test_skill_md_json_schema_has_required_fields():
+    """SKILL.md 가 JSON 스키마에 author/date/summary/file/role 필드를 명시해야 한다."""
+    text = SKILL_MD.read_text(encoding="utf-8")
+    for field in ("author", "date", "summary", "file", "role"):
+        assert field in text, (
+            f"SKILL.md JSON 스키마에 '{field}' 필드 명시가 없다"
+        )

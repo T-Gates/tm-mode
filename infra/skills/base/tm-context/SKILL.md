@@ -15,15 +15,25 @@ description: Use when the user asks about team status, current situation, or nee
 python infra/teammode.py context --root . --json
 ```
 
-반환된 JSON을 파싱해 팀원별로 아래 3가지를 사람 말로 요약한다.
+반환 JSON 스키마:
 
-| 항목 | 세션로그 섹션 | 출력 예시 |
-|------|--------------|-----------|
-| 하고 있는 일 | `## 작업 내역` 최근 내용 | "허브 펌웨어 MQTT 연동 중" |
-| 다음 할 일 | `## 다음 할 일` 섹션 | "- SCD40 연결 테스트" |
-| 막힌 것 | `## 막힌 점 / 시도` 섹션 | "AWS 계정 미정" |
+```json
+{
+  "state": "on" | "off",
+  "index": "<INDEX.md 전문 또는 빈 문자열>",
+  "members": [
+    {
+      "author": "<영문 이름>",
+      "date": "<작업일 YYYY-MM-DD>",
+      "summary": "<세션로그 frontmatter 한 줄 요약>",
+      "file": "<세션로그 상대 경로>",
+      "role": "<team.config.json role 또는 null>"
+    }
+  ]
+}
+```
 
-> ℹ️ JSON의 `summary` 필드는 세션로그 첫 줄 요약이다. 상세 맥락이 필요하면 `members[].file` 경로의 세션로그 전문을 읽는다.
+`members[].summary`(한 줄)로 간단 현황을 요약한다. 작업 내역·다음 할 일·막힌 점 등 **상세 맥락이 필요하면 `members[].file`(세션로그 markdown)을 열어 해당 섹션을 직접 파싱한다** — summary 만으로는 3섹션 본문을 얻을 수 없다.
 
 ### 갓 셋업(세션로그 0개) 안내
 
@@ -39,13 +49,15 @@ python infra/teammode.py context --root . --json
 
 ```
 <이름>
-  하고 있는 일: (세션로그 summary 또는 작업 내역 요약)
-  다음 할 일: (세션로그 "다음 할 일" 섹션)
-  막힌 것: (있으면 표시, 없으면 생략)
-
-<이름2>
-  세션로그 없음 — 다음 작업부터 기록됩니다.
+  하고 있는 일: (members[].summary 또는 file 파싱 결과)
+  다음 할 일: (file 파싱 "다음 할 일" 섹션, 있으면)
+  막힌 것: (file 파싱 "막힌 점" 섹션, 있으면 표시, 없으면 생략)
 ```
+
+> ℹ️ `members` 배열에 포함된 멤버는 세션로그가 1개 이상인 멤버뿐이다(`_collect_members` 가 로그 0개 디렉토리를 skip). 아직 기록이 없는 팀원은 JSON 에 나타나지 않는다.
+
+`members`가 비어 있으면(전원 기록 없음):
+> "아직 팀 기록이 없습니다. 다음 작업부터 세션로그가 쌓입니다 (`tm off` 시 자동 저장)."
 
 이름 앞 이모지는 팀모드에 이모지 스키마가 미정이므로 이름만 표시한다 (이모지는 후속 인프라).
 
@@ -67,25 +79,25 @@ if decisions_path.is_file():
 **미연결이면 조용히 skip** — tm-context는 L2 없어도 완전히 동작한다.
 
 - `services.issues` 슬롯 연결 확인:
-  ```bash
-  python infra/teammode.py issue --root . --json
-  ```
-  연결돼 있으면 In Progress 이슈를 MCP로 조회해 참고 표시.
-  미연결이면 skip.
+  `team.config.json`의 `services.issues.provider` 필드가 채워져 있는지 **파일을 직접 읽어** 확인한다.
+  > ⚠️ `teammode.py issue` 동사는 MCP 이슈 조회를 수행하지 않는다 — provider/input 스키마 echo 만 한다(빈 슬롯이면 비-JSON 안내 텍스트 출력). 이슈 조회는 연결된 역할 슬롯 MCP 도구를 통해 **직접** 호출해야 한다.
+
+  연결된 MCP 도구가 있을 때만 In Progress 이슈를 조회해 L1 요약 이후 보조로 표시한다.
+  미연결이면 조용히 skip(L1 은 항상 먼저·완전).
 
 - `services.calendar` 슬롯: 연결돼 있으면 다가오는 팀 일정을 추가. 미연결이면 skip.
 
 > ⚠️ L2 서비스 데이터는 **보조 정보**다. L2 조회 실패(네트워크·인증 오류)는 비치명 — L1 결과를 먼저 보여주고 "일부 서비스 데이터를 가져오지 못했습니다"로 안내한다.
 
-## 범용화 차이점 (tgates-get-context 대비)
+## 설계 원칙 요약
 
-| 항목 | tgates-get-context | tm-context |
-|------|-------------------|------------|
-| 레포 경로 | `$TGATES_HOME` 환경변수 | `--root .` 명시 |
-| 멤버 이모지 | members.md에서 읽어 표시 | 이름만 표시 (이모지 스키마 미정) |
-| issues 슬롯 하드코딩 | 특정 팀 ID·colorId 필터 | config services 슬롯으로만, 미연결 skip |
-| calendar 슬롯 | 특정 캘린더 ID 하드코딩 | config services 슬롯으로만, 미연결 skip |
-| git pull | 절차에 포함 | 불포함 (tm on 절차가 처리) |
+| 항목 | tm-context 동작 |
+|------|----------------|
+| 레포 경로 | `--root .` 명시 (env 폴백 없음) |
+| 멤버 이모지 | 이름만 표시 (이모지 스키마 미정) |
+| issues 슬롯 | config services 슬롯으로만, 미연결 skip |
+| calendar 슬롯 | config services 슬롯으로만, 미연결 skip |
+| git pull | 불포함 (tm on 절차가 처리) |
 
 ## 안 하는 것
 
