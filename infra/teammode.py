@@ -383,6 +383,10 @@ def _validate_author(author: str) -> str | None:
     # 오인되는 footgun(적대 검수 지적). members.md 영문 이름은 식별자이지 플래그가 아니다.
     if author[0] in "-_":
         return f"author 는 영숫자로 시작해야 합니다: {author!r}"
+    # isascii() 강제: 파이썬 isalnum() 은 유니코드라 한글 등 비ASCII 가 통과한다.
+    # author·filename(파일명 되는 값)은 ASCII 범위 영문/숫자/제한기호만 허용한다.
+    if not author.isascii():
+        return f"author 는 ASCII 문자(영문/숫자/허용기호)만 사용할 수 있습니다: {author!r}"
     # 화이트리스트: members.md 영문 이름 규약(소문자 단일 세그먼트)에 부합하는 문자만
     if not all(c.isalnum() or c in "-_" for c in author):
         return f"author 에 허용되지 않는 문자가 있습니다: {author!r}"
