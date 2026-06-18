@@ -943,9 +943,16 @@ def cmd_knowledge(team_root: Path, action: str | None,
             new_fm = _rebuild_frontmatter(fm, author, weight, created_at, updated_at)
             new_full = new_fm + content
 
-        # 파일 쓰기
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(new_full, encoding="utf-8")
+        # ── 파일 I/O (OSError/PermissionError → exit 2 + 친화 메시지) ─────────
+        # 긴 파일명(255자↑ → OSError)·권한 문제(PermissionError) 등 OS 예외를
+        # 트레이스백 + exit 1 대신 친화 메시지 + exit 2 로 처리한다.
+        # 기존 검증 실패(입력검증 exit 2) 규약과 일치: 사람이 고칠 수 있는 입력 문제.
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(new_full, encoding="utf-8")
+        except (OSError, PermissionError) as exc:
+            print(f"[error] knowledge write: 파일 쓰기 실패 — {exc}", file=sys.stderr)
+            return 2
 
         # 편집일 계산 (P1-3: subject-substring 의존 제거):
         # 본문이 바뀌었으면 today 를 편집일로 사용.
@@ -961,7 +968,11 @@ def cmd_knowledge(team_root: Path, action: str | None,
         # INDEX 행 upsert (rel_path = memory/ 포함 표준 경로)
         index_path = team_root / "memory" / folder / "INDEX.md"
         description = content.strip().splitlines()[0][:60] if content.strip() else filename
-        _index_upsert(index_path, rel_for_git, weight, description, edit_date)
+        try:
+            _index_upsert(index_path, rel_for_git, weight, description, edit_date)
+        except (OSError, PermissionError) as exc:
+            print(f"[error] knowledge write: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            return 2
 
         # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
         changed_paths = [str(target_path), str(index_path)]
@@ -1082,13 +1093,20 @@ def cmd_knowledge(team_root: Path, action: str | None,
             print(f"teammode knowledge delete — 파일 없음(멱등): {rel_path}")
             return 0
 
-        # INDEX 에서 행 제거 (폴더 INDEX)
+        # ── 파일 I/O (OSError/PermissionError → exit 2 + 친화 메시지) ─────────
         folder_path = target_path.parent
         index_path = folder_path / "INDEX.md"
-        _index_remove_row(index_path, rel_for_index)
+        try:
+            _index_remove_row(index_path, rel_for_index)
+        except (OSError, PermissionError) as exc:
+            print(f"[error] knowledge delete: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            return 2
 
-        # 파일 삭제
-        target_path.unlink()
+        try:
+            target_path.unlink()
+        except (OSError, PermissionError) as exc:
+            print(f"[error] knowledge delete: 파일 삭제 실패 — {exc}", file=sys.stderr)
+            return 2
 
         # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
         changed_paths = [str(target_path), str(index_path)]
