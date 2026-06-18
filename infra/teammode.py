@@ -868,7 +868,26 @@ def _index_upsert(index_path: Path, rel_path: str, weight: str,
             content = existing + suffix + block
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(content, encoding="utf-8")
+    # atomic write: 임시파일에 쓴 뒤 os.replace — 부분 변경 상태로 INDEX 가 남지 않도록
+    import tempfile as _tempfile
+    _idx_tmp: "Path | None" = None
+    try:
+        with _tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8",
+            dir=index_path.parent,
+            delete=False,
+            suffix=".idx.tmp",
+        ) as _itf:
+            _idx_tmp = Path(_itf.name)  # name 을 write() 전에 저장
+            _itf.write(content)
+        os.replace(str(_idx_tmp), str(index_path))
+        _idx_tmp = None  # 이동 완료 → 정리 불필요
+    finally:
+        if _idx_tmp is not None:
+            try:
+                _idx_tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
     return True
 
 
@@ -1011,6 +1030,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
             except (OSError, PermissionError):
                 _old_file_content = None  # 읽기 실패 시 롤백 포기, 이후 write 에서 실패
 
+        _tmp_path = None  # write() 호출 전에 None 초기화 → finally 에서 항상 정리 가능
         try:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             # atomic write: 임시파일에 쓴 뒤 os.replace 로 교체
@@ -1021,18 +1041,20 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 delete=False,
                 suffix=".tmp",
             ) as _tf:
+                _tmp_path = Path(_tf.name)  # name 을 write() 호출 전에 저장
                 _tf.write(new_full)
-                _tmp_path = Path(_tf.name)
             os.replace(str(_tmp_path), str(target_path))
+            _tmp_path = None  # os.replace 성공 → 파일이 target 으로 이동됐으므로 정리 불필요
         except (OSError, PermissionError) as exc:
-            # 임시파일이 남아 있으면 정리 시도
-            try:
-                if "_tmp_path" in dir() and _tmp_path.exists():
-                    _tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
             print(f"[error] knowledge write: 파일 쓰기 실패 — {exc}", file=sys.stderr)
             return 2
+        finally:
+            # 예외 발생 여부와 무관하게 임시파일 잔류 방지
+            if _tmp_path is not None:
+                try:
+                    _tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         # 편집일 계산 (P1-3: subject-substring 의존 제거):
         # 본문이 바뀌었으면 today 를 편집일로 사용.
