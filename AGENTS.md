@@ -32,6 +32,7 @@ python infra/install.py --root . --register-obsidian
 - 팀 루트는 **`--root` 명시로만.** 환경변수(`TEAMMODE_HOME` 등)를 신뢰하지 않는다.
 - 실 에이전트 설정(`~/.claude/settings.json`)·셸 프로파일·`obsidian.json`은 **`--yes`(실설치) 또는 `--settings`(격리) / `--register-obsidian` 동의** 없이는 건드리지 않는다.
 - 막히면(exit≠0) 사유를 사람에게 옮기고 멈춘다. 추측 수리 금지.
+- **Windows PowerShell**: git 의 진단 메시지(clone 진행률·remote 정보 등)는 stderr 로 나와 빨간색으로 표시되지만 비치명 — 실제 에러가 아니면 무시해도 된다.
 
 ## 운영 (셋업된 팀 레포에서)
 - 팀 작업 맥락은 **세션로그**로 남는다. 직접 파일을 만들지 말고 엔진(`teammode.py log`)/훅이 기록하게 한다(날짜·frontmatter·06시컷 자동).
