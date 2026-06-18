@@ -142,3 +142,25 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
 - **윈도우 Git Bash 경로변환 주의** — 에이전트가 `git show upstream/main:.gitignore` 류에서 MSYS 경로변환(`/`→`\`, `:`→`;`)에 막혀 오판. 문서(AGENTS/SKILL)에 윈도우 Git Bash 주의(`MSYS_NO_PATHCONV=1`) 한 줄.
 - **`--team-name` 인자** — install이 team.name을 repo명으로 자동. 팀명 직접 지정 인자 부재(현재는 셋업 후 config 수정).
 - **직책/직군 분리 스키마** — 현재 `--role`은 단일 자유필드(예 `팀장/개발`). 직책(팀장/팀원)·직군(dev/pm/design) 분리 스키마.
+
+---
+
+## 핫픽스 묶음 — push 후 검증 P1 견고성 (2026-06-18, BACKLOG③ 출시 후)
+
+915fa70 push 후 7-시나리오 병렬 검증 + 윈도우 실설치 도그푸딩에서 나온 견고성 결함. **P0 0**(핵심 안전 traversal·symlink·커밋오염·고아청소·실호스트오염·거버넌스 실발동 전부 정상). 아래는 입력검증/예외처리 P1 — 출시 막을 결함 아니라 묶음 hotfix.
+
+### knowledge 동사 입력 견고성 (수렴 P1)
+- **미처리 예외 → 트레이스백 + exit 1** (친화 메시지 X): 긴 파일명(255자↑ → `OSError`), 권한 문제(`chmod`된 INDEX → `PermissionError`). → write/delete를 try/except로 감싸 **exit 2 + 친화 메시지**로.
+- **유니코드 author/filename 통과**: `_validate_author`가 `isalnum()` 쓰는데 파이썬 `isalnum()`은 유니코드라 한글 author·filename이 통과(예: author "햄버거"). → **`isascii()` 강제** 추가(영문/숫자/제한기호만).
+- **content 제어문자 미필터 (P2)**: knowledge content에 제어문자 들어가도 그대로 저장. → 정규화 or 거부.
+
+### 거버넌스(kb-write-guard) 경미 (P1)
+- **상대경로 fail-closed 여부 경미**: file_path가 상대경로일 때 containment 판정이 CWD 의존(경미 — 실제 훅 입력은 보통 절대경로). → 명시적 처리.
+- **memory 내부 symlink**: memory/ *안에서* 밖을 가리키는 symlink 경유 편집 경계(경미).
+
+### 윈도우 도그푸딩 미세 갭 (P2)
+- **전역 git identity 빈 경우**: 온보딩에 `git config user.name/email` 안내 한 줄 (AI가 로컬로 설정하게 됨).
+- **`install.py --help`가 `--root` 요구 → exit 2**: help는 root 없이 출력되게.
+- **PowerShell git stderr 빨강 래핑**: 윈도우 특유 비치명 — 문서에 주의 한 줄(선택).
+
+> 출처: 2026-06-18 push 후 검증·윈도우 end-to-end 도그푸딩 (세션로그 jane-doe 2026-06-18). 핵심 안전은 전부 통과, 위는 견고성/UX 개선분.
