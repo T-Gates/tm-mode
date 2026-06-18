@@ -163,4 +163,8 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
 - **`install.py --help`가 `--root` 요구 → exit 2**: help는 root 없이 출력되게.
 - **PowerShell git stderr 빨강 래핑**: 윈도우 특유 비치명 — 문서에 주의 한 줄(선택).
 
+### knowledge 동시 write race (P2, 백로그 — dev-cycle 2차 검수서 codex 적발)
+- atomic write 반영 후, 같은 topic 동시 write 중 한 writer 의 INDEX 실패 롤백이 다른 writer 가 방금 쓴 파일을 삭제/과거 내용으로 복원할 수 있음(race, fault injection 확인).
+- **접은 이유**: teammode knowledge 는 단일 CLI 순차 사용 모델 — 동시 same-topic write 비현실적. lock 도입은 P1 핫픽스 범위 과대. 실제 동시성 요구 생기면 topic/folder 단위 lock 또는 롤백 전 "내가 쓴 내용인지" 비교 후 unlink/restore.
+
 > 출처: 2026-06-18 push 후 검증·윈도우 end-to-end 도그푸딩 (세션로그 jane-doe 2026-06-18). 핵심 안전은 전부 통과, 위는 견고성/UX 개선분.
