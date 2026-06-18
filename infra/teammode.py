@@ -915,6 +915,18 @@ def cmd_knowledge(team_root: Path, action: str | None,
             print(f"[error] knowledge write: {err}", file=sys.stderr)
             return 2
 
+        # content 제어문자 거부 (개행·탭은 허용 — 문서 포맷에 필수)
+        # U+0000–U+001F 중 \n(U+000A)·\r(U+000D)·\t(U+0009)는 제외, 나머지는 거부.
+        # U+007F(DEL)도 거부. 터미널 제어 시퀀스(ESC 등)·NUL 삽입 차단.
+        _ALLOWED_CTRL = {"\n", "\r", "\t"}
+        for _ch in content:
+            _cp = ord(_ch)
+            if (_cp < 0x20 or _cp == 0x7F) and _ch not in _ALLOWED_CTRL:
+                print(f"[error] knowledge write: --content 에 허용되지 않는 제어문자가 "
+                      f"있습니다(U+{_cp:04X}). 개행·탭 외 제어문자는 거부됩니다.",
+                      file=sys.stderr)
+                return 2
+
         target_path = team_root / "memory" / folder / filename
         today = date_str or datetime.now().strftime("%Y-%m-%d")
 
