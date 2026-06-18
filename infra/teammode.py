@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -617,6 +618,38 @@ def _escape_index_cell(value: str) -> str:
     return value.replace("\n", " ").replace("\r", " ").replace("|", "⎪").replace("`", "'")
 
 
+def _validate_filename_chars(filename: str) -> str | None:
+    """filename 문자 검증. 위반 시 에러 메시지 반환.
+
+    - 빈 문자열 거부.
+    - 경로 구분자(/ \\) 거부.
+    - '..' 또는 '.' 로 시작 거부.
+    - 공백·파이프·제어문자(ord < 32) 거부.
+    - 0x7F(DEL) 거부.
+    - ASCII 외(비ASCII) 거부 — write/author 와 동일 정책.
+    - kebab-case(영숫자·-·_) 검증(_validate_author 재사용).
+    """
+    if not filename:
+        return "filename 이 비어 있습니다."
+    if "/" in filename or "\\" in filename:
+        return f"filename 에 경로 구분자가 포함될 수 없습니다: {filename!r}"
+    if ".." in filename or filename.startswith("."):
+        return f"filename 이 허용되지 않습니다: {filename!r}"
+    # 제어문자·공백·파이프·DEL·비ASCII 거부 (write 와 동일 정책)
+    for ch in filename:
+        cp = ord(ch)
+        if cp < 32 or cp == 0x7F or ch in (" ", "|"):
+            return f"filename 에 허용되지 않는 문자가 있습니다: {filename!r}"
+    if not filename.isascii():
+        return f"filename 은 ASCII 문자만 사용할 수 있습니다: {filename!r}"
+    # kebab-case 검증 (확장자 제거 후)
+    base = filename.removesuffix(".md") if filename.endswith(".md") else filename
+    err = _validate_author(base)
+    if err is not None:
+        return f"filename 검증 실패: {err}"
+    return None
+
+
 def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str | None:
     """folder/filename 이 안전한지 검증. 위반 시 에러 메시지 반환.
 
@@ -660,29 +693,21 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str
                 f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} (및 그 하위)")
 
     # ── folder: .. 세그먼트 금지 ──────────────────────────────────
+    # isascii() 강제: isalnum() 은 유니코드라 전각문자(Ａ 등)·한글이 통과한다.
+    # author/filename 과 동일 원인이므로 folder 세그먼트에도 isascii 적용(S1 지적 4).
     parts = norm_folder.split("/")
     for seg in parts:
         if seg in ("", ".", ".."):
             return f"folder 에 허용되지 않는 세그먼트: {seg!r} in {folder!r}"
+        if not seg.isascii():
+            return f"folder 세그먼트는 ASCII 문자만 사용할 수 있습니다: {seg!r}"
         if not all(c.isalnum() or c in "-_" for c in seg):
             return f"folder 세그먼트에 허용되지 않는 문자: {seg!r}"
 
-    # ── filename 검증 (P2: dead-code err 실제 반환) ───────────────
-    if not filename:
-        return "filename 이 비어 있습니다."
-    if "/" in filename or "\\" in filename:
-        return f"filename 에 경로 구분자가 포함될 수 없습니다: {filename!r}"
-    if ".." in filename or filename.startswith("."):
-        return f"filename 이 허용되지 않습니다: {filename!r}"
-    # 공백·파이프·제어문자 거부 (P2: filename whitelist)
-    for ch in filename:
-        if ch in (" ", "\t", "|") or ord(ch) < 32:
-            return f"filename 에 허용되지 않는 문자가 있습니다: {filename!r}"
-    # kebab-case 검증 (확장자 제거 후)
-    base = filename.removesuffix(".md") if filename.endswith(".md") else filename
-    err = _validate_author(base)
-    if err is not None:
-        return f"filename 검증 실패: {err}"
+    # ── filename 검증 (_validate_filename_chars 재사용) ─────────────
+    fn_err = _validate_filename_chars(filename)
+    if fn_err is not None:
+        return fn_err
 
     # ── containment: 정규화된 절대경로가 memory/ 하위여야 한다 ────
     candidate = (team_root / "memory" / folder / filename).resolve()
@@ -915,15 +940,29 @@ def cmd_knowledge(team_root: Path, action: str | None,
             print(f"[error] knowledge write: {err}", file=sys.stderr)
             return 2
 
-        # content 제어문자 거부 (개행·탭은 허용 — 문서 포맷에 필수)
-        # U+0000–U+001F 중 \n(U+000A)·\r(U+000D)·\t(U+0009)는 제외, 나머지는 거부.
-        # U+007F(DEL)도 거부. 터미널 제어 시퀀스(ESC 등)·NUL 삽입 차단.
+        # content 제어문자 거부 (개행·탭·CR 은 허용 — 문서 포맷에 필수)
+        # 거부 대상:
+        #   - unicodedata.category() 기준 Cc(C0/C1 제어), Cf(포맷 제어), Cs(surrogate)
+        #   - 단, \n(U+000A)·\r(U+000D)·\t(U+0009) 만 명시 허용.
+        # surrogate 는 Python str 에 고립 surrogate 로 들어올 수 있으며
+        # unicodedata.category() 호출 시 UnicodeEncodeError 를 유발하므로 코드포인트로 직접 처리.
         _ALLOWED_CTRL = {"\n", "\r", "\t"}
         for _ch in content:
+            if _ch in _ALLOWED_CTRL:
+                continue
             _cp = ord(_ch)
-            if (_cp < 0x20 or _cp == 0x7F) and _ch not in _ALLOWED_CTRL:
-                print(f"[error] knowledge write: --content 에 허용되지 않는 제어문자가 "
-                      f"있습니다(U+{_cp:04X}). 개행·탭 외 제어문자는 거부됩니다.",
+            # 고립 surrogate (U+D800–U+DFFF): category() 호출 전 직접 거부
+            if 0xD800 <= _cp <= 0xDFFF:
+                print(f"[error] knowledge write: --content 에 허용되지 않는 문자가 "
+                      f"있습니다(surrogate U+{_cp:04X}). 제어·포맷·surrogate 문자는 거부됩니다.",
+                      file=sys.stderr)
+                return 2
+            cat = unicodedata.category(_ch)
+            # Cc=제어(C0+C1), Cf=포맷(ZWJ·ZWNJ·BOM 등), Cs=surrogate(이미 위에서 처리)
+            if cat in ("Cc", "Cf", "Cs"):
+                print(f"[error] knowledge write: --content 에 허용되지 않는 문자가 "
+                      f"있습니다(U+{_cp:04X}, category={cat}). "
+                      f"제어·포맷·surrogate 문자는 거부됩니다.",
                       file=sys.stderr)
                 return 2
 
@@ -959,10 +998,39 @@ def cmd_knowledge(team_root: Path, action: str | None,
         # 긴 파일명(255자↑ → OSError)·권한 문제(PermissionError) 등 OS 예외를
         # 트레이스백 + exit 1 대신 친화 메시지 + exit 2 로 처리한다.
         # 기존 검증 실패(입력검증 exit 2) 규약과 일치: 사람이 고칠 수 있는 입력 문제.
+        #
+        # 정합성(S1 적대검수 지적): 파일 write 성공 후 INDEX 갱신 실패 시 파일만 남는
+        # 부분 실패를 막기 위해 2단계 처리한다.
+        #   1단계: 임시파일+os.replace 로 파일 원자 write.
+        #   2단계: INDEX upsert. 실패 시 1단계를 롤백(파일 복원/삭제).
+        is_new_file = not target_path.is_file()
+        _old_file_content: str | None = None
+        if not is_new_file:
+            try:
+                _old_file_content = target_path.read_text(encoding="utf-8")
+            except (OSError, PermissionError):
+                _old_file_content = None  # 읽기 실패 시 롤백 포기, 이후 write 에서 실패
+
         try:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(new_full, encoding="utf-8")
+            # atomic write: 임시파일에 쓴 뒤 os.replace 로 교체
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8",
+                dir=target_path.parent,
+                delete=False,
+                suffix=".tmp",
+            ) as _tf:
+                _tf.write(new_full)
+                _tmp_path = Path(_tf.name)
+            os.replace(str(_tmp_path), str(target_path))
         except (OSError, PermissionError) as exc:
+            # 임시파일이 남아 있으면 정리 시도
+            try:
+                if "_tmp_path" in dir() and _tmp_path.exists():
+                    _tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             print(f"[error] knowledge write: 파일 쓰기 실패 — {exc}", file=sys.stderr)
             return 2
 
@@ -978,12 +1046,24 @@ def cmd_knowledge(team_root: Path, action: str | None,
             edit_date = _index_get_edit_date(index_path_for_date, rel_for_git) or today
 
         # INDEX 행 upsert (rel_path = memory/ 포함 표준 경로)
+        # 실패 시 파일을 롤백하여 부분 실패 정합성 보장.
         index_path = team_root / "memory" / folder / "INDEX.md"
         description = content.strip().splitlines()[0][:60] if content.strip() else filename
         try:
             _index_upsert(index_path, rel_for_git, weight, description, edit_date)
         except (OSError, PermissionError) as exc:
-            print(f"[error] knowledge write: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            # INDEX 갱신 실패 → 파일 롤백 (부분 실패 정합성)
+            try:
+                if is_new_file:
+                    target_path.unlink(missing_ok=True)
+                elif _old_file_content is not None:
+                    target_path.write_text(_old_file_content, encoding="utf-8")
+            except Exception as rb_exc:
+                print(f"[error] knowledge write: INDEX 갱신 실패 + 파일 롤백도 실패 — "
+                      f"INDEX: {exc} / 롤백: {rb_exc}", file=sys.stderr)
+                return 2
+            print(f"[error] knowledge write: INDEX 갱신 실패(파일 롤백됨) — {exc}",
+                  file=sys.stderr)
             return 2
 
         # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
@@ -1043,15 +1123,21 @@ def cmd_knowledge(team_root: Path, action: str | None,
             return 2
 
         # rel_path 는 "memory/..." 형식일 수도 있고 "team/decisions/foo.md" 형식일 수도 있다.
-        if rel_path.startswith("memory/"):
-            candidate = (team_root / rel_path).resolve()
-            rel_for_index = rel_path
-            # 내부 folder 추출 (허용 폴더 검증용)
-            inner = rel_path[len("memory/"):]
-        else:
-            candidate = (team_root / "memory" / rel_path).resolve()
-            rel_for_index = "memory/" + rel_path
-            inner = rel_path
+        # NUL 등 포함 경로는 Path.resolve() 에서 ValueError 를 던진다 — exit 2 로 처리.
+        try:
+            if rel_path.startswith("memory/"):
+                candidate = (team_root / rel_path).resolve()
+                rel_for_index = rel_path
+                # 내부 folder 추출 (허용 폴더 검증용)
+                inner = rel_path[len("memory/"):]
+            else:
+                candidate = (team_root / "memory" / rel_path).resolve()
+                rel_for_index = "memory/" + rel_path
+                inner = rel_path
+        except ValueError as exc:
+            print(f"[error] knowledge delete: 경로에 허용되지 않는 문자가 있습니다 — {exc}",
+                  file=sys.stderr)
+            return 2
 
         # ── P1-1: 허용 폴더 검증 (write 와 동일한 blocked/allowed 규칙) ─────
         # INDEX.md 자신(root) 삭제 거부 + blocked/allowed 폴더 검증
@@ -1061,6 +1147,14 @@ def cmd_knowledge(team_root: Path, action: str | None,
         # INDEX.md 삭제 거부 (root-level INDEX 는 특히)
         if filename_part == "INDEX.md":
             print(f"[error] knowledge delete: INDEX.md 는 직접 삭제할 수 없습니다: {rel_path!r}",
+                  file=sys.stderr)
+            return 2
+
+        # ── filename 문자 검증 (write 와 동일한 정책) ──────────────────
+        # 제어문자·전각문자·비ASCII filename 거부 (NUL 등은 ValueError 전에 차단)
+        fn_err = _validate_filename_chars(filename_part)
+        if fn_err is not None:
+            print(f"[error] knowledge delete: --path 의 filename 검증 실패 — {fn_err}",
                   file=sys.stderr)
             return 2
 
@@ -1106,8 +1200,21 @@ def cmd_knowledge(team_root: Path, action: str | None,
             return 0
 
         # ── 파일 I/O (OSError/PermissionError → exit 2 + 친화 메시지) ─────────
+        # 정합성(S1 적대검수 지적): index_remove 성공 후 unlink 실패 → INDEX 행만 사라지는
+        # 부분 실패를 막기 위해 2단계 처리한다.
+        #   1단계: INDEX 행 제거 (INDEX 원본 내용 백업 후).
+        #   2단계: 파일 unlink. 실패 시 1단계를 롤백(INDEX 원본 복원).
         folder_path = target_path.parent
         index_path = folder_path / "INDEX.md"
+
+        # INDEX 원본 백업 (롤백용)
+        _index_backup: str | None = None
+        if index_path.is_file():
+            try:
+                _index_backup = index_path.read_text(encoding="utf-8")
+            except (OSError, PermissionError):
+                _index_backup = None
+
         try:
             _index_remove_row(index_path, rel_for_index)
         except (OSError, PermissionError) as exc:
@@ -1117,7 +1224,16 @@ def cmd_knowledge(team_root: Path, action: str | None,
         try:
             target_path.unlink()
         except (OSError, PermissionError) as exc:
-            print(f"[error] knowledge delete: 파일 삭제 실패 — {exc}", file=sys.stderr)
+            # unlink 실패 → INDEX 롤백 (부분 실패 정합성)
+            try:
+                if _index_backup is not None:
+                    index_path.write_text(_index_backup, encoding="utf-8")
+            except Exception as rb_exc:
+                print(f"[error] knowledge delete: 파일 삭제 실패 + INDEX 롤백도 실패 — "
+                      f"unlink: {exc} / 롤백: {rb_exc}", file=sys.stderr)
+                return 2
+            print(f"[error] knowledge delete: 파일 삭제 실패(INDEX 롤백됨) — {exc}",
+                  file=sys.stderr)
             return 2
 
         # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
