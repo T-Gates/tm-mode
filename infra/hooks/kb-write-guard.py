@@ -191,10 +191,13 @@ def _is_memory_path(file_path: str, team_root: str) -> bool | None:
         memory_root_raw = (Path(team_root) / "memory")
 
         # ── S2-2 (A): 비-resolve 경로 기준 containment ──
-        # p 가 memory_root_raw 하위인지 확인 (symlink 경로 자체 기준)
+        # p 가 memory_root_raw 하위인지 확인 (symlink 경로 자체 기준).
+        # os.path.normpath 로 `.`/`..` 를 먼저 접어 lexical 정규화한 뒤 판정.
+        # (symlink 는 resolve 하지 않고 .. 만 해소 — S2-2 (B) 의 symlink 차단과 역할 분리.)
+        p_normed = Path(os.path.normpath(p))
         try:
-            p.relative_to(memory_root_raw)
-            return True  # raw 경로상 memory/ 하위 → 차단
+            p_normed.relative_to(memory_root_raw)
+            return True  # raw(normpath) 경로상 memory/ 하위 → 차단
         except ValueError:
             pass  # memory/ 밖 → (B) 확인으로 진행
 
@@ -206,8 +209,8 @@ def _is_memory_path(file_path: str, team_root: str) -> bool | None:
         except ValueError:
             return False  # 어느 쪽도 memory/ 하위 아님 → 통과
 
-    except (OSError, RuntimeError):
-        # resolve() 실패(권한 등) → 판별 불가
+    except (OSError, RuntimeError, TypeError):
+        # resolve() 실패(권한 등) 또는 타입 오류 → 판별 불가
         return None
 
 

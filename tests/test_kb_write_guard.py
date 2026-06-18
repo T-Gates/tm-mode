@@ -739,3 +739,91 @@ def test_symlink_inside_memory_to_within_memory_is_denied(tmp_path):
     assert proc.returncode == 2, (
         "memory/ 내부 symlink(→memory/ 안)도 deny 되어야 한다(S2-2)"
     )
+
+
+# ── S2-2(A): normpath ./../ 처리 ──────────────────────────────────────────────
+
+def test_dotdot_escape_from_memory_is_allowed(tmp_path):
+    """memory/../infra/file.py 는 normpath 후 memory/ 밖 → allow (S2-2 fix).
+
+    수정 전: p.relative_to(memory_root_raw) 가 `memory/..` 를 해소하지 않아
+    false deny(정당한 파일을 잘못 차단)할 수 있었다.
+    수정 후: os.path.normpath 로 lexical 정규화 후 containment 판정 → memory/ 밖임이 정확히 판별.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "memory").mkdir()
+    (root / "infra").mkdir()
+    _active(root)
+    # memory/../infra/file.py : normpath 하면 infra/file.py → memory/ 밖
+    dotdot_path = str(root / "memory" / ".." / "infra" / "file.py")
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [dotdot_path],
+        "tool": {"kind": "builtin", "name": "Edit"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 0, (
+        "memory/../infra/file.py 는 memory/ 밖이므로 allow 되어야 한다(S2-2 normpath fix)"
+    )
+
+
+def test_prefix_trap_outside_memory_is_allowed(tmp_path):
+    """memory-notes/ 처럼 memory 로 시작하지만 다른 디렉터리는 allow (prefix 함정 방지).
+
+    normpath 후에도 memory-notes/ 는 memory/ 와 다른 경로이므로 통과해야 한다.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "memory").mkdir()
+    notes_dir = root / "memory-notes"
+    notes_dir.mkdir()
+    _active(root)
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [str(notes_dir / "x.md")],
+        "tool": {"kind": "builtin", "name": "Edit"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 0, (
+        "memory-notes/x.md 는 memory/ 밖이므로 allow 되어야 한다(prefix 함정 방지)"
+    )
+
+
+def test_symlink_inside_memory_pointing_outside_is_still_denied(tmp_path):
+    """memory/ 내부 symlink 가 밖을 가리키는 경우 normpath 후에도 deny (S2-2 유지).
+
+    normpath fix 후에도 memory/outside-link/file 경로는 normpath 상 memory/ 하위이므로
+    기존 S2-2 (A) 차단이 그대로 작동해야 한다.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "memory").mkdir()
+    _active(root)
+
+    external = tmp_path / "external-data"
+    external.mkdir()
+
+    inside_link = root / "memory" / "outside-link"
+    inside_link.symlink_to(external)
+
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [str(inside_link / "leaked.md")],
+        "tool": {"kind": "builtin", "name": "Write"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 2, (
+        "memory/ 내부 symlink 경유 편집은 normpath 후에도 deny 되어야 한다(S2-2 유지)"
+    )
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
