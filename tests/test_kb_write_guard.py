@@ -671,3 +671,71 @@ def test_relative_path_outside_memory_is_allowed(tmp_path):
     proc = _run_hook(payload, root)
     assert proc.returncode == 0, "상대경로라도 memory/ 밖이면 통과해야 한다(S2-1)"
 
+
+# ── S2-2: memory 내부 symlink 경계 ───────────────────────────────────────────
+
+def test_symlink_inside_memory_pointing_outside_is_denied(tmp_path):
+    """memory/ 내부 symlink 가 밖을 가리키는 경우 편집 시도 → deny (S2-2).
+
+    예: memory/link → /tmp/external/file.md
+    file_path = memory/link/target.md 처럼 memory/ 하위 경로를 통해 들어오면
+    resolve 결과가 memory/ 밖이지만, raw 경로상 memory/ 하위이므로 차단된다.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "memory").mkdir()
+    _active(root)
+
+    # memory/ 밖 실제 디렉터리
+    external = tmp_path / "external-data"
+    external.mkdir()
+
+    # memory/ 내부에서 밖을 가리키는 symlink
+    inside_link = root / "memory" / "outside-link"
+    inside_link.symlink_to(external)
+
+    # memory/ 내부 symlink 경유로 편집 시도
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [str(inside_link / "leaked.md")],
+        "tool": {"kind": "builtin", "name": "Write"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 2, (
+        "memory/ 내부 symlink 가 밖을 가리켜도 경로상 memory/ 하위이면 deny 되어야 한다(S2-2)"
+    )
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_symlink_inside_memory_to_within_memory_is_denied(tmp_path):
+    """memory/ 내부 symlink 가 같은 memory/ 안을 가리키는 경우에도 deny (S2-2).
+
+    memory 안에서 안을 가리키는 symlink는 편집 자체가 차단되어야 한다.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    mem = root / "memory"
+    mem.mkdir()
+    (mem / "real.md").write_text("data")
+    _active(root)
+
+    # memory/ 내부 symlink → 같은 memory/ 안
+    inside_link = mem / "alias-real.md"
+    inside_link.symlink_to(mem / "real.md")
+
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [str(inside_link)],
+        "tool": {"kind": "builtin", "name": "Edit"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 2, (
+        "memory/ 내부 symlink(→memory/ 안)도 deny 되어야 한다(S2-2)"
+    )
