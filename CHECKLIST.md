@@ -11,17 +11,19 @@
 - [x] write/delete atomic 정합성·temp 누수 방지 (codex 2차)
 - 검수: codex 2라운드(1차 3건+2차 2건 반영). #3 동시write race는 백로그(단일CLI순차모델). 메인 직접확인 종결.
 
-## S2 — 거버넌스(kb-write-guard) 경미  (`infra/hooks/kb-write-guard.py`)
-- [ ] 상대경로 fail-closed
-- [ ] memory 내부→밖 symlink 경계
-- 검수(codex): 우회·경계조건
+## S2 — 거버넌스(kb-write-guard) 경미  (`infra/hooks/kb-write-guard.py`) ✅ 종결
+- [x] 상대경로 fail-closed (normpath `../` 오판 수정 포함)
+- [x] memory 내부→밖 symlink 경계 (raw+resolve union)
+- [x] malformed input fail-closed (top-level dict·files 타입/다중요소·tool_input)
+- 검수: codex 2라운드(1차 normpath/fail-closed 2건 + 재검수 top-level dict/files다중 2건 반영). 메인 직접확인 종결.
 
-## S3 — 윈도우 미세갭  (`infra/install.py`, tm-onboard SKILL)
-- [ ] `install.py --help`가 `--root` 없이 출력 (현재 exit2 → exit0)
-- [ ] tm-onboard에 `git config user.name/email` 안내 한 줄
-- [ ] (P2) PowerShell git stderr 빨강 래핑 문서 주의 한 줄
-- 검수(codex): help 경로·문서 정합
+## S3 — 윈도우 미세갭  (`infra/install.py`, tm-onboard SKILL) ✅ 종결
+- [x] `install.py --help`가 `--root` 없이 exit0 출력 (신규 테스트 5)
+- [x] tm-onboard에 `git config user.name/email` 안내
+- [x] (P2) AGENTS.md에 PowerShell git stderr 주의
+- 검수: trivial(문서2 + argparse1)이라 codex 생략, 테스트 + 메인 직접확인.
 
 ## 마감 (사람 몫)
-- [ ] 전체 pytest green (779 + 신규)
+- [x] 전체 pytest green — 779 → 828 (신규 49)
 - [ ] 은수 diff 검토 → push 결정
+- [ ] (이후) 윈도우 실호스트 검증 (push 후 pull)
