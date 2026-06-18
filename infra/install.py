@@ -597,11 +597,46 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
 
 # ─────────────────────────── 엔트리 ───────────────────────────
 
+_HELP_TEXT = """\
+usage: install.py [--root PATH] [--member-name NAME] [--role TEXT]
+                  [--settings PATH] [--yes] [--update] [--dry-run]
+                  [--register-obsidian] [--obsidian-config PATH]
+                  [--uninstall]
+                  [--<agent> sync|uninstall [--settings PATH] [--install]]
+
+teammode 결정적 부트스트랩 + 어댑터 디스패처.
+
+주요 플래그:
+  --root PATH          팀 루트 경로 (필수; env 무신뢰)
+  --member-name NAME   세션로그 author 영문 이름
+  --role TEXT          직책/직군 (예: 팀장/개발)
+  --yes                실 ~/.claude/settings.json 배선 허용 (실설치)
+  --settings PATH      격리 settings 경로 (테스트·CI)
+  --dry-run            변경 없이 계획만 출력
+  --update             infra/ 파일을 upstream(teammode)으로 동기화
+  --register-obsidian  memory/ 를 Obsidian 볼트로 등록 (opt-in)
+  --uninstall          install 이 호스트에 더한 것을 역순 제거
+
+에이전트 디스패치 (예: --claude sync):
+  --<agent> sync [--on|--off]   에이전트 훅 on/off
+  --<agent> uninstall           에이전트 훅 제거
+  플래그로 --settings <격리경로> 또는 --install(실설치) 중 하나 필요.
+
+자세한 내용: docs/spec/ 참조.
+"""
+
+
 def main(argv=None) -> int:
     # 한글 메시지·verify 가 호출하는 context json 이 비-UTF8 stdout(Windows)에서 깨지거나
     # 크래시하지 않도록 진입 즉시 UTF-8 보장(io_encoding 참조 — 크로스플랫폼 안전).
     ensure_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
+
+    # --help / -h: --root 없어도 usage 출력(exit 0). argparse 와 달리 손파싱이므로
+    # 명시 처리 필요 — 없으면 bootstrap이 --root 미지정으로 exit 2 를 냄.
+    if "--help" in argv or "-h" in argv:
+        print(_HELP_TEXT, end="")
+        return 0
 
     # --uninstall: 호스트 되돌리기 액션(신규). 부트스트랩·디스패치와 별개 분기.
     if "--uninstall" in argv:
