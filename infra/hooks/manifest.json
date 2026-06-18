@@ -34,5 +34,17 @@
     "enforcement": "block",
     "strict": true,
     "_timeout_unit": "seconds"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "action": "file_edit" },
+    "script": "kb-write-guard.py",
+    "timeout": 2,
+    "fallback": "runtime",
+    "enforcement": "block",
+    "strict": true,
+    "mode": "on",
+    "_timeout_unit": "seconds",
+    "_note": "KB 쓰기 거버넌스: memory/ 직접 편집 차단. knowledge 동사 경유만 허용."
   }
 ]

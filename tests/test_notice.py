@@ -3,8 +3,9 @@
 설계:
   - git_ops.read_upstream_notice: `git show <remote>/<branch>:NOTICE.md` 로 upstream
     NOTICE 내용 읽기. 파일 없거나 오류면 빈 문자열(무raise).
-  - teammode._maybe_notify_upstream: upstream NOTICE != 로컬 NOTICE 면 [공지] 출력.
-    같으면 조용히 생략(매번 도배 방지). unrelated histories 환경에서도 동작.
+  - on 시 auto_update_on_start 가 upstream 엔진을 자동 sync + 자동 커밋하고,
+    NOTICE 첫 불릿을 "엔진 업데이트됨: <첫불릿>" 형식으로 출력한다.
+    (구 _maybe_notify_upstream 의 "[공지]" 형식은 제거됨 — cmd_on 에서 호출 안 함.)
 
 네트워크는 /tmp 로컬 fake remote 로 모사 — 실 toolkit·실 ~/.claude 무접촉.
 """
@@ -198,33 +199,40 @@ def _make_on_fixture(tmp_path):
     return team
 
 
-def test_on_shows_notice_when_upstream_differs(tmp_path):
-    """upstream NOTICE 가 로컬과 다를 때 [공지] 출력."""
-    # upstream 셋업
+def test_on_shows_update_notice_when_upstream_has_infra(tmp_path):
+    """작업 D: upstream 에 infra 변경 + NOTICE 가 있으면 on 시 "엔진 업데이트됨" 출력.
+
+    auto_update_on_start 가 엔진 업데이트를 적용하고 NOTICE 첫 불릿을 출력한다.
+    (구 _maybe_notify_upstream 은 삭제됨.)
+    """
     upstream = tmp_path / "upstream.git"
     seed = tmp_path / "seed"
     _git(tmp_path, "init", "--bare", str(upstream))
     _git(tmp_path, "clone", str(upstream), str(seed))
     _git(seed, "config", "user.name", "t")
     _git(seed, "config", "user.email", "t@t")
+    (seed / "infra").mkdir()
+    (seed / "infra" / "engine.py").write_text("v1\n")
     (seed / "NOTICE.md").write_text("# teammode\n\n## 2026-06-17\n- 새 업데이트\n",
                                     encoding="utf-8")
     _git(seed, "add", ".")
-    _git(seed, "commit", "-m", "notice")
+    _git(seed, "commit", "-m", "notice+infra")
     _git(seed, "branch", "-M", "main")
     _git(seed, "push", "-u", "origin", "main")
 
     team = _make_on_fixture(tmp_path)
-    # 로컬 NOTICE.md 없음 → upstream 과 다름
+    # team 에 infra/ 없음 → upstream sync 시 추가됨
     _git(team, "remote", "add", "upstream", str(upstream))
 
     res = _run_engine(team, "on")
-    assert "[공지]" in res.stdout, f"[공지] 출력 기대, stdout={res.stdout!r}"
-    assert "teammode update" in res.stdout
+    assert res.returncode == 0, res.stderr
+    # 작업 D: 엔진 업데이트됨 출력(NOTICE 첫 불릿 포함)
+    assert "엔진 업데이트됨" in (res.stdout + res.stderr), \
+        f"엔진 업데이트됨 미출력, stdout={res.stdout!r}"
 
 
-def test_on_silent_when_notice_same(tmp_path):
-    """upstream NOTICE == 로컬 NOTICE 면 조용히 생략."""
+def test_on_silent_when_notice_same_and_uptodate(tmp_path):
+    """이미 최신(변경 없음)이면 on 이 조용함(자동 커밋 없음, "엔진 업데이트됨" 없음)."""
     upstream = tmp_path / "upstream.git"
     seed = tmp_path / "seed"
     _git(tmp_path, "init", "--bare", str(upstream))
@@ -232,6 +240,8 @@ def test_on_silent_when_notice_same(tmp_path):
     _git(seed, "config", "user.name", "t")
     _git(seed, "config", "user.email", "t@t")
     notice_text = "# teammode\n\n## 2026-06-17\n- 동일\n"
+    (seed / "infra").mkdir()
+    (seed / "infra" / "engine.py").write_text("same\n")
     (seed / "NOTICE.md").write_text(notice_text, encoding="utf-8")
     _git(seed, "add", ".")
     _git(seed, "commit", "-m", "notice")
@@ -239,12 +249,19 @@ def test_on_silent_when_notice_same(tmp_path):
     _git(seed, "push", "-u", "origin", "main")
 
     team = _make_on_fixture(tmp_path)
-    # 로컬 NOTICE 도 upstream 과 동일 내용으로 생성
+    # 로컬 NOTICE + infra 도 upstream 과 동일 내용으로 생성 후 커밋
+    (team / "infra").mkdir()
+    (team / "infra" / "engine.py").write_text("same\n")
     (team / "NOTICE.md").write_text(notice_text, encoding="utf-8")
+    _git(team, "add", ".")
+    _git(team, "commit", "-m", "already same as upstream")
     _git(team, "remote", "add", "upstream", str(upstream))
 
     res = _run_engine(team, "on")
-    assert "[공지]" not in res.stdout, f"같은 NOTICE면 조용해야 함, stdout={res.stdout!r}"
+    assert res.returncode == 0, res.stderr
+    # 변경 없음 → "엔진 업데이트됨" 없음
+    assert "엔진 업데이트됨" not in (res.stdout + res.stderr), \
+        f"최신 상태인데 엔진 업데이트됨 출력됨: {res.stdout!r}"
 
 
 def test_on_silent_when_no_upstream(tmp_path):

@@ -5,8 +5,6 @@ description: Use when the user asks about team status, current situation, or nee
 
 # tm-context — 팀 현황 조회
 
-<!-- 설계상 core(on시 활성) — core 설치 메커니즘 구현되면 infra/skills/core/로 이동. 잠정 base에 둠(동작 우선). -->
-
 현재 팀 현황을 조회해 사람 말로 요약한다. 순수 읽기 전용 — 파일/상태를 건드리지 않는다.
 
 ## L1 코어 (항상 동작)

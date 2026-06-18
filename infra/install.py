@@ -136,11 +136,16 @@ def cmd_uninstall(opts, *, platform=None) -> int:
         ad = runpy.run_path(str(AGENTS / "claude" / "adapter.py"),
                             run_name="__uninstall_adapter__")
         Adapter = ad["Adapter"]
+        # P0-1: skills_dir 격리 파생 — settings_path 부모 / 'skills'.
+        # opts.get("skills_dir") 가 없으면 settings_path 에서 파생(실호스트 무접촉).
+        _uninstall_skills_dir = opts.get("skills_dir") or str(
+            Path(settings_path).parent / "skills")
         adapter = Adapter(
             agent_dir=str(AGENTS / "claude"),
             manifest_path=str(INFRA / "hooks" / "manifest.json"),
             settings_path=settings_path,
             team_root=str(INFRA.parent),
+            skills_dir=_uninstall_skills_dir,
         )
         changes = adapter.uninstall()
         if any(c.startswith("[remove]") for c in changes):

@@ -46,18 +46,28 @@ def _banner_file(team_root: Path) -> Path:
     return team_root / "memory" / "banner.txt"
 
 
-def _adapter(settings_path=None):
+def _adapter(settings_path=None, skills_dir=None):
     import runpy
     mod = runpy.run_path(str(INFRA / "agents" / "claude" / "adapter.py"),
                          run_name="__teammode_engine__")
     Adapter = mod["Adapter"]
+    resolved_settings = settings_path or os.path.expanduser("~/.claude/settings.json")
+    # skills_dir 격리 파생(P0-1):
+    #   명시 주입이 없으면 settings_path 의 부모 디렉토리 아래 "skills" 를 사용한다.
+    #   규칙: <settings_path 부모>/skills
+    #   예) --settings /tmp/x/settings.json → skills_dir=/tmp/x/skills  (격리 자동)
+    #       실설치(~/.claude/settings.json) → skills_dir=~/.claude/skills (실호스트)
+    #   이 파생으로 `--settings <tmp>` 만 줘도 실호스트 ~/.claude/skills 무접촉.
+    if skills_dir is None:
+        skills_dir = str(Path(resolved_settings).parent / "skills")
     return Adapter(
         agent_dir=str(INFRA / "agents" / "claude"),
         manifest_path=str(INFRA / "hooks" / "manifest.json"),
-        settings_path=settings_path or os.path.expanduser("~/.claude/settings.json"),
+        settings_path=resolved_settings,
         # 어댑터의 team_root = 설치 위치(normalize.py 소유 마커 기준). 메모리 쓰기의
         # 팀 루트(_team_root, cwd)와는 별개 축이다.
         team_root=str(INFRA.parent),
+        skills_dir=skills_dir,
     )
 
 
@@ -110,53 +120,103 @@ def _read_local_notice(team_root: Path) -> str:
     return ""
 
 
-def _maybe_notify_upstream(team_root: Path) -> None:
-    """on 시 upstream(템플릿)을 fetch 하고 NOTICE.md 가 갱신됐으면 알림(슬라이스 T3).
 
-    핵심 안전(은수 합의): **merge 절대 자동 금지** — fetch 만 자동, 적용은 명시적 update.
-    upstream 미설정·오프라인·git 아님 → 조용히 패스(on 을 막지 않음, 우아한 축소).
-    어떤 예외도 삼킨다(on 의 핵심 경로를 fetch 가 막아선 안 된다).
+def auto_update_on_start(team_root: Path) -> None:
+    """tm ON 시 upstream 엔진 자동 동기화 + 자동 커밋 (작업 D).
 
-    왜 git 커밋 비교를 안 하나:
-      GitHub template 생성 레포는 upstream 과 공통 조상이 0(unrelated histories)이라
-      behind 숫자가 실제 "뒤처진 커밋 수"를 뜻하지 않는다. 대신 upstream 의 NOTICE.md
-      파일을 `git show` 로 직접 읽어 로컬과 비교 — 공통 조상 없어도 동작.
+    설계(docs/archive/2026-06-18-night-skill-layers.md §작업 D):
+      - fetch 실패·remote 없음·offline → **0으로 흡수**(on 막지 않음, 조용히 skip).
+        기존 cmd_update 는 fetch 실패에 return 1 로 on 을 죽이므로 재사용 금지.
+      - dirty(대상 경로 미커밋 변경) → 적용·커밋 둘 다 skip + 알림만(사람 판단 요청).
+      - changed=True 일 때만 do_commit(paths=res.paths) — paths 한정(add -A/paths=None 금지).
+      - do_commit 실패(ok=False) → on 계속 성공, staged 잔존 경고 1줄.
+      - 멱등: changed=False 면 do_commit 호출 안 함.
+      - push 자동 절대 금지.
+      - 적용되면 "엔진 업데이트됨: <NOTICE 첫 불릿>" 한 줄 출력.
+
+    모든 예외를 삼킨다 — on 의 핵심 경로를 자동 update 가 막아선 안 된다.
     """
     try:
-        res = _git_ops.fetch_upstream(str(team_root), remote=UPSTREAM_REMOTE)
+        res = _git_ops.sync_from_upstream(str(team_root), remote=UPSTREAM_REMOTE)
+
+        if res.blocked:
+            # dirty 가드: 적용·커밋 둘 다 skip + 사람 알림
+            print(f"[auto-update] 대상 경로에 커밋 안 된 변경이 있어 자동 업데이트 skip — "
+                  f"검토 후 커밋하거나 되돌리면 다음 on 에서 자동 적용됩니다.")
+            return
+
         if not res.ok:
-            return  # 미설정/오프라인/타임아웃 — 조용히 패스(알림 없음)
-        upstream_notice = _git_ops.read_upstream_notice(
-            str(team_root), remote=UPSTREAM_REMOTE)
-        if not upstream_notice:
-            return  # upstream 에 NOTICE.md 없음 — 조용히 패스
-        local_notice = _read_local_notice(team_root)
-        if upstream_notice == local_notice:
-            return  # 동일 — 이미 본 공지, 도배 방지
-        # upstream 에 새 공지가 있다 — 첫 번째 불릿(## 날짜 줄 아래 요약) 추출해 표시
-        first_bullet = ""
-        for line in upstream_notice.splitlines():
-            line = line.strip()
-            if line.startswith("- ") or line.startswith("* "):
-                first_bullet = line[2:].strip()
-                break
-        summary = first_bullet[:80] if first_bullet else upstream_notice.strip()[:80]
-        print(f"\n[공지] teammode 최신 업데이트: {summary} — "
-              f"받으려면 `teammode update`")
-    except Exception:  # noqa: BLE001 — fetch/알림은 on 을 절대 막지 않는다
+            # fetch 실패·remote 없음·offline — 조용히 skip(on 막지 않음)
+            return
+
+        if not res.changed:
+            # 멱등: 변경 없음 — do_commit 호출 안 함
+            return
+
+        # 변경 있음: paths 한정 자동 커밋(push 절대 금지)
+        commit_res = _git_ops.do_commit(
+            str(team_root),
+            message="chore: sync teammode engine from upstream [auto]",
+            push=False,
+            paths=list(res.paths),
+        )
+
+        if not commit_res.ok:
+            # 커밋 실패(충돌·권한 등) → on 계속 성공, staged 잔존 경고
+            print(f"[auto-update] 자동 커밋 실패(staged 잔존) — "
+                  f"검토 후 직접 커밋하세요: {commit_res.detail}")
+        else:
+            # 적용 성공 — NOTICE 첫 불릿 표시(은수 원래 의도: 켤 때 소식 보여주기)
+            local_notice = _read_local_notice(team_root)
+            first_bullet = ""
+            for line in local_notice.splitlines():
+                line = line.strip()
+                if line.startswith("- ") or line.startswith("* "):
+                    first_bullet = line[2:].strip()
+                    break
+            summary = first_bullet[:80] if first_bullet else ""
+            if summary:
+                print(f"엔진 업데이트됨: {summary}")
+            else:
+                print("엔진 업데이트됨")
+
+    except Exception:  # noqa: BLE001 — 자동 update 는 on 을 절대 막지 않는다
         pass
 
 
-def cmd_on(team_root: Path, settings_path: str) -> int:
+def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
+           skills_dir: str | None = None) -> int:
     print(_render_banner(team_root), end="")
     # 시작 멘트(greeting): 배너 직후, config 에 있으면 출력(없으면 미출력 — §3.1).
     greeting = _read_team_field(team_root, "greeting")
     if greeting:
         print(greeting)
-    _adapter(settings_path).sync(mode="on")
+    # D: upstream 자동 동기화(fetch + 변경 시 자동 커밋). 실패는 on 을 막지 않는다.
+    # 순서: auto_update 먼저 → 그 다음 심링크 토글(새 core 스킬 반영 위해).
+    auto_update_on_start(team_root)
+    adapter = _adapter(settings_path, skills_dir=skills_dir)
+    adapter.sync(mode="on")
     _active_marker(team_root).write_text("", encoding="utf-8")
-    # 템플릿 풀: fetch 만 자동, merge 금지(슬라이스 T). 실패는 on 을 막지 않는다.
-    _maybe_notify_upstream(team_root)
+    # core 스킬 설치 (tm-context 등 — on 시 활성)
+    adapter.install_skills(layer="core")
+    # 멤버별 util 스킬 설치 (--member 지정 시)
+    if member is not None:
+        util_skills = _read_util_skills(team_root, member)
+        for skill_name in util_skills:
+            # P0-2: traversal 가드 — util-skills.json 의 installed 문자열을 검증 없이
+            # src/target 에 쓰면 "../foo" 같은 값이 skills dir 밖으로 탈출한다.
+            # add 경로(_validate_author)와 동일 규칙으로 on 읽기 경로도 필터.
+            err = _validate_author(skill_name)
+            if err is not None:
+                print(f"[warn] util 스킬 '{skill_name}' 무효(traversal 위험) → skip: {err}")
+                continue
+            # infra/skills/util/<name> 실재 확인 (on 읽기 경로도 이중 방어)
+            src = team_root / "infra" / "skills" / "util" / skill_name
+            if not src.is_dir() or not (src / "SKILL.md").is_file():
+                print(f"[warn] util 스킬 '{skill_name}' 소스 없음 → skip")
+                continue
+            target = adapter.skills_dir / skill_name
+            adapter._link_one_skill(src, target, layer="util")
     return 0
 
 
@@ -236,11 +296,68 @@ def _install_upstream_url() -> str:
         return "https://github.com/T-Gates/teammode.git"
 
 
-def cmd_off(team_root: Path, settings_path: str) -> int:
-    _adapter(settings_path).sync(mode="off")
+def _uninstall_layer(adapter, layer: str) -> None:
+    """Remove all skills installed from a given layer."""
+    if not adapter.skills_dir.is_dir():
+        return
+    for child in sorted(adapter.skills_dir.iterdir()):
+        if adapter._is_layer_skill(child, layer):
+            adapter._remove_skill(child)
+
+
+def _util_skills_path(team_root: Path, member: str) -> Path:
+    """Path to member's util-skills.json."""
+    return team_root / "memory" / "team" / "sessions" / member / "util-skills.json"
+
+
+def _read_util_skills(team_root: Path, member: str) -> list:
+    """Read util-skills.json for a member. Returns list of skill names. Errors → []."""
+    path = _util_skills_path(team_root, member)
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                installed = data.get("installed", [])
+                if isinstance(installed, list):
+                    return [s for s in installed if isinstance(s, str)]
+    except (ValueError, OSError):
+        pass
+    return []
+
+
+def _write_util_skills(team_root: Path, member: str, skills: list) -> None:
+    """Atomically write util-skills.json for a member."""
+    import tempfile
+    path = _util_skills_path(team_root, member)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps({"installed": skills}, ensure_ascii=False, indent=2) + "\n"
+    tmp_fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        os.write(tmp_fd, data.encode("utf-8"))
+        os.close(tmp_fd)
+        Path(tmp_name).replace(path)
+    except Exception:
+        try:
+            os.close(tmp_fd)
+        except Exception:
+            pass
+        try:
+            Path(tmp_name).unlink()
+        except Exception:
+            pass
+        raise
+
+
+def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
+            skills_dir: str | None = None) -> int:
+    adapter = _adapter(settings_path, skills_dir=skills_dir)
+    adapter.sync(mode="off")
     marker = _active_marker(team_root)
     if marker.exists():
         marker.unlink()
+    # core/util 스킬 제거
+    _uninstall_layer(adapter, "core")
+    _uninstall_layer(adapter, "util")
     # 끝맺음 말(farewell): config 에 있으면 그걸, 없으면 "상태 저장됨" 폴백(§3.1).
     farewell = _read_team_field(team_root, "farewell")
     print(farewell if farewell else "teammode off — 상태 저장됨")
@@ -321,11 +438,681 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
     return 0
 
 
+def _parse_skill_description(team_root: Path, skill_name: str) -> str:
+    """Parse first 'description:' line from SKILL.md frontmatter. Empty if missing."""
+    skill_md = team_root / "infra" / "skills" / "util" / skill_name / "SKILL.md"
+    try:
+        if skill_md.is_file():
+            text = skill_md.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("description:"):
+                    return stripped[len("description:"):].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def cmd_util(team_root: Path, action: str | None, member: str | None,
+             skill_name: str | None, skills_dir: str | None = None,
+             settings_path: str | None = None) -> int:
+    """util 동사 — util 스킬 목록 관리 (list/add/remove).
+
+    엔진 기계역할: json 갱신 + 즉시 심링크 반영(on 상태면). 판단은 스킬(tm-manage-utils) 몫.
+    settings_path: 즉시반영 심링크 경로 파생에 쓴다(P0-1). None → 실호스트 폴백.
+    """
+    util_dir = team_root / "infra" / "skills" / "util"
+
+    if action == "list":
+        # List available util skills + installed for member
+        available = []
+        if util_dir.is_dir():
+            for d in sorted(util_dir.iterdir()):
+                if d.is_dir() and (d / "SKILL.md").is_file():
+                    desc = _parse_skill_description(team_root, d.name)
+                    available.append({"name": d.name, "description": desc})
+        installed = []
+        if member is not None:
+            err = _validate_author(member)
+            if err is not None:
+                print(f"[error] {err}", file=sys.stderr)
+                return 2
+            installed = _read_util_skills(team_root, member)
+        result = {"available": available, "installed": installed}
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+
+    if action in ("add", "remove"):
+        if member is None:
+            print(f"[error] util {action}: --member <이름> 가 필요합니다.", file=sys.stderr)
+            return 2
+        if skill_name is None:
+            print(f"[error] util {action}: --skill <스킬명> 가 필요합니다.", file=sys.stderr)
+            return 2
+        # Validate member and skill name
+        err = _validate_author(member)
+        if err is not None:
+            print(f"[error] --member: {err}", file=sys.stderr)
+            return 2
+        err = _validate_author(skill_name)
+        if err is not None:
+            print(f"[error] --skill: {err}", file=sys.stderr)
+            return 2
+
+        if action == "add":
+            # Check skill exists
+            skill_src = util_dir / skill_name
+            if not skill_src.is_dir() or not (skill_src / "SKILL.md").is_file():
+                print(f"[error] util add: '{skill_name}' 은 존재하지 않는 util 스킬입니다.",
+                      file=sys.stderr)
+                return 2
+            # Source containment guard: resolved 경로가 util_dir 하위여야 한다.
+            # 심링크 자체(skill_src)가 util_dir 안에 있으면 충분 — resolved 까지
+            # 따라갈 필요는 없다. 단 .. 등 traversal 이 있으면 _validate_author 가
+            # 이미 막았으므로 여기서는 정규화된 절대경로 비교만 한다.
+            try:
+                skill_src.resolve().relative_to(util_dir.resolve())
+            except ValueError:
+                print(f"[error] util add: '{skill_name}' 소스 경로가 "
+                      f"util 디렉터리 밖을 가리킵니다(containment 거부).",
+                      file=sys.stderr)
+                return 2
+            # Update json
+            skills = _read_util_skills(team_root, member)
+            if skill_name not in skills:
+                skills.append(skill_name)
+                _write_util_skills(team_root, member, skills)
+            # Immediate symlink if on (active marker exists).
+            # P0-2: settings_path 가 None(격리 컨텍스트 불명)이면 즉시반영을 skip —
+            # 실호스트 ~/.claude/skills 는 절대 건드리지 않는다. json 갱신은 유지되어
+            # 다음 `on` 시 자동 반영된다.
+            if _active_marker(team_root).exists():
+                if settings_path is None and skills_dir is None:
+                    print("teammode util add — 즉시반영 skip "
+                          "(--settings 또는 --install 필요; 다음 on 에서 반영)",
+                          file=sys.stderr)
+                else:
+                    the_skills_dir = Path(skills_dir) if skills_dir else None
+                    # settings_path 전달 → _adapter 내부에서 skills_dir 격리 파생.
+                    adapter = _adapter(settings_path, skills_dir=the_skills_dir)
+                    target = adapter.skills_dir / skill_name
+                    adapter._link_one_skill(skill_src, target, layer="util")
+            print(f"teammode util add — {skill_name} 등록됨 (member: {member})")
+            return 0
+
+        if action == "remove":
+            skills = _read_util_skills(team_root, member)
+            if skill_name in skills:
+                skills.remove(skill_name)
+                _write_util_skills(team_root, member, skills)
+            # Remove symlink if on and exists.
+            # P0-2: settings_path 가 None이면 즉시반영 skip — 실호스트 무접촉.
+            if _active_marker(team_root).exists():
+                if settings_path is None and skills_dir is None:
+                    print("teammode util remove — 즉시반영 skip "
+                          "(--settings 또는 --install 필요; 다음 on 에서 반영)",
+                          file=sys.stderr)
+                else:
+                    the_skills_dir = Path(skills_dir) if skills_dir else None
+                    # settings_path 전달 → _adapter 내부에서 skills_dir 격리 파생.
+                    adapter = _adapter(settings_path, skills_dir=the_skills_dir)
+                    target = adapter.skills_dir / skill_name
+                    if target.exists() or target.is_symlink():
+                        if adapter._is_layer_skill(target, "util"):
+                            adapter._remove_skill(target)
+            print(f"teammode util remove — {skill_name} 제거됨 (member: {member})")
+            return 0
+
+    print(f"[error] util: 알 수 없는 action: {action!r}. list/add/remove 중 하나.",
+          file=sys.stderr)
+    return 2
+
+
 # 값을 받는 옵션 플래그 화이트리스트. 여기 없는 `--flag` 는 부울/무시로 다룬다 —
 # 알 수 없는 플래그의 다음 토큰을 값으로 삼키지 않게 해 verb 손실을 막는다(§3:366).
 # issue 동사의 정규 입력 필드(--title/--body/--assignee/--label/--priority)도 값 플래그.
 _VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now", "--message",
-                "--title", "--body", "--assignee", "--label", "--priority", "--paths")
+                "--title", "--body", "--assignee", "--label", "--priority", "--paths",
+                "--member", "--skills-dir", "--skill",
+                # knowledge 동사 플래그
+                "--folder", "--filename", "--content", "--weight", "--path", "--date")
+
+
+# ──────────────────────────────────────────────────────────────────
+# 작업 C — knowledge 동사 (기계 전담: frontmatter·파일 쓰기/삭제·INDEX 갱신·커밋)
+# ──────────────────────────────────────────────────────────────────
+
+# 지식 파일이 놓일 수 있는 허용 폴더 목록 (sessions/meeting 은 다른 경로)
+_KNOWLEDGE_ALLOWED_FOLDERS = (
+    "product",
+    "team",
+    "team/decisions",
+    "soma",
+)
+
+# 명시 차단 폴더 — 허용 목록에서 제외되는 경로 (훅 자동·tm-context 관리)
+# team/sessions: 세션로그(훅 자동), team/meeting: 회의록(tm-context 관리)
+_KNOWLEDGE_BLOCKED_FOLDERS = (
+    "team/sessions",
+    "team/meeting",
+)
+
+# INDEX 행 구분자 — 파이프 표 형식
+_INDEX_TABLE_HEADER = "| 가중치 | 경로 | 내용 | 편집일 |"
+_INDEX_TABLE_SEP    = "|--------|------|------|--------|"
+_INDEX_LEGEND       = "> 가중치: 🔥 핵심 · 📌 중요 · 📎 참고"
+
+
+# weight 허용값 (3-enum 검증용)
+_KNOWLEDGE_VALID_WEIGHTS = ("🔥", "📌", "📎")
+
+
+def _escape_index_cell(value: str) -> str:
+    """INDEX 파이프 표 셀 값 이스케이핑 — |·줄바꿈·백틱 처리."""
+    # 줄바꿈 → 공백, 파이프 → ⎪(시각 유사 문자로 대체), 백틱 → 작은따옴표
+    return value.replace("\n", " ").replace("\r", " ").replace("|", "⎪").replace("`", "'")
+
+
+def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str | None:
+    """folder/filename 이 안전한지 검증. 위반 시 에러 메시지 반환.
+
+    - folder: _KNOWLEDGE_ALLOWED_FOLDERS 안의 슬래시 포함 경로 (예: 'team/decisions').
+      하위 경로 분리자(/)는 허용, 상위 이탈(..)은 불허.
+    - 허용 폴더 목록(_KNOWLEDGE_ALLOWED_FOLDERS) 또는 그 하위 폴더여야 한다.
+    - filename: 단순 파일명(슬래시·절대경로 불허). 공백·파이프·제어문자 거부.
+    - 정규화 후 team_root/memory/<folder>/<filename> 이 memory/ 하위여야 한다.
+
+    P0: memory/ 자체가 team_root 밖 symlink 여도 탈출 불가하도록
+        memory.resolve() 가 team_root.resolve() 하위인지 먼저 검증.
+    """
+    # ── P0: symlink 탈출 가드 ─────────────────────────────────────
+    # memory 디렉토리가 team_root 바깥을 가리키는 symlink 라면 containment 자체가 무력화된다.
+    real_root = team_root.resolve()
+    memory_dir = (team_root / "memory").resolve()
+    try:
+        memory_dir.relative_to(real_root)
+    except ValueError:
+        return (f"memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단): "
+                f"{memory_dir} not under {real_root}")
+
+    # ── 허용 폴더 검증 (P1-1) ─────────────────────────────────────
+    # 정규화된 folder 가 허용 목록의 하나이거나 그 하위여야 한다.
+    # 단, 명시 차단 폴더(_KNOWLEDGE_BLOCKED_FOLDERS)는 허용 목록보다 우선 거부.
+    norm_folder = folder.replace("\\", "/").rstrip("/")
+
+    # 먼저 명시 차단 목록 검사
+    for bf in _KNOWLEDGE_BLOCKED_FOLDERS:
+        if norm_folder == bf or norm_folder.startswith(bf + "/"):
+            return (f"folder '{folder}' 는 지식 저장 대상이 아닙니다(훅/tm-context 관리 경로): "
+                    f"차단 목록: {', '.join(_KNOWLEDGE_BLOCKED_FOLDERS)}")
+
+    allowed = False
+    for af in _KNOWLEDGE_ALLOWED_FOLDERS:
+        if norm_folder == af or norm_folder.startswith(af + "/"):
+            allowed = True
+            break
+    if not allowed:
+        return (f"folder '{folder}' 는 허용되지 않습니다. "
+                f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} (및 그 하위)")
+
+    # ── folder: .. 세그먼트 금지 ──────────────────────────────────
+    parts = norm_folder.split("/")
+    for seg in parts:
+        if seg in ("", ".", ".."):
+            return f"folder 에 허용되지 않는 세그먼트: {seg!r} in {folder!r}"
+        if not all(c.isalnum() or c in "-_" for c in seg):
+            return f"folder 세그먼트에 허용되지 않는 문자: {seg!r}"
+
+    # ── filename 검증 (P2: dead-code err 실제 반환) ───────────────
+    if not filename:
+        return "filename 이 비어 있습니다."
+    if "/" in filename or "\\" in filename:
+        return f"filename 에 경로 구분자가 포함될 수 없습니다: {filename!r}"
+    if ".." in filename or filename.startswith("."):
+        return f"filename 이 허용되지 않습니다: {filename!r}"
+    # 공백·파이프·제어문자 거부 (P2: filename whitelist)
+    for ch in filename:
+        if ch in (" ", "\t", "|") or ord(ch) < 32:
+            return f"filename 에 허용되지 않는 문자가 있습니다: {filename!r}"
+    # kebab-case 검증 (확장자 제거 후)
+    base = filename.removesuffix(".md") if filename.endswith(".md") else filename
+    err = _validate_author(base)
+    if err is not None:
+        return f"filename 검증 실패: {err}"
+
+    # ── containment: 정규화된 절대경로가 memory/ 하위여야 한다 ────
+    candidate = (team_root / "memory" / folder / filename).resolve()
+    try:
+        candidate.relative_to(memory_dir)
+    except ValueError:
+        return f"경로가 memory/ 를 벗어납니다: {folder}/{filename}"
+    return None
+
+
+def _index_get_edit_date(index_path: Path, rel_path: str) -> str | None:
+    """INDEX.md 의 해당 경로 행에서 편집일(마지막 컬럼)을 읽는다. 없으면 None.
+
+    편집일 보존 전략(P1-3): 본문 미변경 재write 시 git log subject 파싱 없이
+    기존 INDEX 행에서 편집일을 그대로 가져와 보존한다.
+    """
+    if not index_path.is_file():
+        return None
+    path_marker = f"`{rel_path}`"
+    try:
+        for line in index_path.read_text(encoding="utf-8").splitlines():
+            if path_marker in line and line.strip().startswith("|"):
+                # 파이프 표 행: | weight | `path` | desc | date |
+                cells = [c.strip() for c in line.split("|")]
+                # cells[0]='' cells[1]=weight cells[2]=path cells[3]=desc cells[4]=date cells[5]=''
+                if len(cells) >= 5:
+                    return cells[4] if cells[4] else None
+    except OSError:
+        pass
+    return None
+
+
+def _knowledge_frontmatter(author: str, weight: str, created_at: str,
+                            updated_at: str) -> str:
+    """지식 파일 frontmatter(4필드: created_at/updated_at/author/weight) 생성."""
+    return (f"---\n"
+            f"created_at: {created_at}\n"
+            f"updated_at: {updated_at}\n"
+            f"author: {author}\n"
+            f"weight: {weight}\n"
+            f"---\n")
+
+
+def _parse_knowledge_frontmatter(text: str) -> dict:
+    """지식 파일 frontmatter 파싱. 없거나 깨지면 빈 dict.
+
+    P2: 알 수 없는 필드도 보존(재작성이 4필드만 덮어쓰지 않도록).
+    """
+    if not text.startswith("---"):
+        return {}
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    fm: dict = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" in line:
+            k, _, v = line.partition(":")
+            fm[k.strip()] = v.strip()
+    return fm
+
+
+def _rebuild_frontmatter(fm: dict, author: str, weight: str,
+                          created_at: str, updated_at: str) -> str:
+    """기존 frontmatter dict 를 받아 4필드(created_at/updated_at/author/weight)를
+    갱신하되 나머지 알 수 없는 필드는 보존해 재조립한다(P2: 추가필드 보존).
+
+    4필드가 가장 앞에 오고, 그 다음 나머지 필드가 원래 순서대로.
+    """
+    known = {"created_at", "updated_at", "author", "weight"}
+    extra_lines = [
+        f"{k}: {v}" for k, v in fm.items() if k not in known
+    ]
+    lines = [
+        "---",
+        f"created_at: {created_at}",
+        f"updated_at: {updated_at}",
+        f"author: {author}",
+        f"weight: {weight}",
+    ] + extra_lines + ["---", ""]
+    return "\n".join(lines)
+
+
+def _knowledge_body(text: str) -> str:
+    """frontmatter 이후 본문 반환. frontmatter 없으면 전체 반환."""
+    if not text.startswith("---"):
+        return text
+    idx = text.find("---", 3)
+    if idx == -1:
+        return text
+    return text[idx + 3:].lstrip("\n")
+
+
+def _index_upsert(index_path: Path, rel_path: str, weight: str,
+                  description: str, edit_date: str) -> bool:
+    """INDEX.md 의 파이프 표에 행을 upsert(삽입 또는 갱신). 변경됐으면 True.
+
+    형식:
+      > 가중치: 🔥 핵심 · 📌 중요 · 📎 참고
+
+      | 가중치 | 경로 | 내용 | 편집일 |
+      |--------|------|------|--------|
+      | 🔥 | `product/tech/foo.md` | 설명 | 2026-06-18 |
+
+    - 헤더/범례 없으면 파일 끝에 추가.
+    - 같은 경로(rel_path) 행이 있으면 갱신, 없으면 삽입.
+    - INDEX.md 자신에는 frontmatter 붙이지 않는다(원칙).
+    """
+    existing = index_path.read_text(encoding="utf-8") if index_path.is_file() else ""
+
+    # P2: cell 값 이스케이핑 — |·줄바꿈·백틱에 표가 깨지지 않도록
+    safe_weight = _escape_index_cell(weight)
+    safe_desc = _escape_index_cell(description)
+    safe_date = _escape_index_cell(edit_date)
+    new_row = f"| {safe_weight} | `{rel_path}` | {safe_desc} | {safe_date} |"
+
+    # 기존 행 검색 (rel_path 로 식별)
+    path_marker = f"`{rel_path}`"
+    lines = existing.splitlines(keepends=True)
+    row_idx = None
+    for i, line in enumerate(lines):
+        if path_marker in line and line.strip().startswith("|"):
+            row_idx = i
+            break
+
+    if row_idx is not None:
+        old_row = lines[row_idx].rstrip("\n")
+        if old_row == new_row:
+            return False  # 변경 없음(멱등)
+        lines[row_idx] = new_row + "\n"
+        content = "".join(lines)
+    else:
+        # 헤더 위치 찾기
+        header_idx = None
+        sep_idx = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == _INDEX_TABLE_HEADER:
+                header_idx = i
+            if header_idx is not None and stripped == _INDEX_TABLE_SEP:
+                sep_idx = i
+                break
+
+        if header_idx is not None and sep_idx is not None:
+            # sep 다음에 삽입
+            lines.insert(sep_idx + 1, new_row + "\n")
+            content = "".join(lines)
+        else:
+            # 표 자체 없음 — 범례+표 새로 추가
+            suffix = "\n" if existing and not existing.endswith("\n") else ""
+            block = (
+                f"\n{_INDEX_LEGEND}\n\n"
+                f"{_INDEX_TABLE_HEADER}\n"
+                f"{_INDEX_TABLE_SEP}\n"
+                f"{new_row}\n"
+            )
+            content = existing + suffix + block
+
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(content, encoding="utf-8")
+    return True
+
+
+def _index_remove_row(index_path: Path, rel_path: str) -> bool:
+    """INDEX.md 에서 해당 경로의 행을 제거. 변경됐으면 True."""
+    if not index_path.is_file():
+        return False
+    path_marker = f"`{rel_path}`"
+    lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    new_lines = [l for l in lines
+                 if not (path_marker in l and l.strip().startswith("|"))]
+    if new_lines == lines:
+        return False
+    index_path.write_text("".join(new_lines), encoding="utf-8")
+    return True
+
+
+def cmd_knowledge(team_root: Path, action: str | None,
+                  folder: str | None, filename: str | None,
+                  content: str | None, author: str | None,
+                  weight: str | None, rel_path: str | None,
+                  date_str: str | None) -> int:
+    """knowledge 동사 — 지식 파일 write/delete (기계 전담).
+
+    write:  frontmatter 스탬프 · 파일 write · folder INDEX 행 upsert · do_commit(paths).
+    delete: 파일 삭제 · INDEX 행 제거 · do_commit(paths).
+
+    엔진 불변:
+      - weight 는 인자로만 받는다(추측 금지). 스킬이 사용자에게 확인한 값을 전달.
+      - push 절대 금지(push=False 고정).
+      - traversal 차단(_validate_knowledge_path).
+      - 멱등: 같은 내용 재호출 → 변경 없음(커밋 안 생김).
+      - 대상 범위: product/·team/·team/decisions/·soma/ 등 _KNOWLEDGE_ALLOWED_FOLDERS.
+        sessions/·meeting/ 은 제외.
+    """
+    if action == "write":
+        # 필수 인자 검증
+        if not folder:
+            print("[error] knowledge write: --folder 가 필요합니다.", file=sys.stderr)
+            return 2
+        if not filename:
+            print("[error] knowledge write: --filename 이 필요합니다.", file=sys.stderr)
+            return 2
+        if content is None:
+            print("[error] knowledge write: --content 가 필요합니다.", file=sys.stderr)
+            return 2
+        if not author:
+            print("[error] knowledge write: --author 가 필요합니다.", file=sys.stderr)
+            return 2
+        if not weight:
+            print("[error] knowledge write: --weight 가 필요합니다(추측 금지).", file=sys.stderr)
+            return 2
+
+        # weight 3-enum 검증 (P2)
+        if weight not in _KNOWLEDGE_VALID_WEIGHTS:
+            print(f"[error] knowledge write: --weight 는 {_KNOWLEDGE_VALID_WEIGHTS} 중 하나여야 합니다: {weight!r}",
+                  file=sys.stderr)
+            return 2
+
+        # author traversal 가드
+        err = _validate_author(author)
+        if err is not None:
+            print(f"[error] knowledge write: --author: {err}", file=sys.stderr)
+            return 2
+
+        # folder/filename traversal + containment 가드 + 허용 폴더 검증 (P1-1 포함)
+        err = _validate_knowledge_path(team_root, folder, filename)
+        if err is not None:
+            print(f"[error] knowledge write: {err}", file=sys.stderr)
+            return 2
+
+        target_path = team_root / "memory" / folder / filename
+        today = date_str or datetime.now().strftime("%Y-%m-%d")
+
+        # 기존 파일 확인
+        content_changed = True  # 신규 파일이면 항상 변경
+        if target_path.is_file():
+            existing_text = target_path.read_text(encoding="utf-8")
+            fm = _parse_knowledge_frontmatter(existing_text)
+            created_at = fm.get("created_at", today)
+            updated_at = today
+            # P2: 추가 필드 보존 — 4필드 재조립
+            new_fm = _rebuild_frontmatter(fm, author, weight, created_at, updated_at)
+            new_full = new_fm + content
+            # 멱등: 같은 내용이면 무변경
+            if new_full == existing_text:
+                print(f"teammode knowledge write — 변경 없음(멱등): {folder}/{filename}")
+                return 0
+            # 본문이 실제로 바뀌었는지 확인 (편집일 결정용)
+            old_body = _knowledge_body(existing_text)
+            content_changed = (content != old_body)
+        else:
+            fm = {}
+            # 신규 파일
+            created_at = today
+            updated_at = today
+            new_fm = _rebuild_frontmatter(fm, author, weight, created_at, updated_at)
+            new_full = new_fm + content
+
+        # 파일 쓰기
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(new_full, encoding="utf-8")
+
+        # 편집일 계산 (P1-3: subject-substring 의존 제거):
+        # 본문이 바뀌었으면 today 를 편집일로 사용.
+        # 본문 미변경(weight/author 만 변경)이면 기존 INDEX 행의 편집일을 그대로 보존.
+        # git log subject 파싱은 신뢰 불가(메타커밋 오판) → 제거.
+        rel_for_git = str(Path("memory") / folder / filename)
+        if content_changed:
+            edit_date = today
+        else:
+            index_path_for_date = team_root / "memory" / folder / "INDEX.md"
+            edit_date = _index_get_edit_date(index_path_for_date, rel_for_git) or today
+
+        # INDEX 행 upsert (rel_path = memory/ 포함 표준 경로)
+        index_path = team_root / "memory" / folder / "INDEX.md"
+        description = content.strip().splitlines()[0][:60] if content.strip() else filename
+        _index_upsert(index_path, rel_for_git, weight, description, edit_date)
+
+        # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
+        changed_paths = [str(target_path), str(index_path)]
+        commit_result = _git_ops.do_commit(
+            str(team_root),
+            message=f"docs(memory): write {folder}/{filename}",
+            push=False,
+            paths=changed_paths,
+        )
+        # 정상 케이스(ok=False 여도 경고 불필요):
+        #   "nothing to commit"  — 멱등(이미 커밋됨 혹은 변경 없음)
+        #   "no paths to stage"  — 빈 경로 목록
+        #   "not a git work tree"— git 없는 환경(파일 쓰기는 완료)
+        # 그 외 ok=False → 실제 git 실패(add 실패·commit 실패·timeout 등) → 경고 + non-zero
+        _COMMIT_SILENT_DETAILS = ("nothing to commit", "no paths to stage",
+                                  "not a git work tree")
+        if not commit_result.ok and commit_result.detail not in _COMMIT_SILENT_DETAILS:
+            print(f"[warning] knowledge write: 커밋 실패 — {commit_result.detail}",
+                  file=sys.stderr)
+            print(f"teammode knowledge write — {folder}/{filename} 완료(커밋 안 됨)")
+            return 1
+
+        print(f"teammode knowledge write — {folder}/{filename} 완료")
+        return 0
+
+    if action == "delete":
+        # 필수 인자 검증
+        if not rel_path:
+            print("[error] knowledge delete: --path <memory/상대경로> 가 필요합니다.",
+                  file=sys.stderr)
+            return 2
+        if not author:
+            print("[error] knowledge delete: --author 가 필요합니다.", file=sys.stderr)
+            return 2
+
+        # author traversal 가드
+        err = _validate_author(author)
+        if err is not None:
+            print(f"[error] knowledge delete: --author: {err}", file=sys.stderr)
+            return 2
+
+        # .. 세그먼트 명시 차단 (early: resolve 전에)
+        if ".." in rel_path:
+            print(f"[error] knowledge delete: 경로에 '..' 이 포함될 수 없습니다: {rel_path!r}",
+                  file=sys.stderr)
+            return 2
+
+        # ── P0: symlink 탈출 가드 ──────────────────────────────────
+        real_root = team_root.resolve()
+        memory_dir = (team_root / "memory").resolve()
+        try:
+            memory_dir.relative_to(real_root)
+        except ValueError:
+            print(f"[error] knowledge delete: memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단)",
+                  file=sys.stderr)
+            return 2
+
+        # rel_path 는 "memory/..." 형식일 수도 있고 "team/decisions/foo.md" 형식일 수도 있다.
+        if rel_path.startswith("memory/"):
+            candidate = (team_root / rel_path).resolve()
+            rel_for_index = rel_path
+            # 내부 folder 추출 (허용 폴더 검증용)
+            inner = rel_path[len("memory/"):]
+        else:
+            candidate = (team_root / "memory" / rel_path).resolve()
+            rel_for_index = "memory/" + rel_path
+            inner = rel_path
+
+        # ── P1-1: 허용 폴더 검증 (write 와 동일한 blocked/allowed 규칙) ─────
+        # INDEX.md 자신(root) 삭제 거부 + blocked/allowed 폴더 검증
+        filename_part = inner.split("/")[-1] if "/" in inner else inner
+        folder_part = "/".join(inner.split("/")[:-1]) if "/" in inner else ""
+
+        # INDEX.md 삭제 거부 (root-level INDEX 는 특히)
+        if filename_part == "INDEX.md":
+            print(f"[error] knowledge delete: INDEX.md 는 직접 삭제할 수 없습니다: {rel_path!r}",
+                  file=sys.stderr)
+            return 2
+
+        # 허용 폴더 검증 — write 와 동일한 blocked/allowed 규칙 (P1-1)
+        # folder_part 가 비어 있으면(root memory 파일) 허용 목록에 없으므로 거부
+        norm_folder = folder_part.replace("\\", "/").rstrip("/") if folder_part else ""
+        if not norm_folder:
+            # memory/ 바로 아래 파일 — 허용 폴더 목록에 없음 → 거부
+            print(f"[error] knowledge delete: 허용 폴더 하위의 파일만 삭제할 수 있습니다. "
+                  f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)}",
+                  file=sys.stderr)
+            return 2
+        # 명시 차단 목록 먼저(blocked 우선 — write 와 동일 규칙)
+        for bf in _KNOWLEDGE_BLOCKED_FOLDERS:
+            if norm_folder == bf or norm_folder.startswith(bf + "/"):
+                print(f"[error] knowledge delete: folder '{folder_part}' 는 삭제 대상이 아닙니다"
+                      f"(훅/tm-context 관리 경로)",
+                      file=sys.stderr)
+                return 2
+        del_allowed = False
+        for af in _KNOWLEDGE_ALLOWED_FOLDERS:
+            if norm_folder == af or norm_folder.startswith(af + "/"):
+                del_allowed = True
+                break
+        if not del_allowed:
+            print(f"[error] knowledge delete: folder '{folder_part}' 는 허용되지 않습니다. "
+                  f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)}",
+                  file=sys.stderr)
+            return 2
+
+        # containment 가드
+        try:
+            candidate.relative_to(memory_dir)
+        except ValueError:
+            print(f"[error] knowledge delete: 경로가 memory/ 를 벗어납니다: {rel_path!r}",
+                  file=sys.stderr)
+            return 2
+
+        target_path = candidate
+
+        if not target_path.is_file():
+            print(f"teammode knowledge delete — 파일 없음(멱등): {rel_path}")
+            return 0
+
+        # INDEX 에서 행 제거 (폴더 INDEX)
+        folder_path = target_path.parent
+        index_path = folder_path / "INDEX.md"
+        _index_remove_row(index_path, rel_for_index)
+
+        # 파일 삭제
+        target_path.unlink()
+
+        # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
+        changed_paths = [str(target_path), str(index_path)]
+        commit_result = _git_ops.do_commit(
+            str(team_root),
+            message=f"docs(memory): delete {rel_path}",
+            push=False,
+            paths=changed_paths,
+        )
+        # 정상 케이스(ok=False 여도 경고 불필요):
+        #   "nothing to commit"   — 멱등
+        #   "no paths to stage"   — 빈 경로 목록
+        #   "not a git work tree" — git 없는 환경(파일 삭제는 완료)
+        # 그 외 ok=False → 실제 git 실패(add 실패·commit 실패·timeout 등) → 경고 + non-zero
+        _COMMIT_SILENT_DETAILS = ("nothing to commit", "no paths to stage",
+                                  "not a git work tree")
+        if not commit_result.ok and commit_result.detail not in _COMMIT_SILENT_DETAILS:
+            print(f"[warning] knowledge delete: 커밋 실패 — {commit_result.detail}",
+                  file=sys.stderr)
+            print(f"teammode knowledge delete — {rel_path} 삭제됨(커밋 안 됨)")
+            return 1
+
+        print(f"teammode knowledge delete — {rel_path} 삭제됨")
+        return 0
+
+    print(f"[error] knowledge: 알 수 없는 action: {action!r}. write/delete 중 하나.",
+          file=sys.stderr)
+    return 2
 
 
 def cmd_pull(team_root: Path) -> int:
@@ -644,7 +1431,8 @@ def _parse_now(now_str):
 # settings(어댑터 sync)를 필요로 하는 동사 — on/off 만. log/context 등 메모리/조회
 # 동사는 ~/.claude 를 건드리지 않으므로 settings 요구가 무의미하다.
 _SETTINGS_VERBS = ("on", "off")
-_KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit", "update", "issue")
+_KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit", "update", "issue",
+                "util", "knowledge")
 
 
 def main(argv=None) -> int:
@@ -710,6 +1498,30 @@ def main(argv=None) -> int:
         fields = {f: opts.get(f) for f in _ISSUE_INPUT_FLAGS}
         return cmd_issue(team_root, action, fields)
 
+    if verb == "util":
+        positionals = opts.get("positionals") or []
+        action = positionals[0] if positionals else None
+        # P0-1: util 즉시반영 심링크 경로 파생을 위해 settings_path 를 함께 전달.
+        util_settings = _resolve_settings(opts.get("settings"), opts["install"])
+        return cmd_util(team_root, action, opts.get("member"),
+                        opts.get("skill"), skills_dir=opts.get("skills-dir"),
+                        settings_path=util_settings)
+
+    if verb == "knowledge":
+        positionals = opts.get("positionals") or []
+        action = positionals[0] if positionals else None
+        return cmd_knowledge(
+            team_root,
+            action=action,
+            folder=opts.get("folder"),
+            filename=opts.get("filename"),
+            content=opts.get("content"),
+            author=opts.get("author"),
+            weight=opts.get("weight"),
+            rel_path=opts.get("path"),
+            date_str=opts.get("date"),
+        )
+
     # on/off: P2 settings 경로도 명시로만. 둘 다 없으면 실 ~/.claude 추측 오염 거부.
     resolved_settings = _resolve_settings(opts.get("settings"), opts["install"])
     if resolved_settings is None:
@@ -719,8 +1531,16 @@ def main(argv=None) -> int:
         return 2
 
     if verb == "on":
-        return cmd_on(team_root, resolved_settings)
-    return cmd_off(team_root, resolved_settings)
+        member = opts.get("member")
+        if member is not None:
+            err = _validate_author(member)
+            if err is not None:
+                print(f"[error] --member: {err}", file=sys.stderr)
+                return 2
+        return cmd_on(team_root, resolved_settings, member=member,
+                      skills_dir=opts.get("skills-dir"))
+    return cmd_off(team_root, resolved_settings, member=opts.get("member"),
+                   skills_dir=opts.get("skills-dir"))
 
 
 if __name__ == "__main__":

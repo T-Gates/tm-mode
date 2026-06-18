@@ -544,13 +544,14 @@ argv 파서(`_parse_args`)는 `argparse`가 아니라 손파서다.
   - `team.greeting`이 있으면 그 다음 줄에 출력한다.
   - adapter `sync(mode="on")`를 호출한다.
   - `<team_root>/.tgates-active`에 빈 문자열을 UTF-8로 쓴다. 부모 디렉토리 생성은 하지 않는다. 기존 파일은 덮어써진다.
-  - `_maybe_notify_upstream(team_root)`를 호출한다. 이는 `upstream` remote를 fetch만 하고 merge하지 않는다.
+  - `auto_update_on_start(team_root)`를 호출한다. 이는 upstream 엔진(infra/)을 자동 sync + 자동 커밋한다(push 절대 금지). dirty 가드·fetch 실패 등은 조용히 skip — on 을 막지 않는다.
   - 정상 완료 시 exit 0.
-- `on`의 upstream 알림:
-  - `git_ops.fetch_upstream(team_root, remote="upstream")`가 실패하면 조용히 반환한다. git 아님·remote 없음·오프라인·타임아웃은 `on`을 실패시키지 않는다.
-  - fetch 성공 뒤 `git_ops.count_behind(team_root, "upstream/main") <= 0`이면 아무것도 출력하지 않는다.
-  - behind가 1 이상이면 stdout에 `teammode update` 안내와 behind 커밋 수를 출력하고, `git_ops.upstream_changes(..., limit=20)` 결과가 있으면 그대로 출력한다.
-  - 이 알림 함수는 모든 예외를 삼킨다. `on`의 exit code에 영향을 주지 않는다.
+- `on`의 upstream 자동 업데이트(작업 D):
+  - `auto_update_on_start`가 `git_ops.sync_from_upstream`을 호출한다. fetch 실패·remote 없음·오프라인 → on 막지 않고 조용히 skip.
+  - 대상 경로(infra/, NOTICE.md)에 커밋 안 된 변경이 있으면 blocked=True 로 skip + 사람 알림만 출력.
+  - 변경이 있으면 `do_commit(paths=res.paths, push=False)`로 paths 한정 자동 커밋. push 자동 절대 금지.
+  - 커밋 성공 시 NOTICE 첫 불릿을 "엔진 업데이트됨: <내용>" 형식으로 출력.
+  - 이 함수는 모든 예외를 삼킨다. `on`의 exit code에 영향을 주지 않는다.
 - `off` 실행 순서:
   - adapter `sync(mode="off")`를 호출한다.
   - `<team_root>/.tgates-active`가 존재하면 삭제한다. 없으면 그대로 진행한다.

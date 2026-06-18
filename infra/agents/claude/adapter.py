@@ -133,7 +133,7 @@ class Adapter:
             self.mcp_config_path = Path(os.path.expanduser("~/.claude.json"))
         # 스킬 심링크 타깃 디렉토리 — skills_dir=None 이면 에이전트별 실호스트 기본
         # (claude DEFAULT_SKILLS_DIR=~/.claude/skills, codex=~/.codex/skills). 격리·테스트는
-        # 명시 주입. 소스는 항상 team_root/infra/skills/base/<name>/ (L2-C).
+        # 명시 주입. 소스는 team_root/infra/skills/<layer>/<name>/ (L2-C).
         if skills_dir is not None:
             self.skills_dir = Path(skills_dir)
         else:
@@ -609,8 +609,8 @@ class Adapter:
 
     # ── install-skills (§2.7 CLI, L2-C) — 스킬 디렉토리 심링크 ──
     #
-    # infra/skills/base/<name>/ (tm-onboard·tm-connect·tm-reset 등)을 에이전트의 스킬
-    # 경로(claude=~/.claude/skills, codex=~/.codex/skills)에 <name> 으로 심링크한다.
+    # infra/skills/<layer>/<name>/ (base: 항상 설치, core: on시, util: 멤버별)을 에이전트의
+    # 스킬 경로(claude=~/.claude/skills, codex=~/.codex/skills)에 <name> 으로 심링크한다.
     # 윈도우 등 os.symlink 권한 실패(OSError) 시 디렉토리 복사로 폴백. 멱등(이미 올바른
     # 심링크/복사면 무변경). 소유 판정(is_owned_skill)으로 teammode 가 건 것만 관리하고
     # 사용자가 직접 둔 동명 스킬은 무접촉. uninstall_skills 는 역(소유분만 제거).
@@ -618,41 +618,80 @@ class Adapter:
     # v0.1 단순화(L2-C): 오버라이드 해석·requires 게이트·traversal 가드 없음(v0.2 이월).
     # 심링크/복사 + 멱등 + is_owned 만.
 
-    def _skill_sources(self) -> list:
-        """소스 스킬 디렉토리 목록 — infra/skills/base/<name>/ 중 SKILL.md 보유한 것만."""
-        if not self.skills_src_dir.is_dir():
+    def _skills_src_dir(self, layer: str) -> Path:
+        """Get skill source directory for given layer (base|core|util)."""
+        return self.team_root / "infra" / "skills" / layer
+
+    def _skill_sources(self, layer: str = "base") -> list:
+        """소스 스킬 디렉토리 목록 — infra/skills/<layer>/<name>/ 중 SKILL.md 보유한 것만."""
+        src_dir = self._skills_src_dir(layer)
+        if not src_dir.is_dir():
             return []
         out = []
-        for child in sorted(self.skills_src_dir.iterdir()):
+        for child in sorted(src_dir.iterdir()):
             if child.is_dir() and (child / "SKILL.md").is_file():
                 out.append(child)
         return out
 
     def is_owned_skill(self, target: Path, src: Path) -> bool:
-        """teammode 소유 스킬인지 — target 이 teammode 소스를 가리키는 심링크/복사인지.
+        """teammode 소유 스킬인지 — target 이 base/core/util 소스 중 하나를 가리키는지.
 
-        - 심링크: 링크가 우리 소스(src)를 가리키면 소유(절대경로 비교).
-        - 복사(폴백): 디렉토리 안에 우리 소유 마커 파일(_teammode_skill)이 있으면 소유.
+        심링크: 링크가 base+core+util 소스 중 하나를 가리키면 소유(절대경로 비교).
+        복사(폴백): 우리 소유 마커 파일(_teammode_skill)이 있으면 소유.
         사용자가 직접 둔 동명 디렉토리(마커 없음·다른 링크 타깃)는 무접촉.
         """
         try:
             if target.is_symlink():
                 link = os.readlink(target)
                 link_abs = (target.parent / link) if not os.path.isabs(link) else Path(link)
-                return os.path.realpath(str(link_abs)) == os.path.realpath(str(src))
+                link_real = os.path.realpath(str(link_abs))
+                # Check all layers
+                for layer in ("base", "core", "util"):
+                    layer_src = self._skills_src_dir(layer) / target.name
+                    if link_real == os.path.realpath(str(layer_src)):
+                        return True
+                return False
             if target.is_dir():
                 # 윈도우 정션: is_symlink 은 False 지만 realpath 가 우리 소스로 resolve → 소유.
-                if os.name == "nt" and \
-                        os.path.realpath(str(target)) == os.path.realpath(str(src)):
-                    return True
+                if os.name == "nt":
+                    target_real = os.path.realpath(str(target))
+                    for layer in ("base", "core", "util"):
+                        layer_src = self._skills_src_dir(layer) / target.name
+                        if target_real == os.path.realpath(str(layer_src)):
+                            return True
                 return (target / "_teammode_skill").is_file()
+        except OSError:
+            return False
+        return False
+
+    def _is_layer_skill(self, target: Path, layer: str) -> bool:
+        """Is this skill installed by the given layer specifically?"""
+        src_guess = self._skills_src_dir(layer) / target.name
+        try:
+            if target.is_symlink():
+                link = os.readlink(target)
+                link_abs = (target.parent / link) if not os.path.isabs(link) else Path(link)
+                return os.path.realpath(str(link_abs)) == os.path.realpath(str(src_guess))
+            if target.is_dir():
+                if os.name == "nt" and \
+                        os.path.realpath(str(target)) == os.path.realpath(str(src_guess)):
+                    return True
+                # Copy fallback: marker exists → check layer info
+                marker = target / self._SKILL_MARKER
+                if marker.is_file():
+                    content = marker.read_text(encoding="utf-8")
+                    if f"layer={layer}" in content:
+                        return True
+                    # Old-style marker (no layer info) → treat as base layer
+                    if "layer=" not in content and layer == "base":
+                        return True
         except OSError:
             return False
         return False
 
     _SKILL_MARKER = "_teammode_skill"
 
-    def _link_one_skill(self, src: Path, target: Path) -> str:
+    def _link_one_skill(self, src: Path, target: Path, layer: str = "base") -> str:
         """소스 스킬을 target 에 심링크(폴백: 복사). 변경 종류 문자열 반환(없으면 '')."""
         import shutil
 
@@ -688,30 +727,32 @@ class Adapter:
             # 최후 폴백: 디렉토리 복사 + 소유 마커(무겁고 갱신 안 됨 — 정션 실패 시에만).
             shutil.copytree(str(src), str(target))
             (target / self._SKILL_MARKER).write_text(
-                "teammode-managed skill copy (symlink/junction unavailable)\n", encoding="utf-8")
+                f"teammode-managed skill copy (layer={layer}, name={target.name})\n",
+                encoding="utf-8")
             return f"[skill] {target.name} 복사(폴백)"
 
-    def install_skills(self) -> list:
-        """infra/skills/base/<name>/ → 스킬 디렉토리에 심링크(폴백: 복사). 멱등.
+    def install_skills(self, layer: str = "base") -> list:
+        """infra/skills/<layer>/<name>/ → 스킬 디렉토리에 심링크(폴백: 복사). 멱등.
 
-        - 소스 스킬마다 target=<skills_dir>/<name>. 멱등·소유판정·사용자 무접촉.
-        - 더 이상 소스에 없는 teammode 소유 심링크/복사는 제거(uninstall_skills 와 동일 정리).
+        layer 기본값 "base" — install.py wire, 어댑터 CLI install-skills, 기존 테스트 무변경.
+        core/util 은 on(엔진)이 install_skills(layer="core") 등으로 별도 호출.
+
+        고아 청소: 이 계층(layer)이 관리하는 소유 스킬만 대상. 다른 계층 스킬은 무접촉.
         """
         changes = []
-        sources = self._skill_sources()
+        sources = self._skill_sources(layer=layer)
         wanted_names = {src.name for src in sources}
         for src in sources:
             target = self.skills_dir / src.name
-            msg = self._link_one_skill(src, target)
+            msg = self._link_one_skill(src, target, layer=layer)
             if msg:
                 changes.append(msg)
-        # 정리: 소스에서 사라진 teammode 소유 스킬 제거(고아 심링크/복사 청소).
+        # 정리: 이 계층이 소유하지만 소스에서 사라진 스킬만 제거(계층 한정 고아청소).
         if self.skills_dir.is_dir():
             for child in sorted(self.skills_dir.iterdir()):
                 if child.name in wanted_names:
                     continue
-                src_guess = self.skills_src_dir / child.name
-                if self.is_owned_skill(child, src_guess):
+                if self._is_layer_skill(child, layer):
                     self._remove_skill(child)
                     changes.append(f"[remove-skill] {child.name}")
         if not changes:
