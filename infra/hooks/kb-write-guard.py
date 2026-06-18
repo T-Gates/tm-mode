@@ -238,6 +238,12 @@ def main() -> int:
         _deny("입력 파싱 실패 — 보수적 차단(fail-closed).")
         return 2
 
+    # top-level 이 JSON object(dict) 가 아니면 malformed → fail-closed.
+    # (유효 JSON 이어도 [], "x", 123, null 등은 data.get() 에서 터지므로 먼저 차단.)
+    if not isinstance(data, dict):
+        _deny("입력이 JSON object(dict) 가 아님 — 보수적 차단(fail-closed).")
+        return 2
+
     if data.get("event") != "PreToolUse":
         return 0
 
@@ -268,6 +274,16 @@ def main() -> int:
         return 2
     else:
         files = files_raw
+
+    # 정규 스키마는 단일 경로(normalize: file_path 하나 → files=[fp]).
+    # 다중 요소는 malformed → fail-closed. files[0] 만 보면 뒤 요소의 memory/ 경로를
+    # 놓쳐 우회된다(예: files=[밖, memory/...] → allow 오판).
+    if len(files) > 1:
+        _deny(
+            "malformed 입력 — files 가 단일 경로가 아님(정규 스키마는 단일, fail-closed). "
+            "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+        )
+        return 2
 
     # files[0] 이 문자열인지 확인
     file_path = ""
