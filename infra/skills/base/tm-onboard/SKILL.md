@@ -43,6 +43,7 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 
 **먼저 확인 (필수) — 멋대로 정하지 말 것:**
 - **멤버 이름**: 세션로그에 author로 남는 영문 이름. `git config user.name`을 *제안값*으로 보여주되 **반드시 사용자 확인 후** `--member-name`에 넣는다. ⚠️ git 설정·계정명·이메일(예: `bob`)이 사용자가 원하는 팀 멤버명(예: `jane-doe`)과 다를 수 있다 — 추론값을 임의 확정 금지.
+- **전역 git identity**: `git config --global user.name`·`user.email`이 비어 있으면 커밋 단계에서 실패한다 — 비어 있을 경우 `git config --global user.name "이름"` 및 `git config --global user.email "이메일"` 설정을 안내한다.
 - **팀명**(도입자만): 기본은 repo명. "팀 이름 이대로 쓸까요?" 확인. (현재 install.py는 team.name 인자가 없어 repo명 자동 → 바꾸려면 셋업 후 `team.config.json`의 `team.name` 수정. 백로그: `--team-name`.)
 - **org/레포 위치**(도입자가 아직 레포가 없으면 — **install 보다 먼저**): 레포를 만들기 전에 어느 GitHub org·계정에 만들지 **반드시 묻는다** — 개인 계정 vs 팀 org(예: `Acme`). 임의 선택·자동 진행 금지. 순서: **org 확인 → 레포 생성(template/`gh repo create`) → clone → install.** (AGENTS.md '국면 0'과 동일. 레포가 이미 있으면 건너뜀.)
 - **역할·직군**(`team.config.json` members 에 저장): 팀 내 **직책**(팀장/팀원)과 **직군**(developer/pm/designer 등)을 묻고 `--role` 로 저장한다. ⚠️ install 의 **도입자/팀원 자동판정**(config 유효성 = 팀을 셋업했나/합류했나)과는 **다른 축**이다 — 그건 role 판정용이고, 이건 *사람의 직책·직군*이다. 한 문자열로 합쳐도 된다(예: `팀장/개발`, `팀원/디자인`). 초기 단계라 단일 자유필드(직책·직군 분리 스키마는 백로그).
