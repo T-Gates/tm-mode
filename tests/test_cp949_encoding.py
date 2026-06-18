@@ -158,6 +158,10 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
     """
     # TMPDIR 을 제거해 폴백 경로 테스트
     monkeypatch.delenv("TMPDIR", raising=False)
+    # tempfile.gettempdir() 는 첫 호출값을 tempfile.tempdir 에 캐시한다.
+    # delenv 는 env 만 지우고 캐시는 안 지우므로, 부모가 이미 TMPDIR 로 캐시했다면
+    # 기대값이 오염된다 → 캐시를 무효화해 subprocess(hook) 와 동일 조건으로 맞춘다.
+    monkeypatch.setattr(tempfile, "tempdir", None)
 
     hook = REPO / "infra" / "hooks" / "session-log-remind.py"
     hook_src = hook.read_text(encoding="utf-8")
