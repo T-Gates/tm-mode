@@ -152,6 +152,20 @@ def _is_memory_path(file_path: str, team_root: str) -> bool | None:
     Path.resolve() 기반 containment — symlink 우회(alias→memory)를 차단한다.
     엔진 knowledge 의 memory.resolve() 가드와 동형.
 
+    ── 상대경로 fail-closed (S2-1) ────────────────────────────────────────────
+    file_path 가 상대경로이면 CWD 가 무엇이냐에 따라 containment 판정이 달라진다.
+    훅 입력은 보통 절대경로지만 방어적으로:
+      - 절대경로가 아니면 팀루트 기준으로 join 한 뒤 resolve 시도.
+      - 팀루트 기준 join 후에도 resolve 실패 시 None → 호출부가 fail-closed.
+
+    ── memory 내부 symlink 경계 (S2-2) ────────────────────────────────────────
+    memory/ 내부 경로(raw, 비-resolve)가 memory/ 하위이지만 symlink 타겟이
+    memory/ 밖을 가리키는 경우, resolve 결과만 보면 False(통과)가 된다.
+    이를 차단하기 위해 두 가지 경로 모두 검사:
+      (A) raw_abs: 상위 디렉터리가 비-resolve memory_root 하위 → True(차단)
+      (B) resolved_abs: resolve 결과가 resolved memory_root 하위 → True(차단)
+    어느 쪽이든 True면 차단(union 방식).
+
     반환:
       True  → memory/ 하위(차단 대상)
       False → memory/ 밖(통과)
@@ -161,15 +175,37 @@ def _is_memory_path(file_path: str, team_root: str) -> bool | None:
         return None
 
     try:
+        p = Path(file_path)
+
+        # ── S2-1: 상대경로 → 팀루트 기준 절대경로로 변환 ──
+        if not p.is_absolute():
+            # CWD 의존 resolve 금지 — 팀루트 기준으로 join.
+            p = Path(team_root) / p
+
         # resolve() 로 symlink 추적 + 절대경로 정규화
-        abs_path = Path(file_path).resolve()
-        memory_root = (Path(team_root).resolve() / "memory").resolve()
-        # abs_path 가 memory_root 의 자손인지 확인
-        abs_path.relative_to(memory_root)
-        return True
-    except ValueError:
-        # relative_to 가 실패 = memory/ 밖
-        return False
+        resolved_abs = p.resolve()
+
+        team_root_resolved = Path(team_root).resolve()
+        memory_root_resolved = (team_root_resolved / "memory").resolve()
+        # 비-resolve memory_root (symlink 미추적, 명시 경로 기준)
+        memory_root_raw = (Path(team_root) / "memory")
+
+        # ── S2-2 (A): 비-resolve 경로 기준 containment ──
+        # p 가 memory_root_raw 하위인지 확인 (symlink 경로 자체 기준)
+        try:
+            p.relative_to(memory_root_raw)
+            return True  # raw 경로상 memory/ 하위 → 차단
+        except ValueError:
+            pass  # memory/ 밖 → (B) 확인으로 진행
+
+        # ── S2-2 (B): resolve 결과 기준 containment ──
+        # resolve 결과가 memory/ 하위이면 차단 (alias→memory 우회 차단)
+        try:
+            resolved_abs.relative_to(memory_root_resolved)
+            return True
+        except ValueError:
+            return False  # 어느 쪽도 memory/ 하위 아님 → 통과
+
     except (OSError, RuntimeError):
         # resolve() 실패(권한 등) → 판별 불가
         return None

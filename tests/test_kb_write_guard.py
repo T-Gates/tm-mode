@@ -622,3 +622,52 @@ def test_memory_dir_itself_symlink_is_denied(tmp_path):
     assert proc.returncode == 2, "memory/ 자체가 symlink여도 그 하위는 deny 되어야 한다(P1-1)"
     out = json.loads(proc.stdout)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# ── S2-1: 상대경로 fail-closed ────────────────────────────────────────────────
+
+def test_relative_path_to_memory_is_denied(tmp_path):
+    """상대경로 file_path 가 memory/ 를 가리키면 deny (S2-1 fail-closed).
+
+    절대경로가 아닌 입력을 CWD 의존 resolve 없이 팀루트 기준으로 정규화한 뒤
+    containment 판정을 수행하므로 memory/ 하위이면 차단된다.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "memory").mkdir()
+    _active(root)
+    # 상대경로: "memory/secret.md" (절대경로 아님)
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": ["memory/secret.md"],  # 상대경로
+        "tool": {"kind": "builtin", "name": "Write"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 2, "상대경로로 memory/ 타겟 시 deny 되어야 한다(S2-1)"
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_relative_path_outside_memory_is_allowed(tmp_path):
+    """상대경로 file_path 가 memory/ 밖을 가리키면 allow (S2-1 — 차단 과잉 방지).
+
+    팀루트 기준 resolve 후 containment 체크에서 False → 통과.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "infra").mkdir()
+    _active(root)
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": ["infra/some-file.py"],  # 상대경로이지만 memory/ 밖
+        "tool": {"kind": "builtin", "name": "Edit"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 0, "상대경로라도 memory/ 밖이면 통과해야 한다(S2-1)"
+
