@@ -256,12 +256,52 @@ def main() -> int:
 
     # ── 3. 대상 경로가 memory/ 하위인지 확인 ──
     # 정규 스키마: data["files"] = ["/abs/path/to/file"] (normalize.py L113-116)
-    files = data.get("files") or []
-    file_path = files[0] if files else ""
+    files_raw = data.get("files")
+    # files 타입 검증: None 이면 빈 리스트로 간주, 리스트가 아니면 malformed → fail-closed.
+    if files_raw is None:
+        files = []
+    elif not isinstance(files_raw, list):
+        _deny(
+            "malformed 입력 — files 필드가 리스트가 아님(fail-closed). "
+            "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+        )
+        return 2
+    else:
+        files = files_raw
+
+    # files[0] 이 문자열인지 확인
+    file_path = ""
+    if files:
+        first = files[0]
+        if not isinstance(first, str):
+            _deny(
+                "malformed 입력 — files[0] 이 문자열이 아님(fail-closed). "
+                "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+            )
+            return 2
+        file_path = first
+
     # 정규 스키마에 없으면 raw 에서 보조 조회
     if not file_path:
-        raw = data.get("raw") or {}
-        file_path = (raw.get("tool_input", {}) or {}).get("file_path", "") or ""
+        raw = data.get("raw")
+        # raw 타입 검증: dict 여야 함
+        if raw is not None and not isinstance(raw, dict):
+            _deny(
+                "malformed 입력 — raw 필드가 dict 가 아님(fail-closed). "
+                "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+            )
+            return 2
+        raw = raw or {}
+        tool_input = raw.get("tool_input")
+        # tool_input 타입 검증: dict 여야 함 (문자열이면 malformed → fail-closed)
+        if tool_input is not None and not isinstance(tool_input, dict):
+            _deny(
+                "malformed 입력 — raw.tool_input 이 dict 가 아님(fail-closed). "
+                "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+            )
+            return 2
+        tool_input = tool_input or {}
+        file_path = tool_input.get("file_path", "") or ""
 
     # file_edit 인데 경로 판별 불가 → fail-closed(P1-2)
     if not file_path:
