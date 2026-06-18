@@ -827,3 +827,76 @@ def test_symlink_inside_memory_pointing_outside_is_still_denied(tmp_path):
     )
     out = json.loads(proc.stdout)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# ── malformed 입력 fail-closed ────────────────────────────────────────────────
+
+def test_files_is_integer_list_is_denied(tmp_path):
+    """files=[123] (정수 원소) → deny(exit2, fail-closed).
+
+    수정 전: TypeError traceback 이 나며 exit1. 수정 후: 명시 deny + exit2.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [123],  # 정수 원소 — malformed
+        "tool": {"kind": "builtin", "name": "Write"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 2, "files=[123] → exit2 fail-closed 되어야 한다"
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Traceback" not in proc.stderr
+
+
+def test_files_is_string_is_denied(tmp_path):
+    """files='memory/x.md' (리스트 대신 문자열) → deny(exit2, fail-closed).
+
+    수정 전: files[0] == 'm' 로 취급돼 allow(exit0). 수정 후: isinstance 검증으로 deny.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": str(root / "memory" / "x.md"),  # 문자열 — malformed
+        "tool": {"kind": "builtin", "name": "Write"},
+        "agent": "claude",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 2, "files=문자열 → exit2 fail-closed 되어야 한다"
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Traceback" not in proc.stderr
+
+
+def test_raw_tool_input_is_string_is_denied(tmp_path):
+    """raw.tool_input 이 dict 대신 문자열 → deny(exit2, fail-closed).
+
+    수정 전: AttributeError traceback(exit1). 수정 후: 명시 deny + exit2.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [],  # 비어있음 → raw 보조 조회로 진행
+        "tool": {"kind": "builtin", "name": "Write"},
+        "agent": "claude",
+        "raw": {
+            "tool_input": "not-a-dict",  # 문자열 — malformed
+        },
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 2, "raw.tool_input=문자열 → exit2 fail-closed 되어야 한다"
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Traceback" not in proc.stderr
