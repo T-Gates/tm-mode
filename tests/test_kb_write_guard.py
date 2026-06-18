@@ -900,3 +900,46 @@ def test_raw_tool_input_is_string_is_denied(tmp_path):
     out = json.loads(proc.stdout)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "Traceback" not in proc.stderr
+
+
+def test_toplevel_non_dict_json_is_denied(tmp_path):
+    """top-level 이 dict 아닌 유효 JSON([], "x", 123, null) → deny(exit2, fail-closed).
+
+    수정 전: data.get() 에서 AttributeError traceback(exit1). 수정 후: isinstance(dict) 검증 deny.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    for payload in ([], "x", 123, None):
+        proc = _run_hook(payload, root)
+        assert proc.returncode == 2, f"{payload!r} → exit2 fail-closed 되어야 한다"
+        out = json.loads(proc.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "Traceback" not in proc.stderr
+
+
+def test_files_multiple_elements_is_denied(tmp_path):
+    """files 다중 요소 → deny(exit2, fail-closed).
+
+    수정 전: files[0] 만 봐서 [밖, memory] 면 memory 경로를 놓치고 allow.
+    수정 후: len(files)>1 malformed deny.
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    outside = str(tmp_path / "outside.md")
+    inside = str(root / "memory" / "secret.md")
+    for files in ([outside, inside], [outside, 123]):
+        payload = {
+            "event": "PreToolUse",
+            "action": "file_edit",
+            "files": files,
+            "tool": {"kind": "builtin", "name": "Write"},
+            "agent": "claude",
+            "raw": {},
+        }
+        proc = _run_hook(payload, root)
+        assert proc.returncode == 2, f"files={files!r} → exit2 fail-closed 되어야 한다"
+        out = json.loads(proc.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "Traceback" not in proc.stderr
