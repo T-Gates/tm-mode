@@ -159,9 +159,19 @@ def test_knowledge_write_long_filename_exit2(tmp_path):
     assert "Traceback" not in r.stdout, f"stdout 에 트레이스백이 있다: {r.stdout!r}"
 
 
-@pytest.mark.skipif(os.getuid() == 0, reason="root 는 chmod 무시 → 테스트 불가")
 def test_knowledge_write_permission_error_exit2(tmp_path):
-    """INDEX 파일 권한 제거(PermissionError) → exit 2 + 친화 메시지."""
+    """INDEX 갱신 실패(os.replace OSError) → exit 2 + 친화 메시지(Traceback 없음).
+
+    원래는 INDEX.md chmod(444) 로 write_text PermissionError 를 유발했으나,
+    atomic write(temp+os.replace) 도입으로 Linux 에서 부모 디렉토리 쓰기 권한만
+    있으면 read-only 파일도 덮어쓸 수 있어 chmod(444) 방식이 동작하지 않음.
+    → fault injection: os.replace 를 patch 해 INDEX replace 만 OSError 로 대체.
+    보장: INDEX 갱신 실패 시 exit 2 + Traceback 미노출.
+    """
+    import io as _io
+    import runpy as _runpy
+    from unittest import mock as _mock
+
     root = tmp_path / "root"
     root.mkdir()
     _init_git(root)
@@ -174,28 +184,46 @@ def test_knowledge_write_permission_error_exit2(tmp_path):
          "--author", "jane-doe",
          "--weight", "📎")
 
-    # INDEX.md 를 읽기전용으로 만들어 write 시 PermissionError 유도
     index_path = root / "memory" / "team" / "INDEX.md"
     assert index_path.is_file(), "사전 조건: INDEX.md 가 생성됐어야 한다"
-    index_path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 444
 
+    # os.replace 를 patch 해 INDEX.md 로의 replace 만 OSError
+    original_replace = os.replace
+
+    def _patched_replace(src, dst):
+        dst_path = Path(dst)
+        if dst_path.name == "INDEX.md":
+            raise OSError("fault injection: INDEX os.replace 권한 오류")
+        return original_replace(src, dst)
+
+    mod = _runpy.run_path(str(ENGINE), run_name="__p1_perm_test__")
+    args = ["knowledge", "write",
+            "--folder", "team",
+            "--filename", "another.md",
+            "--content", "또 다른 내용.",
+            "--author", "jane-doe",
+            "--weight", "📌",
+            "--root", str(root)]
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout = _io.StringIO()
+    sys.stderr = _io.StringIO()
     try:
-        r = _run(root, "knowledge", "write",
-                 "--folder", "team",
-                 "--filename", "another.md",
-                 "--content", "또 다른 내용.",
-                 "--author", "jane-doe",
-                 "--weight", "📌")
+        with _mock.patch("os.replace", _patched_replace):
+            try:
+                rc = mod["main"](args)
+            except SystemExit as e:
+                rc = int(e.code) if e.code is not None else 0
     finally:
-        # 복구 (다음 teardown 이 rm -rf 할 수 있도록)
-        index_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        out = sys.stdout.getvalue()
+        err = sys.stderr.getvalue()
+        sys.stdout, sys.stderr = old_stdout, old_stderr
 
-    assert r.returncode == 2, (
-        f"PermissionError 가 exit 2 를 내지 않았다: rc={r.returncode}\n"
-        f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
+    assert rc == 2, (
+        f"PermissionError 가 exit 2 를 내지 않았다: rc={rc}\n"
+        f"stdout={out!r}\nstderr={err!r}"
     )
-    assert "Traceback" not in r.stderr, f"트레이스백이 노출됐다: {r.stderr!r}"
-    assert "Traceback" not in r.stdout, f"stdout 에 트레이스백이 있다: {r.stdout!r}"
+    assert "Traceback" not in err, f"트레이스백이 노출됐다: {err!r}"
+    assert "Traceback" not in out, f"stdout 에 트레이스백이 있다: {out!r}"
 
 
 @pytest.mark.skipif(os.getuid() == 0, reason="root 는 chmod 무시 → 테스트 불가")
