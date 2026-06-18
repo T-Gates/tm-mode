@@ -165,7 +165,10 @@ def test_sync_empty_slot_omits_mcp_matcher_with_info(tmp_path, capsys):
     assert "linear" in out
     settings = _settings(ad)
     assert not _has_linear_matcher(settings)           # 빈 슬롯 → 매처 생략
-    assert "PreToolUse" not in settings.get("hooks", {})
+    # kb-write-guard 는 서비스 슬롯 무관하게 항상 PreToolUse 에 등록(거버넌스 강제)
+    assert "PreToolUse" in settings.get("hooks", {})
+    assert "kb-write-guard" in json.dumps(settings.get("hooks", {}).get("PreToolUse", []))
+    assert not _has_linear_matcher(settings.get("hooks", {}).get("PreToolUse", []))
     # 나머지 훅은 정상 등록 — 전체 sync 실패 아님
     assert "SessionStart" in settings["hooks"]
     assert "PostToolUse" in settings["hooks"]

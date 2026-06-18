@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-SKILL_MD = REPO / "infra" / "skills" / "base" / "tm-context" / "SKILL.md"
+SKILL_MD = REPO / "infra" / "skills" / "core" / "tm-context" / "SKILL.md"
 
 sys.path.insert(0, str(REPO / "infra"))
 
@@ -35,7 +35,7 @@ ClaudeAdapter = _CLAUDE["Adapter"]
 # ── SKILL.md 파일 자체 ──
 
 def test_skill_md_exists():
-    assert SKILL_MD.is_file(), "infra/skills/base/tm-context/SKILL.md 가 없다"
+    assert SKILL_MD.is_file(), "infra/skills/core/tm-context/SKILL.md 가 없다"
 
 
 def _parse_frontmatter(text: str) -> dict:
@@ -134,7 +134,7 @@ def test_skill_md_has_empty_session_log_guidance():
 # ── install_skills 포함 검증 ──
 
 def _scaffold(tmp_path):
-    """tmp 팀 루트 — 실 infra/skills/base 전체 복사."""
+    """tmp 팀 루트 — 실 infra/skills/base·core 전체 복사."""
     root = tmp_path / "teamroot"
     for sub in ("infra/agents/claude", "infra/agents/codex", "infra/hooks"):
         (root / sub).mkdir(parents=True, exist_ok=True)
@@ -149,6 +149,10 @@ def _scaffold(tmp_path):
     shutil.copytree(
         REPO / "infra" / "skills" / "base",
         root / "infra" / "skills" / "base",
+    )
+    shutil.copytree(
+        REPO / "infra" / "skills" / "core",
+        root / "infra" / "skills" / "core",
     )
     return root
 
@@ -165,20 +169,25 @@ def _claude_adapter(root, tmp_path):
 
 
 def test_tm_context_in_source_skills(tmp_path):
-    """adapter._skill_sources() 가 tm-context 를 목록에 포함한다."""
+    """adapter._skill_sources(layer='core') 가 tm-context 를 목록에 포함한다."""
     root = _scaffold(tmp_path)
     a = _claude_adapter(root, tmp_path)
-    names = {s.name for s in a._skill_sources()}
+    names = {s.name for s in a._skill_sources(layer="core")}
     assert "tm-context" in names, (
-        f"_skill_sources 에 tm-context 가 없다. 실제 목록: {names}"
+        f"_skill_sources(layer='core') 에 tm-context 가 없다. 실제 목록: {names}"
+    )
+    # base 레이어에는 없어야 한다
+    base_names = {s.name for s in a._skill_sources(layer="base")}
+    assert "tm-context" not in base_names, (
+        f"tm-context 가 base 레이어에 있다 — core 로 이동되어야 한다. base 목록: {base_names}"
     )
 
 
 def test_install_skills_creates_tm_context_link(tmp_path):
-    """install_skills 실행 후 tm-context 심링크가 생성된다."""
+    """install_skills(layer='core') 실행 후 tm-context 심링크가 생성된다."""
     root = _scaffold(tmp_path)
     a = _claude_adapter(root, tmp_path)
-    a.install_skills()
+    a.install_skills(layer="core")
     link = tmp_path / "claude-skills" / "tm-context"
     assert link.exists() or link.is_symlink(), (
         "tm-context 심링크/복사본이 생성되지 않았다"
@@ -187,14 +196,14 @@ def test_install_skills_creates_tm_context_link(tmp_path):
 
 
 def test_install_skills_tm_context_points_to_source(tmp_path):
-    """tm-context 심링크가 실제 소스 디렉토리를 가리킨다."""
+    """tm-context 심링크가 실제 core 소스 디렉토리를 가리킨다."""
     root = _scaffold(tmp_path)
     a = _claude_adapter(root, tmp_path)
-    a.install_skills()
+    a.install_skills(layer="core")
     link = tmp_path / "claude-skills" / "tm-context"
     if link.is_symlink():
         assert link.resolve() == (
-            root / "infra" / "skills" / "base" / "tm-context"
+            root / "infra" / "skills" / "core" / "tm-context"
         ).resolve()
 
 
@@ -202,7 +211,7 @@ def test_uninstall_removes_tm_context(tmp_path):
     """uninstall_skills 가 tm-context 심링크를 제거한다."""
     root = _scaffold(tmp_path)
     a = _claude_adapter(root, tmp_path)
-    a.install_skills()
+    a.install_skills(layer="core")
     a.uninstall_skills()
     assert not (tmp_path / "claude-skills" / "tm-context").exists(), (
         "uninstall 후 tm-context 가 남아 있다 — 소유 판정 오류"

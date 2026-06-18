@@ -285,12 +285,52 @@ def test_has_common_ancestor_true_for_related(tmp_path):
     assert result is True, "related histories 인데 has_common_ancestor=False"
 
 
-def test_on_does_NOT_auto_sync(team_with_upstream):
-    # 핵심 안전: on 은 fetch 만. 엔진 파일을 자동으로 덮어쓰지 않는다.
-    _run_engine(team_with_upstream.team, "on")
-    assert not (team_with_upstream.team / "infra" / "newfeature.py").exists(), \
-        "on 이 자동 sync 함(금지 위반)"
-    assert (team_with_upstream.team / "infra" / "engine.py").read_text() == "team-old\n"
+def test_on_auto_syncs_and_commits(team_with_upstream):
+    """작업 D: on 시 upstream 변경이 있으면 자동 동기화 + 자동 커밋.
+
+    이전 동작(fetch만 자동, sync 금지)이 변경됨 — auto_update_on_start() 도입으로
+    on 시 변경된 엔진 파일이 자동 적용되고 커밋까지 생성된다.
+    """
+    team = team_with_upstream.team
+    head_before = _git(team, "rev-parse", "HEAD").stdout.strip()
+    r = _run_engine(team, "on")
+    assert r.returncode == 0, r.stderr
+    # 자동 동기화: upstream 변경이 적용됨
+    assert (team / "infra" / "newfeature.py").exists(), \
+        "on 이 upstream 변경을 자동 적용하지 않음(작업 D 미구현)"
+    assert (team / "infra" / "engine.py").read_text() == "v2\n"
+    # 자동 커밋: HEAD 가 변경됨
+    head_after = _git(team, "rev-parse", "HEAD").stdout.strip()
+    assert head_before != head_after, "on 이 자동 커밋을 생성하지 않음"
+    # 커밋 메시지 확인
+    msg = _git(team, "log", "--format=%s", "-1").stdout.strip()
+    assert "[auto]" in msg, f"커밋 메시지에 [auto] 없음: {msg!r}"
+    # 팀 데이터 무손상
+    assert (team / "memory" / "team-secret.md").read_text() == "DO NOT TOUCH\n"
+
+
+def test_on_auto_sync_no_push(team_with_upstream):
+    """작업 D: 자동 커밋은 생성되지만 push 는 절대 자동 하지 않는다.
+
+    upstream bare repo 의 HEAD(커밋 수)가 on 전후 동일해야 한다.
+    auto_update_on_start 가 push=False 로 do_commit 을 호출하지만,
+    만약 실수로 push 가 호출되면 bare repo 쪽 커밋 수가 늘어난다 — 이를 비교해 검증.
+    """
+    team = team_with_upstream.team
+    upstream = team_with_upstream.upstream
+
+    # on 실행 전 upstream HEAD 기록
+    upstream_head_before = _git(upstream, "rev-parse", "HEAD").stdout.strip()
+
+    r = _run_engine(team, "on")
+    assert r.returncode == 0, r.stderr
+
+    # on 실행 후 upstream HEAD — push 가 없었으면 동일해야 함
+    upstream_head_after = _git(upstream, "rev-parse", "HEAD").stdout.strip()
+    assert upstream_head_before == upstream_head_after, (
+        f"upstream HEAD 가 변경됨: {upstream_head_before!r} → {upstream_head_after!r} "
+        "— auto_update 가 push 를 수행한 것으로 보임(절대 금지 위반)"
+    )
 
 
 def test_on_no_upstream_still_succeeds(tmp_path):
@@ -448,3 +488,116 @@ def test_update_offline_upstream_no_hang(tmp_path):
     assert elapsed < 20, f"update 가 {elapsed:.1f}s 매달림(offline hang)"
     assert r.returncode != 0  # fetch 실패 → 비치명 실패
     assert "Traceback" not in r.stderr
+
+
+# ── 작업 D: auto_update_on_start 전용 테스트 ──
+
+def test_on_auto_update_dirty_guard_skip_with_notice(team_with_upstream):
+    """작업 D: dirty 상태면 자동 업데이트 skip + 알림. on 은 정상 성공."""
+    team = team_with_upstream.team
+    # 대상 경로(infra/)에 커밋 안 된 로컬 변경 심기
+    (team / "infra" / "engine.py").write_text("LOCAL DIRTY\n")
+    r = _run_engine(team, "on")
+    # on 은 dirty 여도 성공(return 0)
+    assert r.returncode == 0, r.stderr
+    # 로컬 변경 보존(덮어쓰기 0)
+    assert (team / "infra" / "engine.py").read_text() == "LOCAL DIRTY\n"
+    # upstream 신규 파일도 적용 안 됨
+    assert not (team / "infra" / "newfeature.py").exists()
+    # 알림 메시지 출력됨
+    combined = r.stdout + r.stderr
+    assert "skip" in combined.lower() or "커밋 안 된" in combined, \
+        f"dirty 알림이 없음: {combined!r}"
+
+
+def test_on_auto_update_fetch_fail_no_crash(tmp_path):
+    """작업 D: fetch 실패(remote 없음)면 auto_update skip, on 은 정상 성공."""
+    team = tmp_path / "team"
+    _git(tmp_path, "init", str(team))
+    (team / "memory").mkdir()
+    r = _run_engine(team, "on")
+    assert r.returncode == 0, r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_on_auto_update_idempotent_no_double_commit(team_with_upstream):
+    """작업 D: 변경 없으면(이미 최신) 자동 커밋 안 생김, on 정상."""
+    team = team_with_upstream.team
+    # 먼저 on 으로 자동 커밋 한 번
+    r1 = _run_engine(team, "on")
+    assert r1.returncode == 0
+    head_after_first = _git(team, "rev-parse", "HEAD").stdout.strip()
+    # off 후 다시 on — 이미 최신 상태
+    _run_engine(team, "off")
+    r2 = _run_engine(team, "on")
+    assert r2.returncode == 0
+    head_after_second = _git(team, "rev-parse", "HEAD").stdout.strip()
+    # HEAD 불변(추가 커밋 없음)
+    assert head_after_first == head_after_second, \
+        "변경 없는데 auto_update 가 커밋을 중복 생성함"
+
+
+def test_on_auto_update_commit_message_format(team_with_upstream):
+    """작업 D: 자동 커밋 메시지가 chore: sync ... [auto] 형식이어야 한다."""
+    team = team_with_upstream.team
+    r = _run_engine(team, "on")
+    assert r.returncode == 0
+    msg = _git(team, "log", "--format=%s", "-1").stdout.strip()
+    assert "chore: sync teammode engine from upstream [auto]" == msg, \
+        f"커밋 메시지 형식 불일치: {msg!r}"
+
+
+def test_on_auto_update_paths_limited_not_add_all(team_with_upstream):
+    """작업 D: 자동 커밋은 paths 한정(infra/)이고 memory/ 등 다른 파일을 휩쓸지 않는다."""
+    team = team_with_upstream.team
+    # memory/ 에 staged 파일 추가(커밋 안 함)
+    mem_file = team / "memory" / "staged-but-not-auto.md"
+    mem_file.write_text("should not be auto-committed\n")
+    _git(team, "add", str(mem_file))
+    # on 실행 — auto_update 가 이 staged 파일을 함께 커밋하면 안 됨
+    r = _run_engine(team, "on")
+    assert r.returncode == 0
+    # memory/ 파일은 커밋에 포함 안 됨 — staged 잔존
+    staged = _git(team, "diff", "--cached", "--name-only").stdout
+    assert "staged-but-not-auto" in staged, \
+        "auto_update 가 memory/ staged 파일을 커밋에 휩쓸었음(paths=None 금지 위반)"
+
+
+def test_on_auto_update_blocked_when_infra_staged(team_with_upstream):
+    """작업 D: infra/ 안에 사용자 staged 변경이 있으면 자동 커밋 자체를 skip 한다.
+
+    dirty 가드(SYNC_PATHS 범위): infra/ 에 커밋 안 된 변경이 있으면 auto_update_on_start
+    가 blocked=True 로 early-return 하므로 HEAD 가 변하지 않는다.
+    사용자 staged 변경이 자동 커밋에 휩쓸리지 않고 잔존함을 검증한다.
+    """
+    team = team_with_upstream.team
+    head_before = _git(team, "rev-parse", "HEAD").stdout.strip()
+
+    # infra/ 에 사용자 staged 변경 추가(커밋 안 함)
+    user_infra_file = team / "infra" / "user-pending.py"
+    user_infra_file.write_text("# 사용자 작업 중\n")
+    _git(team, "add", str(user_infra_file))
+
+    r = _run_engine(team, "on")
+    assert r.returncode == 0, r.stderr  # on 자체는 성공해야 함(가드가 막아도 on 은 산다)
+
+    head_after = _git(team, "rev-parse", "HEAD").stdout.strip()
+    assert head_before == head_after, (
+        "infra/ staged 변경이 있는데 auto_update 가 커밋을 생성했음 — "
+        "dirty 가드 위반: 사용자 변경이 자동 커밋에 휩쓸렸거나 가드가 작동 안 함"
+    )
+
+    # 사용자 staged 파일이 그대로 staged 에 남아 있어야 함
+    staged = _git(team, "diff", "--cached", "--name-only").stdout
+    assert "user-pending.py" in staged, (
+        "사용자가 staged 한 infra/user-pending.py 가 사라짐 — "
+        "auto_update 가 무언가를 커밋하거나 staged 를 건드린 것으로 보임"
+    )
+
+
+def test_update_verb_still_no_auto_commit(team_with_upstream):
+    """작업 D 이후도 cmd_update(update 동사)는 자동 커밋 없어야 한다(기존 동작 불변)."""
+    head_before = _git(team_with_upstream.team, "rev-parse", "HEAD").stdout.strip()
+    _run_engine(team_with_upstream.team, "update")
+    head_after = _git(team_with_upstream.team, "rev-parse", "HEAD").stdout.strip()
+    assert head_before == head_after, "update 동사가 자동 커밋함(기존 동작 훼손)"
