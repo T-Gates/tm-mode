@@ -287,10 +287,10 @@ def _run_context_json(team_root: Path) -> dict:
 
 
 def test_cmd_context_json_top_level_keys(tmp_path):
-    """cmd_context --json 출력의 최상위 키가 state/index/members 세 가지여야 한다."""
+    """cmd_context --json 출력의 최상위 키가 state/index/members/personality_customized 여야 한다."""
     root = _make_team_root(tmp_path)
     data = _run_context_json(root)
-    assert set(data.keys()) == {"state", "index", "members"}, (
+    assert set(data.keys()) == {"state", "index", "members", "personality_customized"}, (
         f"최상위 키 불일치. 실제: {set(data.keys())}"
     )
 

@@ -405,13 +405,13 @@ def _ensure_upstream(team_root: Path) -> bool:
 def _engine_capture(argv):
     """teammode.py 를 subprocess 로 호출해 CompletedProcess 반환(verify 용).
 
-    ⚠️ env 화이트리스트로 ambient TEAMMODE_HOME/LEGACY_TOOL_HOME 누수 차단(check.py 와 동일
+    ⚠️ env 화이트리스트로 ambient TEAMMODE_HOME 누수 차단(check.py 와 동일
     정신, P1 이중 방어). 팀 루트·settings 는 argv 의 명시 인자로만 전달된다.
     """
     passthrough = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
                    "TZ", "PYTHONPATH", "TERM", "XDG_STATE_HOME",
                    # Windows 필수 — 없으면 python subprocess 기동·동작 실패.
-                   # (TEAMMODE_HOME/LEGACY_TOOL_HOME 만 차단하면 누수 방어 목적은 유지)
+                   # (TEAMMODE_HOME 만 차단하면 누수 방어 목적은 유지)
                    "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT", "COMSPEC",
                    "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "USERPROFILE",
                    "HOMEDRIVE", "HOMEPATH")

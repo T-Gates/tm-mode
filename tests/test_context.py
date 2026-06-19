@@ -218,3 +218,68 @@ def test_context_member_dir_with_no_log(tmp_path):
     (tmp_path / "memory" / "team" / "sessions" / "ghost").mkdir(parents=True)
     r = _run(tmp_path, "context")
     assert r.returncode == 0  # 빈 멤버 디렉토리도 크래시 안 함
+
+
+# ── personality_customized 결정적 판정 (2026-06-20 도그푸딩 결함 수정) ──
+
+def _write_config(root: Path, name: str, greeting: str = None, farewell: str = None):
+    """team.config.json 작성 (기본값: 기본 공식 그대로)."""
+    cfg = {
+        "spec_version": "0.2",
+        "team": {
+            "name": name,
+            "greeting": greeting if greeting is not None else f"{name} 팀모드 ON",
+            "farewell": farewell if farewell is not None else f"수고하셨습니다 — {name}",
+        },
+        "services": {},
+    }
+    (root / "team.config.json").write_text(
+        json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+
+def test_context_personality_customized_default_is_false(tmp_path):
+    """기본 greeting/farewell 공식 그대로 + banner.txt 없음 → personality_customized=false."""
+    _write_config(tmp_path, "MyTeam")
+    r = _run(tmp_path, "context", "--json")
+    assert r.returncode == 0
+    data = json.loads(r.stdout)
+    assert "personality_customized" in data
+    assert data["personality_customized"] is False
+
+
+def test_context_personality_customized_custom_greeting_is_true(tmp_path):
+    """greeting 이 기본 공식과 다르면 personality_customized=true."""
+    _write_config(tmp_path, "MyTeam", greeting="안녕하세요 팀모드!")
+    r = _run(tmp_path, "context", "--json")
+    assert r.returncode == 0
+    data = json.loads(r.stdout)
+    assert data["personality_customized"] is True
+
+
+def test_context_personality_customized_custom_farewell_is_true(tmp_path):
+    """farewell 이 기본 공식과 다르면 personality_customized=true."""
+    _write_config(tmp_path, "MyTeam", farewell="잘 가요!")
+    r = _run(tmp_path, "context", "--json")
+    assert r.returncode == 0
+    data = json.loads(r.stdout)
+    assert data["personality_customized"] is True
+
+
+def test_context_personality_customized_banner_txt_is_true(tmp_path):
+    """banner.txt 존재하면 greeting/farewell 무관하게 personality_customized=true."""
+    _write_config(tmp_path, "MyTeam")
+    banner_dir = tmp_path / "memory"
+    banner_dir.mkdir(parents=True, exist_ok=True)
+    (banner_dir / "banner.txt").write_text("=== CUSTOM BANNER ===\n", encoding="utf-8")
+    r = _run(tmp_path, "context", "--json")
+    assert r.returncode == 0
+    data = json.loads(r.stdout)
+    assert data["personality_customized"] is True
+
+
+def test_context_personality_customized_no_config_is_false(tmp_path):
+    """team.config.json 없으면 personality_customized=false (비치명)."""
+    r = _run(tmp_path, "context", "--json")
+    assert r.returncode == 0
+    data = json.loads(r.stdout)
+    assert data["personality_customized"] is False

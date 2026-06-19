@@ -25,7 +25,7 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 | 설치·훅 배선 | `teammode.py context --root . --json` 의 `state == "on"` |
 | upstream 추적 | `git -C . remote` 에 `upstream` 있음 |
 | 서비스 연결(L2) | `team.config.json` 의 `services` 슬롯이 빈 슬롯이 아님 |
-| 팀 personality | `team.config.json` 의 `greeting`/`farewell` 이 기본값과 다름 |
+| 팀 personality | `teammode.py context --root . --json` 의 `personality_customized` 필드가 `true` |
 | Obsidian 뷰 | 레포에 `.obsidian/` 존재 |
 
 - 체크표를 사람에게 제시: "여기까진 됐고, 다음/다시 할 것을 고르세요." **이미 된 단계는 기본 건너뛴다**(사람이 "다시"라 하면 재실행 — install 류는 멱등).

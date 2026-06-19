@@ -106,6 +106,46 @@ def _read_team_field(team_root: Path, field: str) -> str | None:
         return None
 
 
+def _personality_customized(team_root: Path) -> bool:
+    """팀 personality 가 기본값과 다른지 결정적으로 판정한다.
+
+    판정 기준 (OR 조건):
+    1. memory/banner.txt 파일이 존재한다 (배너 커스텀됨).
+    2. team.config.json 의 greeting 이 기본 공식 `f"{name} 팀모드 ON"` 과 다르다.
+    3. team.config.json 의 farewell 이 기본 공식 `f"수고하셨습니다 — {name}"` 과 다르다.
+
+    config 부재·파싱 실패 → False (기본값으로 간주). 판정은 비치명 — 어떤 예외도 False.
+    install_lib.py:534 의 기본 공식과 동기화해야 한다.
+    """
+    try:
+        banner_file = _banner_file(team_root)
+        if banner_file.is_file():
+            return True
+        cfg_path = team_root / "team.config.json"
+        if not cfg_path.is_file():
+            return False
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            return False
+        team = cfg.get("team")
+        if not isinstance(team, dict):
+            return False
+        name = team.get("name")
+        if not isinstance(name, str) or not name:
+            return False
+        default_greeting = f"{name} 팀모드 ON"
+        default_farewell = f"수고하셨습니다 — {name}"
+        greeting = team.get("greeting")
+        farewell = team.get("farewell")
+        if isinstance(greeting, str) and greeting != default_greeting:
+            return True
+        if isinstance(farewell, str) and farewell != default_farewell:
+            return True
+        return False
+    except Exception:  # noqa: BLE001 — personality 판정은 context 동사를 막지 않는다
+        return False
+
+
 UPSTREAM_REMOTE = "upstream"
 UPSTREAM_REF = "upstream/main"
 
@@ -1451,6 +1491,7 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
             "state": "on" if active else "off",
             "index": index_text,
             "members": members,
+            "personality_customized": _personality_customized(team_root),
         }, ensure_ascii=False))
         return 0
 
