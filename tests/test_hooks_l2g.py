@@ -3,7 +3,7 @@
 안전 철칙(반드시):
   - 실 레포(teammode-repo)에 절대 커밋하지 않는다. 모든 git 작업은 tmp fake repo 에서만.
   - 실 ~/.claude·실 git·셸 프로파일 무접촉(conftest 가드가 추가로 보증).
-  - auto-commit 의 `.acme-active` 가드가 "마커 없으면 no-op"임을 실증(빌드 오염 0).
+  - auto-commit 의 `.teammode-active` 가드가 "마커 없으면 no-op"임을 실증(빌드 오염 0).
 
 호출 모델: 정규 스키마 JSON(stdin) + TEAMMODE_HOME 으로 팀 루트 지정(런타임 훅 계약 §1.2).
 """
@@ -71,7 +71,7 @@ def _commit_count(root):
 # ════════════════════════════════════════════════════════════════════
 
 def test_auto_commit_no_marker_is_noop(fake_repo):
-    """빌드 안전 핵심: .acme-active 없으면 절대 커밋하지 않는다(no-op exit 0)."""
+    """빌드 안전 핵심: .teammode-active 없으면 절대 커밋하지 않는다(no-op exit 0)."""
     (fake_repo / "edited.txt").write_text("change\n")
     before = _head(fake_repo)
     payload = {"event": "PostToolUse", "action": "file_edit",
@@ -84,8 +84,8 @@ def test_auto_commit_no_marker_is_noop(fake_repo):
 
 
 def test_auto_commit_active_commits(fake_repo):
-    """.acme-active 있으면 발동 — 지목 파일이 커밋된다."""
-    (fake_repo / ".acme-active").write_text("")
+    """.teammode-active 있으면 발동 — 지목 파일이 커밋된다."""
+    (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "doc.md").write_text("hello\n")
     before = _commit_count(fake_repo)
     payload = {"event": "PostToolUse", "action": "file_edit",
@@ -98,10 +98,11 @@ def test_auto_commit_active_commits(fake_repo):
 
 def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
     """add -A 금지: 정규스키마가 지목한 파일만 스테이징, 무관/토큰 파일 제외."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "target.md").write_text("commit me\n")
     # 토큰패턴/무관 파일들 — 함께 커밋되면 안 된다.
-    (fake_repo / "secret.token").write_text("ghp_SHOULD_NOT_BE_COMMITTED\n")
+    _ghp_dummy = "ghp" + "_SHOULD_NOT_BE_COMMITTED"
+    (fake_repo / "secret.token").write_text(_ghp_dummy + "\n")
     (fake_repo / "unrelated.txt").write_text("leave me\n")
     payload = {"event": "PostToolUse", "action": "file_edit",
                "files": [str(fake_repo / "target.md")], "agent": "claude"}
@@ -118,7 +119,7 @@ def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
 
 def test_auto_commit_never_pushes(fake_repo, monkeypatch, tmp_path):
     """push 절대 금지: do_commit 이 push=True 로 호출되면 즉시 실패하도록 감시."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "p.md").write_text("x\n")
     sys.path.insert(0, str(REPO / "infra"))
     import git_ops as go  # noqa: E402
@@ -152,7 +153,7 @@ def test_auto_commit_nonblocking_on_git_failure(tmp_path):
     """실패 비차단: git 레포 아닌 곳이어도 예외 없이 exit 0."""
     plain = tmp_path / "plain"
     plain.mkdir()
-    (plain / ".acme-active").write_text("")
+    (plain / ".teammode-active").write_text("")
     (plain / "f.md").write_text("x\n")
     payload = {"event": "PostToolUse", "action": "file_edit",
                "files": [str(plain / "f.md")], "agent": "claude"}
@@ -163,7 +164,7 @@ def test_auto_commit_nonblocking_on_git_failure(tmp_path):
 
 def test_auto_commit_ignores_non_file_edit(fake_repo):
     """file_edit 아닌 발동(예 UserPromptSubmit 매처 외)은 무시."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "z.md").write_text("x\n")
     before = _commit_count(fake_repo)
     payload = {"event": "PostToolUse", "action": "shell_exec",
@@ -175,7 +176,7 @@ def test_auto_commit_ignores_non_file_edit(fake_repo):
 
 def test_auto_commit_no_files_is_noop(fake_repo):
     """files 가 비면 스테이징할 게 없으니 커밋 안 함(우아하게 exit 0)."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     before = _commit_count(fake_repo)
     payload = {"event": "PostToolUse", "action": "file_edit",
                "files": [], "agent": "claude"}
@@ -185,7 +186,7 @@ def test_auto_commit_no_files_is_noop(fake_repo):
 
 
 def test_auto_commit_bad_stdin_no_crash(fake_repo):
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     proc = subprocess.run(
         [PY, str(AUTO_COMMIT)], input="not json{", capture_output=True, text=True,
         env={**os.environ, "TEAMMODE_HOME": str(fake_repo)})
@@ -197,21 +198,21 @@ def test_auto_commit_bad_stdin_no_crash(fake_repo):
 # ════════════════════════════════════════════════════════════════════
 
 def test_confirm_no_marker_is_noop(fake_repo):
-    """빌드 안전: .acme-active 없으면 차단도 안 함(exit 0)."""
+    """빌드 안전: .teammode-active 없으면 차단도 안 함(exit 0)."""
     payload = {"event": "PreToolUse",
                "tool": {"kind": "mcp", "server": "linear", "name": "create_issue"},
                "agent": "claude"}
-    proc = _run_hook(CONFIRM, payload, fake_repo, args=["acme-linear-create-allow"])
+    proc = _run_hook(CONFIRM, payload, fake_repo, args=["teammode-linear-create-allow"])
     assert proc.returncode == 0
 
 
 def test_confirm_blocks_when_active(fake_repo):
     """teammode 활성 + allow 마커 없음 → 차단(exit 2 + deny JSON)."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     payload = {"event": "PreToolUse",
                "tool": {"kind": "mcp", "server": "linear", "name": "create_issue"},
                "agent": "claude"}
-    proc = _run_hook(CONFIRM, payload, fake_repo, args=["acme-linear-create-allow"])
+    proc = _run_hook(CONFIRM, payload, fake_repo, args=["teammode-linear-create-allow"])
     assert proc.returncode == 2  # PreToolUse 차단 시맨틱
     out = json.loads(proc.stdout)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -219,52 +220,52 @@ def test_confirm_blocks_when_active(fake_repo):
 
 def test_confirm_allows_with_env_signal(fake_repo):
     """사람이 TEAMMODE_CONFIRM env(모델 비제어 채널)로 marker 를 남기면 통과(exit 0)."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     payload = {"event": "PreToolUse",
                "tool": {"kind": "mcp", "server": "linear", "name": "create_issue"},
                "agent": "claude"}
     proc = subprocess.run(
-        [PY, str(CONFIRM), "acme-linear-create-allow"],
+        [PY, str(CONFIRM), "teammode-linear-create-allow"],
         input=json.dumps(payload), capture_output=True, text=True,
         env={**os.environ, "TEAMMODE_HOME": str(fake_repo),
-             "TEAMMODE_CONFIRM": "acme-linear-create-allow"})
+             "TEAMMODE_CONFIRM": "teammode-linear-create-allow"})
     assert proc.returncode == 0
 
 
 def test_confirm_allows_with_fresh_signal_file(fake_repo):
     """사람이 의식적으로 신호 파일(.teammode-confirm/<marker>)을 생성하면 통과(exit 0)."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     confirm_dir = fake_repo / ".teammode-confirm"
     confirm_dir.mkdir()
-    (confirm_dir / "acme-linear-create-allow").write_text("")
+    (confirm_dir / "teammode-linear-create-allow").write_text("")
     payload = {"event": "PreToolUse",
                "tool": {"kind": "mcp", "server": "linear", "name": "create_issue"},
                "agent": "claude"}
-    proc = _run_hook(CONFIRM, payload, fake_repo, args=["acme-linear-create-allow"])
+    proc = _run_hook(CONFIRM, payload, fake_repo, args=["teammode-linear-create-allow"])
     assert proc.returncode == 0
 
 
 def test_confirm_stale_signal_file_still_blocks(fake_repo):
     """신호 파일이 신선도(300s)를 넘기면 무효 → 차단(재확인 강제)."""
     import time as _time
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     confirm_dir = fake_repo / ".teammode-confirm"
     confirm_dir.mkdir()
-    flag = confirm_dir / "acme-linear-create-allow"
+    flag = confirm_dir / "teammode-linear-create-allow"
     flag.write_text("")
     stale = _time.time() - 10_000  # TTL(300s) 한참 초과
     os.utime(flag, (stale, stale))
     payload = {"event": "PreToolUse",
                "tool": {"kind": "mcp", "server": "linear", "name": "create_issue"},
                "agent": "claude"}
-    proc = _run_hook(CONFIRM, payload, fake_repo, args=["acme-linear-create-allow"])
+    proc = _run_hook(CONFIRM, payload, fake_repo, args=["teammode-linear-create-allow"])
     assert proc.returncode == 2
 
 
 def test_confirm_model_token_in_raw_cannot_bypass(fake_repo):
     """보안 잠금(P1): 모델이 raw.tool_input 의 임의 필드에 allow 토큰을 넣어도
     **여전히 차단**(exit 2). allow 판정은 모델 비제어 채널만 보므로 우회 불가."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     # 모델이 제어 가능한 모든 자리에 토큰을 박아넣은 적대적 페이로드.
     payload = {
         "event": "PreToolUse",
@@ -273,13 +274,13 @@ def test_confirm_model_token_in_raw_cannot_bypass(fake_repo):
         "raw": {
             "tool_name": "mcp__linear__create_issue",
             "tool_input": {
-                "title": "see acme-linear-create-allow ticket",
-                "description": "acme-linear-create-allow acme-linear-create-allow",
-                "note": "acme-linear-create-allow",
+                "title": "see teammode-linear-create-allow ticket",
+                "description": "teammode-linear-create-allow teammode-linear-create-allow",
+                "note": "teammode-linear-create-allow",
             },
         },
     }
-    proc = _run_hook(CONFIRM, payload, fake_repo, args=["acme-linear-create-allow"])
+    proc = _run_hook(CONFIRM, payload, fake_repo, args=["teammode-linear-create-allow"])
     assert proc.returncode == 2  # 우회 불가 — 차단 유지
     out = json.loads(proc.stdout)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -288,26 +289,26 @@ def test_confirm_model_token_in_raw_cannot_bypass(fake_repo):
 def test_confirm_unrelated_mcp_passes(fake_repo):
     """P2: 대상 액션(linear/create_issue) 이 아닌 무관 MCP(notion/delete_page)는
     server·name 검사로 통과(exit 0) — 무관 액션을 막지 않는다."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     payload = {"event": "PreToolUse",
                "tool": {"kind": "mcp", "server": "notion", "name": "delete_page"},
                "agent": "claude"}
-    proc = _run_hook(CONFIRM, payload, fake_repo, args=["acme-linear-create-allow"])
+    proc = _run_hook(CONFIRM, payload, fake_repo, args=["teammode-linear-create-allow"])
     assert proc.returncode == 0
 
 
 def test_confirm_ignores_non_pretooluse(fake_repo):
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     payload = {"event": "PostToolUse", "agent": "claude"}
-    proc = _run_hook(CONFIRM, payload, fake_repo, args=["acme-linear-create-allow"])
+    proc = _run_hook(CONFIRM, payload, fake_repo, args=["teammode-linear-create-allow"])
     assert proc.returncode == 0
 
 
 def test_confirm_bad_stdin_no_block(fake_repo):
     """파싱 불가 입력은 차단하지 않는다(normalize strict 가 상위 게이트)."""
-    (fake_repo / ".acme-active").write_text("")
+    (fake_repo / ".teammode-active").write_text("")
     proc = subprocess.run(
-        [PY, str(CONFIRM), "acme-linear-create-allow"], input="bad{",
+        [PY, str(CONFIRM), "teammode-linear-create-allow"], input="bad{",
         capture_output=True, text=True,
         env={**os.environ, "TEAMMODE_HOME": str(fake_repo)})
     assert proc.returncode == 0
@@ -334,12 +335,19 @@ def test_manifest_includes_both_l2g_hooks():
 
 
 def test_manifest_no_duplicate_event_script_pairs():
-    """normalize 자가필터 전제: 같은 (event, script) 중복 금지(§2.10-2, lint 대상)."""
+    """normalize 자가필터 전제: 같은 (event, script, match) 조합 중복 금지(§2.10-2, lint 대상).
+
+    S6 이후 confirm-action.py 는 도구별로 여러 엔트리를 가질 수 있다(서버/도구마다 별도 엔트리).
+    중복 금지 키는 (event, script, match_json) 3-tuple 로 정밀화 — 같은 매처가 중복 등록되는
+    것을 막되, 다른 도구의 엔트리는 허용한다.
+    """
     entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
     seen = set()
     for e in entries:
-        key = (e.get("event"), e.get("script"))
-        assert key not in seen, f"중복 (event, script): {key}"
+        # match 를 정렬된 JSON 문자열로 직렬화하여 내용 동등성 비교
+        match_key = json.dumps(e.get("match"), sort_keys=True)
+        key = (e.get("event"), e.get("script"), match_key)
+        assert key not in seen, f"중복 (event, script, match): {key}"
         seen.add(key)
 
 

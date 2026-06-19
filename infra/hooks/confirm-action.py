@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """confirm-action — PreToolUse 차단 훅 (공통 스크립트, 정규 스키마 전용).
 
-스펙 §2.10: 정규 입력 스키마만 인지하며 에이전트를 모른다. normalize 심이 원어를
-정규형으로 바꿔 stdin 으로 넘긴다. manifest 는 이 훅을 linear/create_issue 의 PreToolUse
-매처로 등록한다(strict, fallback runtime, enforcement block).
+스펙 §2.10 / S6 일반화: 정규 입력 스키마만 인지하며 에이전트를 모른다. normalize 심이
+원어를 정규형으로 바꿔 stdin 으로 넘긴다. manifest 에 side-effect 도구별 PreToolUse
+엔트리를 등록하면 **어떤 server/tool 이든** 이 스크립트 하나로 처리한다(하드코딩 없음).
 
 정규 입력(stdin):
   { "event": "PreToolUse",
-    "tool": { "kind": "mcp", "server": "linear", "name": "create_issue" },
+    "tool": { "kind": "mcp", "server": "<서버>", "name": "<도구>" },
     "agent": "claude", "raw": {...} }
 
-역할: linear 이슈 생성처럼 되돌리기 어려운 외부 부수효과 동작을 사람이 의식적으로
-확인하도록 **기본 차단**한다. 사람이 의식적으로 남긴 allow 신호(아래)가 있을 때만 통과.
+manifest args 첫 인자 = marker (예 "teammode-issues-create-allow").
+이 훅은 manifest 로 등록된 (server, tool) 쌍에만 차단을 적용한다.
+판정 흐름:
+  1) 입력 tool.server / tool.name 추출
+  2) manifest 를 런타임 읽기 → 현재 입력과 일치하는 PreToolUse 엔트리 탐색
+  3) 일치 엔트리 있으면 해당 엔트리의 args(marker) 를 사용해 allow 판정
+  4) allow 신호 없으면 차단(exit 2 + deny JSON)
+  5) 일치 엔트리 없으면 통과(exit 0) — 대상 아님
+
+역할: teammode side-effect 도구(issues_create·issues_update·chat_send·docs_write·
+docs_create·calendar_create 등)처럼 되돌리기 어려운 외부 부수효과 동작을 사람이
+의식적으로 확인하도록 **기본 차단**한다. 사람이 의식적으로 남긴 allow 신호(아래)가
+있을 때만 통과. read 계열(issues_list·issues_get 등)은 manifest 미등록 → 이 훅 미도달.
 
 차단 시맨틱(§2.10-3 시맨틱 전파):
   Claude Code PreToolUse 차단은 **exit 2 + stdout 의 permissionDecision="deny" JSON** 두
   경로 모두로 표현한다(normalize 가 exit code·stdout 을 그대로 전파 → 차단 보존).
 
 ────────────────────────────────────────────────────────────────────────────
-⚠️ `.acme-active` 가드(빌드 안전): 마커 없으면(teammode off) 즉시 no-op exit 0.
+⚠️ `.teammode-active` 가드(빌드 안전): teammode 비활성 시 즉시 no-op exit 0.
    teammode 가 꺼진 채 일상 작업 중에는 차단을 걸지 않는다.
 
 ⚠️ Codex 한계(N5/§2.11): Codex 는 events.json 에서 `PreToolUse: null` 이라 이 차단 훅이
@@ -28,15 +39,15 @@
 
 ────────────────────────────────────────────────────────────────────────────
 allow 신호 = **모델 비제어 채널** (보안 핵심):
-   marker(=manifest `args` 의 첫 인자, 예 "acme-linear-create-allow")는 settings.json 에
-   노출되는 **공개 고정값**이라 모델이 안다. 따라서 모델이 만들 수 있는 입력
-   (raw 의 tool_input — 이슈 제목·본문 등)에서 marker 를 찾으면 **차단 우회**가 된다
+   marker(=manifest `args` 의 첫 인자, 예 "teammode-issues-create-allow")는
+   settings.json 에 노출되는 **공개 고정값**이라 모델이 안다. 따라서 모델이 만들 수 있는
+   입력(raw 의 tool_input — 이슈 제목·본문 등)에서 marker 를 찾으면 **차단 우회**가 된다
    (모델이 title 에 토큰을 써넣으면 통과). 그래서 allow 판정은 raw 본문을 절대 보지 않고
    사람만 남길 수 있는 두 채널만 본다(둘 중 하나라도 있으면 통과):
 
    1) 환경변수  `TEAMMODE_CONFIRM` 값이 marker 와 일치 (사람이 셸/래퍼에서 export).
    2) 신호 파일  `<team_root>/.teammode-confirm/<marker>` 가 존재하고 신선함
-      (사람이 의식적으로 생성; 모델은 create_issue tool_input 으로 이 경로를 만들 수 없다).
+      (사람이 의식적으로 생성; 모델은 tool_input 으로 이 경로를 만들 수 없다).
       신선도: 기본 300초(acme-toolkit 원형의 confirm TTL 과 동일). 만료되면 무효(재확인 필요).
 
    acme-toolkit 원형(infra/hooks/confirm-action.py)도 allow 를 **파일시스템 confirm
@@ -64,14 +75,49 @@ except ImportError:
 # allow 신호 파일의 신선도 한계(초). acme-toolkit 원형의 confirm TTL 과 동일.
 CONFIRM_TTL_SECONDS = 300
 
-# 이 훅이 차단 대상으로 삼는 정규 액션(P2 defense-in-depth). N5 확장 시 여기에 추가.
-TARGET_SERVER = "linear"
-TARGET_NAME = "create_issue"
+# ── S6 일반화: TARGET_SERVER/TARGET_NAME 하드코딩 제거 ──────────────────────
+# 대상 판정은 manifest.json 의 (server, tool) 엔트리 기반으로 동적으로 수행한다.
+# 하드코딩된 상수 없음 — 새 도구 추가는 manifest 엔트리만 수정하면 된다.
 
 
 def _team_root() -> str:
     """런타임 훅의 팀 루트 = 환경변수 TEAMMODE_HOME (없으면 cwd). session-start 와 동일."""
     return os.environ.get("TEAMMODE_HOME", os.getcwd())
+
+
+def _load_manifest_targets() -> dict[tuple[str, str], str] | None:
+    """manifest.json 에서 PreToolUse confirm-action 대상 (server, tool) → marker 매핑을 반환.
+
+    manifest 를 런타임에 읽어 동적으로 대상을 결정한다. 하드코딩 없음.
+    반환: {("linear", "create_issue"): "teammode-linear-create-allow", ...}
+
+    manifest 파싱 실패 시 None 반환 — 호출자가 fail-closed 처리를 결정한다.
+    이 함수가 호출되는 시점은 이미 .teammode-active 가드를 통과한 후이다.
+    """
+    try:
+        from pathlib import Path as _Path
+        manifest_path = _Path(__file__).resolve().parent / "manifest.json"
+        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    targets: dict[tuple[str, str], str] = {}
+    for entry in entries:
+        if entry.get("event") != "PreToolUse":
+            continue
+        if entry.get("script") != "confirm-action.py":
+            continue
+        match = entry.get("match") or {}
+        mcp = match.get("mcp") or {}
+        server = mcp.get("server")
+        tool = mcp.get("tool")
+        if not server or not tool:
+            continue
+        # args: manifest では 文字列(単一 marker)または リスト先頭要素
+        args = entry.get("args") or ""
+        marker = args if isinstance(args, str) else (args[0] if args else "")
+        targets[(server, tool)] = marker
+    return targets
 
 
 def _has_human_allow(root: str, marker: str) -> bool:
@@ -112,7 +158,7 @@ def _deny(reason: str) -> None:
 def main() -> int:
     _ensure_utf8_io()  # 한글 차단 사유 json 출력이 Windows cp949 stdout 에서 크래시 방지
     # allow marker = 어댑터가 넘긴 첫 인자(manifest args). 없을 수도 있다.
-    marker = sys.argv[1] if len(sys.argv) > 1 else ""
+    argv_marker = sys.argv[1] if len(sys.argv) > 1 else ""
 
     # ── 0. 입력 파싱 ── (strict 변환 실패는 normalize 가 처리; 여기 도달하면 정규형)
     try:
@@ -126,26 +172,62 @@ def main() -> int:
 
     root = _team_root()
 
-    # ── 1. .acme-active 가드: 마커 없으면 차단도 안 함(빌드 안전) ──
-    if not os.path.isfile(os.path.join(root, ".acme-active")):
+    # ── 1. .teammode-active 가드: teammode 비활성 시 차단하지 않음(빌드 안전) ──
+    if not os.path.isfile(os.path.join(root, ".teammode-active")):
         return 0
 
-    # ── 2. 정규 스키마로 대상 확인 (linear/create_issue) ──
+    # ── 2. 정규 스키마로 대상 확인 (manifest 기반 동적 판정 — S6 일반화) ──
     # 런타임 자가 필터(§2.10-2)가 normalize 단에서 이미 매처 불일치를 걸러주지만,
     # 공통 스크립트도 정규 스키마로 한 번 더 자기 대상(server·name)을 확인한다
-    # (방어적 정확화 — 무관 MCP 는 통과. N5 확장 시 TARGET_* 추가).
+    # (방어적 정확화 — 무관 MCP 는 통과).
+    #
+    # S6: TARGET_SERVER/TARGET_NAME 하드코딩 제거 → manifest.json 을 런타임에 읽어
+    # (server, tool) → marker 매핑을 동적으로 구성한다. 새 도구 추가 시 manifest 만 수정.
     tool = data.get("tool") or {}
     if tool.get("kind") != "mcp":
         return 0
-    if not (tool.get("server") == TARGET_SERVER and tool.get("name") == TARGET_NAME):
-        return 0  # 대상 액션이 아님 → 차단 안 함(통과)
 
-    # ── 3. 사람의 명시적 allow 신호(모델 비제어 채널)가 있으면 통과, 없으면 차단 ──
-    if _has_human_allow(root, marker):
+    server = tool.get("server") or ""
+    name = tool.get("name") or ""
+
+    if not server or not name:
         return 0
 
-    _deny("linear 이슈 생성은 사람 확인이 필요합니다(teammode confirm-action). "
-          "의도한 동작이면 명시적으로 승인 후 재시도하세요.")
+    # manifest 에 등록된 (server, tool) 쌍인지 확인
+    # manifest 로드 실패 시 None 반환:
+    #   - marker 인자가 있으면 → 보수적 차단(fail-closed). marker 를 받았는데 manifest 를
+    #     못 읽으면 게이트 대상 여부를 판정할 수 없어 안전하게 막는다(#6).
+    #   - marker 없이 호출됐으면 → 통과(훅이 이 도구의 게이트로 지정되지 않은 경우).
+    targets = _load_manifest_targets()
+    if targets is None:
+        if argv_marker:
+            # marker 있고 manifest 로드 실패 → fail-closed
+            _deny("manifest 로드 실패로 안전 차단(fail-closed). manifest.json 을 확인하세요.")
+            return 2
+        return 0  # marker 없음 → 게이트 대상 미지정 → 통과
+    if (server, name) not in targets:
+        return 0  # 대상 액션이 아님 → 차단 안 함(통과)
+
+    # allow 판정은 **manifest 의 marker 를 기준**으로 한다. 실제 입력 (server, name) 으로
+    # 찾은 manifest target 의 marker 만 신뢰한다 — argv_marker 는 배선(normalize→hook)이
+    # 넘긴 값이라, 스테일/오배선 시 다른 도구의 marker 로 승인 우회가 가능하다.
+    # argv_marker 가 있는데 manifest_marker 와 다르면 fail-closed deny(오배선 차단).
+    manifest_marker = targets[(server, name)]
+    if argv_marker and argv_marker != manifest_marker:
+        _deny(
+            f"marker 불일치 — argv={argv_marker!r} != manifest={manifest_marker!r} "
+            "(오배선 의심, fail-closed 차단)."
+        )
+        return 2
+
+    # ── 3. 사람의 명시적 allow 신호(모델 비제어 채널)가 있으면 통과, 없으면 차단 ──
+    if _has_human_allow(root, manifest_marker):
+        return 0
+
+    _deny(
+        f"{server}/{name} 은 사람 확인이 필요합니다(teammode confirm-action). "
+        "의도한 동작이면 명시적으로 승인 후 재시도하세요."
+    )
     return 2  # PreToolUse 차단 — normalize 가 exit code 를 그대로 전파
 
 

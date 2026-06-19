@@ -40,7 +40,7 @@ from io_encoding import ensure_utf8_io  # noqa: E402
 
 
 def _active_marker(team_root: Path) -> Path:
-    return team_root / ".acme-active"
+    return team_root / ".teammode-active"
 
 
 def _banner_file(team_root: Path) -> Path:
@@ -77,7 +77,7 @@ def _render_banner(team_root: Path) -> str:
     banner_file = _banner_file(team_root)
     if banner_file.is_file():
         return banner_file.read_text(encoding="utf-8")
-    team_name = os.environ.get("ACME_TEAM_NAME", "acme")
+    team_name = os.environ.get("TEAMMODE_TEAM_NAME", "teammode")
     banner = f"=== {team_name} team mode ON ===\n"
     banner_file.parent.mkdir(parents=True, exist_ok=True)
     banner_file.write_text(banner, encoding="utf-8")
@@ -1443,7 +1443,7 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
     roles = _member_roles(team_root)
     for m in members:
         m["role"] = roles.get(m["author"])
-    active = (team_root / ".acme-active").exists()
+    active = (team_root / ".teammode-active").exists()
     state = "on (active)" if active else "off"
 
     if as_json:

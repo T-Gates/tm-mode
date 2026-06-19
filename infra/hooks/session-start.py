@@ -9,7 +9,7 @@
 출력(stdout):       Claude additionalContext 형식 JSON — INDEX + 멤버별 최근 로그 summary.
 
 규약:
-- 팀 모드 활성(.acme-active) 시에만 주입. 비활성이면 무동작(exit 0).
+- 팀 모드 활성(.teammode-active) 시에만 주입. 비활성이면 무동작(exit 0).
 - 팀 루트 = TEAMMODE_HOME(런타임 훅이라 env 정당, session-log-remind 와 동일 근거).
 - 맥락 수집은 엔진(teammode._collect_members/_read_index)을 단일 소스로 재사용 — 드리프트
   방지. 요약은 하지 않는다(엔진 철학: 기계적 재료손질, 요약은 스킬·에이전트 몫).
@@ -137,7 +137,7 @@ def main() -> int:
 
     root = Path(_team_root())
     # 팀 모드 활성 시에만 주입
-    if not (root / ".acme-active").is_file():
+    if not (root / ".teammode-active").is_file():
         return 0
 
     # 세션당 1회 레포 최신화 — 맥락 주입 전에(최신 상태로 주입). 실패 무해(철칙).

@@ -18,7 +18,7 @@ git clone git@github.com:our-team/our-repo.git
 cd our-repo
 ```
 **(b) 에이전트** — 아직 아무것도 안 한다. 내가 말을 걸 때까지 대기.
-**(c) 화면** — 셸 프롬프트뿐. teammode 흔적 없음(`team.config.json`·`memory/`·`.acme-active` 전부 없음).
+**(c) 화면** — 셸 프롬프트뿐. teammode 흔적 없음(`team.config.json`·`memory/`·`.teammode-active` 전부 없음).
 **(d) 다음** — 보통은 바로 셋업을 부탁하지만, 처음 보는 레포라 호기심에 "뭐하는 레포냐"부터 물을 수 있다. → 국면 ①.5 (또는 곧장 국면 ②).
 
 ### 국면 ①.5 첫 호기심 — "이거 뭐하는 레포야?"
@@ -86,7 +86,7 @@ python infra/install.py --root . --member-name alice --yes
 ```bash
 python infra/teammode.py context --root . --json
 ```
-**화면** — `state=on`(verify 가 `on` 을 켰으므로 `.acme-active` 마커 존재), `members` 에 alice 1명, summary 는 없음(로그 0):
+**화면** — `state=on`(verify 가 `on` 을 켰으므로 `.teammode-active` 마커 존재), `members` 에 alice 1명, summary 는 없음(로그 0):
 ```json
 {"state": "on", "index": "# 팀 메모리 인덱스 (INDEX.md)…", "members": [{"author": "alice", "date": "…", "summary": "…", "role": null}]}
 ```

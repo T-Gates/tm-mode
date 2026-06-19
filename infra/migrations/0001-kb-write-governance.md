@@ -21,7 +21,7 @@ PreToolUse 훅 스크립트.
 
 - `memory/` 하위 경로를 타겟으로 하는 `file_edit` 액션을 감지
 - unlock 플래그가 없거나 TTL 만료 시 `decision:"block"` 반환 (exit 2)
-- `.acme-active` 가드 — teammode off 상태에서는 비활성
+- `.teammode-active` 가드 — teammode off 상태에서는 비활성
 
 ### 변경: `infra/hooks/manifest.json`
 

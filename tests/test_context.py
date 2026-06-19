@@ -1,7 +1,7 @@
 """V.2 `context` 동사 — 팀 메모리 긁어 구조화 출력 테스트 (스펙 01 §4).
 
 엔진은 기계적 수집만: INDEX.md·멤버별 최근 작업일 세션로그 파일·그 summary 라인·
-.acme-active 상태를 긁어 구조화(텍스트/JSON) 출력. **요약은 안 함**(스킬 몫).
+.teammode-active 상태를 긁어 구조화(텍스트/JSON) 출력. **요약은 안 함**(스킬 몫).
 
 골든 02-context-injection: stdout 에 "INDEX" 와 "summary" 포함.
 P1: --root 명시. /tmp 격리.
@@ -93,11 +93,11 @@ def test_context_multiple_members(tmp_path):
     assert "Jane작업" in r.stdout and "Jonathon작업" in r.stdout
 
 
-# ── 상태(.acme-active) 반영 ──
+# ── 상태(.teammode-active) 반영 ──
 
 def test_context_reports_active_state(tmp_path):
     _write_index(tmp_path)
-    (tmp_path / ".acme-active").write_text("", encoding="utf-8")
+    (tmp_path / ".teammode-active").write_text("", encoding="utf-8")
     r = _run(tmp_path, "context")
     # 활성 상태가 출력에 드러난다 (on/active 류 토큰)
     assert "active" in r.stdout.lower() or "on" in r.stdout.lower()

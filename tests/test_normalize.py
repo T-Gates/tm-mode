@@ -190,7 +190,7 @@ def test_common_hook_consumes_canonical_only(env, tmp_path):
     """session-log-remind 를 정규 JSON stdin 으로 직접 호출 — 에이전트 무지 확인."""
     hook = REPO / "infra" / "hooks" / "session-log-remind.py"
     root = env.root
-    (root / ".acme-active").write_text("")
+    (root / ".teammode-active").write_text("")
     # 오래된 세션로그 없음 + 카운터 0 → 첫 호출은 리마인드 없음(age는 9999라 30분초과 트리거)
     canonical = {"event": "UserPromptSubmit", "prompt": "hi", "agent": "claude"}
     proc = subprocess.run(
@@ -208,7 +208,7 @@ def test_common_hook_consumes_canonical_only(env, tmp_path):
 
 def test_common_hook_ignores_non_userprompt_event(env, tmp_path):
     hook = REPO / "infra" / "hooks" / "session-log-remind.py"
-    (env.root / ".acme-active").write_text("")
+    (env.root / ".teammode-active").write_text("")
     canonical = {"event": "PostToolUse", "agent": "claude"}
     proc = subprocess.run(
         [PY, str(hook)], input=json.dumps(canonical), capture_output=True, text=True,
@@ -224,7 +224,7 @@ def test_remind_end_to_end_through_normalize(env, tmp_path):
     (env.root / "infra" / "hooks" / "session-log-remind.py").write_text(
         (REPO / "infra" / "hooks" / "session-log-remind.py").read_text(),
         encoding="utf-8")
-    (env.root / ".acme-active").write_text("")
+    (env.root / ".teammode-active").write_text("")
     raw = {"hook_event_name": "UserPromptSubmit", "prompt": "작업 시작"}
     proc = env.run("session-log-remind.py", raw, manifest=[
         {"event": "UserPromptSubmit", "script": "session-log-remind.py", "mode": "on"}])

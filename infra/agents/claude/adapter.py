@@ -108,7 +108,12 @@ class Adapter:
         self.settings_path = Path(settings_path)
         # python=None → 설치 시점 인터프리터 절대경로(W-B, python3 하드코딩 제거).
         self.python = python if python is not None else default_python()
-        self.team_root = Path(team_root) if team_root else self.agent_dir.parents[2]
+        if team_root is not None and str(team_root).strip() == "":
+            raise ValueError(
+                "--team-root 에 빈 문자열/공백을 지정할 수 없습니다. "
+                "생략하거나 유효한 경로를 전달하세요."
+            )
+        self.team_root = Path(team_root).resolve() if team_root else self.agent_dir.parents[2]
         self.events = events or self._load_events()
         self.normalize_path = self.agent_dir / "normalize.py"
         # config_path=None(기본): team_root/team.config.json. 빈 슬롯 우선 규칙(§2.9)·
@@ -189,7 +194,14 @@ class Adapter:
 
         provider 팩의 services(역할 목록) 중 하나라도 config services 에서 같은
         provider 로 채워져 있으면 연결됨. services 가 dict 이어야 호출된다.
+
+        S6 일반화: `teammode` 단일 MCP 서버는 provider 팩 시스템과 별개로 handlers/ 존재
+        여부로 연결 판정한다. handlers/ 에 .py 파일이 하나라도 있으면 "연결됨".
         """
+        # S6: teammode 단일 서버는 handlers/ 존재 여부로 연결 판정 (provider 팩 무관)
+        if canonical_server == "teammode":
+            return self._has_handlers()
+
         roles = self._provider_roles(canonical_server)
         if not roles:
             # provider 팩을 못 찾으면 역할 매핑 불가 → 보수적으로 "미연결" 취급
@@ -335,6 +347,41 @@ class Adapter:
             "_register_hint": pack.mcp.get("register_hint", "") if pack else "",
         }
 
+    def _build_teammode_entry(self) -> dict:
+        """teammode 단일 MCP 서버 등록 항목 (S5).
+
+        handlers/ 디렉토리가 있을 때만 호출된다. 실 command/args/cwd 를 포함해
+        role_server.py 를 기동할 수 있는 완전한 항목을 반환한다.
+        """
+        team_root = self.team_root  # 절대경로 (Adapter.__init__ 에서 resolve 됨)
+        handlers_dir = team_root / "handlers"
+        # team name: team.config.json의 team.name 필드, 없으면 팀루트 디렉토리 이름 사용
+        team_name = team_root.name
+        if self.config_path.is_file():
+            try:
+                cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
+                team_name = cfg.get("team", {}).get("name", team_name) or team_name
+            except (ValueError, OSError, AttributeError):
+                pass
+        return {
+            "_teammode_managed": True,
+            "_canonical_server": "teammode",
+            "command": "python",
+            "args": [
+                "-m", "infra.mcp.role_server",
+                "--team", str(team_name),
+                "--handlers-dir", str(handlers_dir),
+            ],
+            "cwd": str(team_root),
+        }
+
+    def _has_handlers(self) -> bool:
+        """team_root/handlers/ 에 .py 파일이 하나 이상 있으면 True."""
+        handlers_dir = self.team_root / "handlers"
+        if not handlers_dir.is_dir():
+            return False
+        return any(handlers_dir.glob("*.py"))
+
     def install_mcp(self) -> list:
         """config services 의 연결 provider 를 MCP 서버로 등록(자기 방식). 멱등.
 
@@ -394,6 +441,24 @@ class Adapter:
                 continue
             servers[alias] = entry
             changes.append(f"[mcp] {alias} 등록")
+
+        # S5: teammode 단일 MCP 서버 등록 (공존 전략).
+        # handlers/ 디렉토리에 .py 파일이 있으면 teammode alias 를 desired 에 추가.
+        # 기존 provider alias(linear 등) 와 공존 — desired_aliases 에 둘 다 포함.
+        if self._has_handlers():
+            tm_alias = "teammode"
+            tm_entry = self._build_teammode_entry()
+            desired_aliases.add(tm_alias)
+            existing_tm = servers.get(tm_alias)
+            if self._is_owned_mcp(existing_tm) and existing_tm == tm_entry:
+                pass  # 멱등: 변경 없음
+            elif existing_tm is not None and not self._is_owned_mcp(existing_tm):
+                # 사용자가 직접 등록한 teammode 서버 — 무접촉.
+                changes.append(f"[warn] {tm_alias}: 사용자 등록 MCP 서버 존재 → 무접촉")
+                desired_aliases.discard(tm_alias)
+            else:
+                servers[tm_alias] = tm_entry
+                changes.append(f"[mcp] {tm_alias} 등록")
 
         # 제거: teammode 소유지만 더 이상 연결되지 않는 항목.
         for alias in list(servers.keys()):
@@ -485,7 +550,12 @@ class Adapter:
             if isinstance(match, dict) and "mcp" in match and isinstance(services, dict):
                 canonical = match["mcp"].get("server")
                 if not self._mcp_server_connected(canonical, services):
-                    # 빈 슬롯 우선 규칙: fallback 무관 등록 생략 + [info] (에러 아님).
+                    # S6: teammode 단일 서버는 handlers/ 없으면 완전 미설정 상태(opt-in).
+                    # handlers/ 없음 = 팀이 아직 tm-connect 를 실행하지 않은 것 → 조용히 생략.
+                    # provider 기반 서버와 달리 [info] 메시지 없음(팀 모르게 silent skip).
+                    if canonical == "teammode":
+                        continue
+                    # 기존 provider 기반 서버: 빈 슬롯 우선 규칙 + [info]
                     infos.append(
                         f"[info] {entry['script']}: '{canonical}' 역할 슬롯 미연결 "
                         f"→ MCP 매처 생략(빈 슬롯, 슬롯 연결 후 sync 재실행)")
@@ -809,6 +879,9 @@ def main(argv=None) -> int:
     p.add_argument("--settings", default=os.path.expanduser("~/.claude/settings.json"))
     # --python 기본 None → 설치 시점 sys.executable(절대경로) 해석 (W-B, 크로스플랫폼)
     p.add_argument("--python", default=None)
+    # --team-root: 팀 레포 루트 절대경로. wire_agents 가 명시 전달해 __file__ 추론 어긋남 해소
+    # (S0). 없으면 기존 기본값(here.parents[2]) 유지 — 하위 호환.
+    p.add_argument("--team-root", default=None)
     # MCP 등록 파일·config·providers 경로 — 기본은 실 경로지만 테스트는 tmp 주입(격리).
     p.add_argument("--mcp-config", default=None)
     p.add_argument("--config", default=None)
@@ -827,13 +900,18 @@ def main(argv=None) -> int:
 
     args = p.parse_args(argv)
 
+    # 명시적 --team-root 가 빈 문자열/공백이면 조용히 기본값으로 폴백하지 않고 명확히 거부.
+    if args.team_root is not None and args.team_root.strip() == "":
+        print("[error] --team-root 에 빈 문자열/공백을 지정할 수 없습니다.", file=sys.stderr)
+        return 1
+
     d = _default_paths()
     adapter = Adapter(
         agent_dir=d["agent_dir"],
         manifest_path=d["manifest_path"],
         settings_path=args.settings,
         python=args.python,
-        team_root=d["team_root"],
+        team_root=args.team_root if args.team_root is not None else d["team_root"],
         config_path=args.config,
         providers_dir=args.providers_dir,
         mcp_config_path=args.mcp_config,

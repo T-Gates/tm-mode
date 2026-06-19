@@ -62,7 +62,7 @@ def main() -> int:
 
     root = _team_root()
     # 팀 모드 활성 시에만 동작
-    if not os.path.isfile(os.path.join(root, ".acme-active")):
+    if not os.path.isfile(os.path.join(root, ".teammode-active")):
         return 0
 
     # (레포 최신화는 여기서 하지 않는다 — SessionStart 훅이 세션당 1회 담당. 위 모듈

@@ -9,7 +9,7 @@
       "action": { "kind": "command", "argv": ["on"] },
       "expect": [
         { "kind": "exit_code", "value": 0 },
-        { "kind": "stdout_contains", "value": "acme" }
+        { "kind": "stdout_contains", "value": "teammode" }
       ]
     },
     {

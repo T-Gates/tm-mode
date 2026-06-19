@@ -51,7 +51,7 @@ def test_verify_does_not_touch_ambient_host(tmp_path, monkeypatch):
     fake_host = tmp_path / "REAL_HOST"
     fake_host.mkdir()
     # 실호스트에 ON 마커를 미리 둔다 — off 시나리오가 이걸 지우면 격리 실패
-    (fake_host / ".acme-active").write_text("")
+    (fake_host / ".teammode-active").write_text("")
     (fake_host / "memory").mkdir()
     sentinel = fake_host / "memory" / "banner.txt"
     sentinel.write_text("ORIGINAL HOST BANNER")
@@ -67,7 +67,7 @@ def test_verify_does_not_touch_ambient_host(tmp_path, monkeypatch):
     report = check.run_mode("verify", eng, run_root, scenario_dir=SCENARIO_DIR)
 
     # 핵심 단언: 실호스트의 마커·배너가 그대로 살아있다 (오염 0)
-    assert (fake_host / ".acme-active").exists(), "실호스트 ON 마커가 삭제됨 — 격리 실패!"
+    assert (fake_host / ".teammode-active").exists(), "실호스트 ON 마커가 삭제됨 — 격리 실패!"
     assert sentinel.read_text() == "ORIGINAL HOST BANNER", "실호스트 배너가 덮어써짐 — 격리 실패!"
     # 작업은 격리 run root 에서 일어났다
     assert (run_root / "memory" / "banner.txt").exists()
@@ -80,7 +80,7 @@ def test_verify_does_not_touch_ambient_host(tmp_path, monkeypatch):
 def test_conform_also_isolated(tmp_path, monkeypatch):
     fake_host = tmp_path / "REAL_HOST"
     fake_host.mkdir()
-    (fake_host / ".acme-active").write_text("")
+    (fake_host / ".teammode-active").write_text("")
     monkeypatch.setenv("TEAMMODE_HOME", str(fake_host))
 
     run_root = tmp_path / "runroot"
@@ -88,7 +88,7 @@ def test_conform_also_isolated(tmp_path, monkeypatch):
     eng = check.SubprocessEngine(
         ENGINE + ["--settings", str(run_root / "settings.json")], run_root)
     check.run_mode("conform", eng, run_root, scenario_dir=SCENARIO_DIR)
-    assert (fake_host / ".acme-active").exists(), "conform 이 실호스트 마커 삭제 — 격리 실패!"
+    assert (fake_host / ".teammode-active").exists(), "conform 이 실호스트 마커 삭제 — 격리 실패!"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -103,10 +103,10 @@ def _run_engine(args, cwd, env):
 
 def test_direct_off_ignores_ambient_team_home(tmp_path):
     """ambient TEAMMODE_HOME=피해자 set 상태로 `off --root <격리>` 직접 호출 →
-    피해자 경로의 .acme-active 는 생존한다 (엔진이 env 를 안 읽음)."""
+    피해자 경로의 .teammode-active 는 생존한다 (엔진이 env 를 안 읽음)."""
     victim = tmp_path / "VICTIM"
     victim.mkdir()
-    (victim / ".acme-active").write_text("")
+    (victim / ".teammode-active").write_text("")
 
     run_root = tmp_path / "runroot"
     run_root.mkdir()
@@ -122,7 +122,7 @@ def test_direct_off_ignores_ambient_team_home(tmp_path):
 
     assert proc.returncode == 0, proc.stderr
     # 엔진이 env 를 읽었다면 피해자 마커가 삭제됐을 것 — 생존해야 통과
-    assert (victim / ".acme-active").exists(), (
+    assert (victim / ".teammode-active").exists(), (
         "엔진이 ambient TEAMMODE_HOME 을 읽어 피해자 마커 삭제 — 격리 실패!")
 
 
@@ -130,7 +130,7 @@ def test_direct_off_without_root_errors(tmp_path):
     """`--root` 미지정 시 정책 (A): 에러로 즉시 종료 (어느 폴더도 안 건드림)."""
     victim = tmp_path / "VICTIM"
     victim.mkdir()
-    (victim / ".acme-active").write_text("")
+    (victim / ".teammode-active").write_text("")
 
     env = dict(os.environ)
     env["TEAMMODE_HOME"] = str(victim)
@@ -140,7 +140,7 @@ def test_direct_off_without_root_errors(tmp_path):
     assert proc.returncode != 0, "--root 없으면 에러 종료해야 함 (정책 A)"
     assert "--root" in proc.stderr
     # cwd(피해자) 로도 폴백하지 않는다 — 마커 생존
-    assert (victim / ".acme-active").exists(), (
+    assert (victim / ".teammode-active").exists(), (
         "--root 없는데 cwd 를 건드림 — 정책 A 위반!")
 
 
@@ -165,7 +165,7 @@ def test_direct_on_with_root_writes_only_to_root(tmp_path):
         cwd=tmp_path, env=env)
 
     assert proc.returncode == 0, proc.stderr
-    assert (run_root / ".acme-active").exists()
+    assert (run_root / ".teammode-active").exists()
     assert (run_root / "memory" / "banner.txt").is_file()
 
 
@@ -182,4 +182,4 @@ def test_settings_omitted_without_install_refuses(tmp_path):
     assert proc.returncode != 0, "격리 모드(--settings)도 --install 도 없으면 거부해야 함"
     assert "settings" in proc.stderr.lower() or "install" in proc.stderr.lower()
     # 거부됐으므로 마커도 안 생긴다 (settings 단계 이전에 차단)
-    assert not (run_root / ".acme-active").exists()
+    assert not (run_root / ".teammode-active").exists()

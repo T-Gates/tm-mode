@@ -28,11 +28,71 @@
     "event": "PreToolUse",
     "match": { "mcp": { "server": "linear", "tool": "create_issue" } },
     "script": "confirm-action.py",
-    "args": "acme-linear-create-allow",
+    "args": "teammode-linear-create-allow",
     "timeout": 2,
     "fallback": "runtime",
     "enforcement": "block",
     "strict": true,
+    "_timeout_unit": "seconds"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "mcp": { "server": "teammode", "tool": "issues_create" } },
+    "script": "confirm-action.py",
+    "args": "teammode-issues-create-allow",
+    "timeout": 2,
+    "fallback": "runtime",
+    "enforcement": "block",
+    "_timeout_unit": "seconds"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "mcp": { "server": "teammode", "tool": "issues_update" } },
+    "script": "confirm-action.py",
+    "args": "teammode-issues-update-allow",
+    "timeout": 2,
+    "fallback": "runtime",
+    "enforcement": "block",
+    "_timeout_unit": "seconds"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "mcp": { "server": "teammode", "tool": "chat_send" } },
+    "script": "confirm-action.py",
+    "args": "teammode-chat-send-allow",
+    "timeout": 2,
+    "fallback": "runtime",
+    "enforcement": "block",
+    "_timeout_unit": "seconds"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "mcp": { "server": "teammode", "tool": "docs_write" } },
+    "script": "confirm-action.py",
+    "args": "teammode-docs-write-allow",
+    "timeout": 2,
+    "fallback": "runtime",
+    "enforcement": "block",
+    "_timeout_unit": "seconds"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "mcp": { "server": "teammode", "tool": "docs_create" } },
+    "script": "confirm-action.py",
+    "args": "teammode-docs-create-allow",
+    "timeout": 2,
+    "fallback": "runtime",
+    "enforcement": "block",
+    "_timeout_unit": "seconds"
+  },
+  {
+    "event": "PreToolUse",
+    "match": { "mcp": { "server": "teammode", "tool": "calendar_create" } },
+    "script": "confirm-action.py",
+    "args": "teammode-calendar-create-allow",
+    "timeout": 2,
+    "fallback": "runtime",
+    "enforcement": "block",
     "_timeout_unit": "seconds"
   },
   {

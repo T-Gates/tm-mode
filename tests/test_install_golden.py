@@ -77,7 +77,7 @@ def test_I1_introducer_full_run(tmp_path):
     assert list((team / "memory" / "team" / "sessions" / "heidi").iterdir()) == []
     # verify: context --json 이 L1 데이터를 읽어냄 + active 마커
     assert "[verify] L1 데이터 읽힘" in proc.stdout
-    assert (team / ".acme-active").is_file()
+    assert (team / ".teammode-active").is_file()
 
 
 # ─────────────────────────── I2 — 유효 config 레포 (팀원) ───────────────────────────
@@ -179,7 +179,7 @@ def test_I4_ambient_teammode_home_ignored(tmp_path):
     assert proc.returncode == 0
     # victim 무접촉: memory·marker 미생성
     assert not (victim / "memory").exists()
-    assert not (victim / ".acme-active").exists()
+    assert not (victim / ".teammode-active").exists()
     # 작업은 명시 --root(team)에만
     assert (team / "memory").is_dir()
 
@@ -300,7 +300,7 @@ def test_Idry_no_side_effects(tmp_path):
     # 무접촉: memory·config·marker·iso settings 전부 미생성
     assert not (team / "memory").exists()
     assert not (team / "team.config.json").exists()
-    assert not (team / ".acme-active").exists()
+    assert not (team / ".teammode-active").exists()
     assert not iso.exists()
     assert not (home / ".bashrc").exists()
 

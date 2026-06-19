@@ -280,7 +280,7 @@ env 제거(`remove_injected_env`)는 uninstall에서만 사용한다. Windows는
 
 단계와 실패 정책:
 
-1. `teammode.py`를 `runpy.run_path()`로 로드해 `cmd_off(team_root, settings_path)` 호출. `.acme-active`가 있었고 호출 후 없어졌으면 제거 목록에 active marker를 넣는다. 예외는 warn 후 계속.
+1. `teammode.py`를 `runpy.run_path()`로 로드해 `cmd_off(team_root, settings_path)` 호출. `.teammode-active`가 있었고 호출 후 없어졌으면 제거 목록에 active marker를 넣는다. 예외는 warn 후 계속.
 2. Claude adapter를 로드해 `Adapter(...).uninstall()` 호출. `[remove]` 메시지가 있으면 settings hook 제거로 기록한다. 예외는 warn 후 계속.
 3. env 제거:
    - `--settings`가 있고 `--profile`이 없으면 격리 대칭 원칙으로 실 env 제거를 건너뛴다.

@@ -271,7 +271,7 @@ def _run_start(team_root, state_dir):
 
 def test_remind_does_NOT_pull_when_team_active(cloned_repo, tmp_path):
     """핵심 회귀: UserPromptSubmit 훅은 더 이상 pull 하지 않는다(매 프롬프트 hang 트리거 제거)."""
-    (cloned_repo.clone / ".acme-active").write_text("")
+    (cloned_repo.clone / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     proc = _run_remind(cloned_repo.clone, state_dir)
@@ -287,7 +287,7 @@ def test_remind_still_reminds_when_team_active(tmp_path):
     import json
     team = tmp_path / "team"
     (team / "memory" / "team" / "sessions").mkdir(parents=True)
-    (team / ".acme-active").write_text("")
+    (team / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     proc = _run_remind(team, state_dir)
@@ -297,7 +297,7 @@ def test_remind_still_reminds_when_team_active(tmp_path):
 
 
 def test_remind_inactive_no_remind(cloned_repo, tmp_path):
-    """.acme-active 없으면 무동작(exit 0, 출력 없음)."""
+    """.teammode-active 없으면 무동작(exit 0, 출력 없음)."""
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     proc = _run_remind(cloned_repo.clone, state_dir)
@@ -309,7 +309,7 @@ def test_remind_inactive_no_remind(cloned_repo, tmp_path):
 
 def test_start_pulls_when_team_active(cloned_repo, tmp_path):
     """팀 모드 활성 + 1 behind → SessionStart 훅이 ff-pull 을 수행한다."""
-    (cloned_repo.clone / ".acme-active").write_text("")
+    (cloned_repo.clone / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     proc = _run_start(cloned_repo.clone, state_dir)
@@ -319,7 +319,7 @@ def test_start_pulls_when_team_active(cloned_repo, tmp_path):
 
 
 def test_start_does_not_pull_when_team_inactive(cloned_repo, tmp_path):
-    """.acme-active 없으면 pull 도 주입도 안 함(exit 0)."""
+    """.teammode-active 없으면 pull 도 주입도 안 함(exit 0)."""
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     proc = _run_start(cloned_repo.clone, state_dir)
@@ -332,7 +332,7 @@ def test_start_never_blocks_on_pull_failure(tmp_path):
     import json
     team = tmp_path / "team"
     (team / "memory" / "team" / "sessions").mkdir(parents=True)
-    (team / ".acme-active").write_text("")
+    (team / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     proc = _run_start(team, state_dir)
@@ -343,7 +343,7 @@ def test_start_never_blocks_on_pull_failure(tmp_path):
 
 def test_start_throttles_rapid_restart(cloned_repo, tmp_path):
     """첫 SessionStart pull 성공 → 상태 기록 → throttle 창 안 둘째 호출은 pull 스킵."""
-    (cloned_repo.clone / ".acme-active").write_text("")
+    (cloned_repo.clone / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     p1 = _run_start(cloned_repo.clone, state_dir)

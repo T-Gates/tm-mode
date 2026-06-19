@@ -243,7 +243,7 @@ def test_session_log_single_file_and_contains(tmp_path):
 
 def test_state_off_assertion(tmp_path):
     def go_off(root):
-        active = root / ".acme-active"
+        active = root / ".teammode-active"
         if active.exists():
             active.unlink()
 
@@ -253,7 +253,7 @@ def test_state_off_assertion(tmp_path):
         {"name": "persisted", "action": {"kind": "noop"},
          "expect": [{"kind": "state_off"}]},
     ])
-    (tmp_path / ".acme-active").write_text("")
+    (tmp_path / ".teammode-active").write_text("")
     eng = FakeEngine(tmp_path, responses={"off": (0, "", "")},
                      side_effects={"off": [go_off]})
     assert check.run_scenario(sc, eng, tmp_path).passed is True

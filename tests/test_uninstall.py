@@ -1,7 +1,7 @@
 """신규 기능 — install.py --uninstall (호스트 되돌리기).
 
 install 이 호스트에 더한 것을 역순·안전·멱등하게 제거한다. 스펙 바깥 신규 기능이며
-현 코드베이스의 실제 설치 산물(.acme-active 마커 + settings.json teammode 훅)에
+현 코드베이스의 실제 설치 산물(.teammode-active 마커 + settings.json teammode 훅)에
 더해, 미래의 env 주입/obsidian 등록까지 **우리 표식만** 골라 되돌리는 역함수를 둔다.
 
 호스트 철칙: 모든 테스트는 fake HOME + 격리 경로(--settings/--obsidian-config tmp).
@@ -41,7 +41,7 @@ def _profile_with_ours(tmp_path):
     p.write_text(
         "export PATH=/usr/local/bin:$PATH  # 남의 줄, 보존돼야 함\n"
         "alias ll='ls -al'  # 또 다른 남의 줄\n"
-        f'export ACME_TEAM_NAME=acme  {ENV_MARKER} v0.1)\n'
+        f'export TEAMMODE_TEAM_NAME=acme  {ENV_MARKER} v0.1)\n'
         "export EDITOR=vim  # 남의 줄\n",
         encoding="utf-8",
     )
@@ -55,7 +55,7 @@ def test_remove_injected_env_only_our_line(tmp_path):
     text = p.read_text()
     # 우리 줄만 사라짐
     assert ENV_MARKER not in text
-    assert "ACME_TEAM_NAME" not in text
+    assert "TEAMMODE_TEAM_NAME" not in text
     # 남의 줄은 전부 보존
     assert "export PATH=/usr/local/bin:$PATH" in text
     assert "alias ll='ls -al'" in text
@@ -163,7 +163,7 @@ def test_uninstall_removes_marker_and_hooks(tmp_path):
     settings = tmp_path / "settings.json"
     rc = _on(team_root, settings)
     assert rc == 0
-    marker = team_root / ".acme-active"
+    marker = team_root / ".teammode-active"
     assert marker.exists()
     blob = json.loads(settings.read_text())
     assert "normalize.py" in json.dumps(blob)  # teammode 훅 등록됨
@@ -210,7 +210,7 @@ def test_uninstall_idempotent(tmp_path):
                        "--settings", str(settings)])
     assert rc == 0
     assert settings.read_text() == first
-    assert not (team_root / ".acme-active").exists()
+    assert not (team_root / ".teammode-active").exists()
 
 
 def test_uninstall_does_not_delete_memory(tmp_path):

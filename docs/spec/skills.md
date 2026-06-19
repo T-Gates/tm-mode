@@ -326,14 +326,14 @@ python infra/teammode.py issue create --root . --title "<요약>"
 
 사전 고지(전체 동작 범위):
 
-- `.acme-active` 마커를 삭제해 팀모드를 off로 만든다.
+- `.teammode-active` 마커를 삭제해 팀모드를 off로 만든다.
 - settings.json에서 teammode 훅을 제거한다. 남의 훅은 보존한다.
 - 현 `install.py --uninstall` 경로는 install이 추가한 MCP 등록과 skills 설치 흔적은 제거하지 않는다.
 - 셸 프로파일에서 teammode가 주입한 줄만 제거한다. 남의 줄은 보존한다.
 - `obsidian.json`에서 이 팀 볼트 등록만 해제한다. 다른 볼트와 Obsidian 미설치 상태는 무영향이다.
 - `memory/`는 삭제하지 않는다. 세션로그, INDEX, members 등 팀 데이터는 그대로 둔다.
 
-현재 `infra/skills/base/tm-reset/SKILL.md`의 "먼저 확인" 목록은 `.acme-active`·settings hook·env·Obsidian·memory 보존만 고지하고, MCP 등록과 skills 설치 흔적이 제거되지 않는다는 사실은 빠뜨린다. 실제 uninstall 동작은 아래 설명과 A.3 갭을 따른다.
+현재 `infra/skills/base/tm-reset/SKILL.md`의 "먼저 확인" 목록은 `.teammode-active`·settings hook·env·Obsidian·memory 보존만 고지하고, MCP 등록과 skills 설치 흔적이 제거되지 않는다는 사실은 빠뜨린다. 실제 uninstall 동작은 아래 설명과 A.3 갭을 따른다.
 
 동의 후 실행:
 

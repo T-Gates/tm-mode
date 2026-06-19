@@ -522,7 +522,7 @@ def test_util_add_active_no_settings_skips_symlink(tmp_path):
 
     root = _scaffold(tmp_path, include_util_skill=True)
     # active marker 생성 (on 상태 시뮬레이션)
-    (root / ".acme-active").touch()
+    (root / ".teammode-active").touch()
 
     mod = runpy.run_path(str(REPO / "infra" / "teammode.py"),
                          run_name="__util_add_no_settings__")
@@ -560,7 +560,7 @@ def test_util_add_active_with_settings_links_to_isolated_dir(tmp_path):
 
     root = _scaffold(tmp_path, include_util_skill=True)
     # active marker
-    (root / ".acme-active").touch()
+    (root / ".teammode-active").touch()
 
     settings = _settings(tmp_path)  # tmp_path/settings.json
     mod = runpy.run_path(str(REPO / "infra" / "teammode.py"),
@@ -626,7 +626,7 @@ def test_util_remove_active_no_settings_skips_symlink(tmp_path):
     _run_util(["util", "add", "--root", str(root),
                "--member", "alice", "--skill", "test-util"], tmp_path, root)
     # active marker
-    (root / ".acme-active").touch()
+    (root / ".teammode-active").touch()
 
     mod = runpy.run_path(str(REPO / "infra" / "teammode.py"),
                          run_name="__util_remove_no_settings__")

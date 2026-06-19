@@ -173,7 +173,7 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
         "TMPDIR env 하드코딩이 남아있다 — tempfile.gettempdir() 로 교체되어야 한다(P1#4)")
 
     # 실제로 hook 을 실행해 카운터 파일이 올바른 경로에 생성되는지 확인
-    active = tmp_path / ".acme-active"
+    active = tmp_path / ".teammode-active"
     active.write_text("")
     canonical = {"event": "UserPromptSubmit", "prompt": "test", "agent": "claude-test"}
 

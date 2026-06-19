@@ -15,7 +15,7 @@ install이 호스트에 더한 것을 **안전하게 되돌리는** 스킬. inst
 
 ## 0. 먼저 확인 (파괴적)
 사람에게 무엇이 되돌려지는지 알린다:
-- `.acme-active` 마커 삭제 (팀모드 off)
+- `.teammode-active` 마커 삭제 (팀모드 off)
 - `settings.json`에서 teammode 훅 제거 (남의 훅은 보존)
 - 셸 프로파일(`.bashrc` 등)에서 teammode가 주입한 줄만 제거 (남의 줄 보존)
 - `obsidian.json`에서 이 팀 볼트 등록만 해제 (다른 볼트·미설치 무영향)
