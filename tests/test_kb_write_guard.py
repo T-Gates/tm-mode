@@ -5,7 +5,7 @@
   - unlock 플래그 있으면 + 세션ID 일치 → allow (exit 0).
   - TTL 만료 플래그 → deny (잔류 무효).
   - memory/ 밖 경로 Edit → 무영향 (통과, exit 0).
-  - .tgates-active 없으면 → no-op (exit 0, 빌드 안전).
+  - .teammode-active 없으면 → no-op (exit 0, 빌드 안전).
   - file_edit 아닌 액션(mcp 등) → 통과.
   - 세션ID 없으면(CLAUDE_SESSION_ID 환경변수 없음) → deny(fail-closed).
   - 빈 플래그(세션ID 없이 touch) → deny(fail-closed — 세션ID 없이 플래그 경로가 맞지 않음).
@@ -80,8 +80,8 @@ def _run_hook(payload: dict, root: Path, env_extra: dict | None = None) -> subpr
 
 
 def _active(root: Path) -> None:
-    """팀 루트에 .tgates-active 마커 생성."""
-    (root / ".tgates-active").write_text("")
+    """팀 루트에 .teammode-active 마커 생성."""
+    (root / ".teammode-active").write_text("")
 
 
 def _memory_payload(root: Path, filename: str = "test.md") -> dict:
@@ -117,7 +117,7 @@ def _flag_path(tmp_path: Path, root: Path, session_id: str = "test-session") -> 
 # ── 기본 차단 / 허용 ──────────────────────────────────────────────────────────
 
 def test_no_marker_is_noop(tmp_path):
-    """.tgates-active 없으면 차단 안 함 (빌드 안전)."""
+    """.teammode-active 없으면 차단 안 함 (빌드 안전)."""
     root = tmp_path / "team"
     root.mkdir()
     proc = _run_hook(_memory_payload(root), root)
@@ -559,18 +559,18 @@ def test_team_root_ignores_env_and_uses_file_location(tmp_path):
     오염된 env 로 guard 가 무력화되지 않는다(P0-3).
 
     방식: tmp_path 에 복사된 훅을 실행하고, 오염 env(TEAMMODE_HOME=다른경로)를 주입한다.
-    훅이 env 를 신뢰하면 다른 경로의 .tgates-active 를 보거나 no-op;
-    __file__ 을 따르면 tmp_path 의 .tgates-active 를 보고 deny 한다.
+    훅이 env 를 신뢰하면 다른 경로의 .teammode-active 를 보거나 no-op;
+    __file__ 을 따르면 tmp_path 의 .teammode-active 를 보고 deny 한다.
     """
     root = tmp_path / "team"
     root.mkdir()
     (root / "memory").mkdir()
-    _active(root)  # 자기 repo에 .tgates-active 생성
+    _active(root)  # 자기 repo에 .teammode-active 생성
 
     # 다른 inactive repo (오염 env)
     other = tmp_path / "other-inactive-repo"
     other.mkdir()
-    # other 에는 .tgates-active 없음 → env 신뢰하면 no-op(exit 0) 됨
+    # other 에는 .teammode-active 없음 → env 신뢰하면 no-op(exit 0) 됨
 
     # 복사된 훅 실행 (TEAMMODE_HOME=other 오염), CLAUDE_SESSION_ID 없음 → deny
     guard = _install_guard(root)
@@ -582,7 +582,7 @@ def test_team_root_ignores_env_and_uses_file_location(tmp_path):
         capture_output=True, text=True,
         env=env,
     )
-    # env 를 신뢰하면 other 의 .tgates-active 를 보고 no-op(0); __file__ 따르면 deny(2)
+    # env 를 신뢰하면 other 의 .teammode-active 를 보고 no-op(0); __file__ 따르면 deny(2)
     assert proc.returncode == 2, (
         "TEAMMODE_HOME 오염에도 불구하고 __file__ 기준 자기 repo 를 보고 deny 해야 한다(P0-3)"
     )

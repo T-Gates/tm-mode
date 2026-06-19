@@ -60,6 +60,133 @@ def _parse_uninstall(argv):
     return opts
 
 
+# ─────────────────────────── MCP 연결 조회 (--check-mcp, S2) ───────────────────────────
+#
+# 읽기 전용 조회: 팀이 이미 쓰는 MCP alias 가 에이전트 설정 파일에 실재하는지 확인.
+# dotfile 직접 읽기 대신 CLI 로 위임해 호스트 무접촉 원칙을 지킨다.
+# 출력(stdout JSON): {"connected": true, "alias": "<provider>"} 또는 {"connected": false}
+#
+# 내부 경로 해석은 기존 agent_mcp_path / agent_settings_path 를 재활용(중복 구현 금지).
+
+_VALID_AGENTS = ("claude", "codex")
+
+
+def _parse_check_mcp(argv):
+    """--check-mcp argv → opts dict. 알 수 없는 플래그 무시."""
+    opts = {"provider": None, "root": None, "agent": None, "settings": None}
+    it = iter(argv)
+    for a in it:
+        if a == "--check-mcp":
+            opts["provider"] = next(it, None)
+        elif a == "--root":
+            opts["root"] = next(it, None)
+        elif a == "--agent":
+            opts["agent"] = next(it, None)
+        elif a == "--settings":
+            opts["settings"] = next(it, None)
+    return opts
+
+
+def _read_claude_mcp_servers(mcp_path: Path) -> dict:
+    """~/.claude.json (또는 격리 등가물)에서 mcpServers dict 반환. 부재/깨짐 → {}."""
+    if not mcp_path.is_file():
+        return {}
+    try:
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            servers = data.get("mcpServers")
+            return servers if isinstance(servers, dict) else {}
+    except (ValueError, OSError):
+        pass
+    return {}
+
+
+def _read_codex_mcp_servers(config_path: Path) -> dict:
+    """codex config.toml 의 teammode-mcp 블록에서 등록 서버명 집합 파싱. 부재/깨짐 → {}.
+
+    값은 claude 와 동일하게 {"_teammode_managed": True} 형태로 정규화해 통일된 판정 가능.
+    """
+    import re
+    if not config_path.is_file():
+        return {}
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    MCP_BLOCK_START = "# teammode-mcp-start"
+    MCP_BLOCK_END = "# teammode-mcp-end"
+    pattern = re.compile(
+        re.escape(MCP_BLOCK_START) + r"(.*?)" + re.escape(MCP_BLOCK_END),
+        re.S)
+    m = pattern.search(text)
+    if not m:
+        return {}
+    servers: dict = {}
+    for sm in re.finditer(r"\[mcp_servers\.([^\]]+)\]", m.group(1)):
+        name = sm.group(1).strip().strip('"')
+        servers[name] = {"_teammode_managed": True}
+    return servers
+
+
+def cmd_check_mcp(argv, *, home=None, out=None, err=None) -> int:
+    """--check-mcp query CLI (S2). 읽기 전용. stdout JSON 출력.
+
+    내부 파일 경로 결정에 기존 il.agent_mcp_path (claude) 및
+    il.agent_settings_path (codex) 를 재활용 — 중복 구현 없음.
+    """
+    if out is None:
+        out = print
+    if err is None:
+        def err(*a, **k):
+            print(*a, file=sys.stderr, **k)
+    if home is None:
+        home = Path(os.path.expanduser("~"))
+
+    opts = _parse_check_mcp(argv)
+
+    provider = opts.get("provider") or ""
+    if not provider:
+        err("[error] --check-mcp: provider 를 지정하세요. 예) --check-mcp linear")
+        return 2
+
+    agent = opts.get("agent")
+    if not agent:
+        err("[error] --check-mcp: --agent <claude|codex> 가 필수입니다.")
+        return 2
+    if agent not in _VALID_AGENTS:
+        err(f"[error] --check-mcp: 알 수 없는 에이전트 '{agent}'. "
+            f"지원: {list(_VALID_AGENTS)}")
+        return 2
+
+    settings_override = opts.get("settings")  # None 이면 실호스트 경로
+
+    if agent == "claude":
+        # claude MCP 파일 경로: il.agent_mcp_path 재활용.
+        # 격리(settings_override 있음): (mcp_flag, path) 튜플 → path 추출.
+        # 실호스트(None 반환): 직접 ~/.claude.json 구성.
+        mcp_result = il.agent_mcp_path(
+            agent, home=home, settings_override=settings_override)
+        if mcp_result is not None:
+            mcp_path = mcp_result[1]  # (flag, path) 튜플
+        else:
+            mcp_path = home / ".claude.json"
+        servers = _read_claude_mcp_servers(mcp_path)
+    else:
+        # codex: MCP는 settings(config.toml) 내 블록 — agent_mcp_path 는 None 반환.
+        # il.agent_settings_path 로 config.toml 경로 재활용.
+        cfg_path = il.agent_settings_path(
+            agent, home=home, settings_override=settings_override)
+        servers = _read_codex_mcp_servers(cfg_path)
+
+    entry = servers.get(provider)
+    if isinstance(entry, dict) and entry.get("_teammode_managed") is True:
+        out(json.dumps({"connected": True, "alias": provider}))
+        return 0
+
+    out(json.dumps({"connected": False}))
+    return 0
+
+
 def _default_profile(platform=None):
     """env 주입 셸 프로파일 기본 경로(미지정 시). 실호스트 게이트가 별도로 보호.
 
@@ -91,7 +218,7 @@ def cmd_uninstall(opts, *, platform=None) -> int:
     platform 미지정 시 sys.platform (W-D: 윈도우는 reg delete, posix 는 셸 프로파일).
 
     재사용 우선(신규 중복 금지):
-      1. off  — teammode.cmd_off 로 .tgates-active 마커 삭제 + 어댑터 sync(off)
+      1. off  — teammode.cmd_off 로 .teammode-active 마커 삭제 + 어댑터 sync(off)
       2. 어댑터 uninstall — settings.json 의 teammode 훅 제거
       3. env 줄 제거 — install_lib.remove_injected_env (우리 표식 줄만)
       4. obsidian 등록 해제 — install_lib.unregister_obsidian_vault (해당 볼트만)
@@ -122,14 +249,14 @@ def cmd_uninstall(opts, *, platform=None) -> int:
 
     # 1. off (마커 삭제 + sync off) — teammode.cmd_off 재사용
     tm = runpy.run_path(str(ENGINE), run_name="__uninstall_off__")
-    marker = team_root / ".tgates-active"
+    marker = team_root / ".teammode-active"
     had_marker = marker.exists()
     try:
         tm["cmd_off"](team_root, settings_path)
     except Exception as e:  # noqa: BLE001 — 되돌리기는 비치명. 다음 단계 계속.
         print(f"[warn] off 단계 건너뜀(비치명): {e}", file=sys.stderr)
     if had_marker and not marker.exists():
-        removed.append(".tgates-active 마커")
+        removed.append(".teammode-active 마커")
 
     # 2. 어댑터 uninstall — teammode 훅 제거(기존 adapter.uninstall 재사용)
     try:
@@ -641,6 +768,10 @@ def main(argv=None) -> int:
     # --uninstall: 호스트 되돌리기 액션(신규). 부트스트랩·디스패치와 별개 분기.
     if "--uninstall" in argv:
         return cmd_uninstall(_parse_uninstall(argv))
+
+    # --check-mcp: MCP 연결 조회(S2). 읽기 전용, stdout JSON.
+    if "--check-mcp" in argv:
+        return cmd_check_mcp(argv)
 
     # 디스패치 모드 판정: 첫 토큰들 중 --<agent>(agents/<name>/ 존재) 가 있으면 위임.
     agent, rest = _split_agent(argv)

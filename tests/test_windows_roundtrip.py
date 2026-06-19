@@ -82,7 +82,7 @@ def test_windows_roundtrip_install_on_context_uninstall(tmp_path, monkeypatch):
             assert "TEAMMODE_HOME" not in p.read_text()
 
     # on 단계 산물: active 마커·배너·memory (verify 가 on 호출)
-    assert (team / ".tgates-active").is_file()
+    assert (team / ".teammode-active").is_file()
     assert (team / "memory" / "INDEX.md").is_file()
 
     # ── context: 엔진이 L1 데이터 읽힘 ──
@@ -106,7 +106,7 @@ def test_windows_roundtrip_install_on_context_uninstall(tmp_path, monkeypatch):
     assert "Environment" in " ".join(reg[0])
     assert "TEAMMODE_HOME" in reg[0]
     # off 되돌림: active 마커 제거
-    assert not (team / ".tgates-active").is_file()
+    assert not (team / ".teammode-active").is_file()
     # 팀 데이터(memory)는 보존
     assert (team / "memory" / "INDEX.md").is_file()
 

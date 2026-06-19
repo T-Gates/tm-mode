@@ -134,12 +134,55 @@ def _matches_filter(entry: dict, canonical: dict) -> bool:
     return True
 
 
-def _lookup_entry(manifest: list, script: str, event: str):
-    """(script, 정규 이벤트) 쌍으로 manifest 엔트리 조회(§6.2-2). 중복은 lint가 금지."""
-    for entry in manifest:
-        if entry.get("script") == script and entry.get("event") == event:
+def _lookup_entry(manifest: list, script: str, event: str,
+                  canonical: dict | None = None,
+                  extra_args: list | None = None):
+    """(script, 정규 이벤트) + canonical/args 로 manifest 엔트리 정확히 조회(§6.2-2).
+
+    같은 (script, event) 쌍이 여러 엔트리에 등록될 수 있다(예: confirm-action.py 가
+    linear/create_issue 와 teammode/issues_create 등을 각각 처리하는 경우).
+    단순히 첫 항목을 반환하면 실제 발동과 무관한 엔트리가 선택돼 자가필터가
+    오작동한다 — 이를 방지하기 위해 아래 우선순위로 엔트리를 선택한다:
+
+    1. (script, event) + match(canonical) 가 일치하는 엔트리 — 가장 구체적
+    2. (script, event) + args(marker) 가 extra_args 첫 인자와 일치하는 엔트리
+    3. (script, event) 만 일치하고 match 가 없는 엔트리(무매처 = 전체 매칭)
+    4. (script, event) 만 일치하는 첫 엔트리(기존 동작 — 중복 엔트리 없는 경우)
+
+    canonical 이나 extra_args 를 주지 않으면 기존 동작(첫 매칭)으로 폴백한다.
+    """
+    candidates = [e for e in manifest
+                  if e.get("script") == script and e.get("event") == event]
+    if not candidates:
+        return None
+
+    # 후보가 하나면 바로 반환 (기존 동작 유지)
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # 우선순위 1: canonical 로 match 가 정확히 일치하는 엔트리
+    if canonical is not None:
+        for entry in candidates:
+            match = entry.get("match")
+            if match and _matches_filter(entry, canonical):
+                return entry
+
+    # 우선순위 2: extra_args 첫 인자(marker)가 엔트리 args 와 일치하는 엔트리
+    if extra_args:
+        marker = extra_args[0]
+        for entry in candidates:
+            args = entry.get("args") or ""
+            entry_marker = args if isinstance(args, str) else (args[0] if args else "")
+            if entry_marker and entry_marker == marker:
+                return entry
+
+    # 우선순위 3: match 없는 엔트리(무매처 = 전체 매칭)
+    for entry in candidates:
+        if not entry.get("match"):
             return entry
-    return None
+
+    # 우선순위 4: 첫 엔트리(기존 동작 폴백)
+    return candidates[0]
 
 
 def main(argv=None) -> int:
@@ -169,7 +212,8 @@ def main(argv=None) -> int:
         return 1 if strict else 0
 
     event = canonical.get("event", "")
-    entry = _lookup_entry(manifest, script, event)
+    entry = _lookup_entry(manifest, script, event,
+                          canonical=canonical, extra_args=extra_args)
 
     # ── 2. 런타임 자가 필터 (runtime 무매처 등록인 경우) ──
     if entry is not None and entry.get("fallback") == "runtime":

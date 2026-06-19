@@ -10,8 +10,8 @@ normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다
     "files": ["/abs/path", ...], "agent": "claude", "raw": {...} }
 
 ────────────────────────────────────────────────────────────────────────────
-⚠️ 빌드 안전 핵심 — `.tgates-active` 가드 (L2-G):
-  팀 루트에 `.tgates-active` 마커가 없으면(teammode off) **즉시 no-op exit 0**.
+⚠️ 빌드 안전 핵심 — `.teammode-active` 가드 (L2-G):
+  팀 루트에 `.teammode-active` 마커가 없으면(teammode off) **즉시 no-op exit 0**.
   아무 git 작업도 하지 않는다. 이 가드가 견고해야, 도그푸딩 설치된 호스트에서
   teammode 가 꺼진 채 일상 편집을 할 때 작업 레포가 자동 커밋으로 오염되지 않는다.
   (session-start.py·session-log-remind.py 의 동일 패턴.)
@@ -41,7 +41,7 @@ def _team_root() -> str:
     """런타임 훅의 팀 루트 = 환경변수 TEAMMODE_HOME (없으면 cwd).
 
     런타임 훅은 에이전트 하니스가 발동하므로 `--root` 인자 통로가 없다(§1.2). read-only
-    가 아닌 쓰기 훅이지만, `.tgates-active` 가드가 활성 팀 루트에서만 동작을 허용하므로
+    가 아닌 쓰기 훅이지만, `.teammode-active` 가드가 활성 팀 루트에서만 동작을 허용하므로
     ambient env 누수가 임의 폴더를 커밋하게 만들지 못한다. session-log-remind 와 동일.
     """
     return os.environ.get("TEAMMODE_HOME", os.getcwd())
@@ -59,9 +59,9 @@ def main() -> int:
 
     root = _team_root()
 
-    # ── 1. 빌드 안전 핵심: .tgates-active 없으면 즉시 no-op ──
+    # ── 1. 빌드 안전 핵심: .teammode-active 없으면 즉시 no-op ──
     # 어떤 git 작업보다 먼저. 마커 부재 = teammode off = 자동 커밋 절대 금지.
-    if not os.path.isfile(os.path.join(root, ".tgates-active")):
+    if not os.path.isfile(os.path.join(root, ".teammode-active")):
         return 0
 
     # ── 2. file_edit 발동만 처리 ──

@@ -253,22 +253,46 @@ class Adapter(BaseAdapter):
         self.settings_path.write_text(updated, encoding="utf-8")
         return True
 
+    def _render_teammode_toml(self) -> str:
+        """teammode 단일 MCP 서버 TOML 섹션 문자열 반환 (S5).
+
+        handlers/ 디렉토리가 있을 때만 호출된다. command/args/cwd 를 포함한
+        실 서버 실행 가능한 완전한 섹션을 반환한다.
+        """
+        import json as _json  # 로컬 import — 모듈 최상단 import 와 충돌 없음
+        team_root = self.team_root
+        handlers_dir = team_root / "handlers"
+        team_name = team_root.name
+        if self.config_path.is_file():
+            try:
+                cfg = _json.loads(self.config_path.read_text(encoding="utf-8"))
+                team_name = cfg.get("team", {}).get("name", team_name) or team_name
+            except (ValueError, OSError, AttributeError):
+                pass
+        args_toml = (
+            "[\n"
+            "    '-m', 'infra.mcp.role_server',\n"
+            f"    '--team', {self._toml_str(str(team_name))},\n"
+            f"    '--handlers-dir', {self._toml_str(str(handlers_dir))},\n"
+            "]"
+        )
+        return (
+            f"[mcp_servers.teammode]\n"
+            f"_teammode_managed = true\n"
+            f"_canonical_server = 'teammode'\n"
+            f"command = 'python'\n"
+            f"args = {args_toml}\n"
+            f"cwd = {self._toml_str(str(team_root))}\n"
+        )
+
     def install_mcp(self) -> list:
         """config services 의 연결 provider 를 Codex config.toml [mcp_servers.*] 로 등록. 멱등.
 
         claude 와 동일 계약(services 읽기·정규명 등록·별칭 항등·멱등·빈 슬롯 [info])이되,
         등록 포맷만 Codex TOML 블록으로 재정의.
 
-        ⚠️ v0.1 한계 (N6, §7.4 — 의도된 범위 제약):
-          여기서 쓰는 [mcp_servers.<name>] 블록은 `_teammode_managed`·`_canonical_server`·
-          `_register_hint` 만 담은 **command 없는 placeholder** 다. Codex 런타임이 이 항목을
-          실 MCP 서버로 띄우려 하면 실행 command 부재로 에러날 수 있다(거부 가능).
-            - teammode 는 MCP 서버를 제작·유지하지 않는다(§7.4) → 실 command 는 데이터로 안 둔다.
-            - wire(install.py) 가 install-mcp 를 실 적용에 노출하더라도, **wire 는 등록(별칭 보장,
-              정규명==별칭 항등)까지만** 책임진다. **실행 command 는 v0.1 미보장** — Codex 로 실제
-              서버를 띄우려면 사용자가 이 블록에 `command`/`args` 를 직접 보강해야 한다(v0.2 이월).
-          즉 이 메서드의 계약은 "별칭 슬롯이 config.toml 에 멱등 존재함" 까지이며, 그 슬롯이
-          기동 가능한 서버 정의인지는 v0.1 범위 밖이다(register_hint 가 사람/LLM 에게 안내).
+        S5 공존 전략: handlers/ 에 .py 파일 있으면 teammode 서버도 블록에 추가.
+        기존 provider alias 와 teammode 둘 다 동일 teammode-mcp 블록에 공존.
         """
         import providers as _prov  # 부모와 동일 모듈(infra/ on sys.path)
         changes = []
@@ -295,8 +319,25 @@ class Adapter(BaseAdapter):
             providers_with_packs.append((alias, pack))
             aliases.append(alias)
 
-        if providers_with_packs:
-            block = self._render_mcp_block(providers_with_packs)
+        # S5: handlers/ 있으면 teammode 서버 추가 (공존)
+        has_tm = self._has_handlers()
+
+        if providers_with_packs or has_tm:
+            # 블록 본문 구성: 기존 provider + teammode(있으면)
+            lines = [self.MCP_BLOCK_START, ""]
+            for provider, pack in providers_with_packs:
+                hint = pack.mcp.get("register_hint", "") if pack else ""
+                lines.append(f"[mcp_servers.{provider}]")
+                lines.append("_teammode_managed = true")
+                lines.append(f"_canonical_server = {self._toml_str(provider)}")
+                lines.append(f"_register_hint = {self._toml_str(hint)}")
+                lines.append("")
+            if has_tm:
+                lines.append(self._render_teammode_toml())
+                if "teammode" not in aliases:
+                    aliases.append("teammode")
+            lines.append(self.MCP_BLOCK_END)
+            block = "\n".join(lines)
             changed = self._write_mcp_block(block)
             # N2: claude 와 대칭 — 실제 파일 변경 시에만 [mcp] 등록, 멱등 무변경은
             # [ok]. (_write_mcp_block 의 changed 반환값을 반영, 거짓 등록 보고 금지.)
@@ -306,7 +347,7 @@ class Adapter(BaseAdapter):
             else:
                 changes.append(f"[ok] 변경 없음 ({len(aliases)}개 provider 등록됨)")
         else:
-            # 연결 provider 없음 → 기존 teammode-mcp 블록 제거(멱등 빈상태).
+            # 연결 provider 없음 + handlers 없음 → 기존 teammode-mcp 블록 제거(멱등 빈상태).
             # 안전(P1-1): 블록이 없으면(부재 config 포함) 파일 무접촉 — pattern.search 가
             # 없을 때 write 하지 않으므로 빈 슬롯에서 config.toml 을 touch 하지 않는다.
             existing = self._read_config()
@@ -357,6 +398,9 @@ def main(argv=None) -> int:
     p.add_argument("--config", default=os.path.expanduser("~/.codex/config.toml"))
     # --python 기본 None → 설치 시점 sys.executable 해석 (W-B, BaseAdapter 와 일관)
     p.add_argument("--python", default=None)
+    # --team-root: 팀 레포 루트 절대경로. wire_agents 가 명시 전달해 __file__ 추론 어긋남 해소
+    # (S0). 없으면 기존 기본값(here.parents[2]) 유지 — 하위 호환.
+    p.add_argument("--team-root", default=None)
     # team.config.json·providers/ 경로 — 기본은 team_root 상대, 테스트는 tmp 주입.
     # (Codex MCP 등록은 --config 의 config.toml 안 블록이므로 별도 --mcp-config 불요.)
     p.add_argument("--team-config", default=None)
@@ -372,13 +416,18 @@ def main(argv=None) -> int:
     sub.add_parser("install-skills")
     args = p.parse_args(argv)
 
+    # 명시적 --team-root 가 빈 문자열/공백이면 조용히 기본값으로 폴백하지 않고 명확히 거부.
+    if args.team_root is not None and args.team_root.strip() == "":
+        print("[error] --team-root 에 빈 문자열/공백을 지정할 수 없습니다.", file=sys.stderr)
+        return 1
+
     d = _default_paths()
     adapter = Adapter(
         agent_dir=d["agent_dir"],
         manifest_path=d["manifest_path"],
         settings_path=args.config,
         python=args.python,
-        team_root=d["team_root"],
+        team_root=args.team_root if args.team_root is not None else d["team_root"],
         config_path=args.team_config,
         providers_dir=args.providers_dir,
         skills_dir=args.skills_dir,

@@ -21,7 +21,7 @@ git clone git@github.com:our-team/our-repo.git
 cd our-repo
 ```
 **(b) 에이전트** — 대기.
-**(c) 화면** — `team.config.json` 이 **이미 있다**(`team.name="our-repo"`, `members:[{name:"alice"}]`, services 일부 채워짐). `memory/team/members.md` 에 `- alice …`, `memory/team/sessions/alice/` 에 기존 로그들. 단 `.tgates-active` 마커는 **이 호스트엔 없다**(마커는 호스트 로컬, 커밋되지 않음 → 내 호스트엔 아직 셋업 안 됨).
+**(c) 화면** — `team.config.json` 이 **이미 있다**(`team.name="our-repo"`, `members:[{name:"alice"}]`, services 일부 채워짐). `memory/team/members.md` 에 `- alice …`, `memory/team/sessions/alice/` 에 기존 로그들. 단 `.teammode-active` 마커는 **이 호스트엔 없다**(마커는 호스트 로컬, 커밋되지 않음 → 내 호스트엔 아직 셋업 안 됨).
 **(d) 다음** — 에이전트에게 셋업 부탁. → 국면 ②.
 
 ### 국면 ② `tm-join` L1 셋업

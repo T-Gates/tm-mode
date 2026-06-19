@@ -36,7 +36,7 @@ codex  : events.json 에서 PreToolUse=null → 이 훅이 **애초 등록되지
          sync 가 enforcement:block 의 "차단 강제 상실"을 [warn] 으로 표면화(무음 누락 0).
          codex 는 이번 릴리스 폴백(경고만) — 커버리지 안정화 후 별도 백로그.
 
-── .tgates-active 가드 ────────────────────────────────────────────────────────
+── .teammode-active 가드 ────────────────────────────────────────────────────────
 teammode 가 꺼진 일상 작업 중에는 차단하지 않는다(빌드 안전).
 
 정규 입력(stdin):
@@ -76,7 +76,7 @@ def _team_root() -> str:
     이 파일은 infra/hooks/ 에 있으므로 parent.parent.parent == 팀 루트.
 
     TEAMMODE_HOME env 는 신뢰하지 않는다 — env 가 다른/inactive repo 를 가리키면
-    .tgates-active 체크가 no-op 되거나 containment root 가 틀어져 guard 전체가
+    .teammode-active 체크가 no-op 되거나 containment root 가 틀어져 guard 전체가
     무력화된다(P0-3). 팀루트는 명시/정적 계산만(env 무신뢰).
     """
     # infra/hooks/kb-write-guard.py → parent=hooks, parent.parent=infra, parent^3=팀루트
@@ -249,8 +249,8 @@ def main() -> int:
 
     root = _team_root()
 
-    # ── 1. .tgates-active 가드: 마커 없으면 차단도 안 함(빌드 안전) ──
-    if not os.path.isfile(os.path.join(root, ".tgates-active")):
+    # ── 1. .teammode-active 가드: 마커 없으면 차단도 안 함(빌드 안전) ──
+    if not os.path.isfile(os.path.join(root, ".teammode-active")):
         return 0
 
     # ── 2. file_edit 액션인지 확인 ──

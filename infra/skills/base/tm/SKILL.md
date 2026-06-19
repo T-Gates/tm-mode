@@ -34,7 +34,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 
 2. **팀모드 켜기**: `python infra/teammode.py on --root . --install`
    - 엔진이 배너 출력, greeting 출력(team.config.json에 있으면), adapter sync(mode=on),
-     `.tgates-active` 마커 생성, upstream fetch + NOTICE 비교 알림까지 한다.
+     `.teammode-active` 마커 생성, upstream fetch + NOTICE 비교 알림까지 한다.
    - NOTICE 알림: upstream `NOTICE.md`가 로컬과 다르면 `[공지] teammode 최신 업데이트: …
      — 받으려면 \`teammode update\`` 를 출력. 같으면 조용히 생략(매번 도배 방지).
    - 스킬은 이 동사를 호출하고 출력을 그대로 사용자에게 보여준다.
@@ -67,7 +67,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
    - **push 는 하지 않는다** — commit 까지만. push 는 사람이 직접 결정.
 
 3. **팀모드 끄기**: `python infra/teammode.py off --root . --install`
-   - 엔진이 adapter sync(mode=off), `.tgates-active` 마커 삭제, farewell 출력을 한다.
+   - 엔진이 adapter sync(mode=off), `.teammode-active` 마커 삭제, farewell 출력을 한다.
    - 스킬은 이 동사를 호출하고 출력을 사용자에게 보여준다.
 
 ## 세션 로그 형식 (--text 에 들어갈 내용)

@@ -34,7 +34,7 @@ def _seed_team(team_root: Path, *, active=True, member="alice",
         f"---\nauthor: {member}\ndate: {date}\nsummary: {summary}\n---\n본문\n")
     (team_root / "memory" / "INDEX.md").write_text("# INDEX\n팀 인덱스\n")
     if active:
-        (team_root / ".tgates-active").write_text("")
+        (team_root / ".teammode-active").write_text("")
 
 
 # ─────────────────────────── 활성/비활성 ───────────────────────────
@@ -52,7 +52,7 @@ def test_injects_context_when_active(tmp_path):
 
 
 def test_no_inject_when_inactive(tmp_path):
-    """.tgates-active 없으면 무동작(빈 stdout, exit 0)."""
+    """.teammode-active 없으면 무동작(빈 stdout, exit 0)."""
     _seed_team(tmp_path, active=False)
     proc = _run_hook({"event": "SessionStart", "agent": "claude"}, tmp_path)
     assert proc.returncode == 0
@@ -69,7 +69,7 @@ def test_ignores_non_sessionstart_event(tmp_path):
 def test_empty_team_still_valid_structure(tmp_path):
     """I1: 로그 0이어도 활성이면 유효 구조 안내 주입(빈 상태도 읽어냄)."""
     (tmp_path / "memory" / "team" / "sessions").mkdir(parents=True)
-    (tmp_path / ".tgates-active").write_text("")
+    (tmp_path / ".teammode-active").write_text("")
     proc = _run_hook({"event": "SessionStart", "agent": "claude"}, tmp_path)
     assert proc.returncode == 0
     out = json.loads(proc.stdout)

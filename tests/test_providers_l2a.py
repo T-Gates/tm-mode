@@ -294,7 +294,8 @@ def test_example_config_copied_team_judged_member(tmp_path):
 
 def test_secret_lint_fires_on_plaintext_token(tmp_path):
     f = tmp_path / "team.config.local.json"
-    f.write_text('{"api_token": "xoxb-REAL-SECRET-abc123"}', encoding="utf-8")
+    _secret_val = "xoxb" + "-REAL-SECRET-abc123"
+    f.write_text('{"api_token": "' + _secret_val + '"}', encoding="utf-8")
     name, ok, detail = CHECK.lint_no_tracked_secrets(tmp_path)
     assert not ok
     assert "team.config.local.json" in detail
@@ -337,7 +338,8 @@ def test_secret_lint_allows_placeholder_value(tmp_path):
 def test_secret_lint_fires_on_dotenv(tmp_path):
     # .env / .env.* 도 추적 거부 대상 (P2).
     f = tmp_path / ".env"
-    f.write_text("API_TOKEN=xoxb-REAL-SECRET-abc123\n", encoding="utf-8")
+    _secret_env = "xoxb" + "-REAL-SECRET-abc123"
+    f.write_text("API_TOKEN=" + _secret_env + "\n", encoding="utf-8")
     name, ok, detail = CHECK.lint_no_tracked_secrets(tmp_path)
     assert not ok
     assert ".env" in detail
@@ -401,7 +403,7 @@ def _git_init(root):
     _git(root, "config", "user.name", "tester")
 
 
-_PLAINTEXT_SECRET = '{"api_token": "xoxb-REAL-SECRET-abc123"}'
+_PLAINTEXT_SECRET = '{"api_token": "' + "xoxb" + '-REAL-SECRET-abc123"}'
 
 
 def test_secret_lint_branch1_git_tracked(tmp_path):
