@@ -7,10 +7,13 @@ __pycache__/
 .teammode-settings.json
 
 # 로컬 전용 머신 상태(팀원마다 다르고 churn — 절대 추적 금지):
-#  - .acme-active: teammode on 시 팀 루트에 쓰는 활성 마커(cmd_on/off 가 생성·삭제).
+#  - .teammode-active: teammode on 시 팀 루트에 쓰는 활성 마커(cmd_on/off 가 생성·삭제).
+#    ⚠️ 마커명은 .teammode-active 다(구 .acme-active 아님). 불일치 시 git add . 로
+#    on/off 상태가 팀 레포에 새어 들어간다(2026-06-20 도그푸딩 적발).
 #  - auto_pull throttle state(last-pull)·프롬프트 카운터는 팀 루트 **밖**(XDG_STATE_HOME·
 #    TMPDIR)에 둬 애초에 추적 안 됨 — memory/(팀 공유)에 머신 상태가 안 들어가는 게 핵심.
 #  - 격리 모드 settings(.s.json 류)는 테스트가 tmp 에 쓰므로 레포 밖이나, 방어로 무시.
+.teammode-active
 .acme-active
 *.s.json
 

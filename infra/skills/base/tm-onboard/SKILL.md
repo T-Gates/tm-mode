@@ -42,6 +42,7 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 
 **먼저 확인 (필수) — 멋대로 정하지 말 것:**
 - **멤버 이름**: 세션로그에 author로 남는 영문 이름. `git config user.name`을 *제안값*으로 보여주되 **반드시 사용자 확인 후** `--member-name`에 넣는다. ⚠️ git 설정·계정명·이메일(예: `bob`)이 사용자가 원하는 팀 멤버명(예: `jane-doe`)과 다를 수 있다 — 추론값을 임의 확정 금지.
+  - **한글·비영문 user.name이면**(예: `장Jane`) 영숫자만 남기는 추론이 비어 install이 exit 3 으로 거부한다. 이 경우 install 을 돌리기 **전에** "영문 멤버명을 뭘로 할까요?(예: jane-doe)"라고 **먼저 물어** `--member-name`을 받는다 — exit 3 를 보고 재실행하게 두지 말 것(첫 도입 흐름이 매끄럽게).
 - **전역 git identity**: `git config --global user.name`·`user.email`이 비어 있으면 커밋 단계에서 실패한다 — 비어 있을 경우 `git config --global user.name "이름"` 및 `git config --global user.email "이메일"` 설정을 안내한다.
 - **팀명**(도입자만): 기본은 repo명. "팀 이름 이대로 쓸까요?" 확인. (현재 install.py는 team.name 인자가 없어 repo명 자동 → 바꾸려면 셋업 후 `team.config.json`의 `team.name` 수정. 백로그: `--team-name`.)
 - **org/레포 위치**(도입자가 아직 레포가 없으면 — **install 보다 먼저**): 레포를 만들기 전에 어느 GitHub org·계정에 만들지 **반드시 묻는다** — 개인 계정 vs 팀 org(예: `Acme`). 임의 선택·자동 진행 금지. 순서: **org 확인 → 레포 생성(template/`gh repo create`) → clone → install.** (AGENTS.md '국면 0'과 동일. 레포가 이미 있으면 건너뜀.)
