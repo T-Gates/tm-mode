@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-SKILL_MD = REPO / "infra" / "skills" / "base" / "tm-connect" / "SKILL.md"
+SKILL_MD = REPO / "infra" / "skills" / "core" / "tm-connect" / "SKILL.md"
 
 sys.path.insert(0, str(REPO / "conformance"))
 import check  # noqa: E402

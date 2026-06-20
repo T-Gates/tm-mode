@@ -1,6 +1,6 @@
 """L2-C — install-skills 어댑터 동사 (SPEC §2.7, L2-PLAN L2-C).
 
-install-skills 는 infra/skills/base/<name>/ (tm-onboard·tm-connect·tm-reset) 을 에이전트의
+install-skills 는 infra/skills/base/<name>/ (tm-onboard·tm-connect) 을 에이전트의
 스킬 디렉토리(claude=~/.claude/skills, codex=~/.codex/skills)에 심링크한다(폴백: 복사).
 
 검증 묶음:
@@ -34,7 +34,7 @@ _CODEX = runpy.run_path(str(REPO / "infra" / "agents" / "codex" / "adapter.py"),
 ClaudeAdapter = _CLAUDE["Adapter"]
 CodexAdapter = _CODEX["Adapter"]
 
-SKILL_NAMES = {"tm-onboard", "tm-connect", "tm-reset", "tm", "tm-manage-utils", "tm-customize"}
+SKILL_NAMES = {"tm-onboard", "tm"}
 
 
 def _scaffold(tmp_path):
@@ -133,7 +133,7 @@ def test_user_skill_untouched(tmp_path):
     assert (user_skill / "SKILL.md").read_text() == "user's own skill\n"
     assert any("무접촉" in c and "tm-onboard" in c for c in changes)
     # 나머지는 정상 심링크
-    assert (sk / "tm-connect").is_symlink()
+    assert (sk / "tm").is_symlink()
 
 
 def test_is_owned_skill_discriminates(tmp_path):
@@ -148,9 +148,9 @@ def test_is_owned_skill_discriminates(tmp_path):
     os.symlink(str(src), str(owned), target_is_directory=True)
     assert a.is_owned_skill(owned, src) is True
     # 사용자 디렉토리 → not owned
-    user = sk / "tm-connect"
+    user = sk / "tm"
     user.mkdir()
-    assert a.is_owned_skill(user, root / "infra" / "skills" / "base" / "tm-connect") is False
+    assert a.is_owned_skill(user, root / "infra" / "skills" / "base" / "tm") is False
 
 
 # ── uninstall (역 제거) ──
@@ -210,11 +210,11 @@ def test_orphan_owned_skill_removed(tmp_path):
     a = _claude(root, tmp_path)
     a.install_skills()
     sk = tmp_path / "claude-skills"
-    # 소스에서 tm-reset 제거 → 재install 시 고아 심링크 청소
-    shutil.rmtree(root / "infra" / "skills" / "base" / "tm-reset")
+    # 소스에서 tm-onboard 제거 → 재install 시 고아 심링크 청소
+    shutil.rmtree(root / "infra" / "skills" / "base" / "tm-onboard")
     changes = a.install_skills()
-    assert not (sk / "tm-reset").exists()
-    assert any("remove-skill" in c and "tm-reset" in c for c in changes)
+    assert not (sk / "tm-onboard").exists()
+    assert any("remove-skill" in c and "tm-onboard" in c for c in changes)
 
 
 # ── 격리/무접촉 (실 HOME monkeypatch — 기본 경로가 격리 HOME 하위인지) ──

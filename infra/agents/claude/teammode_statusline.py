@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Claude Code statusLine 렌더 스크립트 — 팀모드 상태 표시 (크로스플랫폼).
+
+Claude Code의 statusLine.command 로 등록되어, Claude가 상태줄을 렌더링할 때
+이 스크립트를 실행한다. stdin으로 세션 JSON을 받을 수 있으나 이 구현에서는 사용하지 않는다.
+
+동작:
+  - <팀루트>/.teammode-active 있으면: ANSI cyan [<팀명>] 출력
+  - 없으면: 무출력(exit 0)
+
+크로스OS: sys.executable + io_encoding.ensure_utf8_io() 패턴 사용 (기존 훅 전체와 일관).
+Windows에서 Claude statusLine은 Git Bash / PowerShell로 실행되므로
+이 스크립트는 subprocess 재실행 없이 직접 ANSI 출력만 한다.
+
+팀루트 계산:
+  infra/agents/claude/teammode_statusline.py
+  → parent(claude) → parent(agents) → parent(infra) → parent(팀루트)
+  = __file__.resolve().parent × 4
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+# stdout UTF-8 보장 — Windows cp949 콘솔 크래시 방지 (기존 훅 전체와 동일 패턴).
+# infra/ 가 sys.path 에 없을 수 있으므로 방어적으로 추가.
+_HERE = Path(__file__).resolve().parent
+_INFRA_DIR = _HERE.parent.parent  # agents/claude → agents → infra
+if str(_INFRA_DIR) not in sys.path:
+    sys.path.insert(0, str(_INFRA_DIR))
+try:
+    from io_encoding import ensure_utf8_io  # type: ignore
+except ImportError:
+    def ensure_utf8_io() -> None:  # 모듈 부재여도 동작(보정만 스킵)
+        return
+
+
+def _team_root() -> Path:
+    """런타임 팀루트 — __file__ 기준 정적 계산(env 무신뢰).
+
+    infra/agents/claude/teammode_statusline.py 이므로:
+    parent × 1 = infra/agents/claude
+    parent × 2 = infra/agents
+    parent × 3 = infra
+    parent × 4 = 팀루트
+    """
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+
+def _read_team_name(team_root: Path) -> str:
+    """team.config.json 의 team.name 을 읽는다. 파싱 실패 시 'team' 폴백."""
+    config_path = team_root / "team.config.json"
+    if not config_path.is_file():
+        return "team"
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        name = cfg.get("team", {}).get("name") if isinstance(cfg, dict) else None
+        if name and isinstance(name, str):
+            return name
+    except (ValueError, OSError, AttributeError):
+        pass
+    return "team"
+
+
+def main() -> int:
+    ensure_utf8_io()
+
+    # stdin 읽기 (Claude Code가 세션 JSON을 넘길 수 있음 — 현재는 사용 안 함)
+    # 파이프가 아닐 때 블로킹되지 않게 isatty 확인
+    # (아무것도 하지 않음 — stdin은 무시)
+
+    root = _team_root()
+    active_file = root / ".teammode-active"
+
+    if not active_file.is_file():
+        # 팀모드 비활성 — 무출력
+        return 0
+
+    team_name = _read_team_name(root)
+    # ANSI cyan bold: \033[1;36m...\033[0m
+    print(f"\033[1;36m[{team_name}]\033[0m")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

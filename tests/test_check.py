@@ -380,11 +380,11 @@ def test_skill_lint_word_boundary_no_false_positive(tmp_path):
 
 
 def test_skill_lint_clean_on_real_repo():
-    # 실 레포의 스킬 본문(tm-onboard·tm-reset·tm-connect)은 정규형을 지킨다.
+    # 실 레포의 스킬 본문(tm-onboard·tm-connect)은 정규형을 지킨다.
     report = check.lint_skill_canonical(REPO)
     assert report[1] is True, report[2]
     # tm-connect 가 실제로 검사 대상에 들어왔는지(빈 통과가 아님) 확인.
-    connect = REPO / "infra" / "skills" / "base" / "tm-connect" / "SKILL.md"
+    connect = REPO / "infra" / "skills" / "core" / "tm-connect" / "SKILL.md"
     assert connect.is_file()
 
 
@@ -414,7 +414,7 @@ def _frontmatter(skill_path):
 
 def test_tm_connect_frontmatter_matches_onboard_format():
     onboard = REPO / "infra" / "skills" / "base" / "tm-onboard" / "SKILL.md"
-    connect = REPO / "infra" / "skills" / "base" / "tm-connect" / "SKILL.md"
+    connect = REPO / "infra" / "skills" / "core" / "tm-connect" / "SKILL.md"
     fm_on = _frontmatter(onboard)
     fm_co = _frontmatter(connect)
     # 같은 필드 집합(name·description) + 트리거 문구 포함 — tm-onboard 포맷 일관.

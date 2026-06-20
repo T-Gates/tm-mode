@@ -361,43 +361,27 @@ def test_util_in_known_verbs():
     assert "util" in mod["_KNOWN_VERBS"]
 
 
-# ── tm-manage-utils SKILL.md 존재 검증 ──
-
-def test_tm_manage_utils_skill_md_exists():
-    """infra/skills/base/tm-manage-utils/SKILL.md 가 존재한다."""
-    skill_md = REPO / "infra" / "skills" / "base" / "tm-manage-utils" / "SKILL.md"
-    assert skill_md.is_file()
-
-
-def test_tm_manage_utils_in_base_sources(tmp_path):
-    """_skill_sources(layer='base') 에 tm-manage-utils 가 있다."""
-    root = _scaffold(tmp_path)
-    a = _adapter(root, tmp_path)
-    base_names = {s.name for s in a._skill_sources(layer="base")}
-    assert "tm-manage-utils" in base_names
-
-
 # ── tm-customize SKILL.md 및 references 존재 검증 ──
 
 def test_tm_customize_skill_md_exists():
-    """infra/skills/base/tm-customize/SKILL.md 가 존재한다."""
-    skill_md = REPO / "infra" / "skills" / "base" / "tm-customize" / "SKILL.md"
+    """infra/skills/core/tm-customize/SKILL.md 가 존재한다."""
+    skill_md = REPO / "infra" / "skills" / "core" / "tm-customize" / "SKILL.md"
     assert skill_md.is_file()
 
 
 def test_tm_customize_references_exist():
     """tm-customize/references/ 하위 3개 문서가 존재한다."""
-    refs = REPO / "infra" / "skills" / "base" / "tm-customize" / "references"
+    refs = REPO / "infra" / "skills" / "core" / "tm-customize" / "references"
     for name in ("banner.md", "persona.md", "skills.md"):
         assert (refs / name).is_file(), f"references/{name} 없음"
 
 
 def test_tm_customize_in_base_sources(tmp_path):
-    """_skill_sources(layer='base') 에 tm-customize 가 있다."""
+    """_skill_sources(layer='core') 에 tm-customize 가 있다."""
     root = _scaffold(tmp_path)
     a = _adapter(root, tmp_path)
-    base_names = {s.name for s in a._skill_sources(layer="base")}
-    assert "tm-customize" in base_names
+    core_names = {s.name for s in a._skill_sources(layer="core")}
+    assert "tm-customize" in core_names
 
 
 # ── tm-onboard 흡수 후 personality 절차 제거 검증 ──

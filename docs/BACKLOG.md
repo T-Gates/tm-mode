@@ -168,3 +168,102 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
 - **접은 이유**: teammode knowledge 는 단일 CLI 순차 사용 모델 — 동시 same-topic write 비현실적. lock 도입은 P1 핫픽스 범위 과대. 실제 동시성 요구 생기면 topic/folder 단위 lock 또는 롤백 전 "내가 쓴 내용인지" 비교 후 unlink/restore.
 
 > 출처: 2026-06-18 push 후 검증·윈도우 end-to-end 도그푸딩 (세션로그 jane-doe 2026-06-18). 핵심 안전은 전부 통과, 위는 견고성/UX 개선분.
+
+## 스킬 구성 개선 (2026-06-20 Jane 착안, 도그푸딩 중)
+- **tm-reset 스킬 삭제** — [근거 미정, Jane 제안]. reset 기능 자체를 뺄지 다른 경로로 흡수할지 검토.
+- **tm-manage-utils → 커스터마이즈 스킬로 전환** — 유틸 설치/제거 관리 대신 "팀별 커스터마이즈" 용도 스킬로 재정의.
+- (출처: acme→teammode 마이그레이션 도그푸딩 중 발견. 상세 설계는 teammode 본격 작업 시.)
+
+## personality 완료판정 결함 (2026-06-20 도그푸딩 발견 — Jane)
+- tm-onboard 체크표의 "팀 personality = greeting/farewell 기본값과 다름" 판정이 **코드 미구현**. install_lib에 비교 로직 없음 → 스킬 마크다운 기준만 보고 **에이전트가 임의 판정 → 오탐**(마이그레이션 중 팀명만 Acme로 바꿨는데 personality ✅로 잘못 잡힘. 실제론 greeting이 기본 공식 그대로).
+- 게다가 기본 greeting이 `install_lib.py:534 f"{team_name} 팀모드 ON"`으로 팀명 포함 → "기본값"이 팀마다 달라 고정문자열 비교 불가.
+- **개선**: teammode.py context(또는 doctor)가 `personality_customized` 플래그를 결정적으로 뱉게. 기본 공식 `f"{name} 팀모드 ON"`·`f"수고하셨습니다 — {name}"`과 정확 비교 + `banner.txt` 존재 여부로 판정. 체크표 항목은 코드가 판정, 에이전트 임의판정 금지.
+
+## tm-customize 스킬 신설 + 스킬 재구성 (2026-06-20 Jane, 도그푸딩 중 확정)
+teammode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
+- **신설 `tm-customize`**: 팀 personality(배너 picker · greeting/farewell 멘트) + 기존 tm-manage-utils(유틸 스킬 관리) 흡수. "팀색 입히기"를 한곳에.
+- **tm-onboard에서 personality 커스텀 절차(배너·멘트) 제거** → 온보딩은 L1 가치 + 서비스(L2) 제안에 집중, 길이 단축. 체크표의 personality 항목도 제거하거나 "tm-customize로" 안내만.
+- **tm-manage-utils → tm-customize로 전환/흡수** (위 마이그레이션 착안 통합).
+- **tm-reset 삭제** (별도 항목, 위).
+- 연계: 위 "personality 완료판정 결함"도 tm-customize 쪽에서 결정적 판정으로 해소.
+
+## 흡수 경로 탐지 결함 — check-mcp가 _teammode_managed만 인식 (2026-06-20 도그푸딩 — Jane)
+- tm-connect §1② 흡수 = "팀이 이미 다른 경로로 연결한 서비스 탐지"인데, check-mcp(install.py:182)는 `entry.get("_teammode_managed") is True`만 connected 판정 → **teammode가 등록한 MCP만 인식**.
+- 결과: 기존 비-teammode 연결(acme-toolkit이 등록한 linear/slack/notion MCP)을 흡수 대상으로 **탐지 못 함**. 흡수 의도 ↔ 탐지 메커니즘 불일치.
+- 부수 발견: 그 linear MCP args가 `acme-toolkit/infra/mcp/linear-mcp/dist/server.js` 의존 → acme 정리 시 깨짐. 흡수로 끊어야 하는데 자동흡수 불가.
+- 개선안: 흡수 탐지가 _teammode_managed 외 "역할 provider와 매칭되는 기존 MCP"도 후보로 띄워 사람 확인. 또는 흡수=수동(핸들러 생성 + 기존 토큰키 재사용) 경로를 스킬에 명시(현재 §1②가 check-mcp 자동탐지에만 의존).
+
+## 온보딩 발견성 + "왜+다음" 침묵 — teammode 전반 불친절 (2026-06-20 도그푸딩, Jane 핵심지적)
+"불친절"의 정체 = 자동화 부족이 아니라 **발견성·피드백 부재**:
+- **KB 발견성**: 지식(KB) 개념은 README §기둥②에 있으나 **tm-onboard에 소개 0** → 새 팀원은 KB 존재를 모르고, 첫 마주침이 kb-write-guard 차단("memory 직접편집 금지→knowledge write 경유")인데 "왜/KB가 뭔지"가 없음. 문서엔 있으나 필요한 순간엔 없음.
+- **침묵하는 실패(공통 뿌리)**: check-mcp `{"connected":false}`(왜인지 X)·훅 직접실행 무출력·personality 오탐(✅로 거짓보고)·흡수 막다른길. 전부 "왜+다음 액션"을 안 알려줌.
+- 구분: 토큰발급·핸들러 커밋확인 같은 **의도된 보안 마찰은 유지**(없애면 위험), 단 "왜 필요한지" 안내로 부드럽게.
+- 개선(P0급 UX):
+  ① tm-onboard에 "기둥② 지식(KB)" 한 단락 + tm-knowledge/tm-manage-knowledge 존재 안내 (L1·L2처럼 progressive 소개)
+  ② kb-write-guard 차단 메시지에 KB 개념·이유 1줄
+  ③ **실패/차단/빈슬롯 출력에 "왜 + 다음 액션" 원칙** 전반 적용 (check-mcp가 "연결 없음, 흡수하려면 X"까지)
+  ④ 상태 보고 정직성 (personality 등 오탐 제거 — 위 결정적 판정 항목과 연결)
+
+## 배너 기본값 부재 + config 비동기 (2026-06-20 도그푸딩, Jane)
+- **기본값 초라**: infra/banners/ 에 ASCII 아트 6종(ansi_shadow·slant·speed 등) 있으나, banner.txt 없으면 자동 배너가 `<팀> team mode ON` **한 줄 텍스트**. 신규 팀 첫인상이 빈손 — 멋진 배너는 picker로 일부러 골라야만 나옴(발견성 0). "발견성/친절성"과 같은 뿌리.
+  - 개선: install scaffold가 기본 폰트(예: ansi_shadow) banner.txt를 박아두거나, 자동 배너 자체를 ASCII 렌더로. personality 커스텀 = "기본에서 바꾸기"여야지 "빈손 채우기"가 아니게.
+- **배너↔config 비동기**: banner.txt 있으면 무조건 우선 → team.name 바꿔도 배너 안 따라옴(마이그레이션 시 acme 잔재 배너가 그대로 노출). 위 personality 결정적판정 항목과 연결 — 배너 출처가 banner.txt면 team.name 변경 시 경고하거나, 자동 배너는 team.name 추종.
+
+## UX 포팅 — acme엔 있고 teammode가 안 가져온 것들 (2026-06-20 도그푸딩, Jane)
+메타: acme→teammode 마이그레이션이 엔진(L1)만 가져오고 UX/첫경험을 안 가져옴. 재발명 말고 **포팅**.
+- **tm on 출력 포팅**: acme on(acme SKILL.md:39-65)은 [환영 + 📊팀원별 상태(🔧하는일/⏭다음/🚧막힌것, 세션로그+Linear In Progress) + 📋지난성과 3~5줄 + 📅일정(Google Cal 오늘~+3일) + 멤버 이모지 🌙Jane/😛Jonathon/👽Jonathan]. teammode tm on은 배너+greeting+summary 한줄 → 빈약.
+  - L2 불요: 환영·팀원별 상태·지난성과(세션로그 기반). L2 필요: Linear In Progress·Google Calendar 일정.
+  - 구현: tm SKILL.md ON §3-4를 acme식 웰컴 포맷으로. 이모지는 members.md/team.config.
+- **statusline 포팅**: acme는 statusline-command.sh:52 `[Acme]`(노란 하드코딩) + `.acme-active` 마커 조건부. teammode: ①statusline-command.sh에 `.teammode-active` 체크 추가(개인 statusline 유지·병합) ②team.config team.name 동적 읽기(bash+python3) ③settings.json TEAMMODE_HOME 배선(미구현) ④마커 우선순위 teammode>acme. teammode.py 마커는 이미 구현(:43,:1446).
+- 이 묶음 전체가 "친절성·가시성 P0 테마". 계획 에이전트 로드맵에 누락됐으니 다음 세션 P0 묶음으로 신설.
+
+## tm-customize 동작 수정 — 오버라이드 레이어 설계 (2026-06-20 Jane+논의)
+tm-customize에 "동작/훅 수정" 영역 추가. 단 코어 직접 패치는 upstream pull 충돌 → 오버라이드 레이어로.
+- **범위 3층**:
+  1. 표면 personality (배너·greeting/farewell) — 값만, 안전
+  2. 유틸 스킬 추가/제거 (tm-manage-utils 흡수)
+  3. **동작/훅 수정** — 위험, 아래 3중 가드 필수
+- **동작 수정 3중 가드**:
+  ① **서브에이전트 컨텍스트 풀로딩** (Jane 제안) — 이 영역 선택 시 서브에이전트가 레포 구조·계약을 빠삭히 적재한 뒤 작업(무지성 훅 수정 방지).
+  ② **오버라이드 레이어** — `infra/`(코어, upstream 관리)는 불변. 팀 전용 `team-overrides/`(훅 대체·확장, config 동작 플래그)에만 작성 → upstream pull 공존(게임 mods/ 원리). **코어 직접 패치 금지**.
+  ③ **테스트/conformance 게이트** — 수정 후 검증, 깨짐 방지.
+- **설계 미결**: 오버라이드 레이어 로딩 메커니즘(엔진이 team-overrides/ 훅을 코어보다 우선 로드?), config 동작 플래그 스키마, upstream 충돌 감지. → spec/writing-plans 전 확정 필요.
+
+## tm-customize 팀 페르소나(톤·캐릭터) 영역 추가 (2026-06-20 Jane)
+tm-customize 범위 4층으로 확장 — persona 추가:
+1. 표면 personality (배너·greeting/farewell) — 엔진 **출력**
+2. **팀 persona (톤·캐릭터, 예: 토깽이톤)** — 에이전트가 그 톤으로 **말하게**. ↓
+3. 유틸 스킬 추가/제거
+4. 동작/훅 수정 (오버라이드 레이어 — 위 항목)
+- **persona ≠ personality**: personality는 엔진이 출력(배너·멘트), persona는 에이전트 행동 지침(말투·캐릭터).
+- 저장: team.config 또는 `memory/team/persona.md`(팀 공유, 도입자 작성). 적용: SessionStart 훅/맥락 주입에 "이 팀 페르소나: …" 포함 → 에이전트가 그 톤으로 응답·메시지.
+- L2 연동: chat(슬랙) 등 외부 메시지에서 특히 의미(예: 토깽이톤 슬랙 공유). L1 내부 응답 톤에도 적용 가능.
+- 미결: persona 강도/범위(전체 응답 vs 외부메시지만), 멤버별 오버라이드 허용 여부, 토큰 무관(텍스트 지침).
+
+## statusline codex 쪽 누락 — 진짜 발견 (2026-06-20, Jane 끝까지 추적·Jonathan 단서)
+초기 조사가 Claude statusLine만 봐서 3번 "없다" 오판. 실제론 **codex** 쪽에 있었음:
+- **acme는 codex statusline 건드림**: `infra/hooks/sync.py:196`이 codex `config.toml` hooks 블록에 `statusMessage = "acme hook"` 주입(커밋 `c14e746` "Codex Acme setup support"; 과거엔 "Checking/Saving acme session log"). codex CLI는 훅 실행 시 상태줄에 이 메시지 표시 → **Jonathan(codex 사용자)이 본 게 이것**.
+- **teammode는 codex statusMessage 안 넣음** — `infra/agents/codex/adapter.py`가 hooks 블록 생성하되 statusMessage 누락. 마이그레이션 시 빠짐. Jonathan이 teammode 쓰면 codex statusline 비어있음.
+- **할 일 (statusline 두 갈래)**:
+  - Claude statusLine = 동적 팀명(오늘 우리 환경에 수동 구현, statusline-command.sh) → install 자동주입 제품화 필요(기존 작업4).
+  - **Codex statusMessage = teammode codex adapter에 포팅** (acme 원본 있음). 단 "acme hook" 고정 → **동적**(팀명/팀모드 ON, team.config에서)으로 개선.
+- 교훈: 에이전트별 statusline 표면이 다름 — claude=`settings.json` statusLine / codex=`config.toml` statusMessage. **둘 다 봐야** 함. 조사 시 한쪽만 보면 놓침.
+
+## statusline 구현 설계 확정 (2026-06-20 크로스OS·에이전트 검토 — Jane 푸시백)
+초기 "범용 wrapper 한 방"(settings.json statusLine.command를 teammode wrapper로 감싸 개인 원본 호출+팀블록 prepend)은 **크로스OS에서 기각**.
+- **기각 근거(셸 미스매치)**: claude statusLine은 윈도우서 Git Bash(있으면)/PowerShell(없으면)로 실행(공식문서 https://code.claude.com/docs/en/statusline.md). wrapper가 개인 원본 command를 subprocess 재실행하면 python `shell=True`=윈도우 cmd.exe ≠ claude의 GitBash/PS → 원본이 `bash xxx.sh`면 깨진다. **원본 재실행을 피하는 경로만** 견고.
+- **확정 설계**:
+  - **codex**: statusMessage는 config.toml **정적 문자열**(동적렌더 X) → codex adapter sync가 `[<팀명>] 팀모드 ON`을 team.config team.name에서 **동적**으로 박기. wrapper 불요. (acme `statusMessage="acme hook"` 고정 → 동적화)
+  - **claude 케이스 분기**: ①개인 statusLine **없음** → teammode python statusline 단독설치(`sys.executable`+`io_encoding`, 셸무관 — 전 훅 패턴 일관). ②개인 **있음** → 안 덮고 **정직한 수동안내**(BACKLOG "왜+다음" 원칙). ③멱등+원복(`_teammode_managed` 마커, hooks sync 패턴 모방). 팀명 동적, 하드코딩 금지.
+  - **후속 이월**: "개인 bash statusLine에 마커 블록 자동삽입"(우리 현재 수동방식)은 남의 파일 편집·언어의존이라 이번 범위 밖. ②케이스를 수동안내→자동삽입으로 올리는 건 별도 백로그.
+- 상태: 코더(sonnet) TDD 구현 착수 — claude adapter + codex adapter + 신규 `teammode_statusline.py` + 테스트. 완료선=기존 1089 + 신규 green.
+
+## statusLine PowerShell call operator 셸분기 (미지원 — 후속)
+현재 `_build_status_line_entry` / `_sync_status_line`의 statusLine 자동설치는 **Git Bash 전제**이다.
+PowerShell-only 윈도우(Git Bash 미설치)에서는 quoted executable(`'C:/path/python.exe' 'script.py'`)이
+PowerShell call operator(`&`) 없이 문자열 평가로 처리돼 실행되지 않는다.
+
+- **재현 조건**: Windows + Git Bash 미설치 + Claude Code가 statusLine을 PowerShell로 실행하는 환경.
+- **필요한 수정**: `_build_status_line_entry`에서 PowerShell 여부를 감지(또는 `--shell` 옵션 추가)해
+  PowerShell이면 `& 'C:/path/python.exe' 'script.py'` 형태로 생성하는 분기 추가.
+- **현재 Git Bash 사용자(= 대부분 팀원)에게는 영향 없음.** PowerShell-only 환경 대응은 별도 릴리스.

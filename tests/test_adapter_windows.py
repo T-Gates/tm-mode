@@ -106,12 +106,17 @@ def test_build_command_quotes_windows_python_path(env):
     """공백 든 윈도우 python 경로 → slash 정규화 + 따옴표로 감싸 셸 안전.
 
     백슬래시는 slash 로 정규화(bash escape 방지)하되, 공백은 여전히 따옴표 필요.
+    인용 방식은 single-quote 또는 double-quote 모두 허용(어느 쪽이든 셸 안전).
     """
     ad = _make(env, python=WIN_PY)
     cmd = ad.build_command({"script": "auto-commit.py"})
-    # slash 정규화된 공백 경로가 따옴표로 보호돼야 함(백슬래시 노출 금지)
-    assert '"' + WIN_PY.replace("\\", "/") + '"' in cmd
+    slash_path = WIN_PY.replace("\\", "/")
+    # slash 정규화된 공백 경로가 어떤 형태로든 인용돼야 함(백슬래시 노출 금지)
+    assert slash_path in cmd, f"slash 정규화 경로가 command에 없음: {cmd!r}"
     assert "\\" not in cmd
+    # 공백 경로는 따옴표로 감싸져야 함 (single or double quote 모두 허용)
+    assert ('"' + slash_path + '"' in cmd or "'" + slash_path + "'" in cmd), \
+        f"공백 경로가 따옴표로 감싸지지 않음: {cmd!r}"
 
 
 def test_build_command_no_quotes_for_simple_python(env):
@@ -228,12 +233,16 @@ def test_to_slash_helper():
 
 
 def test_windows_path_with_space_still_quoted(env):
-    """슬래시로 바꿔도 공백 경로는 여전히 따옴표 필요(둘 다 적용)."""
+    """슬래시로 바꿔도 공백 경로는 여전히 따옴표 필요(둘 다 적용).
+    인용 방식은 single-quote 또는 double-quote 모두 허용.
+    """
+    slash_path = "C:/Program Files/Python/python.exe"
     ad = _make(env, python=r"C:\Program Files\Python\python.exe")
     cmd = ad.build_command({"script": "auto-commit.py"})
     assert "\\" not in cmd
-    # slash + 공백 → 따옴표
-    assert '"C:/Program Files/Python/python.exe"' in cmd
+    # slash + 공백 → 어떤 따옴표로든 보호돼야 함
+    assert ('"' + slash_path + '"' in cmd or "'" + slash_path + "'" in cmd), \
+        f"공백 경로가 따옴표로 감싸지지 않음: {cmd!r}"
 
 
 def test_codex_inherits_slash_normalization(env, tmp_path):

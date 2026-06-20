@@ -108,6 +108,16 @@ def _build_context(root: Path) -> str | None:
     members = _engine._collect_members(root)
 
     lines = ["[teammode] 팀 모드 활성 — 세션 시작 맥락:"]
+
+    # guidelines 주입: 범용(root/infra/ 우선, fallback _INFRA) + 팀 커스텀
+    _infra_gl = root / "infra" / "guidelines.md"
+    if not _infra_gl.is_file():
+        _infra_gl = _INFRA / "guidelines.md"
+    for _gl_path in (_infra_gl, root / "memory" / "team" / "guidelines.md"):
+        if _gl_path.is_file():
+            lines.append("")
+            lines.append(_gl_path.read_text(encoding="utf-8").rstrip())
+
     if index_text.strip():
         lines.append("")
         lines.append("--- 팀 메모리 INDEX ---")
