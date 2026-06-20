@@ -229,7 +229,16 @@ tm-customize에 "동작/훅 수정" 영역 추가. 단 코어 직접 패치는 u
   ③ **테스트/conformance 게이트** — 수정 후 검증, 깨짐 방지.
 - **설계 미결**: 오버라이드 레이어 로딩 메커니즘(엔진이 team-overrides/ 훅을 코어보다 우선 로드?), config 동작 플래그 스키마, upstream 충돌 감지. → spec/writing-plans 전 확정 필요.
 
-## tm-customize 팀 페르소나(톤·캐릭터) 영역 추가 (2026-06-20 Jane)
+## ~~tm-customize 팀 페르소나(톤·캐릭터) 영역 추가~~ — 접음 (2026-06-21 Jane)
+**결정: persona 영역 제거.** tm-customize에서 페르소나 축을 아예 뺐다(references/persona.md 삭제, 라우터·트리거·테스트 정리).
+- **접은 근거**: persona는 SessionStart 상시주입을 안 하던 어정쩡한 축(매 세션 톤 강제 회피 vs 외부메시지만 적용 사이에서 미결)이라 가장 안 쓰일 물건이었다. tm-customize는 배너 + util 스킬로 좁힌다.
+- **유지**: 표면 `personality`(배너·greeting/farewell, 엔진 출력)는 그대로 — persona와 별개다.
+- 되살릴 일 있으면: 강도/범위(전체 응답 vs 외부메시지만)·멤버별 오버라이드 허용 여부가 당시 미결이었음.
+
+> 후속: 정체성(팀명·greeting·farewell) 커스텀 축은 별도로 추가 예정 — 아래 "정체성 축 + team.id" 항목 참조.
+
+<details><summary>(접힌 원안 — 2026-06-20)</summary>
+
 tm-customize 범위 4층으로 확장 — persona 추가:
 1. 표면 personality (배너·greeting/farewell) — 엔진 **출력**
 2. **팀 persona (톤·캐릭터, 예: 토깽이톤)** — 에이전트가 그 톤으로 **말하게**. ↓
@@ -239,6 +248,16 @@ tm-customize 범위 4층으로 확장 — persona 추가:
 - 저장: team.config 또는 `memory/team/persona.md`(팀 공유, 도입자 작성). 적용: SessionStart 훅/맥락 주입에 "이 팀 페르소나: …" 포함 → 에이전트가 그 톤으로 응답·메시지.
 - L2 연동: chat(슬랙) 등 외부 메시지에서 특히 의미(예: 토깽이톤 슬랙 공유). L1 내부 응답 톤에도 적용 가능.
 - 미결: persona 강도/범위(전체 응답 vs 외부메시지만), 멤버별 오버라이드 허용 여부, 토큰 무관(텍스트 지침).
+
+</details>
+
+## 정체성(팀명·greeting·farewell) 커스텀 축 + team.id (2026-06-21 Jane) — 다음
+**목표: 팀명·greeting·farewell을 tm-customize에서 언제든 자유롭게 바꿀 수 있게.** (Phase 2)
+- **블로커**: 현재 크리덴셜 금고가 `team.name`으로 키됨(`credentials/<team>.json`) + MCP `--team` 인자도 name → **개명하면 토큰 네임스페이스 고아.** 그래서 "이름은 L2 전에 확정" 같은 땜빵 경고가 필요했음.
+- **정공법 (Jane 결정)**: `team.config.json`에 **불변 식별자 `team.id`** 도입(install 1회 생성, 절대 불변) → 크리덴셜·MCP wiring을 `team.id` 기준으로 전환 → `team.name`은 순수 표시용(greeting·farewell·배너·statusline) = 자유 변경.
+- **영향 범위**: install_lib(write_introducer_config에 id 생성·members 스키마)·credentials 호출부·MCP wiring(role_server `--team`)·config 스키마/검증·spec·기존 금고 마이그레이션(name→id 리네임)·테스트(team을 키로 쓰는 다수).
+- **참고**: 멀티팀 동시소속은 애초 고려사항 아님(Jane) — 식별자는 멀티팀 충돌방지가 명목이었으나 우리 용례엔 불필요. 안정 키(id)면 단일팀에서도 개명 안전.
+- **doc**: 엔진 전환 완료 후 `references/identity.md` 작성 + tm-customize 라우터에 "정체성" 축 추가("파급 0, 언제든 변경"). 관련: 위 "배너↔config 비동기" 항목(team.name 변경 시 배너 추종).
 
 ## statusline codex 쪽 누락 — 진짜 발견 (2026-06-20, Jane 끝까지 추적·Jonathan 단서)
 초기 조사가 Claude statusLine만 봐서 3번 "없다" 오판. 실제론 **codex** 쪽에 있었음:
