@@ -58,7 +58,7 @@ def default_banner_content(team_root: Path, team_name: str) -> str:
     if ansi_shadow.is_file():
         art = ansi_shadow.read_text(encoding="utf-8").rstrip("\n")
         return art + "\n💡 팀색 입히기: tm-customize\n"
-    return f"=== {team_name} team mode ON ===\n"
+    return f"=== {team_name} ===\n"
 
 
 def _adapter(settings_path=None, skills_dir=None):
@@ -92,10 +92,24 @@ def _render_banner(team_root: Path) -> str:
     if banner_file.is_file():
         return banner_file.read_text(encoding="utf-8")
     team_name = os.environ.get("TEAMMODE_TEAM_NAME", "teammode")
-    banner = f"=== {team_name} team mode ON ===\n"
+    banner = f"=== {team_name} ===\n"
     banner_file.parent.mkdir(parents=True, exist_ok=True)
     banner_file.write_text(banner, encoding="utf-8")
     return banner
+
+
+def _print_fenced_banner(team_root: Path) -> None:
+    """배너를 CommonMark 동적 펜스 코드블록으로 stdout에 출력한다.
+
+    배너 내 가장 긴 백틱 run보다 최소 1 더 긴(그리고 최소 3) 펜스를 동적 생성해
+    배너 내 ``` 줄로 인한 조기 종료 버그를 방지한다(cmd_on·cmd_off 공용).
+    """
+    banner_content = _render_banner(team_root).rstrip("\n")
+    longest_run = max(
+        (len(m) for m in re.findall(r"`+", banner_content)), default=0
+    )
+    fence = "`" * max(3, longest_run + 1)
+    print(f"{fence}\n{banner_content}\n{fence}")
 
 
 def _read_team_field(team_root: Path, field: str) -> str | None:
@@ -263,14 +277,7 @@ def auto_update_on_start(team_root: Path) -> None:
 
 def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
            skills_dir: str | None = None) -> int:
-    banner_content = _render_banner(team_root).rstrip("\n")
-    # CommonMark fenced code 규칙: 배너 내에 ``` 줄이 있으면 조기 종료 버그 발생.
-    # 배너 내 가장 긴 백틱 run보다 최소 1 더 긴(그리고 최소 3) 펜스를 동적 생성.
-    longest_run = max(
-        (len(m) for m in re.findall(r"`+", banner_content)), default=0
-    )
-    fence = "`" * max(3, longest_run + 1)
-    print(f"{fence}\n{banner_content}\n{fence}")
+    _print_fenced_banner(team_root)
     # 시작 멘트(greeting): 배너 직후, config 에 있으면 출력(없으면 미출력 — §3.1).
     greeting = _read_team_field(team_root, "greeting")
     if greeting:
@@ -444,6 +451,8 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
     # core/util 스킬 제거
     _uninstall_layer(adapter, "core")
     _uninstall_layer(adapter, "util")
+    # OFF 출력 순서: 펜스 배너 → farewell (ON 과 동일 배너 소스 사용).
+    _print_fenced_banner(team_root)
     # 끝맺음 말(farewell): config 에 있으면 그걸, 없으면 "상태 저장됨" 폴백(§3.1).
     farewell = _read_team_field(team_root, "farewell")
     print(farewell if farewell else "teammode off — 상태 저장됨")

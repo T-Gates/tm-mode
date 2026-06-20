@@ -152,7 +152,7 @@ scaffold 대상:
 - 공통 디렉토리: `memory/team`, `memory/team/decisions/archive`, `memory/team/meeting/summary`, `memory/team/meeting/raw`, `memory/team/sessions/<member_name>`.
 - 공통 파일: `memory/INDEX.md`와 `memory/team/decisions/current.md`는 없을 때만 쓴다.
 - `memory/team/members.md`는 없으면 헤더를 만들고, member line을 append한다.
-- `memory/banner.txt`는 없을 때만 `=== <team_name> team mode ON ===\n`으로 쓴다.
+- `memory/banner.txt`는 없을 때만 `=== <team_name> ===\n`으로 쓴다.
 - 첫 세션로그 파일은 만들지 않는다.
 
 도입자 경로:

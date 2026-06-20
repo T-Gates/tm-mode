@@ -44,14 +44,14 @@ def test_on_no_greeting_when_absent(tmp_path):
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
     # 배너만 출력 — greeting 으로 새 줄 추가 안 됨(현행 유지)
-    assert "team mode ON" in r.stdout
+    assert "===" in r.stdout
 
 
 def test_on_no_config_is_nonfatal(tmp_path):
     # config 파일 자체가 없어도 on 성공(greeting 미출력, 비치명)
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
-    assert "team mode ON" in r.stdout
+    assert "===" in r.stdout
 
 
 def test_on_broken_config_is_nonfatal(tmp_path):
@@ -59,7 +59,7 @@ def test_on_broken_config_is_nonfatal(tmp_path):
                                                encoding="utf-8")
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
-    assert "team mode ON" in r.stdout
+    assert "===" in r.stdout
 
 
 def test_on_greeting_after_banner(tmp_path):
@@ -67,7 +67,7 @@ def test_on_greeting_after_banner(tmp_path):
     _write_config(tmp_path, greeting="GREETING_TOKEN")
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
-    assert r.stdout.index("team mode ON") < r.stdout.index("GREETING_TOKEN")
+    assert r.stdout.index("===") < r.stdout.index("GREETING_TOKEN")
 
 
 # ── off: farewell ──
