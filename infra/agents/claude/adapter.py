@@ -690,7 +690,84 @@ class Adapter:
                 pass
         return fallback
 
-    def _build_status_line_entry(self) -> dict:
+    @staticmethod
+    def _is_bash_compatible(command: str, *, resolve_shebang: bool = True) -> bool:
+        """command 가 bash 호환 셸 스크립트인지 판정.
+
+        True (bash 호환 확실):
+          - command 토큰에 '.sh' 포함
+          - command 가 'sh ' 또는 'bash ' 로 시작
+          - 첫 토큰이 실제 파일이고 shebang 첫 줄에 'sh' 또는 'bash' 포함
+
+        False (불확실 또는 확실히 비호환):
+          - command 에 'powershell', 'pwsh', '.ps1' 포함
+          - 위 True 조건에 해당하지 않는 경우 (보수적 = False)
+
+        파일 읽기 실패(부재·권한 없음) → shebang 확인 생략(비치명적).
+        """
+        if not command:
+            return False
+        cmd_lower = command.lower()
+
+        # 확실히 비호환: PowerShell
+        if any(kw in cmd_lower for kw in ("powershell", "pwsh", ".ps1")):
+            return False
+
+        # .sh 토큰 포함
+        if ".sh" in command:
+            return True
+
+        # 실행형 bash / sh 인식 — 첫 토큰 basename 또는 env 다음 토큰
+        # /bin/bash, /usr/bin/sh, env bash, /usr/bin/env bash 등을 모두 인식.
+        # 기존 'bash '/'sh ' prefix 단순 비교는 /bin/bash 등을 놓쳐서 basename 비교로 교체.
+        try:
+            import shlex as _shlex_check
+            _tokens_check = _shlex_check.split(command)
+        except ValueError:
+            _tokens_check = command.split()
+        if _tokens_check:
+            _first = _tokens_check[0]
+            _basename_first = os.path.basename(_first)
+            if _basename_first in ("bash", "sh"):
+                return True
+            # env bash / /usr/bin/env bash 패턴
+            if _basename_first == "env" and len(_tokens_check) >= 2:
+                _second = _tokens_check[1]
+                if _second in ("bash", "sh"):
+                    return True
+
+        # 첫 토큰이 파일 → shebang 확인
+        if resolve_shebang:
+            try:
+                import shlex as _shlex
+                tokens = _shlex.split(command)
+            except ValueError:
+                tokens = command.split()
+            if tokens:
+                first = tokens[0]
+                try:
+                    p = Path(first)
+                    if p.is_file():
+                        first_line = p.read_text(encoding="utf-8", errors="replace").split("\n")[0]
+                        if first_line.startswith("#!"):
+                            # shebang 인터프리터 basename이 정확히 bash 또는 sh 일 때만 True.
+                            # 'sh' 부분일치(zsh/csh/fish 오판 방지) 금지 — basename 단어 단위 비교.
+                            _shebang_parts = first_line[2:].strip().split()
+                            if _shebang_parts:
+                                _shebang_basename = os.path.basename(_shebang_parts[0])
+                                if _shebang_basename in ("bash", "sh"):
+                                    return True
+                                # env bash / env sh 패턴 (#!/usr/bin/env sh 등)
+                                if _shebang_basename == "env" and len(_shebang_parts) >= 2:
+                                    if _shebang_parts[1] in ("bash", "sh"):
+                                        return True
+                except (OSError, ValueError):
+                    pass  # 파일 읽기 실패 → skip
+
+        return False
+
+    def _build_status_line_entry(self, wrapped_command: Optional[str] = None,
+                                original_entry: Optional[dict] = None) -> dict:
         """teammode 소유 statusLine 항목 생성.
 
         sys.executable + teammode_statusline.py 절대경로로 command 구성.
@@ -698,6 +775,12 @@ class Adapter:
         Windows bash escape 방지를 위해 slash 경로 정규화(_to_slash 사용).
         개인 bash statusLine과의 셸 미스매치를 피하기 위해
         subprocess 재실행 없는 단독 Python 스크립트 실행 방식을 사용한다.
+
+        wrapped_command 가 주어지면 wrapper 항목을 생성한다:
+          command = <python> <teammode_statusline.py> --wrapped <quoted_original_command>
+          반환 dict에 _teammode_wrapped=True, _wrapped_command=<original_command> 포함.
+          original_entry 가 주어지면 _wrapped_entry 에 원본 dict 전체를 보존한다 — off 복원 시
+          padding·custom 등 원본 속성이 손실 없이 복원된다.
 
         NOTE(플랫폼 지원 범위): statusLine 자동설치는 **Git Bash 전제**.
         PowerShell-only 윈도우(Git Bash 미설치)에서는 quoted executable이
@@ -708,6 +791,18 @@ class Adapter:
         python = _to_slash(str(self.python))
         script = _to_slash(str(script_path))
         # 공백 포함 경로 따옴표 처리
+        if wrapped_command is not None:
+            command = f"{_quote_arg(python)} {_quote_arg(script)} --wrapped {_quote_arg(wrapped_command)}"
+            entry = {
+                "type": "command",
+                "command": command,
+                "_teammode_managed": True,
+                "_teammode_wrapped": True,
+                "_wrapped_command": wrapped_command,
+            }
+            if original_entry is not None:
+                entry["_wrapped_entry"] = original_entry
+            return entry
         command = f"{_quote_arg(python)} {_quote_arg(script)}"
         return {
             "type": "command",
@@ -726,9 +821,10 @@ class Adapter:
         | 개인 statusLine 상태                         | --on 동작                                    | --off 동작                                |
         |---------------------------------------------|----------------------------------------------|-------------------------------------------|
         | 없음                                        | 단독설치 (_teammode_managed)                 | no-op                                     |
-        | 있음(teammode 아닌 것)                       | 건드리지 않음 + 안내 메시지                  | no-op                                     |
-        | managed + command가 현재 entry와 동일        | skip(멱등)                                   | teammode 명령 가리키면 제거               |
-        | managed + command가 stale(다른 경로)          | 갱신(stale 수정)                             | teammode 명령 가리키면 제거               |
+        | 있음(managed=True, wrapped=True)             | 멱등 확인(rebuild+비교), 변경 시 갱신         | _wrapped_command 원복                     |
+        | 있음(managed=True, standalone)              | stale 체크 → 갱신                            | teammode 명령 가리키면 제거               |
+        | 있음(teammode 아닌 것, bash 호환)            | auto-wrap → wrapper 항목으로 교체             | no-op                                     |
+        | 있음(teammode 아닌 것, bash 불명)            | 무접촉 + 판단필요 경고                       | no-op                                     |
         | managed marker True + 외부 command           | 갱신(현재 올바른 경로로)                     | 경고+보존 (외부 명령 삭제 금지)           |
 
         NOTE: statusLine 자동설치는 Git Bash 전제(PowerShell-only 윈도우 미지원).
@@ -743,35 +839,71 @@ class Adapter:
                 settings["statusLine"] = self._build_status_line_entry()
                 changes.append("[statusline] teammode statusLine 설치")
             elif isinstance(existing_sl, dict) and existing_sl.get("_teammode_managed") is True:
-                # managed 마커 있음 → command가 현재 올바른 entry와 다르면 갱신(stale 수정)
-                wanted = self._build_status_line_entry()
-                if existing_sl.get("command") != wanted["command"]:
-                    settings["statusLine"] = wanted
-                    changes.append("[statusline] teammode statusLine 갱신(stale 수정)")
-                # else: 동일 → 멱등 skip
+                if existing_sl.get("_teammode_wrapped") is True:
+                    # wrapper managed 항목 — 멱등 확인 (double-wrap 방지)
+                    original_cmd = existing_sl.get("_wrapped_command", "")
+                    wanted = self._build_status_line_entry(wrapped_command=original_cmd)
+                    if existing_sl.get("command") != wanted["command"]:
+                        settings["statusLine"] = wanted
+                        changes.append("[statusline] teammode statusLine 갱신(stale 수정)")
+                    # else: 동일 → 멱등 skip
+                else:
+                    # standalone managed 항목 — command stale 체크
+                    wanted = self._build_status_line_entry()
+                    if existing_sl.get("command") != wanted["command"]:
+                        settings["statusLine"] = wanted
+                        changes.append("[statusline] teammode statusLine 갱신(stale 수정)")
+                    # else: 동일 → 멱등 skip
             else:
-                # 개인 statusLine 있음 → 무접촉 + 정직한 안내
-                # (BACKLOG "왜+다음" 원칙 — 개인 bash statusLine 블록삽입 자동화는 후속 BACKLOG)
-                warnings.append(
-                    "[info] 개인 statusLine 감지 — 자동연동 BACKLOG. "
-                    "수동 연동: statusLine.command 에 팀모드 표시 스크립트를 추가하거나 "
-                    "기존 스크립트를 유지하세요 (자동삽입은 후속 릴리스 예정)."
-                )
+                # 개인 statusLine 있음
+                personal_cmd = (existing_sl.get("command", "")
+                                if isinstance(existing_sl, dict) else "")
+                if self._is_bash_compatible(personal_cmd):
+                    # bash 호환 → auto-wrap: 원본 보존 wrapper로 교체
+                    # original_entry=existing_sl: padding·custom 등 모든 속성을 _wrapped_entry에 보존 → off 시 원상복원
+                    settings["statusLine"] = self._build_status_line_entry(
+                        wrapped_command=personal_cmd,
+                        original_entry=existing_sl,
+                    )
+                    changes.append("[statusline] 개인 statusLine을 teammode wrapper로 감쌌습니다(원본 보존)")
+                else:
+                    # bash 불명 → 무접촉 + 판단필요 경고
+                    warnings.append(
+                        "[판단필요] 개인 statusLine 셸 불명(bash 미확인) — 자동 연동 보류. "
+                        "AI가 스크립트를 확인 후 수동 연동하세요."
+                    )
         else:
             # off (또는 None)
             if isinstance(existing_sl, dict) and existing_sl.get("_teammode_managed") is True:
-                cmd = existing_sl.get("command", "")
-                if self._is_team_command(cmd):
-                    # teammode_statusline.py를 가리키는 managed entry → 제거
-                    del settings["statusLine"]
-                    changes.append("[statusline] teammode statusLine 제거")
+                if existing_sl.get("_teammode_wrapped") is True:
+                    # wrapper 항목 → 원본 복원:
+                    # _wrapped_entry(전체 dict) 우선 복원 — padding·custom 등 원본 속성 보존.
+                    # _wrapped_entry 없으면 _wrapped_command 로 최소 재생성(구버전 호환).
+                    original_entry = existing_sl.get("_wrapped_entry")
+                    original_cmd = existing_sl.get("_wrapped_command")
+                    if original_entry is not None:
+                        settings["statusLine"] = original_entry
+                        changes.append("[statusline] 원본 statusLine 복원")
+                    elif original_cmd:
+                        settings["statusLine"] = {"type": "command", "command": original_cmd}
+                        changes.append("[statusline] 원본 statusLine 복원")
+                    else:
+                        # _wrapped_command 없음 (비정상) → 그냥 제거
+                        del settings["statusLine"]
+                        changes.append("[statusline] teammode statusLine 제거")
                 else:
-                    # marker=True인데 외부 command → 삭제 금지, 경고+보존
-                    warnings.append(
-                        "[warn] statusLine: _teammode_managed=True 이지만 command가 "
-                        "teammode_statusline.py 가 아닌 외부 경로입니다 — 삭제하지 않고 보존합니다. "
-                        f"command={cmd!r}"
-                    )
+                    cmd = existing_sl.get("command", "")
+                    if self._is_team_command(cmd):
+                        # teammode_statusline.py를 가리키는 managed entry → 제거
+                        del settings["statusLine"]
+                        changes.append("[statusline] teammode statusLine 제거")
+                    else:
+                        # marker=True인데 외부 command → 삭제 금지, 경고+보존
+                        warnings.append(
+                            "[warn] statusLine: _teammode_managed=True 이지만 command가 "
+                            "teammode_statusline.py 가 아닌 외부 경로입니다 — 삭제하지 않고 보존합니다. "
+                            f"command={cmd!r}"
+                        )
             # 개인 statusLine(managed 아닌 것)이면 no-op (무접촉)
 
         return changes

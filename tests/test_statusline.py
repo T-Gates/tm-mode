@@ -284,10 +284,16 @@ class TestClaudeStatusLine:
         assert sl is None, "팀모드 OFF 시 teammode statusLine이 제거돼야 한다"
 
     def test_B4_user_statusline_untouched(self, claude_env):
-        """개인 statusLine 있음 → sync --on 시 건드리지 않는다."""
+        """개인 statusLine(bash 미확인 — 확장자·shebang 없는 바이너리) 있음
+        → sync --on 시 건드리지 않는다 (판단불가 = 보수적 무접촉).
+
+        bash 호환 확인 불가(확장자·shebang·sh/bash 접두사 없음) 명령은
+        auto-wrap 대상이 아니라 경고+무접촉이다.
+        """
         user_sl = {
             "type": "command",
-            "command": "/usr/local/bin/my-statusline.sh",
+            # 확장자 없는 바이너리 경로 — bash 호환 여부 판단 불가 → 무접촉
+            "command": "/usr/local/bin/my-statusline-binary",
         }
         claude_env.settings.write_text(json.dumps({"statusLine": user_sl}))
         claude_env.make_adapter().sync(mode="on")
@@ -669,3 +675,488 @@ class TestPathWithSpecialChars:
         tokens = shlex.split(result)
         assert len(tokens) == 1
         assert "my python" in tokens[0]
+
+
+# ════════════════════════════════════════════════════════════════════
+# F. wrapper 모드 · _is_bash_compatible · auto-wrap · 원본복원 · 멱등
+# ════════════════════════════════════════════════════════════════════
+
+def _run_statusline_wrapped(agent_dir, wrapped_cmd: str, active: bool,
+                             team_name: str, root: Path, stdin_text: str = "{}"):
+    """teammode_statusline.py를 --wrapped <cmd> 모드로 실행.
+
+    agent_dir 에 스크립트를 복사한 후 subprocess 로 실행.
+    (stdout, returncode) 반환.
+    """
+    import shutil
+    agent_dir = Path(agent_dir)
+    local_script = agent_dir / "teammode_statusline.py"
+    if not local_script.exists():
+        shutil.copy2(str(STATUSLINE_SCRIPT), str(local_script))
+
+    # active 파일 제어
+    active_file = root / ".teammode-active"
+    if active:
+        active_file.write_text("")
+    elif active_file.exists():
+        active_file.unlink()
+
+    result = subprocess.run(
+        [sys.executable, str(local_script), "--wrapped", wrapped_cmd],
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        cwd=str(agent_dir),
+    )
+    return result.stdout, result.returncode
+
+
+class TestWrapperMode:
+    """F1~F4: wrapper 모드 동작 검증."""
+
+    def test_F1_wrapper_passes_stdin_to_subprocess(self, statusline_env):
+        """wrapper 모드 — stdin 데이터가 subprocess(원본 명령)에 전달된다."""
+        # stdin 으로 JSON 전달 → 그대로 출력하는 명령으로 확인
+        (statusline_env.root / ".teammode-active").write_text("")
+        _write_team_config(statusline_env.root, "Acme")
+
+        # echo_stdin 스크립트: stdin을 그대로 stdout으로 출력
+        echo_script = statusline_env.root / "echo_stdin.py"
+        echo_script.write_text(
+            "import sys\nprint(sys.stdin.read(), end='')\n", encoding="utf-8"
+        )
+        wrapped_cmd = f"{sys.executable} {echo_script}"
+        stdin_payload = '{"session": "test-id"}'
+
+        stdout, rc = _run_statusline_wrapped(
+            statusline_env.agent_dir,
+            wrapped_cmd=wrapped_cmd,
+            active=True,
+            team_name="Acme",
+            root=statusline_env.root,
+            stdin_text=stdin_payload,
+        )
+        assert rc == 0
+        # stdin 페이로드가 출력에 포함돼야 한다
+        assert "test-id" in stdout, f"stdin 페이로드가 subprocess에 전달돼야 함: {stdout!r}"
+
+    def test_F2_wrapper_active_combines_original_and_team_name(self, statusline_env):
+        """wrapper 모드 활성 — 원본 출력 + [팀명] 조합."""
+        _write_team_config(statusline_env.root, "Acme")
+
+        # 고정 문자열 출력 스크립트
+        hello_script = statusline_env.root / "hello.py"
+        hello_script.write_text("print('ORIGINAL_OUTPUT', end='')\n", encoding="utf-8")
+        wrapped_cmd = f"{sys.executable} {hello_script}"
+
+        stdout, rc = _run_statusline_wrapped(
+            statusline_env.agent_dir,
+            wrapped_cmd=wrapped_cmd,
+            active=True,
+            team_name="Acme",
+            root=statusline_env.root,
+        )
+        assert rc == 0
+        assert "ORIGINAL_OUTPUT" in stdout, f"원본 출력 포함 필요: {stdout!r}"
+        assert "Acme" in stdout, f"팀명 포함 필요: {stdout!r}"
+
+    def test_F3_wrapper_inactive_only_original_output(self, statusline_env):
+        """wrapper 모드 비활성 — 원본 출력만, [팀명] 없음."""
+        _write_team_config(statusline_env.root, "Acme")
+
+        hello_script = statusline_env.root / "hello2.py"
+        hello_script.write_text("print('ONLY_ORIGINAL', end='')\n", encoding="utf-8")
+        wrapped_cmd = f"{sys.executable} {hello_script}"
+
+        stdout, rc = _run_statusline_wrapped(
+            statusline_env.agent_dir,
+            wrapped_cmd=wrapped_cmd,
+            active=False,
+            team_name="Acme",
+            root=statusline_env.root,
+        )
+        assert rc == 0
+        assert "ONLY_ORIGINAL" in stdout, f"원본 출력 포함 필요: {stdout!r}"
+        assert "Acme" not in stdout, f"비활성 시 팀명 없어야 함: {stdout!r}"
+
+    def test_F4_wrapper_failure_nonfatal(self, statusline_env):
+        """wrapper 모드 — 원본 명령 실패 시 비치명적 (exit 0, 활성이면 팀명 단독)."""
+        _write_team_config(statusline_env.root, "Acme")
+
+        # 실패 명령
+        wrapped_cmd = f"{sys.executable} -c 'import sys; sys.exit(1)'"
+
+        stdout, rc = _run_statusline_wrapped(
+            statusline_env.agent_dir,
+            wrapped_cmd=wrapped_cmd,
+            active=True,
+            team_name="Acme",
+            root=statusline_env.root,
+        )
+        # 항상 exit 0 (비치명적)
+        assert rc == 0
+        # 활성이므로 팀명만이라도 출력
+        assert "Acme" in stdout, f"실패 시에도 활성이면 팀명 출력 필요: {stdout!r}"
+
+    def test_F4b_wrapper_failure_inactive_no_output(self, statusline_env):
+        """wrapper 모드 — 원본 명령 실패 + 비활성 → 무출력."""
+        _write_team_config(statusline_env.root, "Acme")
+
+        wrapped_cmd = f"{sys.executable} -c 'import sys; sys.exit(1)'"
+
+        stdout, rc = _run_statusline_wrapped(
+            statusline_env.agent_dir,
+            wrapped_cmd=wrapped_cmd,
+            active=False,
+            team_name="Acme",
+            root=statusline_env.root,
+        )
+        assert rc == 0
+        assert stdout.strip() == "", f"비활성+실패 시 무출력이어야 함: {stdout!r}"
+
+
+class TestIsBashCompatible:
+    """F5: _is_bash_compatible 판정 테스트."""
+
+    def test_F5_sh_extension_is_bash_compatible(self):
+        """.sh 토큰 포함 command → True."""
+        assert claude_adapter.Adapter._is_bash_compatible("/usr/local/bin/my-status.sh")
+
+    def test_F5b_sh_start_is_bash_compatible(self):
+        """'sh ' 로 시작하는 command → True."""
+        assert claude_adapter.Adapter._is_bash_compatible("sh /usr/local/bin/script")
+
+    def test_F5c_bash_start_is_bash_compatible(self):
+        """'bash ' 로 시작하는 command → True."""
+        assert claude_adapter.Adapter._is_bash_compatible("bash /path/to/script")
+
+    def test_F5d_shebang_sh_is_bash_compatible(self, tmp_path):
+        """실파일 + shebang에 'sh' → True."""
+        script = tmp_path / "my_status"
+        script.write_text("#!/usr/bin/env sh\necho hello\n", encoding="utf-8")
+        assert claude_adapter.Adapter._is_bash_compatible(str(script))
+
+    def test_F5e_shebang_bash_is_bash_compatible(self, tmp_path):
+        """실파일 + shebang에 'bash' → True."""
+        script = tmp_path / "my_status_bash"
+        script.write_text("#!/bin/bash\necho hello\n", encoding="utf-8")
+        assert claude_adapter.Adapter._is_bash_compatible(str(script))
+
+    def test_F5f_ps1_is_not_bash_compatible(self):
+        """.ps1 파일 → False."""
+        assert not claude_adapter.Adapter._is_bash_compatible("/path/to/status.ps1")
+
+    def test_F5g_powershell_is_not_bash_compatible(self):
+        """'powershell' 포함 command → False."""
+        assert not claude_adapter.Adapter._is_bash_compatible(
+            "powershell -Command ./my-status.ps1")
+
+    def test_F5h_pwsh_is_not_bash_compatible(self):
+        """'pwsh' 포함 command → False."""
+        assert not claude_adapter.Adapter._is_bash_compatible("pwsh -File ./status.ps1")
+
+    def test_F5i_unknown_undecidable_is_false(self):
+        """판단 불가 command → False (보수적)."""
+        assert not claude_adapter.Adapter._is_bash_compatible("/usr/local/bin/my-status")
+
+    def test_F5j_empty_command_is_false(self):
+        """빈 command → False."""
+        assert not claude_adapter.Adapter._is_bash_compatible("")
+
+
+class TestAutoWrapPersonalStatusLine:
+    """F6~F7: 개인 statusLine auto-wrap 및 PowerShell no-touch."""
+
+    def test_F6_bash_personal_statusline_auto_wrapped(self, claude_env):
+        """개인 bash statusLine → sync --on 시 auto-wrap (원본 보존)."""
+        personal_cmd = "/usr/local/bin/my-status.sh"
+        user_sl = {"type": "command", "command": personal_cmd}
+        claude_env.settings.write_text(json.dumps({"statusLine": user_sl}))
+
+        adapter = claude_env.make_adapter()
+        settings_dict = json.loads(claude_env.settings.read_text())
+        warnings_list = []
+        changes = adapter._sync_status_line(settings_dict, mode="on", warnings=warnings_list)
+
+        sl = settings_dict.get("statusLine")
+        assert sl is not None
+        assert sl.get("_teammode_managed") is True
+        assert sl.get("_teammode_wrapped") is True
+        # 원본 명령이 _wrapped_command에 보존돼야 한다
+        assert sl.get("_wrapped_command") == personal_cmd
+        # command에 --wrapped 가 포함돼야 한다
+        assert "--wrapped" in sl.get("command", "")
+        # log에 감쌌다는 메시지가 있어야 한다
+        assert any("감쌌습니다" in c or "wrapper" in c for c in changes)
+
+    def test_F7_powershell_personal_statusline_no_touch(self, claude_env):
+        """개인 PowerShell statusLine → sync --on 시 무접촉 + 판단필요 경고."""
+        personal_cmd = "powershell -Command ./my-status.ps1"
+        user_sl = {"type": "command", "command": personal_cmd}
+        claude_env.settings.write_text(json.dumps({"statusLine": user_sl}))
+
+        adapter = claude_env.make_adapter()
+        settings_dict = json.loads(claude_env.settings.read_text())
+        warnings_list = []
+        adapter._sync_status_line(settings_dict, mode="on", warnings=warnings_list)
+
+        # statusLine이 원본 그대로여야 한다 (무접촉)
+        sl = settings_dict.get("statusLine")
+        assert sl == user_sl, f"PowerShell statusLine은 변경되지 않아야 함: {sl!r}"
+        # 경고가 발생해야 한다
+        assert len(warnings_list) > 0
+        assert any("판단필요" in w for w in warnings_list)
+
+    def test_F7b_undecidable_personal_statusline_no_touch(self, claude_env):
+        """판단 불가 개인 statusLine (bash 미확인) → 무접촉 + 경고."""
+        personal_cmd = "/usr/local/bin/my-status"  # 확장자도 shebang도 없음
+        user_sl = {"type": "command", "command": personal_cmd}
+        claude_env.settings.write_text(json.dumps({"statusLine": user_sl}))
+
+        adapter = claude_env.make_adapter()
+        settings_dict = json.loads(claude_env.settings.read_text())
+        warnings_list = []
+        adapter._sync_status_line(settings_dict, mode="on", warnings=warnings_list)
+
+        sl = settings_dict.get("statusLine")
+        assert sl == user_sl, f"미확인 statusLine은 변경되지 않아야 함: {sl!r}"
+        assert len(warnings_list) > 0
+
+
+class TestWrappedRestoreAndIdempotency:
+    """F8~F9: wrapped off 복원 + on 재실행 멱등."""
+
+    def test_F8_off_restores_original_wrapped_command(self, claude_env):
+        """managed + _teammode_wrapped=True → sync --off 시 원본 statusLine 복원."""
+        original_cmd = "/usr/local/bin/my-status.sh"
+        wrapped_sl = {
+            "type": "command",
+            "command": f"{sys.executable} /path/teammode_statusline.py --wrapped {original_cmd}",
+            "_teammode_managed": True,
+            "_teammode_wrapped": True,
+            "_wrapped_command": original_cmd,
+        }
+        claude_env.settings.write_text(json.dumps({"statusLine": wrapped_sl}))
+
+        adapter = claude_env.make_adapter()
+        settings_dict = json.loads(claude_env.settings.read_text())
+        warnings_list = []
+        changes = adapter._sync_status_line(settings_dict, mode="off", warnings=warnings_list)
+
+        sl = settings_dict.get("statusLine")
+        assert sl is not None, "원본 복원 후 statusLine이 있어야 한다"
+        assert sl.get("command") == original_cmd, \
+            f"원본 명령으로 복원돼야 함: {sl!r}"
+        assert sl.get("_teammode_managed") is not True, "복원된 항목은 teammode 관리가 아님"
+        assert any("복원" in c for c in changes)
+
+    def test_F8b_off_standalone_managed_removed(self, claude_env):
+        """managed + standalone (wrapped 아님) → sync --off 시 제거."""
+        adapter = claude_env.make_adapter()
+        entry = adapter._build_status_line_entry()  # wrapped_command=None
+        claude_env.settings.write_text(json.dumps({"statusLine": entry}))
+
+        settings_dict = json.loads(claude_env.settings.read_text())
+        warnings_list = []
+        changes = adapter._sync_status_line(settings_dict, mode="off", warnings=warnings_list)
+
+        assert settings_dict.get("statusLine") is None, "standalone managed → off 시 제거"
+        assert any("제거" in c for c in changes)
+
+    def test_F9_idempotent_on_while_wrapped_no_double_wrap(self, claude_env):
+        """이미 wrapped 상태에서 sync --on 재실행 → double-wrap 없음, 멱등."""
+        original_cmd = "/usr/local/bin/my-status.sh"
+        adapter = claude_env.make_adapter()
+        wrapped_entry = adapter._build_status_line_entry(wrapped_command=original_cmd)
+
+        claude_env.settings.write_text(json.dumps({"statusLine": wrapped_entry}))
+
+        # 첫 번째 on (이미 wrapped)
+        settings_dict = json.loads(claude_env.settings.read_text())
+        warnings_list = []
+        changes1 = adapter._sync_status_line(settings_dict, mode="on", warnings=warnings_list)
+
+        sl = settings_dict.get("statusLine")
+        assert sl is not None
+        # _wrapped_command이 원본 그대로여야 한다 (double-wrap 시 원본이 바뀜)
+        assert sl.get("_wrapped_command") == original_cmd, \
+            f"double-wrap이 발생하면 안 됨 — _wrapped_command={sl.get('_wrapped_command')!r}"
+        # command에 --wrapped가 정확히 1번만 나타나야 한다
+        cmd = sl.get("command", "")
+        assert cmd.count("--wrapped") == 1, f"--wrapped가 두 번 등장: {cmd!r}"
+
+
+class TestWrappedArgEscape:
+    """결함 5: --wrapped 인수 이스케이프 — flags·공백 포함 원본이 단일 토큰으로 전달"""
+
+    def test_G1_flags_preserved_via_shlex(self, claude_env):
+        """`/tmp/s.sh --flag x` 원본이 shlex.split 후 단일 토큰으로 온전히 복원."""
+        original_cmd = "/tmp/s.sh --flag x"
+        adapter = claude_env.make_adapter()
+        entry = adapter._build_status_line_entry(wrapped_command=original_cmd)
+        cmd_str = entry["command"]
+        tokens = shlex.split(cmd_str)
+        # --wrapped 다음 토큰이 원본 전체여야 한다
+        idx = tokens.index("--wrapped")
+        recovered = tokens[idx + 1]
+        assert recovered == original_cmd, (
+            f"flags 손실: {recovered!r} != {original_cmd!r}\nfull cmd: {cmd_str!r}"
+        )
+
+    def test_G2_bash_lc_preserved_via_shlex(self, claude_env):
+        """`bash -lc "echo hi"` 원본이 shlex.split 후 단일 토큰으로 복원."""
+        original_cmd = 'bash -lc "echo hi"'
+        adapter = claude_env.make_adapter()
+        entry = adapter._build_status_line_entry(wrapped_command=original_cmd)
+        cmd_str = entry["command"]
+        tokens = shlex.split(cmd_str)
+        idx = tokens.index("--wrapped")
+        recovered = tokens[idx + 1]
+        assert recovered == original_cmd, (
+            f"bash -lc 손실: {recovered!r} != {original_cmd!r}\nfull cmd: {cmd_str!r}"
+        )
+
+    def test_G3_space_in_path_preserved_via_shlex(self, claude_env):
+        """`/path/with space/s.sh` 원본이 shlex.split 후 단일 토큰으로 복원."""
+        original_cmd = "/path/with space/s.sh"
+        adapter = claude_env.make_adapter()
+        entry = adapter._build_status_line_entry(wrapped_command=original_cmd)
+        cmd_str = entry["command"]
+        tokens = shlex.split(cmd_str)
+        idx = tokens.index("--wrapped")
+        recovered = tokens[idx + 1]
+        assert recovered == original_cmd, (
+            f"공백경로 파손: {recovered!r} != {original_cmd!r}\nfull cmd: {cmd_str!r}"
+        )
+
+
+class TestWrappedEntryPreservesOriginalAttrs:
+    """결함 1: on→off 시 원본 statusLine dict 속성(padding, custom 등) 완전 복원."""
+
+    def test_H1_custom_attrs_preserved_on_off_roundtrip(self, claude_env):
+        """원본 dict에 padding·custom 속성이 있으면 off 복원 시 동일하게 복원된다."""
+        original_sl = {
+            "type": "command",
+            "command": "/usr/local/bin/my-status.sh",
+            "padding": 0,
+            "custom": "keep-me",
+        }
+        claude_env.settings.write_text(json.dumps({"statusLine": original_sl}))
+
+        adapter = claude_env.make_adapter()
+        # on: auto-wrap
+        settings_on = json.loads(claude_env.settings.read_text())
+        warnings_list = []
+        adapter._sync_status_line(settings_on, mode="on", warnings=warnings_list)
+
+        # off: 복원
+        warnings_list2 = []
+        adapter._sync_status_line(settings_on, mode="off", warnings=warnings_list2)
+
+        restored_sl = settings_on.get("statusLine")
+        assert restored_sl is not None, "복원 후 statusLine이 있어야 한다"
+        assert restored_sl == original_sl, (
+            f"원본 dict와 완전 동일해야 함:\n원본: {original_sl!r}\n복원: {restored_sl!r}"
+        )
+
+    def test_H2_wrapped_entry_stores_full_original_dict(self, claude_env):
+        """_build_status_line_entry가 만든 wrapper entry에 _wrapped_entry 키가 있어야 한다."""
+        original_sl = {
+            "type": "command",
+            "command": "/usr/local/bin/my-status.sh",
+            "padding": 5,
+        }
+        adapter = claude_env.make_adapter()
+        entry = adapter._build_status_line_entry(
+            wrapped_command=original_sl["command"],
+            original_entry=original_sl,
+        )
+        assert "_wrapped_entry" in entry, "_wrapped_entry 키가 있어야 한다"
+        assert entry["_wrapped_entry"] == original_sl
+
+
+class TestIsBashCompatibleExtended:
+    """결함 4: _is_bash_compatible — /bin/bash·env bash=True, zsh/csh shebang=False."""
+
+    def test_I1_bin_bash_script_is_bash_compatible(self):
+        """`/bin/bash /tmp/s` → True."""
+        assert claude_adapter.Adapter._is_bash_compatible("/bin/bash /tmp/s"), \
+            "/bin/bash 로 시작하는 command는 True"
+
+    def test_I2_usr_bin_env_bash_is_bash_compatible(self):
+        """`/usr/bin/env bash /tmp/s` → True."""
+        assert claude_adapter.Adapter._is_bash_compatible("/usr/bin/env bash /tmp/s"), \
+            "/usr/bin/env bash 패턴은 True"
+
+    def test_I3_env_bash_is_bash_compatible(self):
+        """`env bash /tmp/s` → True."""
+        assert claude_adapter.Adapter._is_bash_compatible("env bash /tmp/s"), \
+            "env bash 패턴은 True"
+
+    def test_I4_zsh_shebang_is_not_bash_compatible(self, tmp_path):
+        """실파일 shebang이 `#!/bin/zsh` → False."""
+        script = tmp_path / "myzsh"
+        script.write_text("#!/bin/zsh\necho hi\n", encoding="utf-8")
+        assert not claude_adapter.Adapter._is_bash_compatible(str(script)), \
+            "zsh shebang은 False"
+
+    def test_I5_csh_shebang_is_not_bash_compatible(self, tmp_path):
+        """실파일 shebang이 `#!/bin/csh` → False."""
+        script = tmp_path / "mycsh"
+        script.write_text("#!/bin/csh\necho hi\n", encoding="utf-8")
+        assert not claude_adapter.Adapter._is_bash_compatible(str(script)), \
+            "csh shebang은 False (sh 부분일치로 오판 금지)"
+
+    def test_I6_fish_shebang_is_not_bash_compatible(self, tmp_path):
+        """실파일 shebang이 `#!/usr/bin/fish` → False."""
+        script = tmp_path / "myfish"
+        script.write_text("#!/usr/bin/fish\necho hi\n", encoding="utf-8")
+        assert not claude_adapter.Adapter._is_bash_compatible(str(script)), \
+            "fish shebang은 False"
+
+    def test_I7_pwsh_c_with_sh_in_arg_is_not_bash_compatible(self):
+        """`pwsh -c "echo .sh"` — command가 pwsh이므로 False (인수에 .sh 있어도)."""
+        assert not claude_adapter.Adapter._is_bash_compatible('pwsh -c "echo .sh"'), \
+            "pwsh는 False"
+
+
+class TestCrossOsShellExecution:
+    """결함 6: _run_wrapped가 bash로 명시 실행하거나, 한계를 주석으로 명시한다."""
+
+    def test_J1_wrapper_uses_bash_when_available(self, statusline_env):
+        """bash가 PATH에 있으면 bash -c 로 원본을 실행한다 (shell=False, bash 명시).
+
+        이 테스트는 bash가 있는 환경(Linux/Mac)에서 실행 가능.
+        bash가 없으면 skip.
+        """
+        import shutil
+        bash_path = shutil.which("bash")
+        if bash_path is None:
+            pytest.skip("bash를 찾을 수 없어 skip")
+
+        _write_team_config(statusline_env.root, "Acme")
+        (statusline_env.root / ".teammode-active").write_text("")
+
+        # bash 명시 실행 확인용: bash가 실행하는 서브스크립트
+        hello_script = statusline_env.root / "hello_j1.sh"
+        hello_script.write_text("#!/bin/bash\necho BASH_EXECUTED\n", encoding="utf-8")
+        hello_script.chmod(0o755)
+
+        stdout, rc = _run_statusline_wrapped(
+            statusline_env.agent_dir,
+            wrapped_cmd=str(hello_script),
+            active=True,
+            team_name="Acme",
+            root=statusline_env.root,
+        )
+        assert rc == 0
+        assert "BASH_EXECUTED" in stdout, f"bash -c 실행 결과가 없음: {stdout!r}"
+
+    def test_J2_teammode_statusline_has_bash_execution_comment(self):
+        """teammode_statusline.py 소스에 bash 명시 실행 관련 주석이 있다."""
+        content = STATUSLINE_SCRIPT.read_text(encoding="utf-8")
+        # bash 명시 실행 또는 한계 주석이 있어야 한다
+        assert (
+            "bash" in content.lower() and
+            ("shell=False" in content or "bash -c" in content or "BACKLOG" in content or "bash" in content)
+        ), "bash 명시 실행 또는 한계 주석이 있어야 한다"
