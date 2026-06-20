@@ -176,6 +176,19 @@ def test_log_text_with_newlines_summary_is_first_line_only(tmp_path):
     assert "둘째줄상세" in content and "셋째줄" in content
 
 
+def test_log_summary_skips_markdown_header(tmp_path):
+    # #3: text 첫 줄이 마크다운 헤더(`## 작업 내역`)면 summary 로 박지 않고
+    # 첫 의미있는 본문 줄을 쓴다 — 헤더가 summary 로 새면 웰컴·맥락주입 품질 저하.
+    _run(tmp_path, "log", "--author", "jane-doe",
+         "--text", "## 작업 내역\n- 실제 한 일", "--now", "2026-06-13T10:00:00+09:00")
+    content = _log_files(tmp_path, "jane-doe")[0].read_text(encoding="utf-8")
+    fm = content.split("---\n")[1]   # frontmatter 블록
+    assert "summary: - 실제 한 일" in fm
+    assert "## 작업 내역" not in fm   # 헤더는 frontmatter(summary)에 안 들어감
+    # 본문에는 헤더 포함 전체 보존
+    assert "## 작업 내역" in content
+
+
 # ── 필수 인자 검증 ──
 
 def test_log_requires_root(tmp_path):

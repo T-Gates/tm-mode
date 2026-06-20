@@ -258,35 +258,49 @@ def cmd_uninstall(opts, *, platform=None) -> int:
     if had_marker and not marker.exists():
         removed.append(".teammode-active 마커")
 
-    # 2. 어댑터 uninstall — teammode 훅 제거(기존 adapter.uninstall 재사용)
-    try:
-        ad = runpy.run_path(str(AGENTS / "claude" / "adapter.py"),
-                            run_name="__uninstall_adapter__")
-        Adapter = ad["Adapter"]
-        # P0-1: skills_dir 격리 파생 — settings_path 부모 / 'skills'.
-        # opts.get("skills_dir") 가 없으면 settings_path 에서 파생(실호스트 무접촉).
-        _uninstall_skills_dir = opts.get("skills_dir") or str(
-            Path(settings_path).parent / "skills")
-        adapter = Adapter(
-            agent_dir=str(AGENTS / "claude"),
-            manifest_path=str(INFRA / "hooks" / "manifest.json"),
-            settings_path=settings_path,
-            team_root=str(INFRA.parent),
-            skills_dir=_uninstall_skills_dir,
-        )
-        changes = adapter.uninstall()
-        if any(c.startswith("[remove]") for c in changes):
-            removed.append("settings.json teammode 훅")
-        # 스킬(정션/심링크/복사) 제거 — install 의 install_skills 역(대칭). 안 하면 정션이
-        # 고아로 남아 dangling(윈도우 도그푸딩서 uninstall 후 tm-* 정션 잔존 실측).
+    # 2. 어댑터 uninstall — claude·codex 양쪽 teammode 훅·스킬 제거 (#4: 흔적 0 대칭).
+    #    install 은 claude+codex 둘 다 배선하므로 uninstall 도 양쪽을 지워야 한다.
+    #    경로: claude 는 받은 settings_path(= 격리면 <iso>/claude/settings.json, 실설치면
+    #    ~/.claude/settings.json). codex 는 거기서 파생 — 격리면 <iso>(조부모)에서
+    #    agent_settings_path 로 <iso>/codex/config.toml, 실설치면 ~/.codex/config.toml.
+    for _agent in ("claude", "codex"):
         try:
-            skill_changes = adapter.uninstall_skills()
-            if any(c.startswith("[remove-skill]") for c in skill_changes):
-                removed.append("스킬 심링크/정션")
-        except Exception as e:  # noqa: BLE001 — 비치명, 다음 단계 계속.
-            print(f"[warn] 스킬 제거 건너뜀(비치명): {e}", file=sys.stderr)
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] 어댑터 uninstall 건너뜀(비치명): {e}", file=sys.stderr)
+            if _agent == "claude":
+                _agent_settings = settings_path
+                _agent_skills = opts.get("skills_dir") or str(
+                    Path(settings_path).parent / "skills")
+            else:  # codex
+                if settings is not None:
+                    _iso_root = Path(settings_path).parent.parent  # <iso>/claude/settings.json → <iso>
+                    _agent_settings = str(il.agent_settings_path(
+                        "codex", home=Path.home(), settings_override=_iso_root))
+                else:
+                    _agent_settings = str(il.agent_settings_path(
+                        "codex", home=Path.home(), settings_override=None))
+                _agent_skills = str(Path(_agent_settings).parent / "skills")
+            ad = runpy.run_path(str(AGENTS / _agent / "adapter.py"),
+                                run_name=f"__uninstall_{_agent}__")
+            Adapter = ad["Adapter"]
+            adapter = Adapter(
+                agent_dir=str(AGENTS / _agent),
+                manifest_path=str(INFRA / "hooks" / "manifest.json"),
+                settings_path=_agent_settings,
+                team_root=str(INFRA.parent),
+                skills_dir=_agent_skills,
+            )
+            changes = adapter.uninstall()
+            if any(c.startswith("[remove]") for c in changes):
+                removed.append(f"{_agent} settings teammode 훅")
+            # 스킬(정션/심링크/복사) 제거 — install 의 install_skills 역(대칭). 안 하면 정션이
+            # 고아로 남아 dangling(윈도우 도그푸딩서 uninstall 후 tm-* 정션 잔존 실측).
+            try:
+                skill_changes = adapter.uninstall_skills()
+                if any(c.startswith("[remove-skill]") for c in skill_changes):
+                    removed.append(f"{_agent} 스킬 심링크/정션")
+            except Exception as e:  # noqa: BLE001 — 비치명, 다음 단계 계속.
+                print(f"[warn] {_agent} 스킬 제거 건너뜀(비치명): {e}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] {_agent} 어댑터 uninstall 건너뜀(비치명): {e}", file=sys.stderr)
 
     # 3. env 제거 — install_lib.remove_injected_env (우리 표식만)
     #    Windows: reg delete HKCU\Environment(레지스트리). POSIX: 셸 프로파일 우리 줄.
@@ -339,6 +353,30 @@ def _split_agent(argv):
     return agent, rest
 
 
+def _strip_dispatch_only_args(rest):
+    """어댑터로 넘기기 전 부트스트랩/디스패처 전용 인자를 제거 (#5).
+
+    어댑터는 --settings(claude)/--config(codex) 만 안다. 부트스트랩 전용 인자를
+    그대로 넘기면 어댑터 argparse 가 'unrecognized arguments' 로 깨진다
+    (`--codex uninstall --root .` 사고).
+      --install  : 디스패처 전용(실설치 의사) — 게이트로만 쓰고 어댑터엔 안 넘김.
+      --root <값> : 부트스트랩 전용(팀 루트) — value-flag 라 다음 토큰까지 제거.
+    """
+    out = []
+    skip_next = False
+    for a in rest:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--install":
+            continue
+        if a == "--root":
+            skip_next = True  # 뒤따르는 값 토큰도 함께 제거
+            continue
+        out.append(a)
+    return out
+
+
 def _dispatch(agent, rest) -> int:
     """--<agent> → agents/<name>/adapter.py 위임 (분기 로직 0)."""
     adapter_path = AGENTS / agent / "adapter.py"
@@ -353,9 +391,7 @@ def _dispatch(agent, rest) -> int:
         print("[error] --settings <경로> (격리) 또는 --install (실설치) 중 하나가 "
               "필요합니다. 명시 없이 실 호스트 설정에 쓰지 않습니다.", file=sys.stderr)
         return 2
-    # --install 은 디스패처 전용 플래그 — 어댑터로 넘기지 않는다(어댑터는 --settings 만 안다).
-    if "--install" in rest:
-        rest = [a for a in rest if a != "--install"]
+    rest = _strip_dispatch_only_args(rest)
 
     sys.argv = [str(adapter_path)] + rest
     mod = runpy.run_path(str(adapter_path), run_name="__teammode_adapter__")

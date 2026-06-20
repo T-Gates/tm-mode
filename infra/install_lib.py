@@ -564,12 +564,8 @@ def write_banner(team_root: Path, team_name: str):
     if banner_file.is_file():
         return
     banner_file.parent.mkdir(parents=True, exist_ok=True)
-    ansi_shadow = team_root / "infra" / "banners" / "ansi_shadow.txt"
-    if ansi_shadow.is_file():
-        art = ansi_shadow.read_text(encoding="utf-8").rstrip("\n")
-        content = art + "\n💡 팀색 입히기: tm-customize\n"
-    else:
-        content = f"=== {team_name} team mode ON ===\n"
+    # 단일소스 — _personality_customized 의 '기본 배너' 판정과 어긋나지 않게(#2).
+    content = _engine.default_banner_content(team_root, team_name)
     banner_file.write_text(content, encoding="utf-8")
 
 
