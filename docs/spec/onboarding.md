@@ -290,7 +290,7 @@ env 제거(`remove_injected_env`)는 uninstall에서만 사용한다. Windows는
 4. Obsidian 등록 해제: `--obsidian-config` 또는 플랫폼 기본 obsidian.json에서 `team_root/memory` path와 일치하는 vault 항목만 제거한다. 예외는 warn 후 계속.
 5. 제거한 항목이 있으면 목록을 출력하고, 없으면 "되돌릴 호스트 변경 없음"을 출력한다. 항상 memory 보존 문구를 출력한다.
 
-현 구현상 uninstall은 Claude adapter의 `Adapter(...).uninstall()`만 직접 호출한다. Codex adapter uninstall은 이 분기에서 호출하지 않는다. 또한 `install.py --uninstall` 경로는 install 시 wire가 추가한 MCP 등록(`install-mcp`)과 skills 설치(`install-skills`)의 역동작을 호출하지 않는다.
+현 구현상 uninstall은 claude·codex **양쪽** 어댑터의 `Adapter(...).uninstall()`·`uninstall_skills()`를 호출한다(흔적 0 대칭, #4). claude `uninstall()`은 `settings.json` 훅만 제거하고, codex `uninstall()`은 `config.toml`의 훅 블록(`teammode-hooks-*`)과 MCP 블록(`teammode-mcp-*`)을 함께 제거한다(codex는 훅·MCP가 단일 파일). codex 경로는 claude `settings.json` 경로의 조부모(격리 루트)에서 `agent_settings_path`로 파생한다. 단 claude `.claude.json`의 MCP 등록(`install-mcp`) 역동작은 여전히 호출하지 않는다(claude MCP·statusLine 정리는 후속).
 
 ### 4.11 합격 기준 (골든 — §6 시나리오 후보)
 

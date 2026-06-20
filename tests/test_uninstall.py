@@ -288,3 +288,38 @@ def test_strip_dispatch_only_args_keeps_adapter_args():
     strip = _install_mod()["_strip_dispatch_only_args"]
     assert strip(["--settings", "s", "sync", "--on"]) == \
         ["--settings", "s", "sync", "--on"]
+
+
+# ── #4 회귀 게이트: --uninstall 이 codex 어댑터도 제거 (claude 대칭) ──
+
+def test_uninstall_removes_codex_hook_and_mcp_blocks(tmp_path):
+    """#4 회귀: --uninstall 이 codex config.toml 의 teammode 훅·MCP 블록도 제거한다.
+
+    install 은 claude+codex 둘 다 배선하므로 uninstall 도 양쪽을 지워야 흔적 0.
+    ⚠️ mutation gate: install.py 의 `for _agent in ("claude", "codex")` 루프에서
+    codex 를 빼면 codex 블록이 잔존해 이 테스트가 red 가 된다.
+    codex 경로는 claude settings 의 조부모(격리 루트)에서 파생된다.
+    """
+    iso = tmp_path / "iso"
+    (iso / "claude").mkdir(parents=True)
+    (iso / "codex").mkdir(parents=True)
+    claude_settings = iso / "claude" / "settings.json"
+    codex_config = iso / "codex" / "config.toml"
+    claude_settings.write_text("{}", encoding="utf-8")  # 최소(uninstall 무변경)
+    # codex 어댑터가 인식하는 teammode 훅·MCP 블록 + 사용자 콘텐츠
+    codex_config.write_text(
+        "[base]\nuser = 1\n"
+        "# teammode-hooks-start\nhook = true\n# teammode-hooks-end\n"
+        "# teammode-mcp-start\nmcp = true\n# teammode-mcp-end\n",
+        encoding="utf-8")
+    assert "teammode-hooks-start" in codex_config.read_text()  # 사전조건
+
+    team_root = tmp_path / "teamroot"
+    team_root.mkdir()
+    rc = _run_install(["--uninstall", "--root", str(team_root),
+                       "--settings", str(claude_settings)])
+    assert rc == 0
+    after = codex_config.read_text()
+    assert "teammode-hooks-start" not in after, "codex 훅 블록 잔존(#4 회귀)"
+    assert "teammode-mcp-start" not in after, "codex MCP 블록 잔존(#4 회귀)"
+    assert "[base]" in after and "user = 1" in after  # 사용자 콘텐츠 보존
