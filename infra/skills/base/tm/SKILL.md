@@ -46,7 +46,11 @@ description: Use when the user wants to enable or disable team mode. Triggers on
    - JSON 결과를 파싱해 아래 웰컴 포맷으로 출력한다.
    - state=on: 정상. state=off: 배선 문제 — "훅 배선을 확인하세요(`tm-onboard`)"로 안내.
 
-4. **웰컴 메시지** — context JSON을 파싱해 다음 포맷으로 출력한다:
+4. **지침 숙지(필수)**: `infra/guidelines.md`와 `memory/team/guidelines.md`(있으면)를 **Read**해 이 세션의 팀모드 행동지침으로 삼는다.
+   - SessionStart 훅과 **동일 소스** — 세션 시작 시엔 훅이 자동 주입하지만, **세션 도중 `tm on`으로 켤 땐 훅이 안 도므로** 이 단계가 그 누락을 메운다(은수 결정: tm on 때도 지침 주입).
+   - Read 도구로 읽어 **컨텍스트에만** 넣는다 — 사용자 화면에 전문을 출력하지 않는다(노이즈 0).
+
+5. **웰컴 메시지** — context JSON을 파싱해 다음 포맷으로 출력한다:
 
    ```
    환영합니다! <팀명>에 오신 것을 환영합니다.
