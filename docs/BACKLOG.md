@@ -286,3 +286,34 @@ PowerShell call operator(`&`) 없이 문자열 평가로 처리돼 실행되지 
 - **필요한 수정**: `_build_status_line_entry`에서 PowerShell 여부를 감지(또는 `--shell` 옵션 추가)해
   PowerShell이면 `& 'C:/path/python.exe' 'script.py'` 형태로 생성하는 분기 추가.
 - **현재 Git Bash 사용자(= 대부분 팀원)에게는 영향 없음.** PowerShell-only 환경 대응은 별도 릴리스.
+
+---
+
+## L2 재설계 — "표준 인터페이스" → "표준 툴셋" (2026-06-21 Jane 결정)
+**결정: L2 = 팀이 합의한 벤더 MCP 툴셋을 각 멤버 에이전트에 크로스에이전트로 등록해주는 "MCP 등록기".** 자체 role_server 프록시 + 역할(issues/chat/docs/calendar) handler 추상화는 **버린다.**
+
+### 왜 (현 L2가 무거운 근원)
+- 현재 L2(tm-connect)는 teammode 자체 MCP(`role_server`) + 역할별 `handlers/<role>.py` 수제코드로 서비스를 **프록시**한다 = 벤더 공식 MCP(Linear·Notion·GCal)를 **재발명**.
+- "표준 인터페이스(역할 추상화)"의 이득 = provider 교체 무관인데, 팀이 Linear→Jira 갈아탈 일은 거의 없음(YAGNI). 그 보험료로 handler 유지비 + 무거운 절차(핸들러 생성·재배선)를 평생 짐.
+
+### 채택 방향 (B = 표준 툴셋)
+- "표준화"의 대상을 **인터페이스 → 툴셋**으로 이동. teammode가 하는 일:
+  1. 팀이 "우리 쓰는 MCP는 이것들"(예: linear, notion, gcal)을 **합의·공유**(git, team.config 또는 별도 목록).
+  2. 합류자/멤버 셋업 시 teammode가 그 **벤더 MCP를 각 에이전트(claude `.mcp.json`/settings + codex `config.toml`)에 대신 등록**(크로스에이전트 배선 대행).
+  3. 토큰은 보안상 여전히 **각자 1회 붙여넣기**(단일 금고 default.json 재사용 — 이미 구현).
+- 가치: "MCP 깔고 양쪽 에이전트에 배선하는 귀찮음 대행 + 팀 합의 공유". handler·role_server·재배선 소멸.
+
+### 버릴 것 / 바꿀 것 (설계 패스에서 확정)
+- `infra/mcp/role_server.py` + `handlers/` + 역할 추상화 → 제거 또는 대폭 축소.
+- `tm-connect`: 역할 슬롯·핸들러 생성·우선순위판정(재사용>흡수>수제) → "팀 MCP 목록에서 골라 등록 + 토큰 입력"으로 단순화.
+- `providers/<provider>.json`: 프록시 스펙 → **MCP 등록 스펙**(서버 명령/패키지·토큰 안내·필요 env)으로 재정의.
+- `tm-onboard` L2 제안: 등록기 흐름으로 갱신.
+
+### 열린 질문 (브레인스토밍/writing-plans 전 확정)
+- 팀 MCP 목록 저장처: `team.config.json` services 재활용 vs 신설.
+- 토큰을 단일 금고에 둘지 vs 에이전트 MCP 설정의 네이티브 토큰 처리에 맡길지.
+- 멤버별 MCP 차등(누구는 calendar 안 씀) 허용?
+- 기존 role_server/handlers 쓰는 팀 마이그레이션(현재 그런 팀 없을 가능성 — WIP).
+- role_server `--team` dead-code(검수 MINOR)는 이 재설계서 role_server 제거와 함께 해소.
+
+> 다음: 이 방향으로 brainstorming → spec → writing-plans. 큰 재설계라 별도 집중 세션 권장.
