@@ -377,6 +377,41 @@ def test_tm_manage_utils_in_base_sources(tmp_path):
     assert "tm-manage-utils" in base_names
 
 
+# ── tm-customize SKILL.md 및 references 존재 검증 ──
+
+def test_tm_customize_skill_md_exists():
+    """infra/skills/base/tm-customize/SKILL.md 가 존재한다."""
+    skill_md = REPO / "infra" / "skills" / "base" / "tm-customize" / "SKILL.md"
+    assert skill_md.is_file()
+
+
+def test_tm_customize_references_exist():
+    """tm-customize/references/ 하위 3개 문서가 존재한다."""
+    refs = REPO / "infra" / "skills" / "base" / "tm-customize" / "references"
+    for name in ("banner.md", "persona.md", "skills.md"):
+        assert (refs / name).is_file(), f"references/{name} 없음"
+
+
+def test_tm_customize_in_base_sources(tmp_path):
+    """_skill_sources(layer='base') 에 tm-customize 가 있다."""
+    root = _scaffold(tmp_path)
+    a = _adapter(root, tmp_path)
+    base_names = {s.name for s in a._skill_sources(layer="base")}
+    assert "tm-customize" in base_names
+
+
+# ── tm-onboard 흡수 후 personality 절차 제거 검증 ──
+
+def test_tm_onboard_personality_section_redirects_to_tm_customize():
+    """tm-onboard가 personality 커스텀 절차를 직접 보유하지 않고 tm-customize로 안내한다."""
+    onboard = REPO / "infra" / "skills" / "base" / "tm-onboard" / "SKILL.md"
+    text = onboard.read_text(encoding="utf-8")
+    # 배너 picker 절차(cat infra/banners/<폰트명>.txt 단계)가 제거됐는지
+    assert "cat infra/banners" not in text, "배너 picker 절차가 아직 남아 있음 — tm-customize로 옮겨야 한다"
+    # tm-customize 안내가 있는지
+    assert "tm-customize" in text, "tm-onboard에 tm-customize 안내가 없음"
+
+
 # ── P0 핵심 경로 직접 검증 (codex 지적 대응) ──
 
 def _run_teammode(args):

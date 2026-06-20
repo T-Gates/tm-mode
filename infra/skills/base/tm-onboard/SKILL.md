@@ -64,12 +64,13 @@ python infra/teammode.py context --root . --json
 - **단, state=on으로 보이려면 위 셋업이 `--yes`(또는 `--settings`)로 wire+verify까지 완주했어야 한다.** wire를 건너뛴 경우 state=off로 나온다.
 - **갓 만든 팀은 세션로그 0** → 요약할 게 없다. "구조는 섰고, 다음 작업부터 자동 기록·주입됩니다"로 내레이션.
 - 팀원은 context로 팀 기존 로그가 보인다. (다음 세션부터는 `session-start.py` 훅이 자동 주입.)
+- **KB(지식 베이스)**: 팀 공유 지식은 `tm-knowledge`(조회·검색)·`tm-manage-knowledge`(추가·수정·삭제)로 관리한다. 처음엔 비어 있고 팀이 쌓아가는 구조 — 셋업 직후엔 소개만(강제 진행 X).
 
 ## 다음 단계 — 미완료 항목을 하나씩 빠짐없이 (중요)
 첫 가치를 보여준 뒤, **위 체크표에서 미완료(⬜)인 항목을 순서대로 하나씩** 제안한다. 메뉴처럼 동시에 늘어놓진 말되(산만), ⚠️ **한 항목을 "나중에"라고 미뤘다고 거기서 온보딩을 끝내지 마라** — 그 항목만 건너뛰고 **다음 미완료 항목으로 넘어가 또 묻는다.** 미완료 항목을 한 번씩 다 물어본 뒤에 종료한다.
 
 1. **서비스 연결(L2)** → 원하면 `tm-connect`, "나중에"면 **스킵하고 2로**.
-2. **팀 personality 커스텀**(아래 섹션) → 원하면 진행, "나중에"면 **스킵하고 3으로**.
+2. **팀 personality 커스텀** → 원하면 `tm-customize`로, "나중에"면 **스킵하고 3으로**.
 3. **Obsidian 뷰 등록**(아래 섹션) → 원하면 진행, "나중에"면 스킵.
 
 - 각 항목은 **사용자 응답을 받은 뒤** 다음으로. 한 항목 "나중에"는 *그 항목만* 스킵이다 — **전체 종료가 아니다.**
@@ -77,19 +78,9 @@ python infra/teammode.py context --root . --json
 - 이미 된(✅) 항목은 묻지 않는다(체크표 감지). **미완료(⬜)만 하나씩 빠짐없이.**
 - ⚠️ `update`(팀모드 업데이트)는 **갓 셋업한 팀에 제안하지 않는다** — 이미 최신이고, upstream 갱신이 실제로 생겼을 때만 의미 있다.
 
-## 팀 personality 커스텀 (opt-in, 키 0)
-배너·시작 멘트·끝맺음 말을 팀색에 맞게 바꿀 수 있다. **물어보고**(기본값으로도 충분) 진행:
-- "배너·시작멘트(greeting)·끝맺음말(farewell) 커스텀할래요? (기본값 그대로 둬도 됩니다)"
-- **예**:
-  - **시작 멘트·끝맺음 말** → `team.config.json`의 `team.greeting`·`team.farewell` 값을 교체(도입자 config엔 기본값 `"<팀>  팀모드 ON"`·`"수고하셨습니다 — <팀>"`이 이미 있다). 엔진 `on`이 배너 직후 greeting을, `off`가 farewell(없으면 "상태 저장됨")을 출력한다.
-  - **배너(picker)** → `infra/banners/` 에 6종의 폰트(ansi_shadow·slant·chunky·cyberlarge·larry3d·speed)로 렌더된 ASCII 아트 배너가 미리 준비돼 있다. 아래 순서로 진행:
-    1. 각 후보를 순서대로 보여준다: `cat infra/banners/<폰트명>.txt`
-    2. 사용자가 폰트명을 고르면 해당 파일을 복사해 적용한다: `cp infra/banners/<폰트명>.txt memory/banner.txt`
-    3. 엔진은 `memory/banner.txt`가 있으면 그 내용을 그대로 출력한다.
-    - 배너는 TEAM/MODE 텍스트 고정이다. 팀명은 엔진이 배너 아래 greeting으로 동적 출력하므로 배너에 팀명을 따로 넣을 필요가 없다.
-    - 6종 중 마음에 드는 게 없으면 `memory/banner.txt`를 직접 작성해도 된다(임의 ASCII 아트 자유).
-- **아니오** → 도입자 config의 기본 greeting/farewell + 자동 배너(`<팀> team mode ON`)를 그대로 쓴다. 0 영향.
-- **도입자만** config의 greeting/farewell을 쓴다(팀 스코프, 커밋되면 팀원 공유). 팀원은 읽기만 — 개인이 바꾸지 않는다.
+## 팀 personality 커스텀
+
+팀 personality(배너·인사말)는 `tm-customize`로 입힌다 — 이 스킬에서 직접 진행하지 않는다.
 
 ## Obsidian 뷰 (opt-in, 키 0)
 memory/가 마크다운이라 Obsidian으로 그래프처럼 볼 수 있다. **물어보고** 진행:

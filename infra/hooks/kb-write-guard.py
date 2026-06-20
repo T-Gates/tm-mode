@@ -345,6 +345,8 @@ def main() -> int:
 
     _deny(
         "memory/ 하위 직접 편집은 금지돼 있습니다. "
+        "KB(지식 베이스)는 '동사 경유 원칙' — Edit/Write 직접 편집 대신 엔진 동사를 써야 "
+        "충돌 없이 팀 공유 메모리에 기록됩니다. "
         "지식은 tm-manage-knowledge 스킬을 통해서만 추가·수정·삭제하세요 "
         "(엔진: python infra/teammode.py knowledge write …)."
     )

@@ -550,14 +550,21 @@ def write_introducer_config(team_root: Path, *, team_name: str,
 def write_banner(team_root: Path, team_name: str):
     """banner.txt 선기록 (M4) — 엔진은 파일 있으면 그대로 읽으므로 엔진 무수정.
 
+    기본 배너: infra/banners/ansi_shadow.txt + 팀색 입히기 안내 한 줄.
+    팀명 무관 아트라 배너↔config 비동기 해소.
     멱등: 이미 있으면 덮어쓰지 않는다.
     """
     banner_file = team_root / "memory" / "banner.txt"
     if banner_file.is_file():
         return
     banner_file.parent.mkdir(parents=True, exist_ok=True)
-    banner_file.write_text(f"=== {team_name} team mode ON ===\n",
-                           encoding="utf-8")
+    ansi_shadow = team_root / "infra" / "banners" / "ansi_shadow.txt"
+    if ansi_shadow.is_file():
+        art = ansi_shadow.read_text(encoding="utf-8").rstrip("\n")
+        content = art + "\n💡 팀색 입히기: tm-customize\n"
+    else:
+        content = f"=== {team_name} team mode ON ===\n"
+    banner_file.write_text(content, encoding="utf-8")
 
 
 def _write_if_absent(path: Path, content: str):

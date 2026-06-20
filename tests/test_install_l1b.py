@@ -47,10 +47,36 @@ def test_scaffold_does_not_write_first_session_log(tmp_path):
 
 
 def test_scaffold_banner_uses_team_name(tmp_path):
+    # ansi_shadow.txt 없는 tmp_path → fallback: 팀명 포함 한 줄 배너
     il.scaffold_memory(tmp_path, member_name="a", role="introducer",
                        team_name="my-team")
     banner = (tmp_path / "memory" / "banner.txt").read_text()
     assert "my-team" in banner
+
+
+def test_write_banner_uses_ansi_shadow_when_available(tmp_path):
+    """ansi_shadow.txt 가 있으면 그 내용 + 안내 한 줄을 배너로 쓴다."""
+    banners_dir = tmp_path / "infra" / "banners"
+    banners_dir.mkdir(parents=True)
+    (banners_dir / "ansi_shadow.txt").write_text("ART\n", encoding="utf-8")
+    il.write_banner(tmp_path, "any-team")
+    banner = (tmp_path / "memory" / "banner.txt").read_text()
+    assert "ART" in banner
+    assert "tm-customize" in banner
+
+
+def test_write_banner_real_ansi_shadow(tmp_path):
+    """실 infra/banners/ansi_shadow.txt 를 tmp 팀루트에 복사해 배너 생성을 검증한다."""
+    import shutil
+    banners_dir = tmp_path / "infra" / "banners"
+    banners_dir.mkdir(parents=True)
+    shutil.copy(REPO / "infra" / "banners" / "ansi_shadow.txt",
+                banners_dir / "ansi_shadow.txt")
+    il.write_banner(tmp_path, "irrelevant")
+    banner = (tmp_path / "memory" / "banner.txt").read_text()
+    # ansi_shadow 내용(최소 10자 이상 ASCII 아트) 포함
+    assert len(banner) > 20
+    assert "tm-customize" in banner
 
 
 # ─────────────────────────── 도입자 config (§5) ───────────────────────────

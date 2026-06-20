@@ -943,3 +943,16 @@ def test_files_multiple_elements_is_denied(tmp_path):
         out = json.loads(proc.stdout)
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "Traceback" not in proc.stderr
+
+
+def test_deny_message_explains_kb_purpose(tmp_path):
+    """차단 메시지에 KB(동사 경유 원칙) 설명이 포함된다."""
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    proc = _run_hook(_memory_payload(root), root)
+    assert proc.returncode == 2
+    out = json.loads(proc.stdout)
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    # KB 설명 키워드 포함 여부
+    assert "KB" in reason or "지식 베이스" in reason or "동사" in reason
