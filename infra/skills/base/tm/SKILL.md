@@ -95,8 +95,17 @@ description: Use when the user wants to enable or disable team mode. Triggers on
    - **push 는 하지 않는다** — commit 까지만. push 는 사람이 직접 결정.
 
 3. **팀모드 끄기**: `python infra/teammode.py off --root . --install`
-   - 엔진이 adapter sync(mode=off), `.teammode-active` 마커 삭제, farewell 출력을 한다.
-   - 스킬은 이 동사를 호출하고 출력을 사용자에게 보여준다.
+   - 엔진이 adapter sync(mode=off), `.teammode-active` 마커 삭제, 펜스 배너, farewell 출력을 한다.
+   - ⚠️ **엔진 출력(배너 + farewell)은 한 글자도 바꾸지 말고 그대로 사용자에게 옮긴다. 배너(펜스 코드블록)는 축약·생략·재구성 금지. 엔진이 펜스로 감싼 배너를 그대로 전달하는 것이 원칙.**
+
+4. **세션 요약 표시**: 1단계에서 기록한 세션로그 파일(`memory/team/sessions/<이름>/<오늘>.md`)을 Read 도구로 읽어 "작업 내역" 섹션을 3~5줄로 요약해 사용자에게 보여준다.
+   - 이 단계는 **에이전트(스킬)가 LLM 요약으로** 수행한다 — 엔진이 하지 않는다.
+   - 출력 포맷:
+     ```
+     📋 이번 세션 성과
+     - <3~5줄 요약>
+     ```
+   - 세션로그 파일이 없거나 "작업 내역" 섹션이 비어 있으면 이 단계를 생략한다.
 
 ## 세션 로그 형식 (--text 에 들어갈 내용)
 
@@ -122,7 +131,8 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 | ON — 맥락 | `teammode.py context --root . --json` | 스킬이 파싱해 요약 |
 | OFF — 세션로그 | `teammode.py log --root . --author <이름> --text <내용>` | 하루 1파일 append |
 | OFF — 커밋 | `teammode.py commit --root . --paths "memory/" --message <메시지>` | memory/ 만 stage · push 절대 금지 |
-| OFF — 훅 해제 | `teammode.py off --root . --install` | sync=off·마커 삭제 |
+| OFF — 훅 해제 | `teammode.py off --root . --install` | sync=off·마커 삭제·펜스 배너·farewell |
+| OFF — 세션 요약 | (스킬이 세션로그 Read 후 LLM 요약) | 엔진 동사 아님 — 에이전트 단계 |
 
 ## Common Mistakes
 

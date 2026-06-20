@@ -78,7 +78,7 @@ def test_banner_content_inside_fence_is_nonempty(tmp_path):
 
 
 def test_banner_contains_team_mode_inside_fence(tmp_path):
-    """배너에 'team mode ON' 텍스트가 펜스 안에 있어야 한다(기본 fallback 배너)."""
+    """기본 fallback 배너가 펜스 안에 있어야 한다(팀 간판 `===` 마커 기준)."""
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
     lines = r.stdout.splitlines()
@@ -86,8 +86,21 @@ def test_banner_contains_team_mode_inside_fence(tmp_path):
     assert len(fence_indices) >= 2
     open_idx, close_idx = fence_indices[0], fence_indices[1]
     inner_text = "\n".join(lines[open_idx + 1:close_idx])
-    assert "team mode ON" in inner_text, (
-        f"'team mode ON'이 펜스 안에 없음.\n안쪽 내용:\n{inner_text}\n전체:\n{r.stdout}"
+    assert "===" in inner_text, (
+        f"배너 `===` 마커가 펜스 안에 없음.\n안쪽 내용:\n{inner_text}\n전체:\n{r.stdout}"
+    )
+
+
+def test_cmd_off_no_on_in_fresh_env(tmp_path):
+    """cmd_off 는 banner.txt 없는 fresh 환경에서 출력에 'ON'이 없어야 한다(회귀 방지).
+
+    OFF인데 배너에 'ON'이 뜨는 모순을 잡는다.
+    fallback 배너가 `=== <팀> ===`(중립)로 고정됐으므로 'ON' 문자열이 없어야 한다.
+    """
+    r = _run(tmp_path, "off")
+    assert r.returncode == 0, r.stderr
+    assert "ON" not in r.stdout, (
+        f"OFF 시 출력에 'ON'이 포함돼 있음(모순):\n{r.stdout}"
     )
 
 
@@ -207,4 +220,79 @@ def test_empty_banner_fence_structure(tmp_path):
     # 엔진이 rstrip("\n") 후 내용이 공백이어도 펜스는 있어야 한다
     assert len(fence_indices) >= 2, (
         f"빈/공백 배너일 때 펜스가 2개 미만:\nstdout:\n{r.stdout}"
+    )
+
+
+# ── cmd_off 배너 출력 검증 ──
+
+def test_off_banner_is_fenced(tmp_path):
+    """cmd_off stdout에 ``` 펜스가 두 개(오프닝+클로징) 존재해야 한다."""
+    r = _run(tmp_path, "off")
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines(keepends=True)
+    fence_indices = _find_fence_indices(lines)
+    assert len(fence_indices) >= 2, (
+        f"OFF — 펜스(```)가 2개 미만: found={fence_indices}\nstdout:\n{r.stdout}"
+    )
+
+
+def test_off_banner_before_farewell(tmp_path):
+    """cmd_off 에서 배너 펜스가 farewell 보다 먼저 나와야 한다.
+
+    출력 순서: 펜스 배너(오프닝~클로징) → farewell.
+    farewell 은 클로징 펜스 이후에 위치해야 한다.
+    """
+    _write_config(tmp_path, farewell="FAREWELL_TOKEN")
+    r = _run(tmp_path, "off")
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    fence_indices = _find_fence_indices(r.stdout.splitlines(keepends=True))
+    assert len(fence_indices) >= 2, f"OFF — 펜스 부족:\n{r.stdout}"
+    close_idx = fence_indices[1]
+    # farewell 이 stdout 에 있어야 함
+    assert "FAREWELL_TOKEN" in r.stdout, f"farewell 토큰이 stdout 에 없음:\n{r.stdout}"
+    # farewell 이 클로징 펜스 이후에 있어야 함
+    farewell_line_idx = next(
+        i for i, line in enumerate(lines) if "FAREWELL_TOKEN" in line
+    )
+    assert farewell_line_idx > close_idx, (
+        f"farewell(line {farewell_line_idx})이 클로징 펜스(line {close_idx}) 안 또는 앞에 있음.\n"
+        f"stdout:\n{r.stdout}"
+    )
+
+
+def test_off_banner_fence_lines_are_standalone(tmp_path):
+    """cmd_off 의 오프닝·클로징 ``` 은 단독 줄이어야 한다."""
+    r = _run(tmp_path, "off")
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    fence_indices = _find_fence_indices(r.stdout.splitlines(keepends=True))
+    assert len(fence_indices) >= 2, f"OFF — 펜스 부족:\n{r.stdout}"
+    open_idx, close_idx = fence_indices[0], fence_indices[1]
+    assert lines[open_idx] == "```", f"OFF 오프닝 펜스에 불순물: {lines[open_idx]!r}"
+    assert lines[close_idx] == "```", f"OFF 클로징 펜스에 불순물: {lines[close_idx]!r}"
+
+
+def test_off_banner_content_inside_fence_is_nonempty(tmp_path):
+    """cmd_off 펜스 안에 배너 내용이 있어야 한다."""
+    r = _run(tmp_path, "off")
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    fence_indices = _find_fence_indices(r.stdout.splitlines(keepends=True))
+    assert len(fence_indices) >= 2, f"OFF — 펜스 부족:\n{r.stdout}"
+    open_idx, close_idx = fence_indices[0], fence_indices[1]
+    inner = lines[open_idx + 1:close_idx]
+    assert inner, f"OFF 펜스 안 내용이 비어 있음:\n{r.stdout}"
+    assert any(line.strip() for line in inner), (
+        f"OFF 펜스 안 내용이 공백뿐:\n{r.stdout}"
+    )
+
+
+def test_off_no_double_fence(tmp_path):
+    """cmd_off 에서 펜스가 4개 이상(중첩)이면 안 된다."""
+    r = _run(tmp_path, "off")
+    assert r.returncode == 0, r.stderr
+    fence_indices = _find_fence_indices(r.stdout.splitlines(keepends=True))
+    assert len(fence_indices) == 2, (
+        f"OFF — 펜스가 2개가 아님(중첩 의심): found={len(fence_indices)}\nstdout:\n{r.stdout}"
     )

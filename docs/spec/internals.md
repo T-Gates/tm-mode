@@ -537,7 +537,7 @@ argv 파서(`_parse_args`)는 `argparse`가 아니라 손파서다.
   - 여기서 adapter의 `team_root`는 `--root`로 받은 메모리 쓰기 대상이 아니라 엔진 설치 위치(`infra/..`)다. 현재 레포 실행에서는 둘이 보통 같지만 코드상 별개 축이다.
 - 배너·personality config:
   - `_render_banner(team_root)`는 `<team_root>/memory/banner.txt`가 파일이면 UTF-8로 그대로 읽어 stdout에 출력한다.
-  - 배너 파일이 없으면 `TEAMMODE_TEAM_NAME` 환경변수 값 또는 기본 `"teammode"`로 `=== <team_name> team mode ON ===\n`을 만들고, `memory/` 디렉토리를 생성한 뒤 `memory/banner.txt`에 캐시한다. 이 env는 팀 루트 결정에는 쓰지 않는다.
+  - 배너 파일이 없으면 `TEAMMODE_TEAM_NAME` 환경변수 값 또는 기본 `"teammode"`로 `=== <team_name> ===\n`을 만들고, `memory/` 디렉토리를 생성한 뒤 `memory/banner.txt`에 캐시한다. 이 env는 팀 루트 결정에는 쓰지 않는다.
   - `_read_team_field(team_root, field)`는 `<team_root>/team.config.json`의 `team.<field>`가 비어있지 않은 문자열일 때만 반환한다. config 부재·JSON 파싱 실패·타입 불일치·예외는 모두 `None`으로 흡수한다. `on/off`를 막지 않는다.
 - `on` 실행 순서:
   - 배너를 stdout에 **동적 길이 펜스(fenced code block)로 감싸** 출력한다. 구체적으로: `_render_banner` 반환값을 `rstrip("\n")`한 뒤, 내용 안에 등장하는 가장 긴 연속 백틱 run보다 최소 1 더 긴(그리고 최소 3) 길이의 백틱 문자열을 펜스로 사용한다. 이를 통해 배너 내에 `` ``` `` 줄이 있어도 조기 종료 없이 배너 전체가 단일 코드블록 안에 담긴다. 출력 형식: `<fence>\n<banner_content>\n<fence>`.

@@ -205,7 +205,7 @@ teammode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
   ④ 상태 보고 정직성 (personality 등 오탐 제거 — 위 결정적 판정 항목과 연결)
 
 ## 배너 기본값 부재 + config 비동기 (2026-06-20 도그푸딩, 은수)
-- **기본값 초라**: infra/banners/ 에 ASCII 아트 6종(ansi_shadow·slant·speed 등) 있으나, banner.txt 없으면 자동 배너가 `<팀> team mode ON` **한 줄 텍스트**. 신규 팀 첫인상이 빈손 — 멋진 배너는 picker로 일부러 골라야만 나옴(발견성 0). "발견성/친절성"과 같은 뿌리.
+- **기본값 초라**: infra/banners/ 에 ASCII 아트 6종(ansi_shadow·slant·speed 등) 있으나, banner.txt 없으면 자동 배너가 `=== <팀> ===` **한 줄 텍스트**. 신규 팀 첫인상이 빈손 — 멋진 배너는 picker로 일부러 골라야만 나옴(발견성 0). "발견성/친절성"과 같은 뿌리.
   - 개선: install scaffold가 기본 폰트(예: ansi_shadow) banner.txt를 박아두거나, 자동 배너 자체를 ASCII 렌더로. personality 커스텀 = "기본에서 바꾸기"여야지 "빈손 채우기"가 아니게.
 - **배너↔config 비동기**: banner.txt 있으면 무조건 우선 → team.name 바꿔도 배너 안 따라옴(마이그레이션 시 tgates 잔재 배너가 그대로 노출). 위 personality 결정적판정 항목과 연결 — 배너 출처가 banner.txt면 team.name 변경 시 경고하거나, 자동 배너는 team.name 추종.
 
