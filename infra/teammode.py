@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import unicodedata
 from datetime import datetime
@@ -262,7 +263,14 @@ def auto_update_on_start(team_root: Path) -> None:
 
 def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
            skills_dir: str | None = None) -> int:
-    print(_render_banner(team_root), end="")
+    banner_content = _render_banner(team_root).rstrip("\n")
+    # CommonMark fenced code 규칙: 배너 내에 ``` 줄이 있으면 조기 종료 버그 발생.
+    # 배너 내 가장 긴 백틱 run보다 최소 1 더 긴(그리고 최소 3) 펜스를 동적 생성.
+    longest_run = max(
+        (len(m) for m in re.findall(r"`+", banner_content)), default=0
+    )
+    fence = "`" * max(3, longest_run + 1)
+    print(f"{fence}\n{banner_content}\n{fence}")
     # 시작 멘트(greeting): 배너 직후, config 에 있으면 출력(없으면 미출력 — §3.1).
     greeting = _read_team_field(team_root, "greeting")
     if greeting:
