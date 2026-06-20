@@ -9,6 +9,6 @@
 - 안전: 팀 루트는 `--root` 명시만(env 무신뢰). 실 설정 쓰기는 `--yes`/`--settings` 게이트. 푸시는 사람 결정.
 
 ## 서비스 연결 (L2)
-역할 슬롯(issues / chat / docs / calendar)에 서비스를 붙이려면 **`tm-connect` 스킬**(`infra/skills/base/tm-connect/SKILL.md`)을 따른다. tm-onboard 는 첫 가치 직후 *제안*만, 실행은 tm-connect. 발급 안내는 `providers/<provider>.json` 데이터를 읽어 하고, 토큰은 **각자 입력** → 로컬 금고(`infra/credentials.py`, 평문 0600 — 동기화 폴더 금지).
+역할 슬롯(issues / chat / docs / calendar)에 서비스를 붙이려면 **`tm-connect` 스킬**(`infra/skills/core/tm-connect/SKILL.md`)을 따른다. tm-onboard 는 첫 가치 직후 *제안*만, 실행은 tm-connect. 발급 안내는 `providers/<provider>.json` 데이터를 읽어 하고, 토큰은 **각자 입력** → 로컬 금고(`infra/credentials.py`, 평문 0600 — 동기화 폴더 금지).
 
 자세한 내용은 [AGENTS.md](AGENTS.md) · 동작 명세는 [docs/spec/](docs/spec/README.md), 백로그·미구현 설계는 [docs/BACKLOG.md](docs/BACKLOG.md) 참조.

@@ -170,7 +170,7 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
 > 출처: 2026-06-18 push 후 검증·윈도우 end-to-end 도그푸딩 (세션로그 jane-doe 2026-06-18). 핵심 안전은 전부 통과, 위는 견고성/UX 개선분.
 
 ## 스킬 구성 개선 (2026-06-20 Jane 착안, 도그푸딩 중)
-- **tm-reset 스킬 삭제** — [근거 미정, Jane 제안]. reset 기능 자체를 뺄지 다른 경로로 흡수할지 검토.
+- ~~**tm-reset 스킬 삭제**~~ — ✅ 완료(2026-06-20 제거). 되돌리기 기능은 `python infra/install.py --uninstall --root . --yes` 직접 실행으로 유지.
 - **tm-manage-utils → 커스터마이즈 스킬로 전환** — 유틸 설치/제거 관리 대신 "팀별 커스터마이즈" 용도 스킬로 재정의.
 - (출처: acme→teammode 마이그레이션 도그푸딩 중 발견. 상세 설계는 teammode 본격 작업 시.)
 
@@ -184,7 +184,7 @@ teammode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
 - **신설 `tm-customize`**: 팀 personality(배너 picker · greeting/farewell 멘트) + 기존 tm-manage-utils(유틸 스킬 관리) 흡수. "팀색 입히기"를 한곳에.
 - **tm-onboard에서 personality 커스텀 절차(배너·멘트) 제거** → 온보딩은 L1 가치 + 서비스(L2) 제안에 집중, 길이 단축. 체크표의 personality 항목도 제거하거나 "tm-customize로" 안내만.
 - **tm-manage-utils → tm-customize로 전환/흡수** (위 마이그레이션 착안 통합).
-- **tm-reset 삭제** (별도 항목, 위).
+- ~~**tm-reset 삭제**~~ — ✅ 완료(2026-06-20 제거, 별도 항목 위).
 - 연계: 위 "personality 완료판정 결함"도 tm-customize 쪽에서 결정적 판정으로 해소.
 
 ## 흡수 경로 탐지 결함 — check-mcp가 _teammode_managed만 인식 (2026-06-20 도그푸딩 — Jane)

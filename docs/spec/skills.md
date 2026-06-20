@@ -6,8 +6,8 @@ teammode SPEC v0.2 — 스킬 계층(base/core) + acme 이식 로드맵 + 온보
 
 | 계층 | 설치·활성 시점 | 스킬 |
 |---|---|---|
-| **base** | 셋업 시 항상(install) | `tm-onboard` · `tm-connect` · `tm-reset` · `tm`(on/off 토글) |
-| **core** | 팀모드 `on` 시 활성 | `tm-context` · `tm-load-knowledge` · `tm-manage-knowledge` |
+| **base** | 셋업 시 항상(install) | `tm-onboard` · `tm`(on/off 토글) |
+| **core** | 팀모드 `on` 시 활성 | `tm-connect` · `tm-context` · `tm-customize` · `tm-knowledge` · `tm-manage-knowledge` |
 
 - **base** = 팀모드를 켜고·끄고·셋업하는 최소 스킬. 항상 설치된다.
 - **core** = 팀모드가 켜졌을 때만 활성(맥락·지식 운영). `off` 시 비활성.
@@ -55,11 +55,11 @@ acme-toolkit의 검증된 스킬을 범용 teammode로 이식한다. acme 특정
 
 ---
 
-teammode SPEC v0.2 — tm-onboard·tm-connect·tm-reset (§5)
+teammode SPEC v0.2 — tm-onboard·tm-connect (§5)
 
 ## §5. 온보딩 스킬 (tm-onboard)
 
-> 이 절의 ground truth는 현재 워킹트리의 `infra/skills/base/tm-onboard/SKILL.md`, `infra/skills/base/tm-connect/SKILL.md`, `infra/skills/base/tm-reset/SKILL.md`이다. 2026-06-16 현재 워킹트리에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으며, 이 절은 커밋 여부와 무관하게 **현재 구현된 스킬 본문**을 반영한다.
+> 이 절의 ground truth는 현재 워킹트리의 `infra/skills/base/tm-onboard/SKILL.md`, `infra/skills/core/tm-connect/SKILL.md`이다. 2026-06-16 현재 워킹트리에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으며, 이 절은 커밋 여부와 무관하게 **현재 구현된 스킬 본문**을 반영한다.
 >
 > 공통 원칙: 사람이 할 판단·동의·권한 부여는 스킬이 대화로 처리하고, 결정적 파일 조작·배선·검증·되돌리기는 `install.py`/엔진/credentials 모듈에 맡긴다. 스킬은 install.py 단계를 손으로 재현하지 않는다.
 
@@ -102,21 +102,6 @@ triggers:
 
 `tm-connect`는 `tm-onboard`가 첫 가치 직후 제안한 L2 연결을 실제로 수행한다. 토큰 안내, 로컬 금고 저장, config 슬롯 기록, 재배선은 `tm-connect`의 책임이다.
 
-```yaml
-name: tm-reset
-description: Undo a teammode install on this host.
-triggers:
-  - "팀모드 초기화"
-  - "팀모드 제거"
-  - "언인스톨"
-  - "teammode reset"
-  - "teammode uninstall"
-  - "테스트 정리"
-  - when cleaning up a teammode test/scratch repo
-```
-
-`tm-reset`은 install이 호스트에 더한 흔적만 되돌린다. `memory/` 팀 데이터는 지우지 않는다.
-
 ### 5.2 install.py ↔ tm-onboard 분업
 
 | 단계 | 주체 |
@@ -129,7 +114,7 @@ triggers:
 | Obsidian 등록 opt-in | `tm-onboard`가 `install.py --register-obsidian`만 호출. |
 | L2 서비스 연결 제안 | `tm-onboard`. 실행은 하지 않는다. |
 | L2 서비스 연결 실행 | `tm-connect`. provider 데이터 안내, credentials 저장, config 슬롯 기록, install 재배선. |
-| 호스트 설치 되돌리기 | `tm-reset`. 동의 후 `install.py --uninstall` 호출. |
+| 호스트 설치 되돌리기 | `install.py --uninstall` 직접 실행(`python infra/install.py --uninstall --root . --yes`). 파괴적이라 사람 확인 먼저. |
 
 도입자/팀원 분기는 `--member-name`으로 하지 않는다. `install.py`가 `team.config.json`의 유효성을 보고 자동 판정한다.
 
@@ -228,7 +213,7 @@ L2 연결 제안:
 - 아니오 또는 나중에 하겠다고 하면 L1만으로 끝낸다. 빈 슬롯은 정상 상태다.
 - `tm-onboard`는 토큰을 받거나 config 서비스 슬롯을 직접 채우지 않는다.
 
-### 5.4 서비스 연결·리셋 스킬 (tm-connect / tm-reset)
+### 5.4 서비스 연결 스킬 (tm-connect)
 
 #### 5.4.1 tm-connect — 역할 슬롯 연결
 
@@ -320,52 +305,25 @@ python infra/teammode.py issue create --root . --title "<요약>"
 - doctor 수준의 검증·자가수리는 하지 않는다. 연결 직후 유효 ping 정도까지만 범위다.
 - 코드 작성, 이슈 본문 생성, 다른 스킬 자동 호출, 푸시, PR을 하지 않는다.
 
-#### 5.4.2 tm-reset — 호스트 설치 되돌리기
+#### 5.4.2 호스트 되돌리기 (install.py --uninstall 직접)
 
-`tm-reset`은 파괴적 작업이므로 반드시 사람 확인을 먼저 받는다. 되돌리는 범위를 말하고 "진행할까요?" 동의를 받은 뒤에만 실행한다.
-
-사전 고지(전체 동작 범위):
-
-- `.teammode-active` 마커를 삭제해 팀모드를 off로 만든다.
-- settings.json에서 teammode 훅을 제거한다. 남의 훅은 보존한다.
-- 현 `install.py --uninstall` 경로는 install이 추가한 MCP 등록과 skills 설치 흔적은 제거하지 않는다.
-- 셸 프로파일에서 teammode가 주입한 줄만 제거한다. 남의 줄은 보존한다.
-- `obsidian.json`에서 이 팀 볼트 등록만 해제한다. 다른 볼트와 Obsidian 미설치 상태는 무영향이다.
-- `memory/`는 삭제하지 않는다. 세션로그, INDEX, members 등 팀 데이터는 그대로 둔다.
-
-현재 `infra/skills/base/tm-reset/SKILL.md`의 "먼저 확인" 목록은 `.teammode-active`·settings hook·env·Obsidian·memory 보존만 고지하고, MCP 등록과 skills 설치 흔적이 제거되지 않는다는 사실은 빠뜨린다. 실제 uninstall 동작은 아래 설명과 A.3 갭을 따른다.
-
-동의 후 실행:
+tm-reset 스킬은 제거됐다. 호스트 설치 되돌리기는 `install.py --uninstall` 직접 실행으로 수행한다. 파괴적이므로 반드시 사람 확인을 먼저 받고, 되돌리는 범위를 고지한 뒤 실행한다. 상세 동작은 `docs/spec/internals.md §4.10(cmd_uninstall)`을 참조한다.
 
 ```bash
 python infra/install.py --uninstall --root . --yes
 ```
 
 - `install.py`가 off, Claude adapter hook uninstall, env 줄 제거, Obsidian 등록 해제를 처리한다. MCP 등록 제거와 skills 제거는 이 경로에서 처리하지 않는다.
-- `--yes`는 실 settings에서 제거하는 쓰기 의도다.
-- 격리 테스트 정리는 `--yes` 대신 `--settings <settings-file-path>`를 쓴다. bootstrap과 달리 uninstall의 `--settings` 값은 격리 디렉토리가 아니라 settings 파일 경로로 그대로 쓰인다. 필요하면 `--profile`, `--obsidian-config`도 함께 지정한다.
-- 이미 없으면 무동작이다. 스킬 본문은 이 경로를 멱등·비치명으로 다룬다.
-- 출력의 "제거됨:" 목록을 사람 말로 옮긴다.
-- 되돌릴 것이 없으면 "이미 정리됨"으로 안내한다.
-
-테스트용 스크래치 레포:
-
-- uninstall은 호스트 흔적 중 off·Claude hook·env·Obsidian 등록만 되돌린다. MCP 등록과 skills 설치 흔적은 현 구현에서 회수하지 않는다.
-- 레포 폴더 자체는 삭제하지 않는다.
-- 테스트용 스크래치 레포를 통째로 없애야 하면 uninstall 후 사람이 그 폴더를 직접 삭제해야 한다. 예: `rm -rf <scratch-repo>`.
-
-`tm-reset`이 하지 않는 것:
-
-- `memory/` 삭제.
-- 원격 push·PR·커밋.
-- 코드 작성이나 다른 스킬 자동 호출.
+- `--yes`는 실 settings에서 제거하는 쓰기 의도다. 격리 테스트 정리는 `--settings <settings-file-path>`를 쓴다.
+- `memory/`는 삭제하지 않는다. 팀 데이터는 그대로 둔다.
+- 레포 폴더 자체는 삭제하지 않는다. 통째 정리는 사람이 직접 `rm -rf <repo>`.
+- 멱등·비치명: 이미 없으면 무동작.
 
 ### 5.5 경계 / 단일 책임
 
 - `tm-onboard`는 온보딩과 L1 첫 가치까지만 직접 수행한다. L2는 제안만 하고 실행은 `tm-connect`로 넘긴다.
 - `tm-connect`는 provider 데이터 기반 연결만 수행한다. provider 팩에 없는 제품·필드·발급 절차를 추측하지 않는다.
-- `tm-reset`은 호스트 설치 흔적만 되돌린다. 팀 데이터와 레포 삭제는 범위 밖이다.
-- 세 스킬 모두 install.py/engine/credentials가 하는 일을 손으로 재현하지 않는다.
+- 두 스킬 모두 install.py/engine/credentials가 하는 일을 손으로 재현하지 않는다.
 - 실패(exit != 0)하면 사유를 전달하고 멈춘다. 추측 수리하지 않는다.
 - 빈 서비스 슬롯은 1급 시민이다. 연결 전 L1 사용은 정상이다.
 - 푸시·PR은 사람이 결정한다.
@@ -382,7 +340,7 @@ Common mistakes:
 | 토큰을 config·세션로그에 기록 | 토큰은 로컬 credentials 금고에만 둔다. config에는 인스턴스 값만 쓴다. |
 | 평문 금고를 동기화 폴더에 둬도 된다고 안내 | 0.2 금고는 평문 JSON이다. 동기화 폴더 금지. |
 | 빈 슬롯을 에러로 취급 | 빈 슬롯은 정상이다. 엔진은 `[info]` 비치명 안내를 낸다. |
-| reset이 memory까지 지운다고 안내 | uninstall은 호스트 흔적만 되돌리고 `memory/`는 보존한다. |
+| uninstall이 memory까지 지운다고 안내 | uninstall은 호스트 흔적만 되돌리고 `memory/`는 보존한다. |
 | scratch repo가 uninstall로 사라진다고 봄 | 폴더는 남는다. 통째 정리는 별도 삭제다. |
 
 ---

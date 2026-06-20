@@ -463,7 +463,7 @@ manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이
 
 스킬 본문은 현 구현상 `infra/skills/base/<name>/SKILL.md`만 소스로 삼는다. 기존 초안의 `agents/<name>/skills/<skill>/SKILL.md` 오버라이드 탐색은 **현재 구현되어 있지 않다**. 오버라이드 해석·requires 게이트·traversal guard는 0.2에서도 미구현이다.
 
-현 워킹트리의 base 스킬은 `tm-onboard`, `tm-connect`, `tm-reset`이다.
+현 워킹트리의 base 스킬은 `tm-onboard`이다. `tm-connect`는 `infra/skills/core/tm-connect/`에 있다.
 
 `install-skills` 구현 계약:
 
@@ -1105,7 +1105,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 | L2 `team.config.json services` 스키마 | 역할 슬롯(`issues/chat/docs/calendar`) → `{provider, scope?, <resource_fields...>}` object. 빈 슬롯 허용, provider pack 기반 검증 | `install_lib.services_are_valid`·`infra/providers.py` |
 | L2 provider pack 스키마 | `provider`, `token_guide`, `default_scope`, `auth`, `services`, `resource_fields`, `mcp`, optional `action_map`으로 확정 | `infra/providers.py::validate_pack`·`providers/*.json` |
 | L2 credentials 금고 | 로컬 평문 JSON 금고 store/load/delete/list/file_mode 구현 | `infra/credentials.py` |
-| L2 연결 스킬 분리 | tm-onboard는 L2 제안만, 실제 연결은 tm-connect가 수행 | `infra/skills/base/tm-onboard/SKILL.md`·`infra/skills/base/tm-connect/SKILL.md` |
+| L2 연결 스킬 분리 | tm-onboard는 L2 제안만, 실제 연결은 tm-connect가 수행 | `infra/skills/base/tm-onboard/SKILL.md`·`infra/skills/core/tm-connect/SKILL.md` |
 | 멤버 역할 필드 | `team.config.json` `members: [{name, role?}]`로 확정, install 시 자기 엔트리만 upsert | `install_lib.upsert_member_role`·`scaffold_memory` |
 | 팀 personality 기본 출력 | 도입자 config 기본 `greeting`/`farewell`, 엔진 on/off 출력 구현 | `install_lib.write_introducer_config`·`teammode.cmd_on/off` |
 
@@ -1129,7 +1129,6 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 - **`--json` role 출력 미구현**: 05/04가 요구한 install의 구조화 role 출력(`--json`) 미구현 → tm-onboard가 `config_is_valid` 직접 확인으로 우회(§5.2).
 - **Codex 실 훅 입력 스키마 미확인**: normalize가 Claude 유사 형태 가정(§2.11) — Codex 실환경 캡처 후 확정.
 - **install.py uninstall의 MCP/skills 회수 누락**: install wire는 `install-mcp`·`install-skills`를 호출하지만 `cmd_uninstall()`은 Claude `Adapter.uninstall()`만 호출해 MCP 등록과 skills 설치 흔적을 제거하지 않는다.
-- **tm-reset 사전고지 누락**: `tm-reset/SKILL.md`의 현재 확인 목록은 MCP 등록과 skills 설치 흔적이 제거되지 않는다는 사실을 사용자에게 미리 고지하지 않는다.
 - **`--settings` 의미 불일치**: bootstrap은 `--settings`를 격리 디렉토리로 해석하지만 uninstall은 같은 값을 settings 파일 경로로 그대로 사용한다.
 - **normalize 경로 검증 부재**: `tool_input.file_path`는 절대경로화/경로탈출 검증 없이 `files`로 복사되고, `<script>`도 파일명·경로탈출 검증 없이 `HOOKS_DIR / script`로 실행된다.
 - **팀 personality 커스텀 배너 입력**: 기본 `greeting`/`farewell` 생성과 on/off 출력은 구현됐지만, 온보딩에서 custom banner 내용을 입력받아 `memory/banner.txt`를 교체하는 UX는 별도 확장 여지다.

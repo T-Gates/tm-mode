@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 도입자 온보딩 | introducer | [onboard-introducer.md](onboard-introducer.md) | L1 셋업 + L2 서비스 연결 |
 | 팀원 온보딩 | member | [onboard-member.md](onboard-member.md) | L1 셋업 + L2 서비스 연결 |
-| 초기화 | introducer/member | [reset.md](reset.md) | tm-reset 부록 |
+| 초기화 | introducer/member | [reset.md](reset.md) | install.py --uninstall 직접 |
 
 ## 원문 서문
 
@@ -20,7 +20,7 @@
 
 이 문서는 teammode 개발의 **중심 기능명세서**다. "유저가 이렇게 행동하면 시스템이 이렇게 반응한다"를 사용자 시점으로 명세해, 구현이 명세대로 동작하는지 **대조하는 기준점**이 된다. `conformance/` 의 골든(기계 검증)이 정확한 출력 문자열·exit code 를 자동으로 잡는다면, 이 문서는 그 **사람용 짝** — 한 사람이 처음부터 끝까지 따라가며 "맞게 흘러가는지" 읽고 판단하는 서사다. 기획·구현·QA 가 같은 그림을 공유하기 위해, 추측·창작 없이 코드와 문서에 실제로 적힌 동작만 적었다.
 
-진입점은 항상 **자연어**다. 사용자는 슬래시 명령을 외우지 않는다 — "이 레포 셋업해줘" 같은 말을 하면 에이전트가 스킬(`tm-join`/`tm-connect`/`tm-reset`)을 골라 `install.py`(결정적 기계)를 대신 호출하고, 결과를 사람 말로 옮긴다.
+진입점은 항상 **자연어**다. 사용자는 슬래시 명령을 외우지 않는다 — "이 레포 셋업해줘" 같은 말을 하면 에이전트가 스킬(`tm-join`/`tm-connect`)을 골라 `install.py`(결정적 기계)를 대신 호출하고, 결과를 사람 말로 옮긴다.
 
 ### 시나리오 인덱스
 
