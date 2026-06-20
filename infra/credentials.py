@@ -28,6 +28,7 @@ import json
 import os
 import re
 import stat
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -59,6 +60,31 @@ def credentials_dir() -> Path:
 
 def _vault_path(team: str) -> Path:
     return credentials_dir() / f"{_check_ident(team, 'team')}.json"
+
+
+# SEC-4: 평문 금고는 동기화 폴더에 두면 안 된다(skills.md §, internals.md §).
+# 흔한 동기화 폴더 경로 패턴 — Syncthing 은 임의 경로라 완전 감지 불가하므로 휴리스틱.
+_SYNC_FOLDER_HINTS = (
+    "dropbox", "onedrive", "google drive", "googledrive", "gdrive",
+    "mobile documents", "cloudstorage", "icloud", "/sync/", "/syncthing/",
+    "yandex.disk", "pcloud", "mega",
+)
+
+
+def _warn_if_sync_folder(path: Path) -> None:
+    """저장 경로가 흔한 동기화 폴더 패턴이면 경고한다(SEC-4) — 거부는 하지 않는다.
+
+    동기화 폴더의 완전 감지는 불가하고(Syncthing 은 임의 경로) 오탐 차단은 작업을
+    막으므로, 차단 대신 경고로 방어선을 둔다. 평문 토큰이 Syncthing/Dropbox/iCloud
+    등으로 여러 기기·클라우드에 퍼지는 사고를 환기한다. 0600·git 미추적과 함께 0.2 방어선.
+    """
+    low = str(path).lower()
+    if any(hint in low for hint in _SYNC_FOLDER_HINTS):
+        print(
+            "[warn] credentials 금고가 동기화 폴더로 보이는 경로에 있습니다 — "
+            "평문 토큰이 Syncthing/Dropbox/iCloud 등으로 퍼질 수 있습니다. "
+            "$XDG_DATA_HOME 를 로컬 전용 경로로 두세요(SEC-4).",
+            file=sys.stderr)
 
 
 def _check_ident(value: str, what: str) -> str:
@@ -160,6 +186,7 @@ def store(team: str, scope: str, key: str, token: str) -> Path:
     _check_ident(key, "key")
     if not isinstance(token, str):
         raise ValueError("token must be a string")
+    _warn_if_sync_folder(_vault_path(team))  # SEC-4: 동기화 폴더면 경고(거부 X)
     data = _read_vault(team)
     data.setdefault(scope, {})
     if not isinstance(data[scope], dict):

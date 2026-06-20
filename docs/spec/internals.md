@@ -1013,7 +1013,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 - 팀별 금고 파일은 `<credentials_dir>/<team>.json`이다.
 - 디렉토리는 만들거나 보정할 때 `0700`을 시도한다. `chmod` 실패는 비차단이다.
 - 파일은 저장 후 `0600`을 재단언한다. 기존 파일 mode가 넓어져 있어도 다음 `store()`가 `0600`으로 되돌린다.
-- 평문 JSON이므로 동기화 폴더(Syncthing/Dropbox 등)에 두면 안 된다. `.gitignore` 패턴은 별도 방어선일 뿐 금고 모듈이 git 추적 여부를 검사하지는 않는다.
+- 평문 JSON이므로 동기화 폴더(Syncthing/Dropbox 등)에 두면 안 된다. `store()`는 흔한 동기화 폴더 경로 패턴(`dropbox`·`onedrive`·`mobile documents`·`icloud`·`/sync/` 등)을 휴리스틱으로 감지해 **경고**한다(SEC-4). 거부는 하지 않는다 — Syncthing 은 임의 경로라 완전 감지가 불가하고 오탐 차단은 작업을 막으므로, 경고로 방어선을 둔다. git 추적 여부는 검사하지 않으며 `.gitignore`가 별도 방어선이다.
 
 식별자와 scope:
 

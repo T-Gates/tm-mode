@@ -267,3 +267,34 @@ def test_no_team_transmission_channel():
     forbidden = {"share", "push", "broadcast", "sync", "fetch_team", "publish", "upload"}
     leaked = public & forbidden
     assert not leaked, f"v0.1 에 없어야 할 팀 전송 동사 노출: {leaked}"
+
+
+# ─────────────────────────── SEC-4: 동기화 폴더 경고 ───────────────────────────
+
+def test_store_warns_on_sync_folder(monkeypatch, tmp_path):
+    """SEC-4: 금고 경로가 동기화 폴더 패턴이면 store 가 경고한다(거부는 안 함)."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "Dropbox" / "data"))
+    err = io.StringIO()
+    with redirect_stderr(err):
+        path = cred.store(TEAM, cred.SCOPE_PERSONAL, "linear", "tok")
+    assert "SEC-4" in err.getvalue(), "동기화 폴더인데 경고가 없다"
+    assert path.is_file()  # 거부하지 않음 — 저장은 정상 수행
+
+
+def test_store_no_warn_on_local_folder(monkeypatch, tmp_path):
+    """정상 로컬 경로는 SEC-4 경고가 없다(오탐 없음)."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "localdata"))
+    err = io.StringIO()
+    with redirect_stderr(err):
+        cred.store(TEAM, cred.SCOPE_PERSONAL, "linear", "tok")
+    assert "SEC-4" not in err.getvalue()
+
+
+def test_sync_folder_warning_does_not_leak_token(monkeypatch, tmp_path):
+    """SEC-4 경고도 토큰 누출 0 — 경고 메시지에 토큰값이 없다."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "Library" / "Mobile Documents"))
+    tok = _sentinel()
+    err = io.StringIO()
+    with redirect_stderr(err):
+        cred.store(TEAM, cred.SCOPE_PERSONAL, "linear", tok)
+    assert tok not in err.getvalue()
