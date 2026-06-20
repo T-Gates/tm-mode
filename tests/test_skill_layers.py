@@ -372,7 +372,7 @@ def test_tm_customize_skill_md_exists():
 def test_tm_customize_references_exist():
     """tm-customize/references/ 하위 문서가 존재한다 (persona 제거 2026-06-21)."""
     refs = REPO / "infra" / "skills" / "core" / "tm-customize" / "references"
-    for name in ("banner.md", "skills.md"):
+    for name in ("banner.md", "skills.md", "identity.md"):
         assert (refs / name).is_file(), f"references/{name} 없음"
     # persona 영역은 제거됐다 — 되살아나면 잡는다.
     assert not (refs / "persona.md").is_file(), "persona.md가 되살아남 (제거 결정 위반)"

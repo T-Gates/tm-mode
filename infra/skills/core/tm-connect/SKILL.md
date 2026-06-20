@@ -158,7 +158,7 @@ OAuth 크리덴셜 키 계약:
 
 **팀 자동공유 없음(v0.1).** 각 멤버가 자기 토큰을 직접 입력하고, **로컬 금고**(`infra/credentials.py`)에 저장한다.
 
-- 저장 위치: 멤버 로컬 `$XDG_DATA_HOME/teammode/credentials/<team>.json`(파일 권한 0600). git 추적 안 됨.
+- 저장 위치: 멤버 로컬 `$XDG_DATA_HOME/teammode/credentials/default.json`(단일 금고, 파일 권한 0600). git 추적 안 됨.
 - 팩의 `default_scope` 로 네임스페이스를 고른다 — `team` 이든 `personal` 이든 **v0.1 은 각자 1회 입력**이다(팀 scope 라고 도입자 1회로 끝나지 않는다 — 자동공유 미구현).
 - 저장은 엔진/모듈이 한다(스킬이 평문 토큰을 stdout·로그·세션로그에 절대 출력하지 않는다):
   ```bash

@@ -119,6 +119,22 @@ def _read_team_field(team_root: Path, field: str) -> str | None:
         return None
 
 
+def _migrate_legacy_credentials(team_root: Path) -> None:
+    """단일 금고 전환(2026-06-21) 전에 팀명-키(`<team.name>.json`)로 저장한 L2 토큰을
+    단일 금고(default.json)로 1회 이전한다. 비치명 — 실패해도 on 을 막지 않는다.
+
+    멀티팀 미지원 결정으로 금고를 단일 파일로 바꿨다. 그 전에 L2 를 연결한 팀의 토큰이
+    옛 파일명에 고아로 남는 걸 막는다. default.json 이 이미 있으면 no-op(멱등).
+    """
+    try:
+        team_name = _read_team_field(team_root, "name")
+        if team_name:
+            import credentials  # infra/ 가 sys.path[0] (스크립트 디렉토리)
+            credentials.migrate_legacy_vault(team_name)
+    except Exception:  # noqa: BLE001 — 토큰 이전 실패가 on 을 막아선 안 됨
+        pass
+
+
 def _personality_customized(team_root: Path) -> bool:
     """팀 personality 가 기본값과 다른지 결정적으로 판정한다.
 
@@ -251,6 +267,8 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     greeting = _read_team_field(team_root, "greeting")
     if greeting:
         print(greeting)
+    # 단일 금고 전환(2026-06-21) 전에 팀명-키로 저장한 L2 토큰을 default.json 으로 1회 이전.
+    _migrate_legacy_credentials(team_root)
     # D: upstream 자동 동기화(fetch + 변경 시 자동 커밋). 실패는 on 을 막지 않는다.
     # 순서: auto_update 먼저 → 그 다음 심링크 토글(새 core 스킬 반영 위해).
     auto_update_on_start(team_root)

@@ -85,7 +85,7 @@ import sys
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parents[1] / 'infra'))
 import credentials
 
-TEAM = "your-team-name"  # team.config.json 의 team.name 과 일치
+TEAM = "default"  # team 인자는 단일 금고에서 무시됨(2026-06-21) — 임의 식별자 가능
 
 def issues_create(title, body="", ...):
     token = credentials.load(TEAM, "personal", "issues")

@@ -235,7 +235,7 @@ tm-customize에 "동작/훅 수정" 영역 추가. 단 코어 직접 패치는 u
 - **유지**: 표면 `personality`(배너·greeting/farewell, 엔진 출력)는 그대로 — persona와 별개다.
 - 되살릴 일 있으면: 강도/범위(전체 응답 vs 외부메시지만)·멤버별 오버라이드 허용 여부가 당시 미결이었음.
 
-> 후속: 정체성(팀명·greeting·farewell) 커스텀 축은 별도로 추가 예정 — 아래 "정체성 축 + team.id" 항목 참조.
+> 후속: 정체성(팀명·greeting·farewell) 커스텀 축 추가 완료 — 아래 "정체성 커스텀 축" 항목 참조.
 
 <details><summary>(접힌 원안 — 2026-06-20)</summary>
 
@@ -251,13 +251,13 @@ tm-customize 범위 4층으로 확장 — persona 추가:
 
 </details>
 
-## 정체성(팀명·greeting·farewell) 커스텀 축 + team.id (2026-06-21 Jane) — 다음
-**목표: 팀명·greeting·farewell을 tm-customize에서 언제든 자유롭게 바꿀 수 있게.** (Phase 2)
-- **블로커**: 현재 크리덴셜 금고가 `team.name`으로 키됨(`credentials/<team>.json`) + MCP `--team` 인자도 name → **개명하면 토큰 네임스페이스 고아.** 그래서 "이름은 L2 전에 확정" 같은 땜빵 경고가 필요했음.
-- **정공법 (Jane 결정)**: `team.config.json`에 **불변 식별자 `team.id`** 도입(install 1회 생성, 절대 불변) → 크리덴셜·MCP wiring을 `team.id` 기준으로 전환 → `team.name`은 순수 표시용(greeting·farewell·배너·statusline) = 자유 변경.
-- **영향 범위**: install_lib(write_introducer_config에 id 생성·members 스키마)·credentials 호출부·MCP wiring(role_server `--team`)·config 스키마/검증·spec·기존 금고 마이그레이션(name→id 리네임)·테스트(team을 키로 쓰는 다수).
-- **참고**: 멀티팀 동시소속은 애초 고려사항 아님(Jane) — 식별자는 멀티팀 충돌방지가 명목이었으나 우리 용례엔 불필요. 안정 키(id)면 단일팀에서도 개명 안전.
-- **doc**: 엔진 전환 완료 후 `references/identity.md` 작성 + tm-customize 라우터에 "정체성" 축 추가("파급 0, 언제든 변경"). 관련: 위 "배너↔config 비동기" 항목(team.name 변경 시 배너 추종).
+## ✅ 정체성(팀명·greeting·farewell) 커스텀 축 (2026-06-21 Jane) — 완료
+**목표: 팀명·greeting·farewell을 tm-customize에서 언제든 자유롭게 바꿀 수 있게.** → 달성.
+- **블로커였던 것**: 크리덴셜 금고가 `team.name`으로 키됨(`credentials/<team>.json`) → 개명하면 토큰 고아.
+- **검토했다 접은 안 (team.id)**: config에 불변 `team.id` 도입 후 크리덴셜·MCP를 id 기준으로 전환. **과함** — install·MCP wiring·스키마·마이그레이션·다수 테스트를 건드림. 멀티팀이 고려사항이 아닌데(Jane: "그때 가서 생각") 멀티팀 충돌방지용 식별자 체계를 미리 지는 셈.
+- **채택안 (단일 금고)**: `_vault_path`를 팀명 무관 단일 파일 `default.json`으로. team 인자는 시그니처 호환만(파일명에 안 씀). → `team.name`은 순수 표시용 = **파급 0, 언제든 변경.** 훨씬 작음(credentials 1함수 + 마이그레이션 헬퍼 + 테스트). 멀티팀 필요해지면 그때 `_vault_path(team)`로 되살림.
+- **한 일**: `credentials._vault_path` 단일화 + `migrate_legacy_vault`(레거시 `<name>.json`→`default.json` 1회 이전, 멱등) + `teammode.cmd_on`에서 비치명 호출 + `references/identity.md` 신설(team.config.json 직접편집, Edit OK) + tm-customize 라우터에 "정체성" 축 + 스펙(skills/internals) 정합 + 테스트(개명안전·마이그레이션 4종, symlink가드 경로 갱신).
+- **잔여 참고**: "배너↔config 비동기"(team.name 바꿔도 banner.txt 박힌 ASCII는 자동 추종 안 함) — identity.md에 수동 갱신 안내로 커버. 근본 해소(자동 배너가 team.name 추종)는 별개 항목.
 
 ## statusline codex 쪽 누락 — 진짜 발견 (2026-06-20, Jane 끝까지 추적·Jonathan 단서)
 초기 조사가 Claude statusLine만 봐서 3번 "없다" 오판. 실제론 **codex** 쪽에 있었음:

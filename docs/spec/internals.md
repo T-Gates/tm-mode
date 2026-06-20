@@ -1010,7 +1010,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 - `credentials_dir() -> Path`는 `$XDG_DATA_HOME/teammode/credentials`를 반환한다.
 - `XDG_DATA_HOME`이 없으면 `~/.local/share/teammode/credentials`를 쓴다.
 - 함수 자체는 디렉토리를 만들지 않는다. 쓰기 시 `_secure_dir()`가 만든다.
-- 팀별 금고 파일은 `<credentials_dir>/<team>.json`이다.
+- 금고 파일은 단일 `<credentials_dir>/default.json`이다(멀티팀 미지원, 2026-06-21). `_vault_path(team=None)`는 `team` 인자와 무관하게 이 파일을 반환한다 — 팀명에 묶이지 않아 `team.name`을 바꿔도 금고 키가 안 변한다. `migrate_legacy_vault(old_team)`는 단일파일 전환 전 팀명-키 금고(`<old_team>.json`)를 `default.json`으로 1회 이전하며, `default.json`이 이미 있으면 no-op(멱등)이다. 멀티팀이 필요해지면 그때 `team`별 파일명으로 되살린다.
 - 디렉토리는 만들거나 보정할 때 `0700`을 시도한다. `chmod` 실패는 비차단이다.
 - 파일은 저장 후 `0600`을 재단언한다. 기존 파일 mode가 넓어져 있어도 다음 `store()`가 `0600`으로 되돌린다.
 - 평문 JSON이므로 동기화 폴더(Syncthing/Dropbox 등)에 두면 안 된다. `store()`는 흔한 동기화 폴더 경로 패턴(`dropbox`·`onedrive`·`mobile documents`·`icloud`·`/sync/` 등)을 휴리스틱으로 감지해 **경고**한다(SEC-4). 거부는 하지 않는다 — Syncthing 은 임의 경로라 완전 감지가 불가하고 오탐 차단은 작업을 막으므로, 경고로 방어선을 둔다. git 추적 여부는 검사하지 않으며 `.gitignore`가 별도 방어선이다.
@@ -1019,7 +1019,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 
 - public scope 상수는 `SCOPE_TEAM = "team"`, `SCOPE_PERSONAL = "personal"`이다.
 - 허용 scope는 정확히 `team`, `personal` 두 개다. 다른 값은 `ValueError("invalid scope (allowed: team, personal)")`.
-- `team`과 `key` 식별자는 정규식 `^[A-Za-z0-9_.\-]+$`를 통과해야 한다.
+- `key` 식별자는 정규식 `^[A-Za-z0-9_.\-]+$`를 통과해야 한다. `team`은 더 이상 경로 구성요소가 아니라(단일 금고) 일반 CRUD 경로에서 검증·거부되지 않는다 — `migrate_legacy_vault(old_team)`의 `old_team` 인자만 같은 규칙으로 검증한다(레거시 파일명 안전).
 - `/`, 공백, 빈 문자열, NUL, `;`, 기타 문자는 거부된다.
 - `"."`, `".."`, `"..."`처럼 전체가 dot으로만 된 식별자는 정규식을 통과해도 별도로 거부된다.
 - 식별자 오류 메시지는 입력값 자체를 echo하지 않는다. 메시지는 `invalid <team|key> identifier (allowed: [A-Za-z0-9_.-])` 형태다.

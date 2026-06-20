@@ -256,7 +256,7 @@ credentials 저장:
 
 - 0.2에는 팀 토큰 자동공유가 없다.
 - 각 멤버가 자기 토큰을 직접 입력한다. `default_scope`가 `team`이어도 도입자 1회로 끝나지 않는다.
-- 저장 위치는 로컬 `$XDG_DATA_HOME/teammode/credentials/<team>.json`이다.
+- 저장 위치는 로컬 `$XDG_DATA_HOME/teammode/credentials/default.json`이다(단일 금고 — 멀티팀 미지원, 2026-06-21. 팀명에 묶이지 않아 개명 안전).
 - 파일 권한은 0600이다.
 - git 추적 대상이 아니다.
 - 저장은 `infra/credentials.py`가 한다. 스킬은 평문 토큰을 stdout, 로그, 세션로그, config에 출력하거나 기록하지 않는다.

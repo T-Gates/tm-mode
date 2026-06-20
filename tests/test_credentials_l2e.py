@@ -75,7 +75,7 @@ def test_list_keys_returns_names_not_values():
 
 def test_file_mode_is_0600_after_store():
     cred.store(TEAM, cred.SCOPE_PERSONAL, "linear", _sentinel())
-    path = cred.credentials_dir() / f"{TEAM}.json"
+    path = cred._vault_path(TEAM)  # 단일 금고(default.json) — 팀명 무관
     mode = stat.S_IMODE(os.stat(path).st_mode)
     # umask 에 의존하지 않는 절대 단언 — group/other 비트 0, owner rw.
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
@@ -93,7 +93,7 @@ def test_dir_mode_is_owner_only():
 def test_mode_reasserted_on_overwrite():
     """기존 파일을 0666 으로 망가뜨려도 store 가 0600 으로 재단언하는지."""
     cred.store(TEAM, cred.SCOPE_PERSONAL, "k", "v")
-    path = cred.credentials_dir() / f"{TEAM}.json"
+    path = cred._vault_path(TEAM)  # 단일 금고(default.json) — 팀명 무관
     os.chmod(path, 0o666)
     cred.store(TEAM, cred.SCOPE_PERSONAL, "k", "v2")
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
@@ -104,7 +104,7 @@ def test_mode_reasserted_on_overwrite():
 def test_store_refuses_symlinked_vault_no_outside_write(tmp_path):
     """금고 경로에 심링크를 심으면 store 가 O_NOFOLLOW 로 거부 — 금고 밖 토큰 평문 무기록."""
     tok = _sentinel()
-    vault = cred.credentials_dir() / f"{TEAM}.json"
+    vault = cred._vault_path(TEAM)  # 단일 금고(default.json) — 팀명 무관
     vault.parent.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "OUTSIDE_TARGET.txt"  # 금고 밖 타깃(존재하지 않음).
     os.symlink(str(outside), str(vault))
@@ -128,7 +128,7 @@ def test_read_vault_ignores_symlinked_vault(tmp_path):
     # 금고 밖에 '진짜 토큰처럼 보이는' 내용을 둔다.
     target.write_text(json.dumps({cred.SCOPE_PERSONAL: {"linear": tok}}),
                       encoding="utf-8")
-    vault = cred.credentials_dir() / f"{TEAM}.json"
+    vault = cred._vault_path(TEAM)  # 단일 금고(default.json) — 팀명 무관
     vault.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(str(target), str(vault))
 
@@ -137,6 +137,73 @@ def test_read_vault_ignores_symlinked_vault(tmp_path):
         # 심링크 추종 거부 → 금고 밖 토큰을 읽지 않고 None(빈 금고 취급).
         assert cred.load(TEAM, cred.SCOPE_PERSONAL, "linear") is None
     _assert_no_sentinel(out.getvalue() + err.getvalue(), tok, "심링크 read 거부")
+
+
+# ──────────────── 2c. 단일 금고: 팀명 개명 안전 (2026-06-21) ────────────────
+
+def test_vault_path_constant_regardless_of_team():
+    """_vault_path 는 team 인자와 무관하게 같은 파일(default.json) — 팀명 개명해도 키 불변."""
+    p_none = cred._vault_path()
+    p_a = cred._vault_path("team-alpha")
+    p_b = cred._vault_path("another-name")
+    assert p_a == p_b == p_none
+    assert p_none.name == "default.json"
+
+
+def test_rename_team_keeps_tokens():
+    """팀명을 바꿔도(다른 team 인자로 조회) 저장한 토큰이 그대로 읽힌다 — 개명 안전 실증."""
+    tok = _sentinel()
+    cred.store("old-name", cred.SCOPE_PERSONAL, "linear", tok)
+    # 팀명을 바꾼 셈 — 다른 team 인자로 조회해도 같은 단일 금고라 동일 토큰.
+    assert cred.load("new-name", cred.SCOPE_PERSONAL, "linear") == tok
+
+
+def test_migrate_legacy_vault_renames_and_idempotent():
+    """팀명-키 금고(<team>.json)를 default.json 으로 1회 이전 + 멱등."""
+    tok = _sentinel()
+    legacy = cred.credentials_dir() / "legacy-team.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({cred.SCOPE_PERSONAL: {"linear": tok}}),
+                      encoding="utf-8")
+    default = cred._vault_path()
+    assert not default.exists()
+    assert cred.migrate_legacy_vault("legacy-team") is True
+    assert default.exists() and not legacy.exists()
+    # 이전 후 0600 재단언(_write_vault 와 동일 보장).
+    assert stat.S_IMODE(default.stat().st_mode) == 0o600
+    assert cred.load("anything", cred.SCOPE_PERSONAL, "linear") == tok
+    # 재실행 멱등 — 이미 옮겼으니 False, 토큰 보존.
+    assert cred.migrate_legacy_vault("legacy-team") is False
+    assert cred.load("anything", cred.SCOPE_PERSONAL, "linear") == tok
+
+
+def test_migrate_legacy_vault_skips_symlink(tmp_path):
+    """레거시가 symlink 면 이전하지 않는다 — default.json 이 symlink 로 교체돼
+    O_NOFOLLOW 금고가 무음 불능되는 사고를 막는다."""
+    tok = _sentinel()
+    real = tmp_path / "real_legacy.json"
+    real.write_text(json.dumps({cred.SCOPE_PERSONAL: {"linear": tok}}),
+                    encoding="utf-8")
+    legacy = cred.credentials_dir() / "symteam.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(str(real), str(legacy))
+    assert cred.migrate_legacy_vault("symteam") is False
+    default = cred._vault_path()
+    # default.json 이 symlink 로 바뀌지 않았다(생성 안 됐거나, 됐어도 symlink 아님).
+    assert not default.exists() or not default.is_symlink()
+    # 금고는 정상(빈 상태)으로 동작 — symlink 추종으로 금고 밖 토큰을 읽지 않는다.
+    assert cred.load("x", cred.SCOPE_PERSONAL, "linear") is None
+
+
+def test_migrate_legacy_vault_noop_when_default_exists():
+    """default.json 이 이미 있으면 레거시가 있어도 덮어쓰지 않는다(토큰 유실 방지)."""
+    keep = _sentinel()
+    cred.store("x", cred.SCOPE_PERSONAL, "linear", keep)  # default.json 생성
+    legacy = cred.credentials_dir() / "old.json"
+    legacy.write_text(json.dumps({cred.SCOPE_PERSONAL: {"linear": "OTHER"}}),
+                      encoding="utf-8")
+    assert cred.migrate_legacy_vault("old") is False
+    assert cred.load("x", cred.SCOPE_PERSONAL, "linear") == keep  # 안 덮어씀
 
 
 # ─────────────────────────── 3. 토큰 누출 0 실증 ───────────────────────────
@@ -176,17 +243,21 @@ def test_token_never_in_exception_messages():
         cred.store(TEAM, "nonscope", "k", tok)
     _assert_no_sentinel(str(ei.value) + repr(ei.value), tok, "예외(scope)")
 
-    # 잘못된 team 식별자.
-    with pytest.raises(ValueError) as ei:
-        cred.store("../evil", cred.SCOPE_TEAM, "k", tok)
-    _assert_no_sentinel(str(ei.value) + repr(ei.value), tok, "예외(team)")
+    # team 식별자는 더 이상 경로 구성요소가 아니다(단일 금고, 2026-06-21) → 검증·거부 없음.
+    # "../evil" 같은 값도 파일명에 안 쓰여 무해(traversal 위험 0). 예외 없이 통과하고,
+    # 그 경로에서도 토큰 누출 0 만 유지하면 된다(이 테스트의 본래 목적).
+    out2, err2 = io.StringIO(), io.StringIO()
+    with redirect_stdout(out2), redirect_stderr(err2):
+        cred.store("../evil", cred.SCOPE_TEAM, "k", tok)  # 예외 없이 통과
+        cred.delete("../evil", cred.SCOPE_TEAM, "k")      # 정리
+    _assert_no_sentinel(out2.getvalue() + err2.getvalue(), tok, "team 무검증 경로")
 
 
 def test_token_never_in_corrupt_file_exception(monkeypatch):
     """금고 파일이 파손돼도(평문 토큰 잔존 가능) 예외/출력에 내용이 안 샌다 — 빈 금고 취급."""
     tok = _sentinel()
     cred.store(TEAM, cred.SCOPE_PERSONAL, "k", tok)
-    path = cred.credentials_dir() / f"{TEAM}.json"
+    path = cred._vault_path(TEAM)  # 단일 금고(default.json) — 팀명 무관
     # 파일을 깨뜨리되 토큰 평문이 남아있게(파손 JSON).
     path.write_text('{ broken json with ' + tok + ' inside', encoding="utf-8")
     out, err = io.StringIO(), io.StringIO()
@@ -239,7 +310,7 @@ def test_team_vs_personal_scope_isolation():
 def test_scopes_coexist_in_same_file():
     cred.store(TEAM, cred.SCOPE_TEAM, "slack", "t1")
     cred.store(TEAM, cred.SCOPE_PERSONAL, "linear", "p1")
-    path = cred.credentials_dir() / f"{TEAM}.json"
+    path = cred._vault_path(TEAM)  # 단일 금고(default.json) — 팀명 무관
     data = json.loads(path.read_text(encoding="utf-8"))
     assert set(data.keys()) == {cred.SCOPE_TEAM, cred.SCOPE_PERSONAL}
     assert data[cred.SCOPE_TEAM] == {"slack": "t1"}
@@ -251,7 +322,7 @@ def test_scopes_coexist_in_same_file():
 def test_writes_under_isolated_xdg_not_real_host():
     """저장 파일이 conftest 가 격리한 XDG_DATA_HOME 아래에만 생기는지 실증."""
     cred.store(TEAM, cred.SCOPE_PERSONAL, "linear", _sentinel())
-    path = cred.credentials_dir() / f"{TEAM}.json"
+    path = cred._vault_path(TEAM)  # 단일 금고(default.json) — 팀명 무관
     assert path.exists()
     xdg = Path(os.environ["XDG_DATA_HOME"])
     # 격리 경로 하위여야 하고, 실 HOME credentials 경로가 아니어야 한다.
