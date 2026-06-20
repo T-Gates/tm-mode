@@ -125,12 +125,39 @@ class Adapter(BaseAdapter):
             timeout_s = entry.get("timeout") or None
             toml_entries.append((event, matcher, command, timeout_s))
 
-        block = self._render_block(toml_entries)
+        block = self._render_block(toml_entries, mode=mode)
         changed = self._write_block(block)
         if changed:
             changes.append(f"[sync] Codex 훅 {len(toml_entries)}개 등록")
 
+        # warn 도배 방지: 같은 이벤트 미지원으로 발생한 warn 들을 묶어 1줄 요약 출력.
+        # 형식 "[warn] {script}: {agent} 미지원(이벤트 {event})..." 을 파싱해 집계.
+        # 다른 패턴(MCP 별칭 미보장, 매처 표현 불가)은 그대로 출력(드문 케이스, 도배 아님).
+        import re as _re
+        _unsupported_pat = _re.compile(
+            r"^\[warn\] (.+?): .+ 미지원\(이벤트 ([^)]+)\)"
+        )
+        grouped: dict = {}   # (script, event) → [warn_msg, ...]
+        other_warns: list = []
         for w in warnings:
+            m = _unsupported_pat.match(w)
+            if m:
+                key = (m.group(1), m.group(2))
+                grouped.setdefault(key, []).append(w)
+            else:
+                other_warns.append(w)
+        # 묶인 warn 출력: N개면 1줄 요약, 1개면 그대로
+        agent_name = self.events.get("agent", "")
+        for (script, event), msgs in grouped.items():
+            n = len(msgs)
+            if n == 1:
+                print(msgs[0])
+            else:
+                # block 강제 상실이 하나라도 있으면 표기
+                has_block = any("block 강제 상실" in msg for msg in msgs)
+                extra = " — block 강제 비활성" if has_block else ""
+                print(f"[warn] {script}: {agent_name} {event} 미지원 {n}개{extra} → 비활성")
+        for w in other_warns:
             print(w)
         for i in infos:
             print(i)
@@ -138,7 +165,19 @@ class Adapter(BaseAdapter):
             changes.append("[ok] 변경 없음")
         return changes
 
-    def _render_block(self, entries: list) -> str:
+    def _get_status_message(self) -> str:
+        """Codex hook statusMessage 문자열 — '[<팀명>] 팀모드 ON'.
+
+        팀명은 team.config.json team.name 에서 동적 생성(하드코딩 금지).
+        """
+        return f"[{self._get_team_name()}] 팀모드 ON"
+
+    def _render_block(self, entries: list, mode: Optional[str] = None) -> str:
+        """teammode hooks TOML 블록을 렌더링한다.
+
+        statusMessage는 mode=="on" 일 때만 삽입한다.
+        spec(internals.md §2.7): off는 mode없는 base entry 유지 — statusMessage 없음.
+        """
         lines = [BLOCK_START, ""]
         for event, matcher, command, timeout_s in entries:
             lines.append(f"[[hooks.{event}]]")
@@ -151,6 +190,11 @@ class Adapter(BaseAdapter):
             lines.append(f"command = {self._toml_str(command)}")
             if timeout_s is not None:
                 lines.append(f"timeout = {timeout_s}")
+            # statusMessage: mode=="on" 일 때만 삽입(팀명 동적 생성, 하드코딩 금지).
+            # off 경로에서는 base entry에 statusMessage 없음 (spec §2.7).
+            if mode == "on":
+                status_msg = self._get_status_message()
+                lines.append(f"statusMessage = {self._toml_str(status_msg)}")
             lines.append("")
         lines.append(BLOCK_END)
         return "\n".join(lines)

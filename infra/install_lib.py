@@ -438,6 +438,12 @@ _INDEX_MD = """\
 | `team/decisions/archive/` | 과거 결정 |
 | `team/meeting/summary/` | 회의록 요약본 |
 | `team/meeting/raw/` | 회의 원본 (STT·텍스트) |
+| `team/ground-rules.md` | 팀 운영 방식·작업 리듬·소통 규칙 |
+| `team/code-conventions.md` | 코드·커밋·PR 컨벤션 |
+| `product/brand/philosophy.md` | 브랜드 철학·핵심 고객·차별화 |
+| `product/tech/stack.md` | 기술 스택·아키텍처·제약 |
+| `product/tech/features.md` | 피쳐 목록·MVP·로드맵 |
+| `product/design/guide.md` | 디자인 가이드·UI 원칙 |
 """
 
 _MEMBERS_HEADER = """\
@@ -598,6 +604,14 @@ def scaffold_memory(team_root: Path, *, member_name: str, role: str,
     _write_if_absent(team_root / "memory" / "INDEX.md", _INDEX_MD)
     _write_if_absent(team_root / "memory" / "team" / "decisions" / "current.md",
                      "# 활성 결정사항\n")
+
+    # preset scaffold 파일 복사 (infra/scaffolds/memory/ → memory/) — 멱등
+    _scaffolds = Path(__file__).resolve().parent / "scaffolds" / "memory"
+    if _scaffolds.is_dir():
+        for _src in _scaffolds.rglob("*"):
+            if _src.is_file():
+                _dst = team_root / "memory" / _src.relative_to(_scaffolds)
+                _write_if_absent(_dst, _src.read_text(encoding="utf-8"))
 
     # 도입자만 config 작성 (§5-1). 팀원은 읽기만(§6-1) — 무수정.
     if role == "introducer":

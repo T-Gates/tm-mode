@@ -79,18 +79,31 @@ def _to_slash(s: str) -> str:
 
 
 def _quote_arg(s: str) -> str:
-    """셸 명령 토큰 안전 인용 — 공백/특수문자 있으면 따옴표(윈도우 경로 대비).
+    """셸 명령 토큰 안전 인용 — POSIX single-quote escape (Git Bash / bash 안전).
 
-    이미 따옴표로 감싼 토큰은 그대로. 단순 토큰(공백·따옴표 없음)은 인용 안 함
-    (기존 'python3' 동작·테스트 보존).
+    double-quote(`"$foo"`)는 bash에서 `$`·backtick이 확장돼 경로가 변조될 수 있다.
+    Git Bash(윈도우 Claude Code 실행 환경) + Linux/macOS bash 모두 POSIX
+    single-quote를 지원하므로 single-quote 방식을 사용한다:
+      - 특수문자(공백·$·backtick·! 등) 포함 토큰 → 'token' (확장 없음)
+      - 토큰 안에 ' 자체가 있으면 POSIX 이스케이프: foo'bar → 'foo'"'"'bar'
+      - 단순 토큰(공백·특수문자 없음)은 인용 안 함 (기존 동작·테스트 보존)
+      - 빈 문자열 → ''
+
+    NOTE: PowerShell-only 윈도우(Git Bash 없음)는 미지원 — statusLine 자동설치는
+    Git Bash 전제다. PowerShell call operator(& "path") 분기는 BACKLOG 참조.
     """
     if not s:
-        return '""'
-    if s[0] in ('"', "'") and s[-1] == s[0]:
-        return s  # 이미 인용됨
-    if any(c in s for c in ' \t"'):
-        return '"' + s.replace('"', '\\"') + '"'
-    return s
+        return "''"
+    # 이미 single-quote로 감싼 토큰은 그대로
+    if s[0] == "'" and s[-1] == "'":
+        return s
+    # 특수문자가 없는 단순 토큰은 인용 안 함
+    _SPECIAL = set(' \t"\'$`!\\')
+    if not any(c in _SPECIAL for c in s):
+        return s
+    # POSIX single-quote escape: ' → '"'"'
+    escaped = s.replace("'", "'\"'\"'")
+    return "'" + escaped + "'"
 
 
 class Adapter:
@@ -646,6 +659,11 @@ class Adapter:
             else:
                 del hooks[event]
 
+        # ── statusLine 관리 (settings.json "statusLine" 키) ──
+        # 개인 statusLine 없음 → 단독설치. 있음(teammode 아닌 것) → 무접촉 + 안내.
+        # 이미 teammode 설치됨 → 멱등 skip. off → _teammode_managed이면 제거.
+        changes += self._sync_status_line(settings, mode, warnings)
+
         changed = self._write_settings(settings, original_text)
         for w in warnings:
             print(w)
@@ -653,6 +671,109 @@ class Adapter:
             print(i)
         if not changed and not warnings and not infos:
             changes.append("[ok] 변경 없음")
+        return changes
+
+    def _get_team_name(self) -> str:
+        """team.config.json 의 team.name 을 읽어 반환. 파싱 실패 시 팀루트 디렉토리명 폴백.
+
+        팀명 하드코딩 금지(스펙 제약) — team.config.json 에서 동적 생성.
+        파일 부재 / 파싱 실패 시 팀루트 디렉토리명을 폴백으로 사용한다.
+        """
+        fallback = self.team_root.name  # 팀루트 디렉토리명 폴백
+        if self.config_path.is_file():
+            try:
+                cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
+                name = cfg.get("team", {}).get("name") if isinstance(cfg, dict) else None
+                if name and isinstance(name, str):
+                    return name
+            except (ValueError, OSError, AttributeError):
+                pass
+        return fallback
+
+    def _build_status_line_entry(self) -> dict:
+        """teammode 소유 statusLine 항목 생성.
+
+        sys.executable + teammode_statusline.py 절대경로로 command 구성.
+        크로스OS 패턴(기존 훅 명령과 동일): sys.executable 절대경로 사용,
+        Windows bash escape 방지를 위해 slash 경로 정규화(_to_slash 사용).
+        개인 bash statusLine과의 셸 미스매치를 피하기 위해
+        subprocess 재실행 없는 단독 Python 스크립트 실행 방식을 사용한다.
+
+        NOTE(플랫폼 지원 범위): statusLine 자동설치는 **Git Bash 전제**.
+        PowerShell-only 윈도우(Git Bash 미설치)에서는 quoted executable이
+        call operator(`&`) 없이 실행되지 않아 동작하지 않는다.
+        후속 대응은 BACKLOG의 "statusLine PowerShell call operator 셸분기" 참조.
+        """
+        script_path = self.agent_dir / "teammode_statusline.py"
+        python = _to_slash(str(self.python))
+        script = _to_slash(str(script_path))
+        # 공백 포함 경로 따옴표 처리
+        command = f"{_quote_arg(python)} {_quote_arg(script)}"
+        return {
+            "type": "command",
+            "command": command,
+            "_teammode_managed": True,
+        }
+
+    def _is_team_command(self, command: str) -> bool:
+        """command 문자열이 teammode_statusline.py를 가리키는지 판정."""
+        return "teammode_statusline.py" in _to_slash(command)
+
+    def _sync_status_line(self, settings: dict, mode: Optional[str],
+                          warnings: list) -> list:
+        """settings dict 의 statusLine 키를 mode 에 맞게 동기화. 변경 로그 반환.
+
+        | 개인 statusLine 상태                         | --on 동작                                    | --off 동작                                |
+        |---------------------------------------------|----------------------------------------------|-------------------------------------------|
+        | 없음                                        | 단독설치 (_teammode_managed)                 | no-op                                     |
+        | 있음(teammode 아닌 것)                       | 건드리지 않음 + 안내 메시지                  | no-op                                     |
+        | managed + command가 현재 entry와 동일        | skip(멱등)                                   | teammode 명령 가리키면 제거               |
+        | managed + command가 stale(다른 경로)          | 갱신(stale 수정)                             | teammode 명령 가리키면 제거               |
+        | managed marker True + 외부 command           | 갱신(현재 올바른 경로로)                     | 경고+보존 (외부 명령 삭제 금지)           |
+
+        NOTE: statusLine 자동설치는 Git Bash 전제(PowerShell-only 윈도우 미지원).
+        BACKLOG "statusLine PowerShell call operator 셸분기" 참조.
+        """
+        changes = []
+        existing_sl = settings.get("statusLine")
+
+        if mode == "on":
+            if existing_sl is None:
+                # 없음 → 단독설치
+                settings["statusLine"] = self._build_status_line_entry()
+                changes.append("[statusline] teammode statusLine 설치")
+            elif isinstance(existing_sl, dict) and existing_sl.get("_teammode_managed") is True:
+                # managed 마커 있음 → command가 현재 올바른 entry와 다르면 갱신(stale 수정)
+                wanted = self._build_status_line_entry()
+                if existing_sl.get("command") != wanted["command"]:
+                    settings["statusLine"] = wanted
+                    changes.append("[statusline] teammode statusLine 갱신(stale 수정)")
+                # else: 동일 → 멱등 skip
+            else:
+                # 개인 statusLine 있음 → 무접촉 + 정직한 안내
+                # (BACKLOG "왜+다음" 원칙 — 개인 bash statusLine 블록삽입 자동화는 후속 BACKLOG)
+                warnings.append(
+                    "[info] 개인 statusLine 감지 — 자동연동 BACKLOG. "
+                    "수동 연동: statusLine.command 에 팀모드 표시 스크립트를 추가하거나 "
+                    "기존 스크립트를 유지하세요 (자동삽입은 후속 릴리스 예정)."
+                )
+        else:
+            # off (또는 None)
+            if isinstance(existing_sl, dict) and existing_sl.get("_teammode_managed") is True:
+                cmd = existing_sl.get("command", "")
+                if self._is_team_command(cmd):
+                    # teammode_statusline.py를 가리키는 managed entry → 제거
+                    del settings["statusLine"]
+                    changes.append("[statusline] teammode statusLine 제거")
+                else:
+                    # marker=True인데 외부 command → 삭제 금지, 경고+보존
+                    warnings.append(
+                        "[warn] statusLine: _teammode_managed=True 이지만 command가 "
+                        "teammode_statusline.py 가 아닌 외부 경로입니다 — 삭제하지 않고 보존합니다. "
+                        f"command={cmd!r}"
+                    )
+            # 개인 statusLine(managed 아닌 것)이면 no-op (무접촉)
+
         return changes
 
     def uninstall(self) -> list:
@@ -809,14 +930,14 @@ class Adapter:
 
         고아 청소: 이 계층(layer)이 관리하는 소유 스킬만 대상. 다른 계층 스킬은 무접촉.
         """
-        changes = []
+        raw_changes = []
         sources = self._skill_sources(layer=layer)
         wanted_names = {src.name for src in sources}
         for src in sources:
             target = self.skills_dir / src.name
             msg = self._link_one_skill(src, target, layer=layer)
             if msg:
-                changes.append(msg)
+                raw_changes.append(msg)
         # 정리: 이 계층이 소유하지만 소스에서 사라진 스킬만 제거(계층 한정 고아청소).
         if self.skills_dir.is_dir():
             for child in sorted(self.skills_dir.iterdir()):
@@ -824,9 +945,22 @@ class Adapter:
                     continue
                 if self._is_layer_skill(child, layer):
                     self._remove_skill(child)
-                    changes.append(f"[remove-skill] {child.name}")
-        if not changes:
-            changes.append("[ok] 변경 없음")
+                    raw_changes.append(f"[remove-skill] {child.name}")
+        if not raw_changes:
+            return ["[ok] 변경 없음"]
+
+        # 심링크 생성 로그 요약: "[skill] X 심링크/정션/복사(폴백)" 줄을 1줄 요약으로 집계.
+        # 그 외([skip], [remove-skill] 등)는 그대로 유지.
+        agent_name = self.events.get("agent", "")
+        skill_msgs = [m for m in raw_changes if m.startswith("[skill]")]
+        other_msgs = [m for m in raw_changes if not m.startswith("[skill]")]
+        changes: list = list(other_msgs)
+        if skill_msgs:
+            n = len(skill_msgs)
+            # 복사(폴백)가 하나라도 있으면 요약에 복사 표기
+            has_copy = any("복사" in m for m in skill_msgs)
+            suffix = " 심링크/복사(폴백)" if has_copy else " 심링크"
+            changes.append(f"[skill] {n}개{suffix} ({agent_name})")
         return changes
 
     def _remove_skill(self, target: Path):

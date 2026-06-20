@@ -94,7 +94,7 @@ _GUARDED = [
 # install-skills 가 남기는 teammode 소유 스킬명(infra/skills/base/<name>). 실 스킬 디렉토리에
 # 이 이름의 심링크/복사본이 새로 등장하면 = install-skills 가 실호스트를 오염시킨 것.
 # 사용자/딴 플러그인의 무관 스킬(다른 이름)은 footprint 에 영향 없어 무발화(플레이크 제거).
-_TEAMMODE_SKILL_NAMES = {"tm-onboard", "tm-connect", "tm-reset", "tm", "tm-manage-utils",
+_TEAMMODE_SKILL_NAMES = {"tm-onboard", "tm-connect", "tm",
                          "tm-context", "tm-knowledge",
                          "tm-manage-knowledge", "tm-customize"}  # P1: core 스킬 — on 시 심링크, 실호스트 누수 가드
 
