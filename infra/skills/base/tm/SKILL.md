@@ -37,7 +37,10 @@ description: Use when the user wants to enable or disable team mode. Triggers on
      `.teammode-active` 마커 생성, upstream fetch + NOTICE 비교 알림까지 한다.
    - NOTICE 알림: upstream `NOTICE.md`가 로컬과 다르면 `[공지] teammode 최신 업데이트: …
      — 받으려면 \`teammode update\`` 를 출력. 같으면 조용히 생략(매번 도배 방지).
-   - 스킬은 이 동사를 호출하고 출력을 그대로 사용자에게 보여준다.
+   - ⚠️ **배너(ASCII 아트)는 코드블록(\`\`\`)으로 감싸 한 글자도 바꾸지 말고 그대로 출력한다.**
+     엔진 stdout의 ASCII 아트 부분을 떼어 ` ``` ` 안에 raw 그대로 넣어라 — **축약·요약·재구성·
+     "배너 생략" 절대 금지.** (코드블록 없이 옮기면 ASCII 줄이 깨지고 축약된다 — teammode 배너가
+     안 보이던 원인. acme ON 스킬이 배너를 코드블록으로 직접 그리던 방식과 동일하게.)
 
 3. **맥락 주입**: `python infra/teammode.py context --root . --json`
    - JSON 결과를 파싱해 아래 웰컴 포맷으로 출력한다.
