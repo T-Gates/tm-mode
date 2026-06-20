@@ -265,3 +265,26 @@ def test_uninstall_real_host_gate(tmp_path, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "--settings" in err or "--yes" in err
+
+
+# ── #5: _dispatch 부트스트랩 인자 필터 (--root/--install 가 어댑터로 새지 않음) ──
+
+def _install_mod():
+    return runpy.run_path(str(INFRA / "install.py"), run_name="__dispatch_test__")
+
+
+def test_strip_dispatch_only_args_removes_root_value_flag():
+    """#5: --root <값> 은 value-flag 라 플래그+값 둘 다 제거 — 어댑터로 안 샌다."""
+    strip = _install_mod()["_strip_dispatch_only_args"]
+    assert strip(["uninstall", "--root", ".", "--settings", "x"]) == \
+        ["uninstall", "--settings", "x"]
+    # codex: --config 는 보존, --root/--install 만 제거
+    assert strip(["--config", "y", "--install", "uninstall", "--root", "/t"]) == \
+        ["--config", "y", "uninstall"]
+
+
+def test_strip_dispatch_only_args_keeps_adapter_args():
+    """어댑터가 아는 인자(--settings/--config/서브커맨드)는 보존."""
+    strip = _install_mod()["_strip_dispatch_only_args"]
+    assert strip(["--settings", "s", "sync", "--on"]) == \
+        ["--settings", "s", "sync", "--on"]

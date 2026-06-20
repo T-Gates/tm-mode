@@ -47,6 +47,19 @@ def _banner_file(team_root: Path) -> Path:
     return team_root / "memory" / "banner.txt"
 
 
+def default_banner_content(team_root: Path, team_name: str) -> str:
+    """기본 배너 content — install_lib.write_banner 와 _personality_customized 공용 단일소스.
+
+    ansi_shadow 아트 + 팀색 안내 한 줄. 아트 부재 시 팀명 기반 fallback.
+    이 함수가 단일소스라 '기본 배너인가' 판정과 '기본 배너 기록'이 어긋나지 않는다(#2).
+    """
+    ansi_shadow = team_root / "infra" / "banners" / "ansi_shadow.txt"
+    if ansi_shadow.is_file():
+        art = ansi_shadow.read_text(encoding="utf-8").rstrip("\n")
+        return art + "\n💡 팀색 입히기: tm-customize\n"
+    return f"=== {team_name} team mode ON ===\n"
+
+
 def _adapter(settings_path=None, skills_dir=None):
     import runpy
     mod = runpy.run_path(str(INFRA / "agents" / "claude" / "adapter.py"),
@@ -110,37 +123,43 @@ def _personality_customized(team_root: Path) -> bool:
     """팀 personality 가 기본값과 다른지 결정적으로 판정한다.
 
     판정 기준 (OR 조건):
-    1. memory/banner.txt 파일이 존재한다 (배너 커스텀됨).
+    1. memory/banner.txt 내용이 기본 배너(default_banner_content)와 다르다 (배너 커스텀됨).
+       ⚠️ '존재'가 아니라 '내용 비교' — install 이 fresh 팀에도 기본 banner.txt 를 깔기
+       때문에, 존재만으로 판정하면 미커스텀 팀이 전부 커스텀으로 오판된다(#2).
     2. team.config.json 의 greeting 이 기본 공식 `f"{name} 팀모드 ON"` 과 다르다.
     3. team.config.json 의 farewell 이 기본 공식 `f"수고하셨습니다 — {name}"` 과 다르다.
 
     config 부재·파싱 실패 → False (기본값으로 간주). 판정은 비치명 — 어떤 예외도 False.
-    install_lib.py:534 의 기본 공식과 동기화해야 한다.
+    기본 배너·greeting/farewell 공식은 install_lib.write_banner / default_banner_content 와 동기화.
     """
     try:
-        banner_file = _banner_file(team_root)
-        if banner_file.is_file():
-            return True
+        # config 먼저 — name 은 배너 fallback 비교·greeting/farewell 공식에 공용으로 쓰인다.
         cfg_path = team_root / "team.config.json"
-        if not cfg_path.is_file():
-            return False
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg = (json.loads(cfg_path.read_text(encoding="utf-8"))
+               if cfg_path.is_file() else {})
         if not isinstance(cfg, dict):
-            return False
+            cfg = {}
         team = cfg.get("team")
         if not isinstance(team, dict):
-            return False
+            team = {}
         name = team.get("name")
-        if not isinstance(name, str) or not name:
-            return False
-        default_greeting = f"{name} 팀모드 ON"
-        default_farewell = f"수고하셨습니다 — {name}"
-        greeting = team.get("greeting")
-        farewell = team.get("farewell")
-        if isinstance(greeting, str) and greeting != default_greeting:
-            return True
-        if isinstance(farewell, str) and farewell != default_farewell:
-            return True
+        name = name if isinstance(name, str) and name else None
+
+        # 1. banner: 내용이 기본과 다르면 커스텀 (존재만으로는 판정 안 함)
+        banner_file = _banner_file(team_root)
+        if banner_file.is_file():
+            actual = banner_file.read_text(encoding="utf-8")
+            if actual != default_banner_content(team_root, name or ""):
+                return True
+
+        # 2,3. greeting/farewell — name 있을 때만 기본 공식과 비교
+        if name:
+            greeting = team.get("greeting")
+            farewell = team.get("farewell")
+            if isinstance(greeting, str) and greeting != f"{name} 팀모드 ON":
+                return True
+            if isinstance(farewell, str) and farewell != f"수고하셨습니다 — {name}":
+                return True
         return False
     except Exception:  # noqa: BLE001 — personality 판정은 context 동사를 막지 않는다
         return False
@@ -472,9 +491,16 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry)
     else:
-        # 첫 기록: frontmatter + 첫 항목. summary 는 text 첫 줄(100자)로 초기화.
-        first_line = text.strip().splitlines()[0] if text.strip() else ""
-        summary = first_line[:100]
+        # 첫 기록: frontmatter + 첫 항목. summary 는 첫 '의미있는' 줄(100자)로 초기화.
+        # 마크다운 헤더(`## 작업 내역` 등)·빈 줄은 건너뛴다 — 헤더가 summary 로 박히면
+        # 웰컴·맥락주입에 무의미한 헤더만 보인다(#3). 리스트 마커(`- `)는 본문이라 채택.
+        summary = ""
+        for _line in text.strip().splitlines():
+            _s = _line.strip()
+            if not _s or _s.startswith("#"):
+                continue
+            summary = _s[:100]
+            break
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(_frontmatter(author, date_str, summary))
             f.write(entry)

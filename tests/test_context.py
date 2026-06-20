@@ -266,7 +266,7 @@ def test_context_personality_customized_custom_farewell_is_true(tmp_path):
 
 
 def test_context_personality_customized_banner_txt_is_true(tmp_path):
-    """banner.txt 존재하면 greeting/farewell 무관하게 personality_customized=true."""
+    """banner.txt 내용이 기본 배너와 다르면(커스텀) personality_customized=true."""
     _write_config(tmp_path, "MyTeam")
     banner_dir = tmp_path / "memory"
     banner_dir.mkdir(parents=True, exist_ok=True)
@@ -275,6 +275,30 @@ def test_context_personality_customized_banner_txt_is_true(tmp_path):
     assert r.returncode == 0
     data = json.loads(r.stdout)
     assert data["personality_customized"] is True
+
+
+def test_context_personality_customized_default_banner_is_false(tmp_path):
+    """기본 배너 그대로(install 이 fresh 팀에 깐 것)면 미커스텀=false (#2 핵심).
+
+    '존재'가 아니라 '내용'으로 판정 — fresh 팀도 banner.txt 가 깔리므로 존재만으로
+    true 면 모든 새 팀이 커스텀으로 오판된다.
+    """
+    import shutil
+    _write_config(tmp_path, "MyTeam")
+    banners = tmp_path / "infra" / "banners"
+    banners.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / "infra" / "banners" / "ansi_shadow.txt",
+                banners / "ansi_shadow.txt")
+    mem = tmp_path / "memory"
+    mem.mkdir(parents=True, exist_ok=True)
+    # default_banner_content 와 동일하게 기록 (write_banner 가 fresh 에 깐 것 재현)
+    art = (banners / "ansi_shadow.txt").read_text(encoding="utf-8").rstrip("\n")
+    (mem / "banner.txt").write_text(
+        art + "\n💡 팀색 입히기: tm-customize\n", encoding="utf-8")
+    r = _run(tmp_path, "context", "--json")
+    assert r.returncode == 0
+    data = json.loads(r.stdout)
+    assert data["personality_customized"] is False
 
 
 def test_context_personality_customized_no_config_is_false(tmp_path):
