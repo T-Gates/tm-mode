@@ -142,6 +142,9 @@ def _isolate_pull_state(tmp_path_factory, monkeypatch):
     # 실 `~/.local/share/teammode/credentials` 로 새지 않게 격리 경로를 주입(subprocess 상속).
     data_home = tmp_path_factory.mktemp("xdg-data")
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+    # 개발자 셸의 TEAMMODE_MEMBER 가 hook subprocess 로 새면 폴백/멤버격리 테스트가
+    # 오염된다(테스트는 격리 환경 가정) — 기본 제거. 멤버 지정 테스트는 자체 env 로 덮는다.
+    monkeypatch.delenv("TEAMMODE_MEMBER", raising=False)
 
 
 def _claude_json_footprint(raw: bytes):
