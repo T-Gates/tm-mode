@@ -80,12 +80,13 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 0. **⚠️ 확인**: "팀 모드를 끌까요?" 사용자에게 한번 더 확인받은 후 진행. 확인 없이 끄지 않는다.
 
 1. **세션로그 기록**: 이번 세션에서 한 작업을 묻는다(또는 사용자가 미리 말했으면 그대로).
-   ```bash
-   python infra/teammode.py log --root . --author <이름> --text "<내용>"
-   ```
-   - `<이름>`: 사용자 확인 후 확정한 영문 이름.
-   - `<내용>`: 세션 작업 내역 요약 (아래 "세션 로그 형식" 참고).
-   - 이름 확인이 안 됐으면 먼저 묻는다(`git config user.name`을 제안값으로).
+   - 파일: `memory/team/sessions/<이름>/<오늘(06시컷)>.md` (00:00~05:59면 전날 파일).
+   - **Read(끝부분 offset)+Edit 로 직접 쓴다** (`log` 동사 쓰지 말 것 — deprecated, 컨텍스트 절약·충실도):
+     - 파일이 있으면 `Read("<경로>", offset=max(1, 줄수-20), limit=25)` 로 끝 20줄만 읽고 `Edit` 로 이어붙인다. summary(frontmatter) 갱신이 필요하면 `Read("<경로>", offset=1, limit=6)` 도.
+     - 파일이 없으면 frontmatter(author/date/summary)+첫 항목을 `Write` 로 만든다.
+     - 발화 시 리마인드 훅이 정확한 offset 명령을 컨텍스트에 깔아준다 — 그대로 따르면 된다.
+   - `<이름>`: 사용자 확인 후 확정한 영문 이름. 확인 안 됐으면 먼저 묻는다(`git config user.name` 제안값).
+   - 내용: 세션 작업 내역 요약 (아래 "세션 로그 형식" 참고).
 
 2. **커밋**: 세션로그(memory/ 디렉터리만)를 팀 레포에 커밋한다.
    ```bash
@@ -107,7 +108,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
      ```
    - 세션로그 파일이 없거나 "작업 내역" 섹션이 비어 있으면 이 단계를 생략한다.
 
-## 세션 로그 형식 (--text 에 들어갈 내용)
+## 세션 로그 형식 (본문에 넣을 내용)
 
 ```
 ## 작업 내역
@@ -129,7 +130,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 | ON — 최신화 | `teammode.py pull --root .` | 실패=비치명 |
 | ON — 배선·배너 | `teammode.py on --root . --install` | 배너·greeting·sync·마커 |
 | ON — 맥락 | `teammode.py context --root . --json` | 스킬이 파싱해 요약 |
-| OFF — 세션로그 | `teammode.py log --root . --author <이름> --text <내용>` | 하루 1파일 append |
+| OFF — 세션로그 | (스킬이 Read(끝 offset)+Edit 로 직접 기록) | `log` 동사 deprecated — 엔진 아님 |
 | OFF — 커밋 | `teammode.py commit --root . --paths "memory/" --message <메시지>` | memory/ 만 stage · push 절대 금지 |
 | OFF — 훅 해제 | `teammode.py off --root . --install` | sync=off·마커 삭제·펜스 배너·farewell |
 | OFF — 세션 요약 | (스킬이 세션로그 Read 후 LLM 요약) | 엔진 동사 아님 — 에이전트 단계 |

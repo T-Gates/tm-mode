@@ -103,17 +103,34 @@ def _load_team_config(root: str) -> dict:
         return {}
 
 
+def _valid_member_name(name: str) -> bool:
+    """멤버명이 경로·지시문에 안전한 식별자인지 — teammode._validate_author 와 동일 규칙.
+
+    멤버명은 _my_log_path 로 경로에 join 되고 _log_kit 로 Read("...") 지시문에
+    그대로 박힌다. team.config.json(레포 공유) 또는 TEAMMODE_MEMBER(env)에서 오므로
+    신뢰 경계 밖이다 — '/'·'\\'·'.'·'..'·절대경로·개행·따옴표·')' 등을 차단해
+    경로 traversal·컨텍스트 주입을 막는다(실패 시 폴백). Unicode 영숫자는 허용.
+    """
+    if not name or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name or os.path.isabs(name):
+        return False
+    if not name[0].isalnum():
+        return False
+    return all(c.isalnum() or c in "-_" for c in name)
+
+
 def _resolve_member(root: str) -> str | None:
     """멤버 이름 결정.
 
     1. env TEAMMODE_MEMBER (단일 소스 — install 이 settings.json 에 박음)
     2. fallback: team.config.json members 가 1명 → members[0]["name"]
        (단일멤버·env 미설정 전환기 호환)
-    3. 둘 다 불가 → None(폴백 신호)
+    3. 둘 다 불가(또는 이름이 안전 식별자가 아님) → None(폴백 신호)
     """
     # 1. env 단일 소스 (멀티멤버에서 "나"를 가르는 기준)
     env_name = os.environ.get("TEAMMODE_MEMBER", "").strip()
-    if env_name:
+    if env_name and _valid_member_name(env_name):
         return env_name
     # 2. fallback: config members 1명
     config = _load_team_config(root)
@@ -124,7 +141,7 @@ def _resolve_member(root: str) -> str | None:
     if len(valid) == 1:
         name = valid[0].get("name", "")
         name = name.strip() if isinstance(name, str) else ""
-        if name:
+        if name and _valid_member_name(name):
             return name
     return None
 
@@ -132,6 +149,35 @@ def _resolve_member(root: str) -> str | None:
 def _my_log_path(root: str, member: str, date_str: str) -> str:
     """내 세션로그 파일 경로: memory/team/sessions/<멤버>/<날짜>.md."""
     return os.path.join(root, "memory", "team", "sessions", member, f"{date_str}.md")
+
+
+def _count_lines(path: str) -> int:
+    """파일 줄 수. 없거나 못 읽으면 0(새 파일로 간주).
+
+    advisory 훅은 매 프롬프트 경로라 예외 전파 금지 — 깨진 UTF-8/바이너리
+    세션로그도 errors='replace' 로 줄 수만 세고 크래시하지 않는다.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
+def _log_kit(log_path: str) -> str:
+    """세션로그를 Read(끝 offset)+Edit 로 이어쓰는 구체 명령을 만든다.
+
+    파일이 있으면 끝 ~20줄만 읽는 offset 명령을, 없으면 새로 Write 안내를 준다.
+    훅이 정확한 offset 을 코드로 깔아줘 모델이 log 동사로 도망가지 못하게 한다.
+    """
+    n = _count_lines(log_path)
+    if n == 0:
+        return (f' 세션로그 파일이 아직 없습니다 — Read 없이 '
+                f'frontmatter(author/date/summary)+첫 항목을 Write("{log_path}", ...) 로 새로 만드세요.')
+    off = max(1, n - 20)
+    return (f' 이어쓰기: Read("{log_path}", offset={off}, limit=25) 로 끝부분만 읽고 Edit 로 추가. '
+            f'summary(frontmatter) 갱신이 필요하면 Read("{log_path}", offset=1, limit=6) 도. '
+            f'log 동사·전체 Read 금지 — 끝 20줄만.')
 
 
 def _root_tag(root: str) -> str:
@@ -249,14 +295,16 @@ def main() -> int:
                  f"({weekday}) {now.strftime('%H:%M')} KST")
 
     base_guide = (
-        " 세션 로그를 팀 루트의 memory/team/sessions/<이름>/<날짜>.md 에 기록하세요. "
-        "<이름>은 members.md의 영문 이름(OS 사용자명 아님), "
-        "<날짜>는 06시 컷 기준 YYYY-MM-DD(00:00~05:59면 전날, 06:00 이후면 오늘). "
-        "본인 세션로그는 가드 예외라 직접 수정·재구성·요약 갱신이 됩니다 "
-        "(append만이 아니라 — 진행에 따라 살아있는 문서로 관리하세요). "
-        "파일은 하루 하나(-late 등 분리 금지), frontmatter(author/date/summary) 필수. "
+        " 세션 로그를 팀 루트의 memory/team/sessions/<이름>/ 에 Read(끝부분 offset)+Edit 로 "
+        "직접 관리하세요(log 동사 쓰지 말 것 — 컨텍스트 절약·충실도). "
+        "본인 세션로그는 가드 예외라 append뿐 아니라 직접 수정·재구성·요약 갱신이 됩니다. "
+        "<이름>은 members.md의 영문 이름(OS 사용자명 아님). "
+        "파일은 하루 하나(YYYY-MM-DD.md, -late 등 분리 금지), "
+        "frontmatter(author/date/summary) 필수. "
+        "날짜는 06시 컷 — 위 시각이 00:00~05:59면 전날 파일, 06:00 이후면 오늘 파일. "
         "현재 작업 레포의 ./memory/ 에는 쓰지 마세요. "
         "한 일뿐 아니라 근거·접은 대안·막힌 점·다음 단계까지 한 흐름으로. "
+        "일상 추가는 끝 20줄만 Read, 큰 재구성·요약 갱신만 전체 Read. "
         "개인 내용 제외, 팀 작업만.")
 
     # 멤버 식별
@@ -268,6 +316,7 @@ def main() -> int:
         state_file = _state_path(agent, member=member, root=root)
         date_str = _log_date(now)
         log_path = _my_log_path(root, member, date_str)
+        log_kit = _log_kit(log_path)  # offset 명령(끝 20줄 Read+Edit)을 코드로 깔아준다
         mtime = _current_mtime(log_path)
         age = int(time.time() - mtime) if mtime > 0 else 9999
 
@@ -294,6 +343,8 @@ def main() -> int:
 
     else:
         # ── 폴백(degraded): 전역 mtime 기준 ──
+        # 멤버를 못 정해 경로를 특정할 수 없으므로 offset 키트는 비운다(base_guide 일반 안내만).
+        log_kit = ""
         state_file = _state_path(agent)
         age = _global_sessions_age(root)
 
@@ -322,7 +373,7 @@ def main() -> int:
         context = (
             f"{time_line}\n"
             f"⛔ 세션 로그 30분 이상 미갱신 ({count}번째 프롬프트째 세션로그 미작성). "
-            f"첫 행동으로{base_guide}"
+            f"첫 행동으로{base_guide}{log_kit}"
         )
         system_msg = f"⛔ 세션로그 미작성 — {count}번째 프롬프트째. 첫 행동으로 기록하세요"
         # 강발화 시각 기록 (멤버·폴백 둘 다 상태파일에 저장)
@@ -343,7 +394,7 @@ def main() -> int:
     elif weak_ok:
         context = (
             f"{time_line}\n"
-            f"{count}번째 프롬프트째 세션로그 미작성.{base_guide}"
+            f"{count}번째 프롬프트째 세션로그 미작성.{base_guide}{log_kit}"
         )
         system_msg = f"📝 세션로그 미작성 — {count}번째 프롬프트째"
 

@@ -72,7 +72,7 @@ def test_frontmatter_description_nonempty():
     "teammode.py on",
     "teammode.py off",
     "teammode.py pull",
-    "teammode.py log",
+    # "teammode.py log" — deprecated: 세션로그는 Read(끝 offset)+Edit 로 직접 기록(SKILL.md 안내 교체).
     "teammode.py commit",
     "teammode.py context",
     "--root",

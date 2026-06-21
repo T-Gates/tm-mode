@@ -508,6 +508,9 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
         print(f"[error] {err}", file=sys.stderr)
         return 2
 
+    print("[deprecated] log 동사 대신 세션로그를 Read(끝 offset)+Edit 로 직접 쓰세요 "
+          "(컨텍스트 절약·충실도). 이 동사는 하위호환으로만 유지됩니다.", file=sys.stderr)
+
     date_str = _workday.workday_str(now)
     sessions_dir = team_root / "memory" / "team" / "sessions" / author
     log_path = sessions_dir / f"{date_str}.md"
