@@ -36,6 +36,9 @@ def _run_hook(root: Path, tmp_dir: Path, agent: str = "claude-test",
         "TEAMMODE_HOME": str(root),
         "TMPDIR": str(tmp_dir),
     }
+    # 부모 셸의 TEAMMODE_MEMBER 가 새면 폴백/멤버격리 테스트가 오염된다 —
+    # 격리 실행이므로 제거하고, 멤버 지정은 extra_env 로만 받는다.
+    env.pop("TEAMMODE_MEMBER", None)
     if extra_env:
         env.update(extra_env)
     canonical = {"event": "UserPromptSubmit", "prompt": "hi", "agent": agent}

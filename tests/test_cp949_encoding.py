@@ -158,6 +158,9 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
     """
     # TMPDIR 을 제거해 폴백 경로 테스트
     monkeypatch.delenv("TMPDIR", raising=False)
+    # TEAMMODE_MEMBER 가 부모 env 로 새면 멤버별 상태파일 경로가 되므로, 폴백(agent 단위)
+    # 경로를 검증하려면 제거한다 (subprocess 는 {**os.environ} 를 상속하므로 부모에서 지운다).
+    monkeypatch.delenv("TEAMMODE_MEMBER", raising=False)
     # tempfile.gettempdir() 는 첫 호출값을 tempfile.tempdir 에 캐시한다.
     # delenv 는 env 만 지우고 캐시는 안 지우므로, 부모가 이미 TMPDIR 로 캐시했다면
     # 기대값이 오염된다 → 캐시를 무효화해 subprocess(hook) 와 동일 조건으로 맞춘다.
@@ -187,11 +190,12 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
     )
 
     assert proc.returncode == 0, f"hook crash: {proc.stderr}"
-    # 카운터 파일이 tempfile.gettempdir() 위치에 생성됐어야 한다
-    expected_counter = os.path.join(
-        tempfile.gettempdir(), "teammode-prompt-counter-claude-test")
-    assert os.path.isfile(expected_counter), (
-        f"카운터 파일이 {expected_counter} 에 생성되어야 한다")
+    # 상태(카운터) 파일이 tempfile.gettempdir() 위치에 생성됐어야 한다.
+    # 멤버 미특정 폴백 → _state_path(agent) = teammode-remind-state-<agent>.json
+    expected_state = os.path.join(
+        tempfile.gettempdir(), "teammode-remind-state-claude-test.json")
+    assert os.path.isfile(expected_state), (
+        f"상태 파일이 {expected_state} 에 생성되어야 한다")
 
 
 def test_counter_file_write_failure_is_silent(tmp_path, monkeypatch):
