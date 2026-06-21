@@ -394,23 +394,20 @@ def test_age_trigger_shows_count(tmp_path):
 
 # ── 설계 7: 출력은 평문 stdout (JSON 아님) ──
 
-def test_output_is_plaintext_not_json(tmp_path):
-    """발화 시 출력이 평문이고 JSON이 아니어야 한다."""
+def test_output_is_json_with_additional_context(tmp_path):
+    """발화 시 출력이 JSON(hookSpecificOutput.additionalContext + systemMessage)이어야 한다."""
     (tmp_path / ".teammode-active").write_text("")
     # team.config.json 없음 → 폴백 → 세션로그 없음 → 발화
     proc = _run_hook(tmp_path, tmp_path, "claude-plain")
     assert proc.returncode == 0
     if proc.stdout.strip():  # 발화 시
-        # JSON 파싱이 실패해야 한다
-        try:
-            json.loads(proc.stdout)
-            assert False, "출력이 JSON인데 평문이어야 한다"
-        except json.JSONDecodeError:
-            pass  # 평문 출력 확인
-        assert "hookSpecificOutput" not in proc.stdout
-        assert "[teammode]" in proc.stdout  # 평문 헤더 포함
+        obj = json.loads(proc.stdout)  # JSON 파싱이 성공해야 한다
+        hso = obj["hookSpecificOutput"]
+        assert hso["hookEventName"] == "UserPromptSubmit"
+        assert "[teammode]" in hso["additionalContext"]  # 안내 헤더 포함
+        assert obj.get("systemMessage")  # 사용자 표시용 한 줄
     else:
-        # 발화 안 했으면 최소한 "[teammode]" 없는 게 정상 — 빈 출력 허용
+        # 발화 안 했으면 빈 출력 허용
         pass
 
 
@@ -618,7 +615,7 @@ def test_log_date_after_6am_is_today():
 
 # ── (3) normalize 통합: stdout 비면 실패하도록 강화 ──
 
-def test_output_is_plaintext_with_fire_required(tmp_path):
+def test_output_present_when_fire_required(tmp_path):
     """발화 조건이 확실한 상태에서 stdout이 비면 실패."""
     (tmp_path / ".teammode-active").write_text("")
     _write_config(tmp_path, [{"name": "jane-doe"}])

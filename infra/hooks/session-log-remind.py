@@ -7,7 +7,7 @@
 정규 입력(stdin):
   { "event": "UserPromptSubmit", "prompt": "...", "agent": "claude", "raw": {...} }
 
-출력: 평문 stdout print — 시각(KST) + count + 세션로그 갱신 안내.
+출력: JSON stdout — additionalContext(상세 안내, 모델 컨텍스트용) + systemMessage(짧은 한 줄, 사용자 화면 표시용).
 30분 이상 미갱신 또는 5프롬프트마다 리마인드(스펙 01 §3.4 권장).
 
 멤버 식별(B-순위):
@@ -311,6 +311,7 @@ def main() -> int:
     # A 해결: strong_ok/weak_ok 를 독립 계산, strong throttle 중에도 elif(약발화)로 떨어진다.
     # B 해결: 멤버·폴백 모두 상태파일의 last_strong_remind 를 읽는다.
     context = None
+    system_msg = None
     now_ts = time.time()
     last_strong = state["last_strong_remind"]
 
@@ -323,6 +324,7 @@ def main() -> int:
             f"⛔ 세션 로그 30분 이상 미갱신 ({count}번째 프롬프트째 세션로그 미작성). "
             f"첫 행동으로{base_guide}"
         )
+        system_msg = f"⛔ 세션로그 미작성 — {count}번째 프롬프트째. 첫 행동으로 기록하세요"
         # 강발화 시각 기록 (멤버·폴백 둘 다 상태파일에 저장)
         if member is not None:
             _write_state(state_file, {
@@ -343,9 +345,16 @@ def main() -> int:
             f"{time_line}\n"
             f"{count}번째 프롬프트째 세션로그 미작성.{base_guide}"
         )
+        system_msg = f"📝 세션로그 미작성 — {count}번째 프롬프트째"
 
     if context:
-        print(context)
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": context,
+            },
+            "systemMessage": system_msg,
+        }, ensure_ascii=False))
     return 0
 
 
