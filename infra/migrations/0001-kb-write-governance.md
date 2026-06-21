@@ -38,7 +38,7 @@ PreToolUse 훅 스크립트.
 ```
 
 - `mode: "on"` — teammode 활성 시에만 동기화
-- `enforcement: "block"` — claude 강제, codex 폴백(events.json PreToolUse=null)
+- `enforcement: "block"` — Claude/Codex 모두 PreToolUse 차단 훅으로 강제.
 
 ### 변경: `infra/skills/core/tm-manage-knowledge/SKILL.md`
 
@@ -61,9 +61,12 @@ PreToolUse 훅 스크립트.
 | 에이전트 | 처리 |
 |---|---|
 | claude | Write/Edit 직접 편집 가드(PreToolUse block). Bash 등 우회는 현 범위 밖. |
-| codex | events.json PreToolUse=null → 훅 미등록, adapter가 "차단 강제 상실" [warn] 출력 |
+| codex | apply_patch/file_edit 직접 편집 가드(PreToolUse block). normalize가 실 hook stdin의 `tool_input.command` 또는 호환 후보 `tool_input.patch`/`tool_input.input`/top-level `input` 문자열 헤더를 `files[]`로 변환한다. Bash 등 우회는 현 범위 밖. |
 
-codex 강제는 codex hook 커버리지 안정화 후 별도 백로그.
+참고: 이 migration 초안 작성 당시에는 Codex PreToolUse 미지원으로 보았으나,
+2026-06-21 확인 후 Codex도 PreToolUse 등록 대상으로 갱신했다. 같은 날 격리
+`codex exec`로 실제 hook stdin을 캡처해 `tool_name=apply_patch`,
+`tool_input.command=<patch>` 형태를 확인했다.
 
 ## install 반영
 

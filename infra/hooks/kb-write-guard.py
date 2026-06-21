@@ -32,9 +32,9 @@ stdin 파싱 실패 → deny(보수적 차단).
 
 ── 크로스에이전트 ─────────────────────────────────────────────────────────────
 claude : PreToolUse block → Write/Edit 직접 편집 가드 강제.
-codex  : events.json 에서 PreToolUse=null → 이 훅이 **애초 등록되지 않는다**. 어댑터
-         sync 가 enforcement:block 의 "차단 강제 상실"을 [warn] 으로 표면화(무음 누락 0).
-         codex 는 이번 릴리스 폴백(경고만) — 커버리지 안정화 후 별도 백로그.
+codex  : PreToolUse hooks 지원 → apply_patch/file_edit 직접 편집 가드 강제.
+         normalize 가 apply_patch tool_input.command/tool_input.patch/tool_input.input
+         또는 top-level input 문자열의 파일 헤더를 정규 files[] 로 변환한다.
 
 ── .teammode-active 가드 ────────────────────────────────────────────────────────
 teammode 가 꺼진 일상 작업 중에는 차단하지 않는다(빌드 안전).

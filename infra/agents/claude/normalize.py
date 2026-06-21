@@ -88,6 +88,45 @@ def _reverse_action(events: dict, tool_name: str):
     return None
 
 
+def _strip_matching_quotes(path: str) -> str:
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in ("'", '"'):
+        return path[1:-1]
+    return path
+
+
+def _extract_apply_patch_files(tool_input: dict) -> list[str]:
+    """Codex apply_patch patch text에서 파일 헤더 경로를 모두 추출한다.
+
+    경로 수 정책은 여기서 판단하지 않는다. normalize는 추출한 경로를 모두
+    files[]로 넘기고, PreToolUse guard/auto-commit 같은 소비자가 각자 정책을 적용한다.
+    """
+    patch = None
+    for key in ("patch", "input", "command"):
+        value = tool_input.get(key)
+        if isinstance(value, str):
+            patch = value
+            break
+    if not patch:
+        return []
+
+    prefixes = (
+        "*** Add File: ",
+        "*** Update File: ",
+        "*** Delete File: ",
+        "*** Move to: ",
+    )
+    files: list[str] = []
+    for raw_line in patch.splitlines():
+        line = raw_line.rstrip("\r")
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                path = _strip_matching_quotes(line[len(prefix):].strip())
+                if path:
+                    files.append(path)
+                break
+    return files
+
+
 def normalize(raw: dict, events: dict) -> dict:
     """Claude 원어 → 정규 입력 스키마(§6.1)."""
     raw_event = raw.get("hook_event_name") or raw.get("event") or ""
@@ -97,8 +136,13 @@ def normalize(raw: dict, events: dict) -> dict:
     if event == "UserPromptSubmit":
         out["prompt"] = raw.get("prompt", "")
 
-    tool_name = raw.get("tool_name", "")
-    tool_input = raw.get("tool_input", {}) or {}
+    tool_name = raw.get("tool_name") or raw.get("name", "")
+    tool_input = raw.get("tool_input")
+    if tool_input is None:
+        tool_input = {}
+    if isinstance(tool_input, dict) and isinstance(raw.get("input"), str):
+        tool_input = {**tool_input}
+        tool_input.setdefault("input", raw["input"])
 
     if event in ("PreToolUse", "PostToolUse") and tool_name:
         mcp = _parse_mcp(events, tool_name)
@@ -111,8 +155,10 @@ def normalize(raw: dict, events: dict) -> dict:
             if action:
                 out["action"] = action
                 files = []
-                fp = tool_input.get("file_path")
-                if fp:
+                if isinstance(tool_input, dict) and tool_name == "apply_patch":
+                    files = _extract_apply_patch_files(tool_input)
+                fp = tool_input.get("file_path") if isinstance(tool_input, dict) else None
+                if fp and not files:
                     files = [fp]
                 out["files"] = files
     return out

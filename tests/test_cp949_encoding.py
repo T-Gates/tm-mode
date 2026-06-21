@@ -176,6 +176,12 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
     active = tmp_path / ".teammode-active"
     active.write_text("")
     canonical = {"event": "UserPromptSubmit", "prompt": "test", "agent": "claude-test"}
+    expected_counter = os.path.join(
+        tempfile.gettempdir(), "teammode-remind-state-claude-test.json")
+    try:
+        os.unlink(expected_counter)
+    except FileNotFoundError:
+        pass
 
     proc = subprocess.run(
         [PY, str(hook)],
@@ -187,11 +193,9 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
     )
 
     assert proc.returncode == 0, f"hook crash: {proc.stderr}"
-    # 카운터 파일이 tempfile.gettempdir() 위치에 생성됐어야 한다
-    expected_counter = os.path.join(
-        tempfile.gettempdir(), "teammode-prompt-counter-claude-test")
+    # 상태 파일이 tempfile.gettempdir() 위치에 생성됐어야 한다
     assert os.path.isfile(expected_counter), (
-        f"카운터 파일이 {expected_counter} 에 생성되어야 한다")
+        f"상태 파일이 {expected_counter} 에 생성되어야 한다")
 
 
 def test_counter_file_write_failure_is_silent(tmp_path, monkeypatch):
