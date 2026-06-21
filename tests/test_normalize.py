@@ -187,11 +187,15 @@ def test_malformed_input_propagates_when_strict(env):
 # ── 3.2 공통 훅 이식 검증: session-log-remind 가 정규 스키마만 인지 ──
 
 def test_common_hook_consumes_canonical_only(env, tmp_path):
-    """session-log-remind 를 정규 JSON stdin 으로 직접 호출 — 에이전트 무지 확인."""
+    """session-log-remind 를 정규 JSON stdin 으로 직접 호출 — 에이전트 무지 확인.
+
+    출력은 평문 stdout(JSON 아님) — normalize 가 그대로 전파해 additionalContext 로 감.
+    """
     hook = REPO / "infra" / "hooks" / "session-log-remind.py"
     root = env.root
     (root / ".teammode-active").write_text("")
-    # 오래된 세션로그 없음 + 카운터 0 → 첫 호출은 리마인드 없음(age는 9999라 30분초과 트리거)
+    # 세션로그 전무 → age 9999 ≥ 1800 → 리마인드 발화(첫 호출이지만 check_reset 후 return)
+    # team.config.json 없어 폴백 경로 → 전역 sessions age ≥ 1800 → 발화
     canonical = {"event": "UserPromptSubmit", "prompt": "hi", "agent": "claude"}
     proc = subprocess.run(
         [PY, str(hook)], input=json.dumps(canonical), capture_output=True, text=True,
@@ -199,9 +203,9 @@ def test_common_hook_consumes_canonical_only(env, tmp_path):
         env={**os.environ, "TEAMMODE_HOME": str(root),
              "TMPDIR": str(tmp_path)})
     assert proc.returncode == 0
-    # 세션로그 전무 → age 9999 ≥ 1800 → 리마인드 발화
-    out = json.loads(proc.stdout)
-    assert "additionalContext" in out["hookSpecificOutput"]
+    # 세션로그 전무 → age 9999 ≥ 1800 → 리마인드 발화(평문 출력)
+    assert proc.stdout.strip() != "", "age≥1800 인데 리마인드가 발화하지 않음"
+    assert "세션 로그" in proc.stdout
     # 에이전트 고유 표기 직표기 없음(§8.2)
     assert "mcp__" not in proc.stdout
 
@@ -219,7 +223,10 @@ def test_common_hook_ignores_non_userprompt_event(env, tmp_path):
 
 
 def test_remind_end_to_end_through_normalize(env, tmp_path):
-    """Claude 원어 → normalize → session-log-remind 전체 배선 (실 공통 스크립트)."""
+    """Claude 원어 → normalize → session-log-remind 전체 배선 (실 공통 스크립트).
+
+    출력은 평문 stdout — normalize 가 그대로 재방출해 Claude 가 additionalContext 로 수신.
+    """
     # 실 공통 스크립트를 fixture hooks 디렉토리에 복사
     (env.root / "infra" / "hooks" / "session-log-remind.py").write_text(
         (REPO / "infra" / "hooks" / "session-log-remind.py").read_text(),
@@ -230,6 +237,6 @@ def test_remind_end_to_end_through_normalize(env, tmp_path):
         {"event": "UserPromptSubmit", "script": "session-log-remind.py", "mode": "on"}])
     # TMPDIR 격리를 위해 env.run 은 os.environ 상속 — 카운터는 별도지만 age 트리거로 발화
     assert proc.returncode == 0
+    # 발화 시 평문 stdout(JSON 아님) — "세션 로그" 안내 포함 여부만 확인
     if proc.stdout.strip():
-        out = json.loads(proc.stdout)
-        assert "세션 로그" in out["hookSpecificOutput"]["additionalContext"]
+        assert "세션 로그" in proc.stdout

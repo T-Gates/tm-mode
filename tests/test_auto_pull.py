@@ -283,7 +283,10 @@ def test_remind_does_NOT_pull_when_team_active(cloned_repo, tmp_path):
 
 
 def test_remind_still_reminds_when_team_active(tmp_path):
-    """pull 을 떼도 리마인더 로직은 그대로 동작한다(세션로그 전무 → 발화)."""
+    """pull 을 떼도 리마인더 로직은 그대로 동작한다(세션로그 전무 → 발화).
+
+    출력은 평문 stdout(JSON 아님) — 세션 로그 안내 문구가 포함된다.
+    """
     import json
     team = tmp_path / "team"
     (team / "memory" / "team" / "sessions").mkdir(parents=True)
@@ -292,8 +295,9 @@ def test_remind_still_reminds_when_team_active(tmp_path):
     state_dir.mkdir()
     proc = _run_remind(team, state_dir)
     assert proc.returncode == 0  # 작업 절대 차단 금지
-    out = json.loads(proc.stdout)
-    assert "additionalContext" in out["hookSpecificOutput"]
+    # 세션로그 전무 → age ≥ 1800 → 발화(평문 출력)
+    assert proc.stdout.strip() != "", "세션로그 전무인데 리마인드 미발화"
+    assert "세션 로그" in proc.stdout
 
 
 def test_remind_inactive_no_remind(cloned_repo, tmp_path):
