@@ -523,6 +523,80 @@ def register_member(members_file: Path, name: str, identity=None) -> bool:
     return True
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """편집거리 (반복형, O(len(a)*len(b)))."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def find_similar_names(name: str, existing, *, max_distance: int = 2) -> list:
+    """기존 이름 중 새 이름과 혼동될 만큼 비슷한 것들을 반환 (시안 사태 방지).
+
+    휴리스틱(완벽 판정 불가 — 의심 후보를 띄워 사람이 판단):
+      - Levenshtein 편집거리 <= max_distance, 또는
+      - 공통 프리픽스 길이 >= 짧은쪽 길이의 80%
+    동일 이름은 제외(그건 register_member 의 UNIQUE 가 처리).
+    junhyun↔junhyung(거리1) 같은 케이스를 잡는다.
+    """
+    n = name.strip().lower()
+    out = []
+    for other in existing:
+        o = str(other).strip().lower()
+        if not o or o == n:
+            continue
+        if _levenshtein(n, o) <= max_distance:
+            out.append(other)
+            continue
+        plen = 0
+        for ca, cb in zip(n, o):
+            if ca != cb:
+                break
+            plen += 1
+        if plen >= max(1, int(min(len(n), len(o)) * 0.8)):
+            out.append(other)
+    return out
+
+
+def inject_member_env_settings(settings_path: Path, member_name: str) -> bool:
+    """Claude Code settings.json 의 env 에 TEAMMODE_MEMBER 를 박는다.
+
+    셸 프로파일 env 주입(TEAMMODE_HOME, §9)과 달리 settings.json env 는
+    Claude Code 가 훅·도구 환경에 주입한다 — 가드훅(kb-write-guard)이
+    TEAMMODE_MEMBER 로 본인 세션로그를 판정하려면 이 경로라야 닿는다.
+
+    멱등: 같은 값이면 무변경(False), 새로 박거나 바뀌면 True.
+    """
+    try:
+        data = (json.loads(settings_path.read_text(encoding="utf-8"))
+                if settings_path.is_file() else {})
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    env = data.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    if env.get("TEAMMODE_MEMBER") == member_name:
+        return False
+    env["TEAMMODE_MEMBER"] = member_name
+    data["env"] = env
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return True
+
+
 def write_introducer_config(team_root: Path, *, team_name: str,
                             admin_contact: str, timezone=None, locale=None):
     """도입자 최소 config 작성 (§5-1). services = 전부 빈 슬롯(키 생략).

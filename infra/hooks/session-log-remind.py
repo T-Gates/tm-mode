@@ -104,30 +104,28 @@ def _load_team_config(root: str) -> dict:
 
 
 def _resolve_member(root: str) -> str | None:
-    """멤버 이름 결정 (B-순위).
+    """멤버 이름 결정.
 
-    1. team.config.json members 가 1명 → members[0]["name"]
-    2. len > 1 → env TEAMMODE_MEMBER
+    1. env TEAMMODE_MEMBER (단일 소스 — install 이 settings.json 에 박음)
+    2. fallback: team.config.json members 가 1명 → members[0]["name"]
+       (단일멤버·env 미설정 전환기 호환)
     3. 둘 다 불가 → None(폴백 신호)
     """
+    # 1. env 단일 소스 (멀티멤버에서 "나"를 가르는 기준)
+    env_name = os.environ.get("TEAMMODE_MEMBER", "").strip()
+    if env_name:
+        return env_name
+    # 2. fallback: config members 1명
     config = _load_team_config(root)
     members = config.get("members", [])
     if not isinstance(members, list):
         return None
-    # 원소가 dict인 것만 유효하게 처리
     valid = [m for m in members if isinstance(m, dict)]
     if len(valid) == 1:
         name = valid[0].get("name", "")
-        if isinstance(name, str):
-            name = name.strip()
-        else:
-            name = ""
+        name = name.strip() if isinstance(name, str) else ""
         if name:
             return name
-    if len(valid) > 1:
-        env_name = os.environ.get("TEAMMODE_MEMBER", "").strip()
-        if env_name:
-            return env_name
     return None
 
 
@@ -251,11 +249,12 @@ def main() -> int:
                  f"({weekday}) {now.strftime('%H:%M')} KST")
 
     base_guide = (
-        " 세션 로그를 팀 루트의 memory/team/sessions/<이름>/ 에 기록하세요. "
-        "<이름>은 members.md의 영문 이름(OS 사용자명 아님). "
-        "파일은 하루 하나(YYYY-MM-DD.md, -late 등 분리 금지), "
-        "frontmatter(author/date/summary) 필수. "
-        "날짜는 06시 컷 — 위 시각이 00:00~05:59면 전날 파일, 06:00 이후면 오늘 파일. "
+        " 세션 로그를 팀 루트의 memory/team/sessions/<이름>/<날짜>.md 에 기록하세요. "
+        "<이름>은 members.md의 영문 이름(OS 사용자명 아님), "
+        "<날짜>는 06시 컷 기준 YYYY-MM-DD(00:00~05:59면 전날, 06:00 이후면 오늘). "
+        "본인 세션로그는 가드 예외라 직접 수정·재구성·요약 갱신이 됩니다 "
+        "(append만이 아니라 — 진행에 따라 살아있는 문서로 관리하세요). "
+        "파일은 하루 하나(-late 등 분리 금지), frontmatter(author/date/summary) 필수. "
         "현재 작업 레포의 ./memory/ 에는 쓰지 마세요. "
         "한 일뿐 아니라 근거·접은 대안·막힌 점·다음 단계까지 한 흐름으로. "
         "개인 내용 제외, 팀 작업만.")

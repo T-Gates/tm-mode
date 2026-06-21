@@ -653,6 +653,16 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
             "지정하세요(git user.name 도 없어 추측하지 않습니다).")
         return 3
 
+    # 유사성 가드(시안 사태 방지): 기존 이름과 혼동될 만큼 비슷하면 거부.
+    # junhyun↔junhyung 처럼 UNIQUE 는 통과하지만 AI 가 헷갈리는 케이스를 막는다.
+    _members_file = team_root / "memory" / "team" / "members.md"
+    _similar = il.find_similar_names(member_name, il._member_names(_members_file))
+    if _similar:
+        err(f"[error] 멤버 이름 '{member_name}' 가 기존 {_similar} 와(과) 너무 비슷합니다 "
+            f"(AI 혼동 위험 — junhyun↔junhyung 사례). 더 구별되는 슬러그를 쓰세요 "
+            f"(예: 준현→xian). 정말 의도했다면 members.md 에 수동 등재하세요.")
+        return 3
+
     # ④ scaffold (§4④·§5·§6, M1·M2·M4) — 멱등. 첫 세션로그 안 씀(M2).
     try:
         il.scaffold_memory(team_root, member_name=member_name, role=role,
@@ -697,6 +707,21 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         for agent, why in wire.failed:
             err(f"[error] wire 실패: {agent} — {why}")
         return wire.exit_code  # 부분 실패 exit 3, 성공분은 롤백 안 함(M5)
+
+    # settings.json env 에 TEAMMODE_MEMBER 주입 — 가드훅(kb-write-guard)이 본인
+    # 세션로그를 판정하는 단일 소스. 셸 프로파일(TEAMMODE_HOME)과 달리 settings.json
+    # env 라야 훅·도구 환경에 닿는다. settings_override 면 격리 경로에 박힌다.
+    # ⚠️ claude 가 배선된 경우만 — codex-only 호스트에 stray ~/.claude/settings.json
+    #    을 만들지 않는다(Opus 적대검수 blocker).
+    if "claude" in (det.get("agents") or []):
+        try:
+            _claude_settings = il.agent_settings_path(
+                "claude", home=home, settings_override=settings_override)
+            if _claude_settings and il.inject_member_env_settings(
+                    _claude_settings, member_name):
+                out(f"[env] settings.json: TEAMMODE_MEMBER={member_name}")
+        except Exception as e:
+            err(f"[warn] settings.json env(TEAMMODE_MEMBER) 주입 실패(비치명): {e}")
 
     # ⑥ env 주입 (§9, m2) — 런타임 훅용 TEAMMODE_HOME 을 셸 프로파일에 멱등 1줄.
     # 셸은 $SHELL 에서(주입). 미지원/미감지 셸은 경고만(비치명 — L1 핵심은 메모리+훅).

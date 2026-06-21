@@ -50,6 +50,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -156,6 +157,44 @@ def _is_unlock_valid(team_root: str) -> bool:
         return False  # TTL 만료
 
     return True
+
+
+def _my_member() -> str:
+    """현재 멤버 식별자 (TEAMMODE_MEMBER env). 없으면 빈 문자열.
+
+    install 이 settings.json env 에 박는다 — 멀티멤버에서 "나"를 가르는 단일 소스.
+    """
+    return os.environ.get("TEAMMODE_MEMBER", "").strip()
+
+
+def _is_own_session_log(file_path: str, team_root: str) -> bool:
+    """file_path 가 본인 세션로그 디렉토리(memory/team/sessions/<TEAMMODE_MEMBER>/)
+    하위인지. 본인 세션로그는 가드 예외(자유 편집)다.
+
+    방어(codex 적대검수 반영):
+    - env 미설정이면 False(fail-closed — 가드 유지).
+    - 멤버명은 슬러그(영숫자·_-)만 허용 — env 오염·유니코드/공백/경로구분자 위장 차단
+      (install/엔진의 이름 검증을 훅에서도 강제, env 를 신뢰하지 않는다).
+    - sessions/<member> 디렉토리 자체가 symlink 면 거부 — 지식·타인 폴더로의
+      resolve 우회를 막는다.
+    - target.resolve() 가 own_dir 하위여야 통과 — .. ·중간 symlink 우회 차단.
+    """
+    member = _my_member()
+    if not member:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", member):
+        return False
+    try:
+        sessions_root = (Path(team_root) / "memory" / "team" / "sessions").resolve()
+        own_dir = sessions_root / member
+        # member 디렉토리 자체가 symlink → resolve 가 다른 곳을 가리킴 → 우회. 거부.
+        if own_dir.is_symlink():
+            return False
+        target = Path(file_path).resolve()
+        target.relative_to(own_dir.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def _is_memory_path(file_path: str, team_root: str) -> bool | None:
@@ -350,6 +389,12 @@ def main() -> int:
         return 2
     if not in_memory:
         return 0  # memory/ 밖 → 무영향(통과)
+
+    # ── 본인 세션로그는 자유 편집 허용 (sessions/<TEAMMODE_MEMBER>/) ──
+    # toolkit 식 "살아있는 문서" 관리 복원: append뿐 아니라 수정·재구성·summary 갱신.
+    # env 미설정이면 _is_own_session_log 가 False → 아래 unlock/deny 로 진행(가드 유지).
+    if _is_own_session_log(file_path, root):
+        return 0
 
     # ── 4. unlock 플래그 확인 ──
     if _is_unlock_valid(root):
