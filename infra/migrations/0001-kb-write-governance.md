@@ -52,7 +52,7 @@ PreToolUse 훅 스크립트.
 | 폴백 경로 | `$TMPDIR/teammode-kb-unlock-$USER-<root_hash>-<session_id>` |
 | root_hash | 팀루트 절대경로 SHA-1 앞 8자리 (레포별 격리) |
 | TTL | 300초 (5분) |
-| 세션ID | `CLAUDE_SESSION_ID` 없으면 deny(fail-closed). 파일명 격리이므로 내용 검사 불필요. |
+| 세션ID | `CLAUDE_SESSION_ID`(없으면 `CLAUDE_CODE_SESSION_ID` fallback) 둘 다 없으면 deny(fail-closed). 파일명 격리이므로 내용 검사 불필요. |
 | git 추적 | 없음 (팀 루트 밖 머신 상태) |
 | strict | manifest `strict: true` — normalize 변환 실패 시 exit 1 |
 
