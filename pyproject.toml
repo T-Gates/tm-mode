@@ -1,3 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "teammode"
+version = "0.1.0"
+description = "Turn your team mode on — cross-agent team memory bootstrapper for AI coding agents."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "T-Gates" }]
+keywords = ["ai", "agent", "claude", "codex", "team", "memory", "git"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+]
+dependencies = []  # stdlib only (git/gh are host prerequisites, not pip deps)
+
+[project.urls]
+Homepage = "https://github.com/T-Gates/teammode"
+Repository = "https://github.com/T-Gates/teammode"
+
+[project.scripts]
+teammode = "teammode.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/teammode"]
+
+[tool.hatch.build.targets.sdist]
+# 패키지는 런처(src/teammode)만 — infra/ 스킬·훅·엔진은 번들하지 않는다(template repo 가 공급).
+include = ["src/teammode", "README.md", "LICENSE"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
