@@ -106,10 +106,10 @@ def _mock_adapter(skills_dir_path):
 # ─────────────────────────────────────────────────────────────────────
 
 def test_cmd_on_loops_all_detected_agents(tmp_path):
-    """detect_agents 가 ['claude','codex'] 반환 시 양쪽 adapter.sync('on') 호출."""
+    """detect_agents 가 ['claude','codex'] 반환 시 install=True 면 양쪽 adapter.sync('on') 호출."""
     root = _scaffold_team_root(tmp_path)
-    # 실 ~/.claude/settings.json 과 동일한 경로 사용 → "실설치 모드" 트리거
-    # (격리 모드 판정이 False 가 되어 detected agents 전부 배선)
+    # install=True(--install 플래그) 가 멀티에이전트 배선의 정책 결정자.
+    # 경로 비교는 더 이상 정책 판정에 쓰이지 않는다(지적1 반영).
     real_claude_settings = os.path.expanduser("~/.claude/settings.json")
     settings = real_claude_settings
     (root / "memory").mkdir(exist_ok=True)
@@ -134,7 +134,7 @@ def test_cmd_on_loops_all_detected_agents(tmp_path):
         _il.detect_agents = lambda home: ["claude", "codex"]
         try:
             mod = _load_engine()
-            rc = mod["cmd_on"](root, settings)
+            rc = mod["cmd_on"](root, settings, install=True)
         finally:
             _il.detect_agents = orig_detect
 
@@ -152,7 +152,7 @@ def test_cmd_on_loops_all_detected_agents(tmp_path):
 # ─────────────────────────────────────────────────────────────────────
 
 def test_cmd_off_loops_all_detected_agents(tmp_path):
-    """detect_agents 가 ['claude','codex'] 반환 시 양쪽 adapter.sync('off') 호출."""
+    """detect_agents 가 ['claude','codex'] 반환 시 install=True 면 양쪽 adapter.sync('off') 호출."""
     root = _scaffold_team_root(tmp_path)
     real_claude_settings = os.path.expanduser("~/.claude/settings.json")
     settings = real_claude_settings
@@ -177,7 +177,7 @@ def test_cmd_off_loops_all_detected_agents(tmp_path):
         _il.detect_agents = lambda home: ["claude", "codex"]
         try:
             mod = _load_engine()
-            rc = mod["cmd_off"](root, settings)
+            rc = mod["cmd_off"](root, settings, install=True)
         finally:
             _il.detect_agents = orig_detect
 
@@ -193,7 +193,7 @@ def test_cmd_off_loops_all_detected_agents(tmp_path):
 # ─────────────────────────────────────────────────────────────────────
 
 def test_cmd_on_with_only_claude_regression(tmp_path):
-    """detect_agents(['claude']) 반환 시 기존 단일 adapter 동작과 동일 — 회귀 0."""
+    """detect_agents(['claude']) + install=True 시 claude만 배선 — 회귀 0."""
     root = _scaffold_team_root(tmp_path)
     real_claude_settings = os.path.expanduser("~/.claude/settings.json")
     settings = real_claude_settings
@@ -215,7 +215,7 @@ def test_cmd_on_with_only_claude_regression(tmp_path):
         _il.detect_agents = lambda home: ["claude"]
         try:
             mod = _load_engine()
-            rc = mod["cmd_on"](root, settings)
+            rc = mod["cmd_on"](root, settings, install=True)
         finally:
             _il.detect_agents = orig_detect
 
@@ -226,7 +226,7 @@ def test_cmd_on_with_only_claude_regression(tmp_path):
 
 
 def test_cmd_off_with_only_claude_regression(tmp_path):
-    """detect_agents(['claude']) 반환 시 기존 단일 off 동작과 동일 — 회귀 0."""
+    """detect_agents(['claude']) + install=True 시 claude만 해제 — 회귀 0."""
     root = _scaffold_team_root(tmp_path)
     real_claude_settings = os.path.expanduser("~/.claude/settings.json")
     settings = real_claude_settings
@@ -248,7 +248,7 @@ def test_cmd_off_with_only_claude_regression(tmp_path):
         _il.detect_agents = lambda home: ["claude"]
         try:
             mod = _load_engine()
-            rc = mod["cmd_off"](root, settings)
+            rc = mod["cmd_off"](root, settings, install=True)
         finally:
             _il.detect_agents = orig_detect
 
@@ -372,3 +372,247 @@ def test_isolated_mode_only_wires_claude(tmp_path):
     assert "codex" not in wired_agents, (
         f"격리 모드인데 codex 가 배선됨: {wired_agents}")
     assert "claude" in wired_agents, "claude 가 배선되지 않음"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 지적1: install=False(--settings 격리) → codex 배선 안 됨, install=True → 양쪽
+# ─────────────────────────────────────────────────────────────────────
+
+def test_install_false_does_not_wire_codex(tmp_path):
+    """install=False(기본값) 이면 detect_agents(['claude','codex'])라도 claude만 배선 — 경로 무관."""
+    root = _scaffold_team_root(tmp_path)
+    # 실 ~/.claude/settings.json 과 동일한 경로여도 install=False 면 claude만
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+
+    wired_agents = []
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        wired_agents.append(agent_name)
+        m = MagicMock()
+        m.skills_dir = tmp_path / f"{agent_name}-skills"
+        return m
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            # install=False 명시 — 경로가 실경로여도 claude만 배선돼야 함
+            rc = mod["cmd_on"](root, real_claude_settings, install=False)
+        finally:
+            _il.detect_agents = orig_detect
+
+    assert rc == 0
+    assert "codex" not in wired_agents, (
+        f"install=False인데 codex 가 배선됨: {wired_agents}")
+    assert "claude" in wired_agents, "claude 가 배선되지 않음"
+
+
+def test_install_true_wires_all_agents(tmp_path):
+    """install=True(--install) 이면 detect_agents의 모든 에이전트가 배선된다."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+
+    wired_agents = []
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        wired_agents.append(agent_name)
+        m = MagicMock()
+        m.skills_dir = tmp_path / f"{agent_name}-skills"
+        return m
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_on"](root, real_claude_settings, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    assert rc == 0
+    assert "claude" in wired_agents, f"claude 가 배선되지 않음: {wired_agents}"
+    assert "codex" in wired_agents, f"install=True인데 codex 가 배선되지 않음: {wired_agents}"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 지적2: on --member 시 util 스킬이 양쪽 skills_dir에 link되는지
+# ─────────────────────────────────────────────────────────────────────
+
+def test_cmd_on_member_util_applied_to_all_adapters(tmp_path):
+    """on --member 시 util 스킬이 감지된 모든 에이전트의 skills_dir 에 link된다."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+
+    # util 스킬 소스 준비
+    util_skill_dir = root / "infra" / "skills" / "util" / "myutil"
+    util_skill_dir.mkdir(parents=True, exist_ok=True)
+    (util_skill_dir / "SKILL.md").write_text("---\ndescription: test util\n---\n",
+                                              encoding="utf-8")
+
+    # member util-skills.json 준비
+    member = "alice"
+    sessions_dir = root / "memory" / "team" / "sessions" / member
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    util_json = sessions_dir / "util-skills.json"
+    util_json.write_text(json.dumps({"installed": ["myutil"]}), encoding="utf-8")
+
+    claude_skills_dir = tmp_path / "claude-skills"
+    codex_skills_dir  = tmp_path / "codex-skills"
+    claude_skills_dir.mkdir()
+    codex_skills_dir.mkdir()
+
+    link_calls: list = []  # (skills_dir, skill_name)
+
+    def make_mock_adapter(agent_name, sd):
+        m = MagicMock()
+        m.skills_dir = sd
+
+        def _link_one_skill(src, target, layer=None):
+            link_calls.append((str(sd), src.name))
+
+        m._link_one_skill = _link_one_skill
+        return m
+
+    claude_adapter = make_mock_adapter("claude", claude_skills_dir)
+    codex_adapter  = make_mock_adapter("codex",  codex_skills_dir)
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        if agent_name == "claude":
+            return claude_adapter
+        elif agent_name == "codex":
+            return codex_adapter
+        raise ValueError(f"unexpected agent: {agent_name}")
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_on"](root, real_claude_settings, member=member, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    assert rc == 0
+    linked_dirs = {d for d, _ in link_calls}
+    assert str(claude_skills_dir) in linked_dirs, (
+        f"claude skills_dir 에 util link 없음: {link_calls}")
+    assert str(codex_skills_dir) in linked_dirs, (
+        f"codex skills_dir 에 util link 없음 (지적2): {link_calls}")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 지적3: codex.sync throw 시 claude 처리 + 마커 정책 + warn 보고
+# ─────────────────────────────────────────────────────────────────────
+
+def test_partial_failure_claude_succeeds_codex_fails(tmp_path, capsys):
+    """codex.sync() throw 시 claude 는 성공 처리, 마커 생성, [warn] 출력."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+
+    claude_adapter = _mock_adapter(tmp_path / "claude-skills")
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        if agent_name == "claude":
+            return claude_adapter
+        elif agent_name == "codex":
+            m = MagicMock()
+            m.skills_dir = tmp_path / "codex-skills"
+            m.sync.side_effect = RuntimeError("codex sync boom")
+            return m
+        raise ValueError(f"unexpected: {agent_name}")
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_on"](root, real_claude_settings, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    # claude 는 성공했으므로 rc=0
+    assert rc == 0, f"codex 실패해도 claude 성공이면 rc=0 이어야 함: rc={rc}"
+    # 마커 생성 확인 (최소 하나 성공 정책)
+    assert (root / ".teammode-active").exists(), "최소 1개 성공 시 마커 생성 정책 위반"
+    # [warn] 출력 확인
+    captured = capsys.readouterr()
+    assert "[warn]" in captured.out, f"[warn] 미출력: stdout={captured.out!r}"
+    assert "codex" in captured.out, f"실패 에이전트명(codex) 미출력: {captured.out!r}"
+
+
+def test_all_agents_fail_no_marker(tmp_path):
+    """모든 에이전트 실패 시 마커 미생성, rc=1."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        m = MagicMock()
+        m.skills_dir = tmp_path / f"{agent_name}-skills"
+        m.sync.side_effect = RuntimeError(f"{agent_name} boom")
+        return m
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_on"](root, real_claude_settings, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    assert rc == 1, f"전부 실패 시 rc=1 이어야 함: rc={rc}"
+    assert not (root / ".teammode-active").exists(), "전부 실패 시 마커 미생성 정책 위반"
+
+
+def test_cmd_off_partial_failure_warn(tmp_path, capsys):
+    """cmd_off 에서 codex 실패해도 claude 해제 + [warn] 출력."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+    # 마커 사전 생성 (off 가 실행되는 상황)
+    (root / ".teammode-active").write_text("", encoding="utf-8")
+
+    claude_adapter = _mock_adapter(tmp_path / "claude-skills")
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        if agent_name == "claude":
+            return claude_adapter
+        elif agent_name == "codex":
+            m = MagicMock()
+            m.skills_dir = tmp_path / "codex-skills"
+            m.sync.side_effect = RuntimeError("codex off boom")
+            return m
+        raise ValueError(f"unexpected: {agent_name}")
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_off"](root, real_claude_settings, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    assert rc == 0, f"claude 해제 성공이면 rc=0: rc={rc}"
+    claude_adapter.sync.assert_called_with(mode="off")
+    captured = capsys.readouterr()
+    assert "[warn]" in captured.out, f"[warn] 미출력: {captured.out!r}"
+    assert "codex" in captured.out, f"실패 에이전트명 미출력: {captured.out!r}"
