@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,24 @@ def _git_user_name() -> str | None:
         return None
 
 
+def _git_user_email_local_part() -> str | None:
+    """git config user.email → @ 앞 부분(비-TTY 빈슬러그 fallback용)."""
+    try:
+        r = subprocess.run(["git", "config", "user.email"],
+                           capture_output=True, text=True, timeout=5)
+        email = r.stdout.strip()
+        if email and "@" in email:
+            local = email.split("@")[0]
+            # ASCII 소문자·숫자·하이픈만 남기기
+            cleaned = "".join(c if (c.isascii() and (c.isalnum() or c == "-")) else "-"
+                              for c in local.lower())
+            cleaned = "-".join(filter(None, cleaned.split("-")))
+            return cleaned or None
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _slugify(name: str) -> str:
     """영문 소문자·숫자·하이픈만 — 멤버명 제안용(한글 user.name 대비)."""
     s = "".join(c if (c.isascii() and c.isalnum()) else "-" for c in name.lower())
@@ -57,8 +76,17 @@ def _resolve_member(opt_member: str | None) -> str | None:
     guess = _git_user_name()
     slug = _slugify(guess) if guess else None
     if sys.stdin.isatty():
+        # TTY: 빈 슬러그면 반복 입력 강제
+        if not slug:
+            while True:
+                val = _prompt("멤버 이름(영문, 필수)").strip()
+                if val:
+                    return val
         return _prompt("멤버 이름(영문)", slug) or None
-    return slug  # 비대화: git 추론값(없으면 install.py 가 재판단/에러 안내)
+    # 비-TTY: 빈 슬러그면 git email local-part fallback
+    if not slug:
+        slug = _git_user_email_local_part()
+    return slug  # None 이면 install.py 가 재판단/에러 안내
 
 
 def _pick_owner() -> str | None:
@@ -178,24 +206,220 @@ def cmd_init(args) -> int:
     return 0
 
 
+_ROLES_SUGGESTED = [
+    "developer", "pm", "designer", "researcher",
+    "marketer", "ops", "lead",
+]
+
+
+def _detect_agents_from_install_lib(home: Path) -> list[str]:
+    """팀 레포 clone 전에도 호출 가능: install_lib.detect_agents를 동적 import 없이 재현.
+
+    install_lib 는 팀 레포 안에 있으므로 join wizard 는 직접 복제 로직을 사용.
+    """
+    agent_dirs = {"claude": ".claude", "codex": ".codex"}
+    found = [name for name, d in agent_dirs.items() if (home / d).is_dir()]
+    return sorted(found)
+
+
+def _parse_members_md(members_file: Path) -> list[str]:
+    """memory/team/members.md → 영문 이름 목록 (간단 파싱)."""
+    if not members_file.is_file():
+        return []
+    names = []
+    for line in members_file.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s.startswith("- "):
+            body = s[2:].strip()
+            # <!-- id: ... --> 주석 제거 후 첫 토큰이 이름
+            body = re.sub(r"<!--.*?-->", "", body).strip()
+            name = body.split()[0] if body.split() else ""
+            if name:
+                names.append(name)
+    return names
+
+
+def _wizard_join(url: str, args) -> tuple[Path, str | None, list[str], bool]:
+    """TTY 대화형 join wizard 8단계. (dest, member, extra_args, clone_skip) 반환.
+
+    clone 은 wizard 가 직접 하지 않는다 — 1단계 위치 확정 후 호출자가 clone.
+    extra 에는 --agent, --role, --register-obsidian 이 들어간다.
+    clone_skip=True 이면 git clone 을 건너뛴다(기존 폴더 재사용).
+    """
+    home = Path.home()
+
+    while True:  # 7단계에서 n → 전체 재시작
+        # ── 1단계: 설치 위치 ──────────────────────────────────────────────
+        repo_name = url.rstrip("/").split("/")[-1]
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        default_dest = home / "teammode" / repo_name
+
+        while True:
+            raw = _prompt(f"1) 설치 위치", str(default_dest))
+            dest = Path(raw).expanduser().resolve()
+            if dest.exists() and any(dest.iterdir()):
+                print(f"  ⚠ '{dest}' 이(가) 이미 있고 비어있지 않습니다.")
+                choice = _prompt("  ① 다른 위치 입력  ② 기존에 재설치(clone skip) [1/2]", "1")
+                if choice.strip() == "2":
+                    # clone skip 플래그를 반환값으로 표시 — sentinel Path 활용
+                    dest = dest  # 그대로 사용
+                    clone_skip = True
+                    break
+                # 1 또는 기타 → 다시 위치 입력
+            else:
+                clone_skip = False
+                break
+
+        # ── 2단계: 에이전트 선택 ──────────────────────────────────────────
+        installed = _detect_agents_from_install_lib(home)
+        all_agents = ["claude", "codex"]
+        if not installed:
+            print("  ⚠ 설치된 에이전트를 감지할 수 없습니다. 계속 진행합니다.")
+        selected_agents: list[str] = list(installed) if installed else []
+
+        print("2) 에이전트 선택 (Enter=전부, 번호=토글):")
+        for i, ag in enumerate(all_agents, 1):
+            mark = "x" if ag in selected_agents else " "
+            note = "" if ag in installed else "  (미설치)"
+            print(f"  [{mark}] {i}) {ag}{note}")
+
+        raw = _prompt("  번호 입력 또는 Enter", "")
+        if raw.strip():
+            for token in raw.replace(",", " ").split():
+                try:
+                    idx = int(token) - 1
+                    if 0 <= idx < len(all_agents):
+                        ag = all_agents[idx]
+                        if ag not in installed:
+                            print(f"  '{ag}'은(는) 미설치라 선택할 수 없습니다.")
+                            continue
+                        if ag in selected_agents:
+                            selected_agents.remove(ag)
+                        else:
+                            selected_agents.append(ag)
+                except ValueError:
+                    pass
+
+        # ── 3단계: 새/기존 멤버 ───────────────────────────────────────────
+        members_file = dest / "memory" / "team" / "members.md"
+        existing_members = _parse_members_md(members_file) if not clone_skip else \
+            _parse_members_md(members_file)  # clone 후엔 있을 수도
+
+        choice3 = _prompt("3) 새 팀원/기존? [1=새/2=기존]", "1")
+        is_new = choice3.strip() != "2"
+
+        # ── 4단계: 이름 ───────────────────────────────────────────────────
+        if is_new:
+            guess = _git_user_name()
+            slug = _slugify(guess) if guess else ""
+            if not slug:
+                # 빈 슬러그: 반복 강제
+                while True:
+                    val = _prompt("4) 멤버 이름(영문, 필수)").strip()
+                    if val:
+                        member = val
+                        break
+            else:
+                member = _prompt("4) 멤버 이름(영문)", slug) or slug
+        else:
+            if existing_members:
+                print("4) 기존 팀원 목록:")
+                for i, n in enumerate(existing_members, 1):
+                    print(f"  {i}) {n}")
+                sel = _prompt("  번호 선택", "1")
+                try:
+                    idx = int(sel) - 1
+                    member = existing_members[idx] if 0 <= idx < len(existing_members) \
+                        else existing_members[0]
+                except (ValueError, IndexError):
+                    member = existing_members[0]
+            else:
+                print("  (members.md 없음 — 이름을 직접 입력하세요)")
+                guess = _git_user_name()
+                slug = _slugify(guess) if guess else ""
+                member = _prompt("4) 멤버 이름(영문)", slug or None) or None
+
+        # ── 5단계: 역할 ───────────────────────────────────────────────────
+        print("5) 역할 (권장: " + " / ".join(_ROLES_SUGGESTED) + ")")
+        role = _prompt("  역할 입력(Enter=생략)", "")
+
+        # ── 6단계: Obsidian ───────────────────────────────────────────────
+        obsidian_raw = _prompt("6) Obsidian 볼트 등록? [y/N]", "N")
+        register_obsidian = obsidian_raw.strip().lower() == "y"
+
+        # ── 7단계: 요약 확인 ──────────────────────────────────────────────
+        print()
+        print("── 설치 요약 ─────────────────────────────")
+        print(f"  위치   : {dest}")
+        print(f"  에이전트: {', '.join(selected_agents) if selected_agents else '(없음)'}")
+        print(f"  멤버   : {member or '(미지정)'}")
+        print(f"  역할   : {role or '(생략)'}")
+        print(f"  Obsidian: {'등록' if register_obsidian else '건너뜀'}")
+        print(f"  clone  : {'skip(기존 재사용)' if clone_skip else '새로 clone'}")
+        print("──────────────────────────────────────────")
+        confirm = _prompt("[Y/n]", "Y")
+        if confirm.strip().lower() == "n":
+            print("  처음부터 다시 시작합니다...\n")
+            continue  # while True 재시작
+        break  # 확인 완료
+
+    # ── 8단계: extra 인자 조립 ────────────────────────────────────────────
+    extra: list[str] = []
+    for ag in selected_agents:
+        extra += ["--agent", ag]
+    if role:
+        extra += ["--role", role]
+    if register_obsidian:
+        extra += ["--register-obsidian"]
+
+    return dest, member or None, extra, clone_skip
+
+
 def cmd_join(args) -> int:
     if not _have("git"):
         _err("git 이 필요합니다.")
         return 2
-    dest = Path(args.dir).resolve() if args.dir else None
-    cmd = ["git", "clone", args.url] + ([str(dest)] if dest else [])
-    print(f"[join] clone {args.url}")
-    if subprocess.run(cmd).returncode != 0:
-        _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
-        return 1
-    if dest is None:
-        dest = _clone_dir_from_url(args.url)
+
+    is_tty = sys.stdin.isatty()
+
+    if is_tty:
+        # ── 대화형: wizard 8단계 ──────────────────────────────────────────
+        dest, member, extra, clone_skip = _wizard_join(args.url, args)
+
+        if not clone_skip:
+            print(f"[join] clone {args.url} → {dest}")
+            if subprocess.run(["git", "clone", args.url, str(dest)]).returncode != 0:
+                _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
+                return 1
+        else:
+            print(f"[join] clone skip — 기존 폴더 재사용: {dest}")
+    else:
+        # ── 비-TTY: 인자 경로 (input 절대 호출 안 함) ────────────────────
+        dest = Path(args.dir).resolve() if args.dir else None
+        cmd = ["git", "clone", args.url] + ([str(dest)] if dest else [])
+        print(f"[join] clone {args.url}")
+        if subprocess.run(cmd).returncode != 0:
+            _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
+            return 1
+        if dest is None:
+            dest = _clone_dir_from_url(args.url)
+
+        member = _resolve_member(args.member_name)
+        extra = []
+        if args.agent:
+            for ag in args.agent:
+                extra += ["--agent", ag]
+        if args.role:
+            extra += ["--role", args.role]
+        if args.obsidian:
+            extra += ["--register-obsidian"]
+
     if not (dest / "infra").is_dir():
         _err(f"clone 된 레포에 infra/ 가 없습니다: {dest}")
         return 3
 
-    member = _resolve_member(args.member_name)
-    rc = _delegate_install(dest, member, [])
+    rc = _delegate_install(dest, member, extra)
     if rc != 0:
         return rc
     _done(dest, joined=True)
@@ -219,6 +443,10 @@ def main(argv=None) -> int:
     pj.add_argument("url", help="팀 레포 clone URL")
     pj.add_argument("--member-name")
     pj.add_argument("--dir", help="clone 위치")
+    pj.add_argument("--agent", action="append", metavar="AGENT",
+                    help="에이전트 (claude/codex). 비-TTY용; 반복 가능")
+    pj.add_argument("--role", help="역할 (비-TTY용)")
+    pj.add_argument("--obsidian", action="store_true", help="Obsidian 볼트 등록 (비-TTY용)")
     pj.set_defaults(func=cmd_join)
 
     args = p.parse_args(argv)
