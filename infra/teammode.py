@@ -382,9 +382,13 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
                 print(f"[warn] util 스킬 '{skill_name}' 소스 없음 → skip")
                 continue
             # 지적2: 모든 어댑터에 util 심링크 적용 (기존: 대표 어댑터만)
+            # util link 실패가 cmd_on 전체를 crash시키지 않도록 어댑터별 try/except.
             for _adp in _all_adapters:
-                target = _adp.skills_dir / skill_name
-                _adp._link_one_skill(src, target, layer="util")
+                try:
+                    target = _adp.skills_dir / skill_name
+                    _adp._link_one_skill(src, target, layer="util")
+                except Exception as _util_exc:  # noqa: BLE001
+                    print(f"[warn] util 스킬 '{skill_name}' 링크 실패({_adp.skills_dir}) → skip: {_util_exc}")
     return 0
 
 
@@ -553,7 +557,11 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
     # 실패 에이전트 경고 출력
     for _ag_name, _ag_err in _failed_agents:
         print(f"[warn] {_ag_name} 에이전트 해제 실패 → skip: {_ag_err}")
+    # 마커 정책(cmd_on 대칭): 최소 하나 성공 시 삭제. 전부 실패면 마커 유지 + rc=1.
+    # 근거: 전부 실패면 실제 해제가 이뤄지지 않았으므로 active 상태가 남아 있어야 한다.
     marker = _active_marker(team_root)
+    if _primary_adapter is None:
+        return 1
     if marker.exists():
         marker.unlink()
     # OFF 출력 순서: 펜스 배너 → farewell (ON 과 동일 배너 소스 사용).
