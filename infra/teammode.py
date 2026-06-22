@@ -61,12 +61,35 @@ def default_banner_content(team_root: Path, team_name: str) -> str:
     return f"=== {team_name} ===\n"
 
 
-def _adapter(settings_path=None, skills_dir=None):
+def _adapter_for(agent_name, settings_path=None, skills_dir=None):
+    """에이전트별 어댑터 팩토리.
+
+    agent_name: 'claude' 또는 'codex' (agents/ 하위 디렉토리명).
+    settings_path: None이면 에이전트 기본 경로 파생.
+      - claude → ~/.claude/settings.json
+      - codex  → install_lib.agent_settings_path("codex", home) 활용(~/.codex/config.toml)
+    skills_dir: None이면 settings_path 부모/skills 파생(P0-1).
+    ⚠️ codex에 claude settings 경로를 넘기면 사고 — 각 에이전트는 자기 기본 경로 파생.
+    """
     import runpy
-    mod = runpy.run_path(str(INFRA / "agents" / "claude" / "adapter.py"),
+    mod = runpy.run_path(str(INFRA / "agents" / agent_name / "adapter.py"),
                          run_name="__teammode_engine__")
     Adapter = mod["Adapter"]
-    resolved_settings = settings_path or os.path.expanduser("~/.claude/settings.json")
+
+    if settings_path is not None:
+        resolved_settings = settings_path
+    elif agent_name == "claude":
+        resolved_settings = os.path.expanduser("~/.claude/settings.json")
+    else:
+        # codex 등 다른 에이전트: install_lib.agent_settings_path 활용
+        try:
+            import install_lib as _il
+            resolved_settings = str(
+                _il.agent_settings_path(agent_name, home=Path.home()))
+        except Exception:
+            # fallback: ~/.codex/config.toml
+            resolved_settings = os.path.expanduser(f"~/.{agent_name}/config.toml")
+
     # skills_dir 격리 파생(P0-1):
     #   명시 주입이 없으면 settings_path 의 부모 디렉토리 아래 "skills" 를 사용한다.
     #   규칙: <settings_path 부모>/skills
@@ -75,8 +98,9 @@ def _adapter(settings_path=None, skills_dir=None):
     #   이 파생으로 `--settings <tmp>` 만 줘도 실호스트 ~/.claude/skills 무접촉.
     if skills_dir is None:
         skills_dir = str(Path(resolved_settings).parent / "skills")
+
     return Adapter(
-        agent_dir=str(INFRA / "agents" / "claude"),
+        agent_dir=str(INFRA / "agents" / agent_name),
         manifest_path=str(INFRA / "hooks" / "manifest.json"),
         settings_path=resolved_settings,
         # 어댑터의 team_root = 설치 위치(normalize.py 소유 마커 기준). 메모리 쓰기의
@@ -84,6 +108,11 @@ def _adapter(settings_path=None, skills_dir=None):
         team_root=str(INFRA.parent),
         skills_dir=skills_dir,
     )
+
+
+def _adapter(settings_path=None, skills_dir=None):
+    """하위호환 래퍼 — claude 어댑터 단일 반환. 기존 테스트·호출 코드 무회귀."""
+    return _adapter_for("claude", settings_path, skills_dir)
 
 
 def _render_banner(team_root: Path) -> str:
@@ -287,11 +316,36 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     # D: upstream 자동 동기화(fetch + 변경 시 자동 커밋). 실패는 on 을 막지 않는다.
     # 순서: auto_update 먼저 → 그 다음 심링크 토글(새 core 스킬 반영 위해).
     auto_update_on_start(team_root)
-    adapter = _adapter(settings_path, skills_dir=skills_dir)
-    adapter.sync(mode="on")
+    # 멀티에이전트 detect loop:
+    #   감지된 에이전트 전부에 sync+install_skills. 감지 없으면 claude 기본.
+    #   ⚠️ settings_path/skills_dir(격리 테스트 인자)은 claude에만 적용 —
+    #   다른 에이전트는 None(자기 기본 경로 파생). codex에 claude 경로 주입 사고 방지.
+    #   격리 모드 판정: settings_path 가 실호스트 ~/.claude/settings.json 이 아니면
+    #   (즉 --settings <tmp> 격리 테스트), 다른 에이전트는 실호스트 파일을 건드리므로 skip.
+    _real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    _is_isolated = (settings_path is not None and
+                    os.path.abspath(settings_path) != os.path.abspath(_real_claude_settings))
+    try:
+        import install_lib as _il
+        _detected = _il.detect_agents(Path.home())
+    except Exception:
+        _detected = []
+    # 격리 모드에서는 claude만 배선 — 실호스트 ~/.codex 등 무접촉
+    _agents_to_wire = (["claude"] if _is_isolated
+                       else _detected or ["claude"])
+    _primary_adapter = None  # 마커·util 심링크에 쓸 대표 어댑터(첫 번째)
+    for _ag in _agents_to_wire:
+        if _ag == "claude":
+            _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
+        else:
+            _ag_adapter = _adapter_for(_ag)  # 자기 기본 경로 파생
+        _ag_adapter.sync(mode="on")
+        _ag_adapter.install_skills(layer="core")
+        if _primary_adapter is None:
+            _primary_adapter = _ag_adapter
+    # 대표 어댑터(첫 번째)가 없는 경우 방어 — 실 발생 불가지만 타입 안전
+    adapter = _primary_adapter or _adapter_for("claude", settings_path, skills_dir)
     _active_marker(team_root).write_text("", encoding="utf-8")
-    # core 스킬 설치 (tm-context 등 — on 시 활성)
-    adapter.install_skills(layer="core")
     # 멤버별 util 스킬 설치 (--member 지정 시)
     if member is not None:
         util_skills = _read_util_skills(team_root, member)
@@ -443,14 +497,36 @@ def _write_util_skills(team_root: Path, member: str, skills: list) -> None:
 
 def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
             skills_dir: str | None = None) -> int:
-    adapter = _adapter(settings_path, skills_dir=skills_dir)
-    adapter.sync(mode="off")
+    # 멀티에이전트 detect loop:
+    #   감지된 에이전트 전부에 sync+uninstall. 감지 없으면 claude 기본.
+    #   ⚠️ settings_path/skills_dir(격리 테스트 인자)은 claude에만 적용.
+    #   격리 모드 판정: settings_path 가 실호스트 ~/.claude/settings.json 이 아니면
+    #   다른 에이전트는 실호스트 파일을 건드리므로 skip.
+    _real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    _is_isolated = (settings_path is not None and
+                    os.path.abspath(settings_path) != os.path.abspath(_real_claude_settings))
+    try:
+        import install_lib as _il
+        _detected = _il.detect_agents(Path.home())
+    except Exception:
+        _detected = []
+    _agents_to_wire = (["claude"] if _is_isolated
+                       else _detected or ["claude"])
+    _primary_adapter = None
+    for _ag in _agents_to_wire:
+        if _ag == "claude":
+            _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
+        else:
+            _ag_adapter = _adapter_for(_ag)
+        _ag_adapter.sync(mode="off")
+        _uninstall_layer(_ag_adapter, "core")
+        _uninstall_layer(_ag_adapter, "util")
+        if _primary_adapter is None:
+            _primary_adapter = _ag_adapter
+    adapter = _primary_adapter or _adapter_for("claude", settings_path, skills_dir)
     marker = _active_marker(team_root)
     if marker.exists():
         marker.unlink()
-    # core/util 스킬 제거
-    _uninstall_layer(adapter, "core")
-    _uninstall_layer(adapter, "util")
     # OFF 출력 순서: 펜스 배너 → farewell (ON 과 동일 배너 소스 사용).
     _print_fenced_banner(team_root)
     # 끝맺음 말(farewell): config 에 있으면 그걸, 없으면 "상태 저장됨" 폴백(§3.1).
@@ -641,11 +717,28 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                           "(--settings 또는 --install 필요; 다음 on 에서 반영)",
                           file=sys.stderr)
                 else:
-                    the_skills_dir = Path(skills_dir) if skills_dir else None
-                    # settings_path 전달 → _adapter 내부에서 skills_dir 격리 파생.
-                    adapter = _adapter(settings_path, skills_dir=the_skills_dir)
-                    target = adapter.skills_dir / skill_name
-                    adapter._link_one_skill(skill_src, target, layer="util")
+                    # 멀티에이전트 loop: 감지된 에이전트 전부에 util 심링크 반영.
+                    # ⚠️ settings_path/skills_dir 은 claude에만 적용.
+                    # 격리 모드 판정: settings_path 가 실호스트 path면 멀티에이전트, 아니면 claude만.
+                    _uc_real = os.path.expanduser("~/.claude/settings.json")
+                    _uc_isolated = (settings_path is not None and
+                                    os.path.abspath(settings_path) != os.path.abspath(_uc_real))
+                    try:
+                        import install_lib as _il
+                        _util_detected = _il.detect_agents(Path.home())
+                    except Exception:
+                        _util_detected = []
+                    _util_agents = (["claude"] if _uc_isolated
+                                    else _util_detected or ["claude"])
+                    for _uag in _util_agents:
+                        if _uag == "claude":
+                            the_skills_dir = Path(skills_dir) if skills_dir else None
+                            _uadapter = _adapter_for("claude", settings_path,
+                                                      the_skills_dir)
+                        else:
+                            _uadapter = _adapter_for(_uag)
+                        target = _uadapter.skills_dir / skill_name
+                        _uadapter._link_one_skill(skill_src, target, layer="util")
             print(f"teammode util add — {skill_name} 등록됨 (member: {member})")
             return 0
 
@@ -662,13 +755,30 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                           "(--settings 또는 --install 필요; 다음 on 에서 반영)",
                           file=sys.stderr)
                 else:
-                    the_skills_dir = Path(skills_dir) if skills_dir else None
-                    # settings_path 전달 → _adapter 내부에서 skills_dir 격리 파생.
-                    adapter = _adapter(settings_path, skills_dir=the_skills_dir)
-                    target = adapter.skills_dir / skill_name
-                    if target.exists() or target.is_symlink():
-                        if adapter._is_layer_skill(target, "util"):
-                            adapter._remove_skill(target)
+                    # 멀티에이전트 loop: 감지된 에이전트 전부에서 util 심링크 제거.
+                    # ⚠️ settings_path/skills_dir 은 claude에만 적용.
+                    # 격리 모드 판정: settings_path 가 실호스트 path면 멀티에이전트, 아니면 claude만.
+                    _uc_real = os.path.expanduser("~/.claude/settings.json")
+                    _uc_isolated = (settings_path is not None and
+                                    os.path.abspath(settings_path) != os.path.abspath(_uc_real))
+                    try:
+                        import install_lib as _il
+                        _util_detected = _il.detect_agents(Path.home())
+                    except Exception:
+                        _util_detected = []
+                    _util_agents = (["claude"] if _uc_isolated
+                                    else _util_detected or ["claude"])
+                    for _uag in _util_agents:
+                        if _uag == "claude":
+                            the_skills_dir = Path(skills_dir) if skills_dir else None
+                            _uadapter = _adapter_for("claude", settings_path,
+                                                      the_skills_dir)
+                        else:
+                            _uadapter = _adapter_for(_uag)
+                        target = _uadapter.skills_dir / skill_name
+                        if target.exists() or target.is_symlink():
+                            if _uadapter._is_layer_skill(target, "util"):
+                                _uadapter._remove_skill(target)
             print(f"teammode util remove — {skill_name} 제거됨 (member: {member})")
             return 0
 
