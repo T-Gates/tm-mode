@@ -22,7 +22,8 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 
 | 단계 | 됨 판정 (이렇게 감지 — 저장 X) |
 |------|------------------------------|
-| 설치·훅 배선 | `teammode.py context --root . --json` 의 `state == "on"` |
+| 설치·훅 배선 | `team.config.json` 존재 (install.py 가 스캐폴드+배선 완료 시 생성). ⚠️ `state` 는 **활성화** 여부지 설치 여부가 아니다 — 설치 직후 정상값은 `off` |
+| 팀모드 활성화 *(opt)* | `teammode.py context --json` 의 `state == "on"` (설치는 자동 활성화 안 함 — 사용자가 `tm on` 으로 켬) |
 | upstream 추적 | `git -C . remote` 에 `upstream` 있음 |
 | 서비스 연결(L2) | `team.config.json` 의 `services` 슬롯이 빈 슬롯이 아님 |
 | Obsidian 뷰 | 레포에 `.obsidian/` 존재 |
@@ -51,7 +52,7 @@ teammode를 처음 켜는 스킬. 팀 생애주기를 따라 자란다:
 ```bash
 python infra/install.py --root . --member-name <영문이름> --role <직책/직군> --yes
 ```
-- install.py가 함: preflight → 감지 → role 자동 → scaffold(`memory/INDEX.md`·`memory/team/members.md`·`memory/team/sessions/<이름>/`·도입자면 빈 services config) → 훅 sync(**실 settings.json에 write**) → env 주입 → verify(`on` → active 마커).
+- install.py가 함: preflight → 감지 → role 자동 → scaffold(`memory/INDEX.md`·`memory/team/members.md`·`memory/team/sessions/<이름>/`·도입자면 빈 services config) → 훅 sync(**실 settings.json에 write**) → env 주입 → verify(`context` 로 설치 확인 — **팀모드는 켜지 않는다**, 활성화는 사용자가 `tm on`).
 - `--member-name`: 권장. 생략 시 git user.name 제안. **팀원은 이름 충돌 회피 위해 명시 권장.**
 - **이름 충돌**(다른 사람이 같은 이름 등재) → install.py가 **exit 3 + 안내**. 사람이 `--member-name <다른 영문이름>`으로 재실행하게 한다 (추측 정정 금지).
 - 실패(exit≠0)면 사유를 사람 말로 옮기고 멈춘다.
@@ -61,11 +62,11 @@ python infra/install.py --root . --member-name <영문이름> --role <직책/직
 python infra/teammode.py context --root . --json
 ```
 → 결과를 사람 말로 요약: "지금 팀 상황: …"
-- **단, state=on으로 보이려면 위 셋업이 `--yes`(또는 `--settings`)로 wire+verify까지 완주했어야 한다.** wire를 건너뛴 경우 state=off로 나온다.
+- **설치는 팀모드를 자동으로 켜지 않는다 — `--yes`로 wire까지 했어도 state=off가 정상이다**(설치 ≠ 활성화, P: 사용자 동의 전 호스트를 활성 상태로 두지 않음). 활성화는 사용자가 직접 `tm on`(아래 진입점 권유) 하거나 tm-onboard 제안에 동의했을 때만. off라도 context로 팀 맥락은 보여줄 수 있다.
 - **갓 만든 팀은 세션로그 0** → 요약할 게 없다. "구조는 섰고, 다음 작업부터 자동 기록·주입됩니다"로 내레이션.
 - 팀원은 context로 팀 기존 로그가 보인다. (다음 세션부터는 `session-start.py` 훅이 자동 주입.)
 - **KB(지식 베이스)**: 팀 공유 지식은 `tm-knowledge`(조회·검색)·`tm-manage-knowledge`(추가·수정·삭제)로 관리한다. 처음엔 비어 있고 팀이 쌓아가는 구조 — 셋업 직후엔 소개만(강제 진행 X).
-- **이제 시작 — 일상 진입점 (여기서 닫는다)**: 셋업·선택을 마치면 마지막으로 **`tm on`만** 권한다: "작업을 시작할 땐 `tm on` 하세요 — 최신화하고 팀 맥락과 함께 엽니다." 셋업 직후의 막막함("이제 뭐하지?")을 막는 **다음 한 걸음**이다. ⚠️ tm off·tm-knowledge·tm-customize 등 나머지는 **여기서 설명하지 않는다** — `tm on` 웰컴과 각 스킬 트리거로 그때그때 자연히 드러난다(progressive, 온보딩 비대화 방지). 작업 스타일은 설명이 아니라 반복으로 밴다.
+- **이제 시작 — 일상 진입점 (여기서 닫는다)**: 셋업·선택을 마치면 마지막으로 **팀모드를 지금 켤지 제안한다**(설치만으론 꺼져 있음 — 동의하면 `tm on`, "나중에"면 안내만): "작업을 시작할 땐 `tm on` 하세요 — 최신화하고 팀 맥락과 함께 엽니다." 셋업 직후의 막막함("이제 뭐하지?")을 막는 **다음 한 걸음**이다. ⚠️ tm off·tm-knowledge·tm-customize 등 나머지는 **여기서 설명하지 않는다** — `tm on` 웰컴과 각 스킬 트리거로 그때그때 자연히 드러난다(progressive, 온보딩 비대화 방지). 작업 스타일은 설명이 아니라 반복으로 밴다.
 
 ## 다음 단계 — 미완료 항목을 하나씩 빠짐없이 (중요)
 첫 가치를 보여준 뒤, **위 체크표에서 미완료(⬜)인 항목을 순서대로 하나씩** 제안한다. 메뉴처럼 동시에 늘어놓진 말되(산만), ⚠️ **한 항목을 "나중에"라고 미뤘다고 거기서 온보딩을 끝내지 마라** — 그 항목만 건너뛰고 **다음 미완료 항목으로 넘어가 또 묻는다.** 미완료 항목을 한 번씩 다 물어본 뒤에 종료한다.

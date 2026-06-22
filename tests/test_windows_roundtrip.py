@@ -81,7 +81,15 @@ def test_windows_roundtrip_install_on_context_uninstall(tmp_path, monkeypatch):
         if p.is_file():
             assert "TEAMMODE_HOME" not in p.read_text()
 
-    # on 단계 산물: active 마커·배너·memory (verify 가 on 호출)
+    # 설치는 자동 활성화하지 않는다 → 이 라운드트립은 on 상태를 검증하므로 명시적으로 켠다.
+    on_proc = subprocess.run(
+        [sys.executable, str(REPO / "infra" / "teammode.py"), "on",
+         "--root", str(team), "--install"],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(home)}, timeout=30)
+    assert on_proc.returncode == 0, on_proc.stderr
+
+    # on 단계 산물: active 마커·배너·memory
     assert (team / ".teammode-active").is_file()
     assert (team / "memory" / "INDEX.md").is_file()
 
