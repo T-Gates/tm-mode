@@ -32,3 +32,6 @@ team.config.local.json
 
 # 작업 스크래치/계획 메모(팀 공유 대상 아님 — 밤 작업 설계도 등)
 docs/archive/
+
+# 에이전트 작업 산물(worktree·리뷰 출력) — 제품 레포에 넣지 않음
+.claude/

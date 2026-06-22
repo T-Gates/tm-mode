@@ -753,21 +753,11 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     else:
         out(f"[env] 셸 미감지 — 수동 설정 권장: {il.ENV_VAR}={team_root}")
 
-    # ⑦ verify (§4⑦·B1) — teammode on(배너+훅+active 마커) 후 context --json 으로
-    # L1 데이터가 읽히는지(수집 가능) 확인. ※ 실제 *맥락 주입*은 다음 세션 SessionStart
-    # 훅이 한다(여기 아님). context 는 기계 수집만 — 요약은 스킬 몫(--json 원자료까지).
-    # settings: 격리(--settings 디렉토리)면 그 하위 verify 파일, 실설치(--yes)면 --install.
-    # ※ settings_override 는 디렉토리(에이전트별 파일을 그 아래 둠) — 엔진 on 은 파일
-    #   경로를 받으므로 격리 모드에선 전용 verify settings 파일을 그 아래 만든다.
-    if settings_override is not None:
-        verify_flag = ["--settings",
-                       str(Path(settings_override) / "verify-settings.json")]
-    else:
-        verify_flag = ["--install"]
-    rc_on = _engine_call(["on", "--root", str(team_root)] + verify_flag)
-    if rc_on != 0:
-        err(f"[error] verify: teammode on 실패(rc={rc_on}).")
-        return 3
+    # ⑦ verify (§4⑦·B1) — 설치가 정상인지 context --json 으로 확인한다. **팀모드는 켜지
+    # 않는다**(on 미호출, 설치 ≠ 활성화). 활성화는 사용자 몫이고, verify 의 on 은
+    # cmd_on→auto_update_on_start 로 팀 레포에 upstream 자동 커밋을 남기는 부작용이
+    # 있어(이종 적대검수 B1) on/off 왕복을 제거했다 — context 는 마커 없이도 동작한다
+    # (state=off 가 정상). ※ 실제 맥락 *주입*은 다음 세션 SessionStart 훅이 한다(여기 아님).
     res_ctx = _engine_capture(["context", "--root", str(team_root), "--json"])
     if res_ctx.returncode != 0:
         err(f"[error] verify: teammode context 실패(rc={res_ctx.returncode}).")
@@ -777,9 +767,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     except (ValueError, json.JSONDecodeError):
         err("[error] verify: context --json 출력이 JSON 이 아닙니다.")
         return 3
-    out(f"[verify] L1 데이터 읽힘 — state={ctx.get('state')}, "
-        f"members={len(ctx.get('members', []))}, active 마커·배너 생성됨.")
-    out("[done] L1 부트스트랩 완료. 다음 세션부터 SessionStart 훅이 맥락을 주입합니다.")
+    out(f"[verify] 설치 검증 OK — members={len(ctx.get('members', []))} (팀모드는 꺼둠).")
+    out("[done] 설치 완료. 팀모드를 켜려면 `tm on`(또는 /tm) 하세요.")
     return 0
 
 

@@ -75,9 +75,10 @@ def test_I1_introducer_full_run(tmp_path):
     assert (team / "memory" / "banner.txt").is_file()
     # 첫 세션로그 미생성(M2)
     assert list((team / "memory" / "team" / "sessions" / "heidi").iterdir()) == []
-    # verify: context --json 이 L1 데이터를 읽어냄 + active 마커
-    assert "[verify] L1 데이터 읽힘" in proc.stdout
-    assert (team / ".teammode-active").is_file()
+    # verify: 설치 검증은 돌되, 활성화는 opt-in — 기본 install 은 팀모드를 켜지 않는다.
+    assert "[verify] 설치 검증 OK" in proc.stdout
+    assert "tm on" in proc.stdout          # 켜는 법 안내
+    assert not (team / ".teammode-active").exists()  # 마커 없음 = off (설치 ≠ 활성화)
 
 
 # ─────────────────────────── I2 — 유효 config 레포 (팀원) ───────────────────────────
@@ -113,7 +114,7 @@ def test_I2_member_only_upserts_own_config_entry(tmp_path):
     assert {"name": "ivan", "role": "developer"} in after["members"]
     # members.md 본인 이름 등재
     assert "ivan" in (md / "members.md").read_text()
-    assert "[verify] L1 데이터 읽힘" in proc.stdout
+    assert "[verify] 설치 검증 OK" in proc.stdout  # 기본 install = 활성화 안 함
 
 
 # ─────────────────────────── I2b — 다음 세션 SessionStart 주입 ───────────────────────────
@@ -127,6 +128,12 @@ def test_I2b_next_session_injects_context(tmp_path):
     (home / ".claude").mkdir(parents=True)
     iso = tmp_path / "iso"
     _run_install(team, home, ["--settings", str(iso)])
+    # 다음 세션 주입은 활성화(on) 전제 → 설치 후 명시적으로 켠다(마커 생성). 설치는 자동 on 안 함.
+    on_proc = subprocess.run(
+        [PY, str(REPO / "infra" / "teammode.py"), "on",
+         "--root", str(team), "--settings", str(iso / "on.json")],
+        capture_output=True, text=True, env=_env(home), timeout=60)
+    assert on_proc.returncode == 0, on_proc.stderr
     # 멤버 세션로그 하나 적재(첫 작업 시뮬레이션) — 그래야 주입 내용이 생김
     sess = team / "memory" / "team" / "sessions" / "heidi"
     (sess / "2026-06-14.md").write_text(
