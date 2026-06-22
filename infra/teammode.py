@@ -305,7 +305,13 @@ def auto_update_on_start(team_root: Path) -> None:
 
 
 def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
-           skills_dir: str | None = None) -> int:
+           skills_dir: str | None = None, install: bool = False) -> int:
+    """팀 모드를 켠다.
+
+    install=True (--install 플래그)일 때만 detect_agents loop 로 전 에이전트 배선.
+    install=False (--settings <격리경로> 모드)면 claude 만 배선 — 실호스트
+    ~/.codex 등 무접촉. 경로 비교는 보조 진단으로만 사용하고 정책 판정에 쓰지 않는다.
+    """
     _print_fenced_banner(team_root)
     # 시작 멘트(greeting): 배너 직후, config 에 있으면 출력(없으면 미출력 — §3.1).
     greeting = _read_team_field(team_root, "greeting")
@@ -317,36 +323,49 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     # 순서: auto_update 먼저 → 그 다음 심링크 토글(새 core 스킬 반영 위해).
     auto_update_on_start(team_root)
     # 멀티에이전트 detect loop:
-    #   감지된 에이전트 전부에 sync+install_skills. 감지 없으면 claude 기본.
+    #   install=True 시 감지된 에이전트 전부에 sync+install_skills. 감지 없으면 claude 기본.
+    #   install=False (격리/--settings 모드) 시 claude 만 배선 — 실호스트 ~/.codex 등 무접촉.
     #   ⚠️ settings_path/skills_dir(격리 테스트 인자)은 claude에만 적용 —
     #   다른 에이전트는 None(자기 기본 경로 파생). codex에 claude 경로 주입 사고 방지.
-    #   격리 모드 판정: settings_path 가 실호스트 ~/.claude/settings.json 이 아니면
-    #   (즉 --settings <tmp> 격리 테스트), 다른 에이전트는 실호스트 파일을 건드리므로 skip.
+    #   정책 판정은 install 플래그로만. 경로 비교(_is_isolated)는 보조 진단 목적.
     _real_claude_settings = os.path.expanduser("~/.claude/settings.json")
-    _is_isolated = (settings_path is not None and
-                    os.path.abspath(settings_path) != os.path.abspath(_real_claude_settings))
-    try:
-        import install_lib as _il
-        _detected = _il.detect_agents(Path.home())
-    except Exception:
-        _detected = []
-    # 격리 모드에서는 claude만 배선 — 실호스트 ~/.codex 등 무접촉
-    _agents_to_wire = (["claude"] if _is_isolated
-                       else _detected or ["claude"])
-    _primary_adapter = None  # 마커·util 심링크에 쓸 대표 어댑터(첫 번째)
+    _is_isolated_diag = (settings_path is not None and
+                         os.path.abspath(settings_path) != os.path.abspath(_real_claude_settings))
+    if install:
+        try:
+            import install_lib as _il
+            _detected = _il.detect_agents(Path.home())
+        except Exception:
+            _detected = []
+        _agents_to_wire = _detected or ["claude"]
+    else:
+        # --settings 격리 모드: claude 만 배선 (실호스트 무접촉)
+        _agents_to_wire = ["claude"]
+    _all_adapters: list = []  # 생성된 어댑터 전부 보관 — util replay 를 전부에 적용
+    _failed_agents: list = []  # 실패 에이전트 수집 (지적3: 부분 실패 처리)
     for _ag in _agents_to_wire:
-        if _ag == "claude":
-            _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
-        else:
-            _ag_adapter = _adapter_for(_ag)  # 자기 기본 경로 파생
-        _ag_adapter.sync(mode="on")
-        _ag_adapter.install_skills(layer="core")
-        if _primary_adapter is None:
-            _primary_adapter = _ag_adapter
-    # 대표 어댑터(첫 번째)가 없는 경우 방어 — 실 발생 불가지만 타입 안전
-    adapter = _primary_adapter or _adapter_for("claude", settings_path, skills_dir)
-    _active_marker(team_root).write_text("", encoding="utf-8")
-    # 멤버별 util 스킬 설치 (--member 지정 시)
+        try:
+            if _ag == "claude":
+                _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
+            else:
+                _ag_adapter = _adapter_for(_ag)  # 자기 기본 경로 파생
+            _ag_adapter.sync(mode="on")
+            _ag_adapter.install_skills(layer="core")
+            _all_adapters.append(_ag_adapter)
+        except Exception as _exc:  # noqa: BLE001 — 한 에이전트 실패가 나머지를 막지 않는다
+            _failed_agents.append((_ag, str(_exc)))
+    # 마커 정책: 최소 하나 성공 시 생성. 전부 실패하면 마커 미생성(엔진 off 상태 유지).
+    # 근거: 부분 ON 이라도 팀 기능 활성화는 가능. 전부 실패면 ON 의미 없음.
+    _primary_adapter = _all_adapters[0] if _all_adapters else None
+    if _primary_adapter is not None:
+        _active_marker(team_root).write_text("", encoding="utf-8")
+    # 실패 에이전트 경고 출력
+    for _ag_name, _ag_err in _failed_agents:
+        print(f"[warn] {_ag_name} 에이전트 배선 실패 → skip: {_ag_err}")
+    # 대표 어댑터가 없는 경우(전부 실패) 방어 — util replay 건너뜀
+    if _primary_adapter is None:
+        return 1
+    # 멤버별 util 스킬 설치 (--member 지정 시): 감지된 에이전트 전부에 적용(지적2).
     if member is not None:
         util_skills = _read_util_skills(team_root, member)
         for skill_name in util_skills:
@@ -362,8 +381,10 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
             if not src.is_dir() or not (src / "SKILL.md").is_file():
                 print(f"[warn] util 스킬 '{skill_name}' 소스 없음 → skip")
                 continue
-            target = adapter.skills_dir / skill_name
-            adapter._link_one_skill(src, target, layer="util")
+            # 지적2: 모든 어댑터에 util 심링크 적용 (기존: 대표 어댑터만)
+            for _adp in _all_adapters:
+                target = _adp.skills_dir / skill_name
+                _adp._link_one_skill(src, target, layer="util")
     return 0
 
 
@@ -496,34 +517,42 @@ def _write_util_skills(team_root: Path, member: str, skills: list) -> None:
 
 
 def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
-            skills_dir: str | None = None) -> int:
-    # 멀티에이전트 detect loop:
-    #   감지된 에이전트 전부에 sync+uninstall. 감지 없으면 claude 기본.
-    #   ⚠️ settings_path/skills_dir(격리 테스트 인자)은 claude에만 적용.
-    #   격리 모드 판정: settings_path 가 실호스트 ~/.claude/settings.json 이 아니면
-    #   다른 에이전트는 실호스트 파일을 건드리므로 skip.
-    _real_claude_settings = os.path.expanduser("~/.claude/settings.json")
-    _is_isolated = (settings_path is not None and
-                    os.path.abspath(settings_path) != os.path.abspath(_real_claude_settings))
-    try:
-        import install_lib as _il
-        _detected = _il.detect_agents(Path.home())
-    except Exception:
-        _detected = []
-    _agents_to_wire = (["claude"] if _is_isolated
-                       else _detected or ["claude"])
+            skills_dir: str | None = None, install: bool = False) -> int:
+    """팀 모드를 끈다.
+
+    install=True (--install 플래그)일 때만 detect_agents loop 로 전 에이전트 해제.
+    install=False (--settings 격리 모드)면 claude 만 해제 — 실호스트 무접촉.
+    정책 판정은 install 플래그로만. 경로 비교는 보조 진단 목적.
+    부분 실패(지적3): 에이전트별 작업을 try/except 로 감싸 전부 시도. 실패 [warn] 보고.
+    """
+    # 정책: install 플래그 기준으로 배선 대상 결정
+    if install:
+        try:
+            import install_lib as _il
+            _detected = _il.detect_agents(Path.home())
+        except Exception:
+            _detected = []
+        _agents_to_wire = _detected or ["claude"]
+    else:
+        _agents_to_wire = ["claude"]
     _primary_adapter = None
+    _failed_agents: list = []
     for _ag in _agents_to_wire:
-        if _ag == "claude":
-            _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
-        else:
-            _ag_adapter = _adapter_for(_ag)
-        _ag_adapter.sync(mode="off")
-        _uninstall_layer(_ag_adapter, "core")
-        _uninstall_layer(_ag_adapter, "util")
-        if _primary_adapter is None:
-            _primary_adapter = _ag_adapter
-    adapter = _primary_adapter or _adapter_for("claude", settings_path, skills_dir)
+        try:
+            if _ag == "claude":
+                _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
+            else:
+                _ag_adapter = _adapter_for(_ag)
+            _ag_adapter.sync(mode="off")
+            _uninstall_layer(_ag_adapter, "core")
+            _uninstall_layer(_ag_adapter, "util")
+            if _primary_adapter is None:
+                _primary_adapter = _ag_adapter
+        except Exception as _exc:  # noqa: BLE001 — 한 에이전트 실패가 나머지를 막지 않는다
+            _failed_agents.append((_ag, str(_exc)))
+    # 실패 에이전트 경고 출력
+    for _ag_name, _ag_err in _failed_agents:
+        print(f"[warn] {_ag_name} 에이전트 해제 실패 → skip: {_ag_err}")
     marker = _active_marker(team_root)
     if marker.exists():
         marker.unlink()
@@ -640,11 +669,12 @@ def _parse_skill_description(team_root: Path, skill_name: str) -> str:
 
 def cmd_util(team_root: Path, action: str | None, member: str | None,
              skill_name: str | None, skills_dir: str | None = None,
-             settings_path: str | None = None) -> int:
+             settings_path: str | None = None, install: bool = False) -> int:
     """util 동사 — util 스킬 목록 관리 (list/add/remove).
 
     엔진 기계역할: json 갱신 + 즉시 심링크 반영(on 상태면). 판단은 스킬(tm-manage-utils) 몫.
     settings_path: 즉시반영 심링크 경로 파생에 쓴다(P0-1). None → 실호스트 폴백.
+    install: --install 플래그. True 면 detect_agents loop, False 면 claude 만.
     """
     util_dir = team_root / "infra" / "skills" / "util"
 
@@ -717,19 +747,18 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                           "(--settings 또는 --install 필요; 다음 on 에서 반영)",
                           file=sys.stderr)
                 else:
-                    # 멀티에이전트 loop: 감지된 에이전트 전부에 util 심링크 반영.
+                    # 멀티에이전트 loop: install 플래그 기준으로 배선 대상 결정.
                     # ⚠️ settings_path/skills_dir 은 claude에만 적용.
-                    # 격리 모드 판정: settings_path 가 실호스트 path면 멀티에이전트, 아니면 claude만.
-                    _uc_real = os.path.expanduser("~/.claude/settings.json")
-                    _uc_isolated = (settings_path is not None and
-                                    os.path.abspath(settings_path) != os.path.abspath(_uc_real))
-                    try:
-                        import install_lib as _il
-                        _util_detected = _il.detect_agents(Path.home())
-                    except Exception:
-                        _util_detected = []
-                    _util_agents = (["claude"] if _uc_isolated
-                                    else _util_detected or ["claude"])
+                    # 정책 판정은 install 플래그로만. 경로 비교는 보조 진단 목적.
+                    if install:
+                        try:
+                            import install_lib as _il
+                            _util_detected = _il.detect_agents(Path.home())
+                        except Exception:
+                            _util_detected = []
+                        _util_agents = _util_detected or ["claude"]
+                    else:
+                        _util_agents = ["claude"]
                     for _uag in _util_agents:
                         if _uag == "claude":
                             the_skills_dir = Path(skills_dir) if skills_dir else None
@@ -755,19 +784,16 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                           "(--settings 또는 --install 필요; 다음 on 에서 반영)",
                           file=sys.stderr)
                 else:
-                    # 멀티에이전트 loop: 감지된 에이전트 전부에서 util 심링크 제거.
-                    # ⚠️ settings_path/skills_dir 은 claude에만 적용.
-                    # 격리 모드 판정: settings_path 가 실호스트 path면 멀티에이전트, 아니면 claude만.
-                    _uc_real = os.path.expanduser("~/.claude/settings.json")
-                    _uc_isolated = (settings_path is not None and
-                                    os.path.abspath(settings_path) != os.path.abspath(_uc_real))
-                    try:
-                        import install_lib as _il
-                        _util_detected = _il.detect_agents(Path.home())
-                    except Exception:
-                        _util_detected = []
-                    _util_agents = (["claude"] if _uc_isolated
-                                    else _util_detected or ["claude"])
+                    # 멀티에이전트 loop: install 플래그 기준으로 배선 대상 결정.
+                    if install:
+                        try:
+                            import install_lib as _il
+                            _util_detected = _il.detect_agents(Path.home())
+                        except Exception:
+                            _util_detected = []
+                        _util_agents = _util_detected or ["claude"]
+                    else:
+                        _util_agents = ["claude"]
                     for _uag in _util_agents:
                         if _uag == "claude":
                             the_skills_dir = Path(skills_dir) if skills_dir else None
@@ -1892,7 +1918,7 @@ def main(argv=None) -> int:
         util_settings = _resolve_settings(opts.get("settings"), opts["install"])
         return cmd_util(team_root, action, opts.get("member"),
                         opts.get("skill"), skills_dir=opts.get("skills-dir"),
-                        settings_path=util_settings)
+                        settings_path=util_settings, install=opts["install"])
 
     if verb == "knowledge":
         positionals = opts.get("positionals") or []
@@ -1925,9 +1951,9 @@ def main(argv=None) -> int:
                 print(f"[error] --member: {err}", file=sys.stderr)
                 return 2
         return cmd_on(team_root, resolved_settings, member=member,
-                      skills_dir=opts.get("skills-dir"))
+                      skills_dir=opts.get("skills-dir"), install=opts["install"])
     return cmd_off(team_root, resolved_settings, member=opts.get("member"),
-                   skills_dir=opts.get("skills-dir"))
+                   skills_dir=opts.get("skills-dir"), install=opts["install"])
 
 
 if __name__ == "__main__":
