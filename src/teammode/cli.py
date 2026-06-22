@@ -39,7 +39,7 @@ def _git_user_name() -> str | None:
 
 def _slugify(name: str) -> str:
     """영문 소문자·숫자·하이픈만 — 멤버명 제안용(한글 user.name 대비)."""
-    s = "".join(c if c.isalnum() else "-" for c in name.lower())
+    s = "".join(c if (c.isascii() and c.isalnum()) else "-" for c in name.lower())
     return "-".join(filter(None, s.split("-")))
 
 
@@ -125,7 +125,7 @@ def _done(repo_dir: Path, *, joined: bool) -> None:
         if url:
             print()
             print("   팀원에게 이 한 줄을 공유하세요:")
-            print(f"     pipx run teammode join {url}")
+            print(f'     pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
 
 
 def cmd_init(args) -> int:
