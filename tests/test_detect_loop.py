@@ -616,3 +616,151 @@ def test_cmd_off_partial_failure_warn(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "[warn]" in captured.out, f"[warn] 미출력: {captured.out!r}"
     assert "codex" in captured.out, f"실패 에이전트명 미출력: {captured.out!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 지적1 cmd_off: 전부 실패 → marker 유지 + rc=1 + [warn]
+# ─────────────────────────────────────────────────────────────────────
+
+def test_cmd_off_all_agents_fail_marker_kept(tmp_path, capsys):
+    """cmd_off 에서 모든 에이전트 실패 시 marker 유지 + rc=1 + [warn] 출력."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+    # 마커 사전 생성 (off 가 실행되는 상황)
+    marker = root / ".teammode-active"
+    marker.write_text("", encoding="utf-8")
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        m = MagicMock()
+        m.skills_dir = tmp_path / f"{agent_name}-skills"
+        m.sync.side_effect = RuntimeError(f"{agent_name} off boom")
+        return m
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_off"](root, real_claude_settings, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    assert rc == 1, f"전부 실패 시 rc=1 이어야 함: rc={rc}"
+    assert marker.exists(), "전부 실패 시 marker 는 유지돼야 한다"
+    captured = capsys.readouterr()
+    assert "[warn]" in captured.out, f"[warn] 미출력: {captured.out!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 지적1 cmd_off: 부분 실패(1성공) → marker 삭제 + rc=0
+# ─────────────────────────────────────────────────────────────────────
+
+def test_cmd_off_partial_failure_marker_removed(tmp_path, capsys):
+    """cmd_off 에서 claude 성공·codex 실패 시 marker 삭제 + rc=0."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+    marker = root / ".teammode-active"
+    marker.write_text("", encoding="utf-8")
+
+    claude_adapter = _mock_adapter(tmp_path / "claude-skills")
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        if agent_name == "claude":
+            return claude_adapter
+        m = MagicMock()
+        m.skills_dir = tmp_path / f"{agent_name}-skills"
+        m.sync.side_effect = RuntimeError(f"{agent_name} off boom")
+        return m
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_off"](root, real_claude_settings, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    assert rc == 0, f"claude 해제 성공이면 rc=0: rc={rc}"
+    assert not marker.exists(), "1개 이상 성공 시 marker 는 삭제돼야 한다"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 지적2 util replay: 한쪽 _link_one_skill 실패 → crash 안 함, [warn], marker 유지, 나머지 처리
+# ─────────────────────────────────────────────────────────────────────
+
+def test_cmd_on_util_link_partial_failure_no_crash(tmp_path, capsys):
+    """on --member 시 util link 한 어댑터 실패 → crash 없음, [warn] 출력, marker 생성, 나머지 처리."""
+    root = _scaffold_team_root(tmp_path)
+    real_claude_settings = os.path.expanduser("~/.claude/settings.json")
+    (root / "memory").mkdir(exist_ok=True)
+
+    # util 스킬 소스 준비
+    util_skill_dir = root / "infra" / "skills" / "util" / "myutil"
+    util_skill_dir.mkdir(parents=True, exist_ok=True)
+    (util_skill_dir / "SKILL.md").write_text("---\ndescription: test util\n---\n",
+                                              encoding="utf-8")
+
+    member = "bob"
+    sessions_dir = root / "memory" / "team" / "sessions" / member
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    util_json = sessions_dir / "util-skills.json"
+    util_json.write_text(json.dumps({"installed": ["myutil"]}), encoding="utf-8")
+
+    claude_skills_dir = tmp_path / "claude-skills"
+    codex_skills_dir  = tmp_path / "codex-skills"
+    claude_skills_dir.mkdir()
+    codex_skills_dir.mkdir()
+
+    link_calls: list = []
+
+    def make_mock_adapter(agent_name, sd, fail_link=False):
+        m = MagicMock()
+        m.skills_dir = sd
+
+        def _link_one_skill(src, target, layer=None):
+            if fail_link:
+                raise RuntimeError(f"{agent_name} link boom")
+            link_calls.append((str(sd), src.name))
+
+        m._link_one_skill = _link_one_skill
+        return m
+
+    claude_adapter = make_mock_adapter("claude", claude_skills_dir, fail_link=False)
+    # codex _link_one_skill 이 예외를 던짐
+    codex_adapter  = make_mock_adapter("codex",  codex_skills_dir, fail_link=True)
+
+    def fake_adapter_for(agent_name, s=None, sd=None):
+        if agent_name == "claude":
+            return claude_adapter
+        elif agent_name == "codex":
+            return codex_adapter
+        raise ValueError(f"unexpected: {agent_name}")
+
+    import install_lib as _il
+    with _patch_globals(_adapter_for=fake_adapter_for,
+                        _adapter=lambda s=None, sd=None: fake_adapter_for("claude", s, sd)):
+        orig_detect = _il.detect_agents
+        _il.detect_agents = lambda home: ["claude", "codex"]
+        try:
+            mod = _load_engine()
+            rc = mod["cmd_on"](root, real_claude_settings, member=member, install=True)
+        finally:
+            _il.detect_agents = orig_detect
+
+    # crash 없이 완료
+    assert rc == 0, f"util link 실패해도 rc=0 이어야 함: rc={rc}"
+    # marker 생성됨 (core sync 성공)
+    assert (root / ".teammode-active").exists(), "core sync 성공 시 marker 있어야 함"
+    # claude 에는 link 성공
+    assert any(str(claude_skills_dir) in d for d, _ in link_calls), (
+        f"claude util link 없음: {link_calls}")
+    # [warn] 출력
+    captured = capsys.readouterr()
+    assert "[warn]" in captured.out, f"[warn] 미출력: {captured.out!r}"
