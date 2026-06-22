@@ -16,7 +16,7 @@ teammode SPEC v0.2 — 설치·부트스트랩
 | **결정적** | 일반 bootstrap 경로는 같은 입력과 같은 파일 상태 → 같은 결과를 목표로 한다. 이름·identity·role·settings·root는 명시 인자 또는 git/local 파일에서 읽고, 애매하면 멈춘다. 예외: `--register-obsidian`의 신규 등록은 `ts`/`vault_id` 기본값이 실행마다 달라질 수 있다(§4.9). |
 | **env 불신뢰** | 팀 루트는 `--root` 또는 팀 표식 있는 cwd로만 결정한다. ambient `TEAMMODE_HOME`/`LEGACY_TOOL_HOME`은 install 경로에서 신뢰하지 않는다. verify subprocess도 env 화이트리스트만 넘긴다. |
 | **L1 자력 도달** | 서비스 연결(L2) 없이도 memory 구조, members, 훅 배선, active marker, context 수집까지 간다. 빈 `services` 슬롯은 정상이다. |
-| **크로스에이전트** | wire 단계는 home의 `.claude`·`.codex` 디렉토리 존재로 감지한 에이전트를 각 어댑터 CLI에 위임한다. 단 bootstrap verify는 감지 결과를 쓰지 않고 엔진 `on`을 호출하며, 현 엔진 `on`은 Claude 어댑터만 로드한다(§4.4·§4.7, 부록 A.3). |
+| **크로스에이전트** | wire 단계는 home의 `.claude`·`.codex` 디렉토리 존재로 감지한 에이전트를 각 어댑터 CLI에 위임한다. 단 bootstrap verify는 `context`만 호출하므로(`on` 미사용) 어댑터 로드와 무관하다(§4.4·§4.7). |
 | **호스트 쓰기 게이트** | 실 에이전트 설정·실 env는 `--yes` 또는 격리 `--settings` 의도가 있을 때만 처리한다. `--settings`가 있으면 env는 실호스트에 쓰지 않는다. |
 | **판단은 위임** | "어느 Notion DB·어느 캘린더"는 install.py 범위 밖이다. provider 연결은 별도 connect/onboard 계층이 채우며, install은 빈 슬롯을 허용한다. |
 
@@ -42,7 +42,7 @@ python infra/install.py --<agent> <adapter-args...>
 | `--agent VALUE` | `Options.agent`에 저장된다. | `auto` |
 | `--member-name NAME` | 세션로그 author/member 이름. `opts.member_name` 우선, 없으면 `git config user.name`에서 Unicode 영숫자만 남긴 뒤 lowercase한 제안값 사용. 최종 검증은 `_validate_author` 규칙(Unicode `isalnum()` + `-`/`_`, 첫 글자 영숫자)이다. | 제안 실패 시 없음 → scaffold 전에 exit 3 |
 | `--role ROLE` | `team.config.json.members`의 자기 엔트리에 넣을 선택 role 문자열. members.md의 role 판정값이 아니다. | `None`이면 config member role 키 생략/제거 |
-| `--settings DIR/PATH` | bootstrap에서는 에이전트 설정·MCP·skills·verify 파일을 실호스트 대신 둘 격리 디렉토리로 해석한다. `--uninstall`에서는 같은 값이 디렉토리로 해석되지 않고 Claude `settings.json` 파일 경로 문자열로 그대로 쓰인다. | 미지정 |
+| `--settings DIR/PATH` | bootstrap에서는 에이전트 설정·MCP·skills를 실호스트 대신 둘 격리 디렉토리로 해석한다(verify는 `context`만 호출 — settings 파일 안 만듦). `--uninstall`에서는 같은 값이 디렉토리로 해석되지 않고 Claude `settings.json` 파일 경로 문자열로 그대로 쓰인다. | 미지정 |
 | `--yes` | `--settings` 없이 실호스트 배선·env 주입까지 진행하겠다는 동의. | off |
 | `--update` | `Options.update=True`로 파싱만 된다. | **현 bootstrap에서 사용하지 않음** |
 | `--dry-run` | 변경 없이 계획만 출력. settings·memory·env 무접촉. | off |
@@ -126,8 +126,8 @@ detect 함수 `_detect(team_root, home)`는 읽기만 한다.
 ⑥ wire        감지 에이전트마다 install-mcp → sync --on → install-skills.
               실호스트 배선은 --yes 또는 --settings 필요.
 ⑦ env         런타임 훅용 TEAMMODE_HOME 영구 주입 — POSIX:셸 프로파일 1줄 / Windows:setx (§4.8)
-⑧ verify      teammode on(배너+훅+active 마커) → teammode context --json 으로 L1 데이터 읽힘 확인.
-              현 엔진 on은 감지 에이전트와 무관하게 Claude 어댑터만 로드한다.
+⑧ verify      context --json 으로 설치 확인(데이터 읽힘) — 팀모드 on 은 호출하지 않는다
+              (설치 ≠ 활성화 — on 의 auto_update 부작용 회피). 활성화는 사용자가 `tm on` 할 때만.
               ※ 실제 *맥락 주입*은 여기가 아니라 다음 세션의 SessionStart 훅(§1.6·§2.4)
 ```
 
@@ -138,7 +138,7 @@ detect 함수 `_detect(team_root, home)`는 읽기만 한다.
 - `team_name_default`는 remote repo name이 있으면 그것, 없으면 `team_root.name`이다.
 - `shell="__env__"` 기본값은 `os.environ["SHELL"]`에서 bash/zsh/fish 감지에만 쓰인다. 팀 root 결정에는 env를 쓰지 않는다.
 - `platform=None`이면 `sys.platform`으로 Windows/POSIX env 분기를 결정한다.
-- verify는 `_engine_call(["on", "--root", team_root] + verify_flag)` 후 `_engine_capture(["context", "--root", team_root, "--json"])` 순서다. `on` rc 비zero, `context` rc 비zero, stdout JSON 파싱 실패는 모두 exit 3이다. 이 `on`은 `infra/teammode.py`의 `_adapter()`를 통해 항상 Claude 어댑터를 사용하므로 Codex-only/no-agent 환경에서도 verify settings 경로가 Claude settings 형식으로 쓰일 수 있다.
+- verify는 `_engine_capture(["context", "--root", team_root, "--json"])`만 호출한다(**`on` 미사용** — `cmd_on`의 `auto_update_on_start`가 팀 레포에 자동 커밋을 남기는 부작용 회피). `context` rc 비zero·stdout JSON 파싱 실패는 exit 3이다. settings·active 마커를 만들지 않으며 팀모드를 켜지 않는다(설치 ≠ 활성화).
 - `_engine_capture()`는 subprocess env를 `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `TZ`, `PYTHONPATH`, `TERM`, `XDG_STATE_HOME`로 제한한다. ambient `TEAMMODE_HOME`/`LEGACY_TOOL_HOME`은 넘기지 않는다.
 
 ### 4.5 도입자/팀원 role 분기
@@ -201,9 +201,9 @@ members/services 스키마 검증:
 
 ### 4.6 에이전트 설정 쓰기 경계
 
-- wire의 실호스트 쓰기(`~/.claude/settings.json`, `~/.codex/config.toml`, `~/.claude.json`, skills dir 등)는 정상 설치다. verify의 settings 쓰기는 엔진 `on` 경유라 현 구현에서 Claude 어댑터 경로만 쓴다. 단 명시 의도 없이는 안 쓴다.
+- wire의 실호스트 쓰기(`~/.claude/settings.json`, `~/.codex/config.toml`, `~/.claude.json`, skills dir 등)는 정상 설치다. verify는 `context`만 호출하므로 settings·마커를 쓰지 않는다. 단 명시 의도 없이는 안 쓴다.
 - bootstrap에서 scaffold까지 끝낸 뒤 `opts.settings is None and not opts.yes`이면 `[wire] 건너뜀...`을 출력하고 exit 0한다. 이 경우 env 주입과 verify도 실행하지 않는다.
-- `--settings <DIR>` 지정 → 격리 모드. 에이전트 settings/config, Claude MCP 파일, skills dir, verify settings 파일은 DIR 하위로 간다. 실 env는 건드리지 않는다.
+- `--settings <DIR>` 지정 → 격리 모드. 에이전트 settings/config, Claude MCP 파일, skills dir는 DIR 하위로 간다. 실 env는 건드리지 않는다.
 - `--settings` 미지정 + `--yes` 지정 → 실호스트 모드. home 기준 기본 경로에 배선하고 env를 주입한다.
 - `--settings`와 `--yes`가 같이 오면 격리 모드가 env 기준으로 우선한다. settings는 격리 하위로 가고 실 env는 스킵된다.
 - 디스패치 모드(`--<agent> sync`)도 동일 게이트: `--settings`/`--install` 둘 다 없으면 exit 2. 이 게이트는 Codex 어댑터의 `--config`를 인정하지 않으며, `--settings`는 Codex 어댑터에 전달되면 argparse 오류가 난다. `--install`은 디스패처 전용(어댑터엔 전달 안 함).
@@ -213,7 +213,7 @@ members/services 스키마 검증:
 
 ### 4.7 에이전트 배선 (wire)
 
-`wire_agents(agents, home, settings_override, run_adapter, team_root)`가 감지된 에이전트별로 어댑터를 호출한다. `run_adapter`는 필수 주입 콜러블이며 없으면 `ValueError`다. 이 절은 wire 단계만 설명한다. bootstrap verify는 이 감지 목록을 재사용하지 않고 `teammode.py on`을 호출하며, 현 엔진 `on`은 Claude 어댑터만 로드한다.
+`wire_agents(agents, home, settings_override, run_adapter, team_root)`가 감지된 에이전트별로 어댑터를 호출한다. `run_adapter`는 필수 주입 콜러블이며 없으면 `ValueError`다. 이 절은 wire 단계만 설명한다. bootstrap verify는 이 감지 목록과 무관하게 `context`만 호출한다(`on` 미사용).
 
 지원 에이전트와 경로:
 

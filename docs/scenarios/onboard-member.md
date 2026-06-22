@@ -46,8 +46,8 @@ python infra/install.py --root . --member-name bob --yes
 [wire] claude 훅 동기화 완료 → /home/me/.claude/settings.json
 [wire] claude 스킬 심링크 완료 → /home/me/.claude/skills
 [env] /home/me/.bashrc 에 TEAMMODE_HOME 주입 (신규 주입).
-[verify] L1 데이터 읽힘 — state=on, members=2, active 마커·배너 생성됨.
-[done] L1 부트스트랩 완료. 다음 세션부터 SessionStart 훅이 맥락을 주입합니다.
+[verify] 설치 검증 OK — members=2 (팀모드는 꺼둠).
+[done] 설치 완료. 팀모드를 켜려면 `tm on`(또는 /tm) 하세요.
 ```
 - exit **0**. `members=2` — 기존 alice + 방금 등재된 bob.
 - 부수효과: `members.md` 에 `- bob  <!-- id: <bob git email> -->` append, `config.members` 에 `{name:"bob"}` upsert(자기것만, alice 엔트리 무접촉). **`team.config.json` 의 `spec_version`·`team`·`services`·`admin_contact` 는 그대로** — 팀원은 안 건드린다. `team.name` 기본값 계산은 하지만 config 를 안 쓰므로 무의미(읽기만).
@@ -68,9 +68,9 @@ python infra/install.py --root . --member-name bob --yes
 ```bash
 python infra/teammode.py context --root . --json
 ```
-**화면** — 도입자와 달리 **기존 팀 세션로그가 보인다**. `state=on`, `members` 에 alice(기존 로그 summary)·bob(아직 로그 없음):
+**화면** — 도입자와 달리 **기존 팀 세션로그가 보인다**. `state=off`(설치는 팀모드를 켜지 않음 — `tm on` 전까지 off), `members` 에 alice(기존 로그 summary)·bob(아직 로그 없음):
 ```json
-{"state": "on", "index": "…", "members": [
+{"state": "off", "index": "…", "members": [
   {"author": "alice", "date": "2026-06-10", "summary": "결제 모듈 리팩터링 …", "role": "pm"},
   {"author": "bob", "date": "…", "summary": "…", "role": null}
 ]}
