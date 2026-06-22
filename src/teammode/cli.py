@@ -239,10 +239,12 @@ def _parse_members_md(members_file: Path) -> list[str]:
     return names
 
 
-def _wizard_join(url: str, args) -> tuple[Path, str | None, list[str], bool]:
+def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[str], bool]:
     """TTY 대화형 join wizard 8단계. (dest, member, extra_args, clone_skip) 반환.
 
-    clone 은 wizard 가 직접 하지 않는다 — 1단계 위치 확정 후 호출자가 clone.
+    clone_fn: 선택적 콜백 `(url, dest) -> bool`. 단계1·2 확정 후, 단계3(members.md 읽기)
+      전에 호출한다. True 반환 시 clone 성공, False 시 오류 처리. None 이면 clone 건너뜀
+      (테스트가 members.md를 미리 세팅한 경우·기존 폴더 재사용 등).
     extra 에는 --agent, --role, --register-obsidian 이 들어간다.
     clone_skip=True 이면 git clone 을 건너뛴다(기존 폴더 재사용).
     """
@@ -301,10 +303,19 @@ def _wizard_join(url: str, args) -> tuple[Path, str | None, list[str], bool]:
                 except ValueError:
                     pass
 
+        # ── clone (단계 2.5): members.md 읽기 전에 실행 → 기존멤버 목록 정확하게 읽힘 ──
+        # clone_skip 이거나 clone_fn 이 없으면 건너뜀(테스트·재사용 경로).
+        if not clone_skip and clone_fn is not None:
+            print(f"[join] clone {url} → {dest}")
+            ok = clone_fn(url, dest)
+            if not ok:
+                _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
+                raise SystemExit(1)
+
         # ── 3단계: 새/기존 멤버 ───────────────────────────────────────────
+        # clone 완료 후 읽으므로 신규 합류 시 기존멤버 목록이 정확히 채워진다.
         members_file = dest / "memory" / "team" / "members.md"
-        existing_members = _parse_members_md(members_file) if not clone_skip else \
-            _parse_members_md(members_file)  # clone 후엔 있을 수도
+        existing_members = _parse_members_md(members_file)
 
         choice3 = _prompt("3) 새 팀원/기존? [1=새/2=기존]", "1")
         is_new = choice3.strip() != "2"
@@ -385,14 +396,16 @@ def cmd_join(args) -> int:
 
     if is_tty:
         # ── 대화형: wizard 8단계 ──────────────────────────────────────────
-        dest, member, extra, clone_skip = _wizard_join(args.url, args)
+        # clone_fn: 단계2 후·단계3(members.md 읽기) 전에 실행해 기존멤버 목록을 정확히 읽음.
+        def _clone_fn(clone_url: str, clone_dest: Path) -> bool:
+            return subprocess.run(["git", "clone", clone_url, str(clone_dest)]).returncode == 0
 
-        if not clone_skip:
-            print(f"[join] clone {args.url} → {dest}")
-            if subprocess.run(["git", "clone", args.url, str(dest)]).returncode != 0:
-                _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
-                return 1
-        else:
+        try:
+            dest, member, extra, clone_skip = _wizard_join(args.url, args, clone_fn=_clone_fn)
+        except SystemExit as _se:
+            return int(_se.code) if _se.code is not None else 1
+
+        if clone_skip:
             print(f"[join] clone skip — 기존 폴더 재사용: {dest}")
     else:
         # ── 비-TTY: 인자 경로 (input 절대 호출 안 함) ────────────────────

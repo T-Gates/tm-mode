@@ -25,8 +25,19 @@ from pathlib import Path
 _INFRA = Path(__file__).resolve().parent
 if str(_INFRA) not in sys.path:
     sys.path.insert(0, str(_INFRA))
-import teammode as _engine  # noqa: E402
 import providers as _providers  # noqa: E402
+import teammode as _engine  # noqa: E402
+
+# ⚠️ 테스트 순서 견고성: test_cli_join_wizard 가 collection 시점에 sys.modules['teammode']
+# 를 pip 런처 패키지(src/teammode) 스텁으로 등록한다(infra/teammode.py 엔진과 이름 충돌).
+# 기본 수집 순서에선 install_lib 가 더 일찍 import 돼 실제 엔진에 바인딩되지만, 역순/-k 등에선
+# 스텁(=_validate_author 없음)에 바인딩될 수 있다. 모듈레벨 바인딩은 유지하되(run-time 스텁
+# 상태와 무관해야 함), 스텁이 잡히면 실제 엔진을 파일에서 직접 로드해 교정한다.
+if not hasattr(_engine, "_validate_author"):
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("_tm_engine_real", str(_INFRA / "teammode.py"))
+    _engine = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_engine)
 
 # Python 버전 하한 (§12-1 미결 — 타깃 머신 분포 근거 나오면 확정).
 # 보수적으로 3.9 로 둔다(현행 런타임 훅·엔진이 3.9+ 문법 사용).
@@ -50,7 +61,7 @@ _TEAM_MARKERS = (".git", "team.config.json", "memory")
 @dataclass
 class Options:
     root: str | None = None
-    agent: str = "auto"
+    agents: list = field(default_factory=list)  # [] = auto(감지 전부). 하위호환: agent(str) 제거.
     member_name: str | None = None
     role: str | None = None
     settings: str | None = None
@@ -70,6 +81,10 @@ def parse_args(argv) -> Options:
 
     알 수 없는 플래그는 무시(후속 슬라이스 확장 여지). --<agent> 디스패치 흡수는
     install.py 오케스트레이터가 parse_args 전에 분기하므로 여기선 부트스트랩 플래그만.
+
+    --agent 는 복수 허용(append). 단일 `--agent x` → opts.agents = ["x"].
+    복수 `--agent claude --agent codex` → ["claude", "codex"].
+    미지정 시 [] → auto(감지 전부).
     """
     opts = Options()
     it = iter(argv)
@@ -77,7 +92,9 @@ def parse_args(argv) -> Options:
         if a == "--root":
             opts.root = next(it, None)
         elif a == "--agent":
-            opts.agent = next(it, None) or "auto"
+            val = next(it, None)
+            if val:
+                opts.agents.append(val)
         elif a == "--member-name":
             opts.member_name = next(it, None)
         elif a == "--role":
@@ -374,6 +391,45 @@ def detect_agents(home: Path) -> list:
     found = [name for name, d in _AGENT_HOME_DIRS.items()
              if (home / d).is_dir()]
     return sorted(found)
+
+
+def write_agents_to_config(team_root: Path, agents: list) -> bool:
+    """wire한 최종 에이전트 집합을 team.config.json 의 `agents` 필드에 기록.
+
+    멱등: 같은 값이면 무변경(False 반환). config 부재/깨짐이면 무작업(False).
+    `agents` 필드는 on/off 가 detect 재감지 없이 읽는 단일 소스가 된다(선택 미전파 버그 해소).
+    """
+    cfg_path = team_root / "team.config.json"
+    cfg = load_config(team_root)
+    if not isinstance(cfg, dict):
+        return False
+    normalized = sorted(agents)
+    if cfg.get("agents") == normalized:
+        return False
+    cfg["agents"] = normalized
+    cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+                        encoding="utf-8")
+    return True
+
+
+def read_agents_from_config(team_root: Path) -> list | None:
+    """team.config.json 의 `agents` 필드를 읽는다.
+
+    반환:
+      - list: config 에 `agents` 필드가 있고 유효 리스트면 그 값.
+      - None: config 부재·깨짐·필드 없음 → 호출부가 detect_agents fallback 처리.
+    비치명: 어떤 예외도 삼킨다(on/off 가 막히면 안 됨).
+    """
+    try:
+        cfg = load_config(team_root)
+        if not isinstance(cfg, dict):
+            return None
+        val = cfg.get("agents")
+        if isinstance(val, list):
+            return [a for a in val if isinstance(a, str) and a]
+        return None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def suggest_member_name(git_user_name) -> str | None:

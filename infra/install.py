@@ -638,10 +638,21 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     member_name = opts.member_name or det["member_name_suggestion"]
     team_name_default = det["team_name_default"] or team_root.name
 
+    # 에이전트 집합 결정: --agent 선택 있으면 감지 결과와 교집합, 없으면(auto) 감지 전부.
+    _detected = det["agents"]
+    if opts.agents:
+        # 사용자가 명시한 에이전트 중 실제 설치된 것만 wire.
+        _wire_agents = [a for a in opts.agents if a in _detected]
+        _missing = [a for a in opts.agents if a not in _detected]
+        for _ag in _missing:
+            err(f"[warn] --agent {_ag} 는 홈 디렉토리에서 감지되지 않아 제외합니다.")
+    else:
+        _wire_agents = _detected  # auto: 감지 전부
+
     # 계획 출력
     out(f"[plan] team_root={team_root}")
     out(f"[plan] role={role} (team.name 기본='{team_name_default}')")
-    out(f"[plan] agents={det['agents'] or '(없음)'}")
+    out(f"[plan] agents={_wire_agents or '(없음)'}")
     out(f"[plan] member_name={member_name or '(미정)'}")
 
     if opts.dry_run:
@@ -699,7 +710,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
             "스캐폴드는 완료(메모리는 준비됨).")
         return 0
     wire = il.wire_agents(
-        det["agents"], home=home, settings_override=settings_override,
+        _wire_agents, home=home, settings_override=settings_override,
         run_adapter=_make_run_adapter(), team_root=team_root)
     for m in wire.messages:
         out(m)
@@ -708,12 +719,20 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
             err(f"[error] wire 실패: {agent} — {why}")
         return wire.exit_code  # 부분 실패 exit 3, 성공분은 롤백 안 함(M5)
 
+    # wire 성공한 에이전트 집합을 team.config.json 에 기록 → on/off 가 재감지 없이 읽는다.
+    if wire.wired:
+        try:
+            if il.write_agents_to_config(team_root, wire.wired):
+                out(f"[config] agents={wire.wired} → team.config.json 기록")
+        except Exception as _e:
+            err(f"[warn] agents config 기록 실패(비치명): {_e}")
+
     # settings.json env 에 TEAMMODE_MEMBER 주입 — 가드훅(kb-write-guard)이 본인
     # 세션로그를 판정하는 단일 소스. 셸 프로파일(TEAMMODE_HOME)과 달리 settings.json
     # env 라야 훅·도구 환경에 닿는다. settings_override 면 격리 경로에 박힌다.
     # ⚠️ claude 가 배선된 경우만 — codex-only 호스트에 stray ~/.claude/settings.json
     #    을 만들지 않는다(Opus 적대검수 blocker).
-    if "claude" in (det.get("agents") or []):
+    if "claude" in (wire.wired or []):
         try:
             _claude_settings = il.agent_settings_path(
                 "claude", home=home, settings_override=settings_override)

@@ -26,6 +26,13 @@ import pytest
 # pytest 전체 suite 에서 infra/ 가 sys.path 에 먼저 들어가도 영향 없다.
 # patch("teammode.cli.*") 가 동작하려면 sys.modules 에 "teammode" 패키지와
 # "teammode.cli" 를 모두 등록해야 한다.
+#
+# ⚠️ sys.modules 오염 방지: 이 모듈이 스텁 "teammode" 패키지를 등록하면 후속 테스트의
+# `import teammode`(infra/teammode.py)가 스텁을 받아 깨진다. 따라서 원래 값을 저장하고
+# 이 모듈의 테스트가 끝난 뒤 복구하는 autouse fixture 를 module 스코프로 제공한다.
+_ORIG_TEAMMODE = sys.modules.get("teammode")
+_ORIG_TEAMMODE_CLI = sys.modules.get("teammode.cli")
+
 if "teammode" not in sys.modules or not hasattr(sys.modules["teammode"], "__path__"):
     _pkg = types.ModuleType("teammode")
     _pkg.__path__ = []  # type: ignore[attr-defined]
@@ -38,6 +45,27 @@ cli = importlib.util.module_from_spec(_spec)
 cli.__package__ = "teammode"
 sys.modules["teammode.cli"] = cli
 _spec.loader.exec_module(cli)  # type: ignore[union-attr]
+
+
+# ─── sys.modules 오염 복구 픽스처 ─────────────────────────────────────────────
+
+@pytest.fixture(autouse=True, scope="module")
+def _restore_teammode_modules():
+    """이 모듈의 테스트가 모두 끝난 뒤 sys.modules["teammode"]를 원래대로 복구.
+
+    복구하지 않으면 후속 테스트 파일에서 `import teammode` 가 infra/teammode.py 대신
+    여기서 등록한 스텁 패키지를 반환해 AttributeError 가 터진다(전체 suite 오염).
+    """
+    yield  # 이 모듈의 모든 테스트 실행
+    # 복구: 원래 값이 있으면 복원, 없으면 키 제거
+    if _ORIG_TEAMMODE is not None:
+        sys.modules["teammode"] = _ORIG_TEAMMODE
+    else:
+        sys.modules.pop("teammode", None)
+    if _ORIG_TEAMMODE_CLI is not None:
+        sys.modules["teammode.cli"] = _ORIG_TEAMMODE_CLI
+    else:
+        sys.modules.pop("teammode.cli", None)
 
 
 # ─── 공통 픽스처 ────────────────────────────────────────────────────────────

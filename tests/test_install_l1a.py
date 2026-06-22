@@ -20,7 +20,7 @@ import install_lib as il  # noqa: E402
 def test_parse_args_defaults():
     opts = il.parse_args([])
     assert opts.root is None
-    assert opts.agent == "auto"
+    assert opts.agents == []  # [] = auto(미지정 시 감지 전부)
     assert opts.member_name is None
     assert opts.settings is None
     assert opts.yes is False
@@ -34,7 +34,7 @@ def test_parse_args_all_flags():
         "--settings", "/tmp/s.json", "--yes", "--update", "--dry-run",
     ])
     assert opts.root == "/team"
-    assert opts.agent == "claude"
+    assert opts.agents == ["claude"]  # 단일 --agent → list
     assert opts.member_name == "alice"
     assert opts.settings == "/tmp/s.json"
     assert opts.yes is True

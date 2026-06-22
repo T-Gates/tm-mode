@@ -323,7 +323,8 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     # 순서: auto_update 먼저 → 그 다음 심링크 토글(새 core 스킬 반영 위해).
     auto_update_on_start(team_root)
     # 멀티에이전트 detect loop:
-    #   install=True 시 감지된 에이전트 전부에 sync+install_skills. 감지 없으면 claude 기본.
+    #   install=True 시 config.agents(install이 기록한 선택 집합) 우선,
+    #     없으면 detect_agents fallback(기존 레포 회귀 0). 감지/config 모두 없으면 claude 기본.
     #   install=False (격리/--settings 모드) 시 claude 만 배선 — 실호스트 ~/.codex 등 무접촉.
     #   ⚠️ settings_path/skills_dir(격리 테스트 인자)은 claude에만 적용 —
     #   다른 에이전트는 None(자기 기본 경로 파생). codex에 claude 경로 주입 사고 방지.
@@ -334,7 +335,13 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     if install:
         try:
             import install_lib as _il
-            _detected = _il.detect_agents(Path.home())
+            # config.agents 에 선택 집합이 기록돼 있으면 그걸 쓴다(install 미전파 버그 해소).
+            # 없으면(기존 레포 또는 config 미기록) detect fallback — 회귀 0.
+            _from_config = _il.read_agents_from_config(team_root)
+            if _from_config is not None:
+                _detected = _from_config
+            else:
+                _detected = _il.detect_agents(Path.home())
         except Exception:
             _detected = []
         _agents_to_wire = _detected or ["claude"]
@@ -529,11 +536,16 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
     정책 판정은 install 플래그로만. 경로 비교는 보조 진단 목적.
     부분 실패(지적3): 에이전트별 작업을 try/except 로 감싸 전부 시도. 실패 [warn] 보고.
     """
-    # 정책: install 플래그 기준으로 배선 대상 결정
+    # 정책: install 플래그 기준으로 배선 대상 결정.
+    # config.agents(install이 기록한 선택 집합) 우선, 없으면 detect fallback(회귀 0).
     if install:
         try:
             import install_lib as _il
-            _detected = _il.detect_agents(Path.home())
+            _from_config = _il.read_agents_from_config(team_root)
+            if _from_config is not None:
+                _detected = _from_config
+            else:
+                _detected = _il.detect_agents(Path.home())
         except Exception:
             _detected = []
         _agents_to_wire = _detected or ["claude"]
@@ -761,7 +773,11 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                     if install:
                         try:
                             import install_lib as _il
-                            _util_detected = _il.detect_agents(Path.home())
+                            # config.agents(install 이 기록한 선택 집합) 우선 — cmd_on/off 와 일관.
+                            # 없으면(기존 레포·미기록) detect_agents fallback(회귀 0).
+                            _from_config = _il.read_agents_from_config(team_root)
+                            _util_detected = (_from_config if _from_config is not None
+                                              else _il.detect_agents(Path.home()))
                         except Exception:
                             _util_detected = []
                         _util_agents = _util_detected or ["claude"]
@@ -796,7 +812,11 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                     if install:
                         try:
                             import install_lib as _il
-                            _util_detected = _il.detect_agents(Path.home())
+                            # config.agents(install 이 기록한 선택 집합) 우선 — cmd_on/off 와 일관.
+                            # 없으면(기존 레포·미기록) detect_agents fallback(회귀 0).
+                            _from_config = _il.read_agents_from_config(team_root)
+                            _util_detected = (_from_config if _from_config is not None
+                                              else _il.detect_agents(Path.home()))
                         except Exception:
                             _util_detected = []
                         _util_agents = _util_detected or ["claude"]
