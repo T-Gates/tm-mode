@@ -189,7 +189,8 @@ def test_malformed_input_propagates_when_strict(env):
 def test_common_hook_consumes_canonical_only(env, tmp_path):
     """session-log-remind 를 정규 JSON stdin 으로 직접 호출 — 에이전트 무지 확인.
 
-    출력은 평문 stdout(JSON 아님) — normalize 가 그대로 전파해 additionalContext 로 감.
+    출력은 hookSpecificOutput.additionalContext+systemMessage JSON stdout —
+    normalize 가 그대로 전파해 additionalContext 로 감.
     """
     hook = REPO / "infra" / "hooks" / "session-log-remind.py"
     root = env.root

@@ -180,6 +180,15 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
     active.write_text("")
     canonical = {"event": "UserPromptSubmit", "prompt": "test", "agent": "claude-test"}
 
+    # 상태 파일이 tempfile.gettempdir() 위치에 *이번 실행으로* 생성됐는지 본다.
+    # 멤버 미특정 폴백 → _state_path(agent) = teammode-remind-state-<agent>.json
+    # 고정 agent 라 이전 실행의 stale 파일이 남아 있으면 "이번 훅이 만들었다"를 오판하므로
+    # 실행 전 제거한다(존재만 확인하는 약한 단언 보강).
+    expected_state = os.path.join(
+        tempfile.gettempdir(), "teammode-remind-state-claude-test.json")
+    if os.path.exists(expected_state):
+        os.remove(expected_state)
+
     proc = subprocess.run(
         [PY, str(hook)],
         input=json.dumps(canonical),
@@ -190,12 +199,13 @@ def test_counter_file_uses_tempfile_gettempdir(tmp_path, monkeypatch):
     )
 
     assert proc.returncode == 0, f"hook crash: {proc.stderr}"
-    # 상태(카운터) 파일이 tempfile.gettempdir() 위치에 생성됐어야 한다.
-    # 멤버 미특정 폴백 → _state_path(agent) = teammode-remind-state-<agent>.json
-    expected_state = os.path.join(
-        tempfile.gettempdir(), "teammode-remind-state-claude-test.json")
     assert os.path.isfile(expected_state), (
         f"상태 파일이 {expected_state} 에 생성되어야 한다")
+    # 존재만으로는 약하다 — 내용이 카운터 상태 JSON(dict + count 키)인지까지 확인.
+    with open(expected_state, encoding="utf-8") as f:
+        state = json.load(f)
+    assert isinstance(state, dict) and "count" in state, (
+        f"상태 파일 내용이 카운터 JSON 이어야 한다: {state!r}")
 
 
 def test_counter_file_write_failure_is_silent(tmp_path, monkeypatch):

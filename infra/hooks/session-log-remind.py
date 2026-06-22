@@ -104,14 +104,18 @@ def _load_team_config(root: str) -> dict:
 
 
 def _valid_member_name(name: str) -> bool:
-    """멤버명이 경로·지시문에 안전한 식별자인지 — teammode._validate_author 와 동일 규칙.
+    """멤버명이 경로·지시문에 안전한 식별자인지 — teammode._validate_author·kb-write-guard 와 동일 규칙.
 
-    멤버명은 _my_log_path 로 경로에 join 되고 _log_kit 로 Read("...") 지시문에
+    멤버명은 _my_log_path 로 경로에 join 되고 _log_kit 로 Read(...) 지시문에
     그대로 박힌다. team.config.json(레포 공유) 또는 TEAMMODE_MEMBER(env)에서 오므로
     신뢰 경계 밖이다 — '/'·'\\'·'.'·'..'·절대경로·개행·따옴표·')' 등을 차단해
-    경로 traversal·컨텍스트 주입을 막는다(실패 시 폴백). Unicode 영숫자는 허용.
+    경로 traversal·컨텍스트 주입을 막는다(실패 시 폴백). ASCII 영숫자+'-_'만 허용 —
+    isalnum() 은 유니코드라 한글이 통과하지만, kb-write-guard([A-Za-z0-9_-])·_validate_author
+    (isascii 강제)와 어긋나면 한글 멤버는 리마인더는 멤버로 굳고 편집 가드는 fail-closed 가 된다.
     """
     if not name or name in (".", ".."):
+        return False
+    if not name.isascii():
         return False
     if "/" in name or "\\" in name or os.path.isabs(name):
         return False
@@ -171,12 +175,16 @@ def _log_kit(log_path: str) -> str:
     훅이 정확한 offset 을 코드로 깔아줘 모델이 log 동사로 도망가지 못하게 한다.
     """
     n = _count_lines(log_path)
+    # log_path 는 TEAMMODE_HOME 루트를 포함한다(멤버명만 검증됐을 뿐 루트는 신뢰 밖).
+    # 경로에 따옴표·개행이 있으면 Read("...") 지시문 줄이 갈라져 컨텍스트 주입이 되므로
+    # 문자열 리터럴로 이스케이프해 박는다. (ensure_ascii=False: 한글 폴더 경로 보존)
+    p = json.dumps(log_path, ensure_ascii=False)
     if n == 0:
         return (f' 세션로그 파일이 아직 없습니다 — Read 없이 '
-                f'frontmatter(author/date/summary)+첫 항목을 Write("{log_path}", ...) 로 새로 만드세요.')
+                f'frontmatter(author/date/summary)+첫 항목을 Write({p}, ...) 로 새로 만드세요.')
     off = max(1, n - 20)
-    return (f' 이어쓰기: Read("{log_path}", offset={off}, limit=25) 로 끝부분만 읽고 Edit 로 추가. '
-            f'summary(frontmatter) 갱신이 필요하면 Read("{log_path}", offset=1, limit=6) 도. '
+    return (f' 이어쓰기: Read({p}, offset={off}, limit=25) 로 끝부분만 읽고 Edit 로 추가. '
+            f'summary(frontmatter) 갱신이 필요하면 Read({p}, offset=1, limit=6) 도. '
             f'log 동사·전체 Read 금지 — 끝 20줄만.')
 
 
