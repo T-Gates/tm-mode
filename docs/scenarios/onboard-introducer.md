@@ -65,8 +65,8 @@ python infra/install.py --root . --member-name alice --yes
 [wire] claude 훅 동기화 완료 → /home/me/.claude/settings.json
 [wire] claude 스킬 심링크 완료 → /home/me/.claude/skills
 [env] /home/me/.bashrc 에 TEAMMODE_HOME 주입 (신규 주입).
-[verify] L1 데이터 읽힘 — state=on, members=1, active 마커·배너 생성됨.
-[done] L1 부트스트랩 완료. 다음 세션부터 SessionStart 훅이 맥락을 주입합니다.
+[verify] 설치 검증 OK — members=1 (팀모드는 꺼둠).
+[done] 설치 완료. 팀모드를 켜려면 `tm on`(또는 /tm) 하세요.
 ```
 - exit code **0**.
 - `team.name` 기본값은 git remote 의 repo 명(`repo_name_from_remote`), 없으면 폴더명. 위 예는 remote → `our-repo`.
@@ -75,7 +75,7 @@ python infra/install.py --root . --member-name alice --yes
 > 막히는/사람이 직접 해야 하는 지점, 분기:
 > - **`--yes`/`--settings` 둘 다 없으면** wire·env·verify 를 건너뛰고 scaffold 까지만 하고 끝난다(exit 0). 화면엔 `[wire] 건너뜀 — 실호스트 배선은 --yes(실설치) 또는 --settings(격리) 필요. 스캐폴드는 완료(메모리는 준비됨).` → state 는 `off` 로 남는다.
 > - **`--dry-run`** 이면 `[plan]` 출력 후 `[dry-run] 변경 없음 — 계획만 출력했습니다(settings·memory·env 무접촉).` 만 찍고 exit 0. 파일 무생성.
-> - **`--settings <격리경로>`** 면 실 호스트 무접촉: `[env] 건너뜀 — 격리 모드(--settings): 실 호스트 env … 무접촉.`, verify 도 그 디렉토리 하위 `verify-settings.json` 사용. 격리 테스트·CI 용.
+> - **`--settings <격리경로>`** 면 실 호스트 무접촉: `[env] 건너뜀 — 격리 모드(--settings): 실 호스트 env … 무접촉.`, verify 는 `context` 만 호출(설치 확인 — 팀모드 on 미사용이라 settings 무관). 격리 테스트·CI 용.
 > - **git 원격 인증이 없으면** stderr 에 `[warn] git 원격 인증 미확인 — 로컬 L1 은 진행(협업 시 push/pull 막힘).` (비치명, 진행).
 > - **이름을 못 정하면**(`--member-name` 없고 git user.name 도 없음) → stderr `[error] 멤버 이름을 정할 수 없습니다. --member-name <영문이름> 으로 지정하세요…` + exit **3**. 사람이 이름 주고 재실행.
 > - **preflight 실패**(Python 3.9 미만 / git 바이너리 부재 / 팀 표식 부재) → stderr `[error] preflight 실패: …` + exit **2**. 무변경.
@@ -86,9 +86,9 @@ python infra/install.py --root . --member-name alice --yes
 ```bash
 python infra/teammode.py context --root . --json
 ```
-**화면** — `state=on`(verify 가 `on` 을 켰으므로 `.teammode-active` 마커 존재), `members` 에 alice 1명, summary 는 없음(로그 0):
+**화면** — `state=off`(설치는 팀모드를 켜지 않는다 — `tm on` 전까지 off, 마커 없음), `members` 에 alice 1명, summary 는 없음(로그 0):
 ```json
-{"state": "on", "index": "# 팀 메모리 인덱스 (INDEX.md)…", "members": [{"author": "alice", "date": "…", "summary": "…", "role": null}]}
+{"state": "off", "index": "# 팀 메모리 인덱스 (INDEX.md)…", "members": [{"author": "alice", "date": "…", "summary": "…", "role": null}]}
 ```
 에이전트는 "지금 팀 상황: 멤버 1명(alice), 아직 작업 로그 없음, 구조는 준비됨"으로 요약한다.
 

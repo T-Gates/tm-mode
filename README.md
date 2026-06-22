@@ -84,31 +84,9 @@
 팀 셋업 (도입자 1회)  →  개인 셋업 (각 멤버)  →  서비스 연결 (L2)
 ```
 
-## 직접 셋업
+## 설치
 
-```bash
-# 도입자(팀 새로 시작) — 이 레포를 템플릿으로 만든 뒤:
-python infra/install.py --root . --yes
-
-# 팀원(합류) — 팀 레포 clone 후:
-python infra/install.py --root . --member-name <영문이름> --yes
-
-# (선택) Obsidian 볼트 자동 등록 — 온보딩 때 안 했어도 언제든 나중에 실행 가능:
-python infra/install.py --root . --register-obsidian
-```
-
-`--yes` 없이는 실 에이전트 설정에 쓰지 않는다(안전). 격리 실행은 `--settings <경로>`, 계획만 보려면 `--dry-run`.
-
-## 엔진 동사 (teammode.py)
-
-| 동사 | 역할 |
-|---|---|
-| `on` / `off` | 팀모드 켜기·끄기 (배너·훅·active 마커) |
-| `log` | 세션로그 기록 (날짜·frontmatter 자동) |
-| `context` | 전원 최근 세션로그·상태를 JSON으로 수집 (요약은 스킬 몫) |
-| `pull` / `commit` / `update` | git 동기화·커밋·upstream 갱신 |
-
-모든 동사는 팀 루트를 `--root`로 명시받는다(환경변수 무신뢰 — 안전).
+**에이전트에게 "이 레포 셋업해줘" 한 줄이면 끝**(위 [도입은 이 한 줄](#도입은-이-한-줄)). 직접 설치하거나 상세 절차 — 요구사항·도입자/팀원 셋업·**활성화**·플래그·엔진 동사 — 가 필요하면 **→ [INSTALL.md](INSTALL.md)**.
 
 ## 구조
 

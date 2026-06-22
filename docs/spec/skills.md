@@ -164,7 +164,7 @@ install.py가 하는 일:
 - scaffold: `memory/INDEX.md`, `memory/team/members.md`, `memory/team/sessions/<이름>/`, 도입자면 빈 services config 등
 - 훅 sync와 실 settings write(`--yes`일 때)
 - env 주입
-- verify: `teammode.py on`을 통해 active marker를 만든다.
+- verify: `context`로 설치를 확인한다(`on` 미사용 — active marker·settings 안 만듦).
 
 멱등성과 분기:
 
@@ -179,7 +179,7 @@ python infra/teammode.py context --root . --json
 ```
 
 - 결과를 그대로 덤프하지 않고 사람 말로 요약한다.
-- `state=on`으로 보이려면 셋업이 `--yes` 또는 `--settings`로 wire+verify까지 완주했어야 한다. wire를 건너뛴 설치는 구조가 생겼더라도 state가 off로 보일 수 있다.
+- 설치는 팀모드를 자동으로 켜지 않는다 — `--yes`/`--settings`로 wire+verify까지 완주해도 `state=off`가 정상이다(설치 ≠ 활성화). verify는 `context`로 설치를 확인하고 **팀모드는 켜지 않는다**(on 미사용 — on의 auto_update 부작용 회피). `state=on`은 사용자가 `tm on`(또는 tm-onboard 제안 동의)으로 명시했을 때만 — 설치하며 켜는 단축 플래그는 두지 않는다.
 - 갓 만든 팀은 세션로그가 0개일 수 있다. 이때는 "구조는 섰고, 다음 작업부터 자동 기록·주입됩니다"라고 설명한다.
 - 팀원은 기존 팀 로그가 있으면 context에서 보인다. 다음 세션부터는 `session-start.py` 훅이 팀원별 최근 세션로그를 자동 주입한다.
 

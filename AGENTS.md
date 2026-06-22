@@ -3,7 +3,7 @@
 이 레포는 **teammode**(크로스에이전트 팀 협업 툴킷)다. 에이전트(Claude Code · Codex)가 이 파일을 읽고 셋업·운영을 안내한다.
 
 ## 첫 접촉: "셋업해줘" / "온보딩"
-사용자가 팀모드를 켜달라고 하면 **`tm-onboard` 스킬**을 따른다(`infra/skills/base/tm-onboard/SKILL.md`). 스킬이 없거나 못 쓰는 환경이면 아래를 직접 실행한다:
+사용자가 팀모드를 켜달라고 하면 **`tm-onboard` 스킬**을 따른다(`infra/skills/base/tm-onboard/SKILL.md`). 스킬이 없거나 못 쓰는 환경이면 아래를 직접 실행한다(설치 절차의 단일 소스는 **[INSTALL.md](INSTALL.md)** — 상세·플래그는 거기):
 
 > **국면 0 — 도입자가 아직 팀 레포가 없으면 (install 보다 먼저).** 레포를 만들기 전에 ① 어느 GitHub **org·계정**에 만들지 **반드시 묻는다**(개인 계정 vs 팀 org 예 `T-Gates` — 임의 선택·자동 진행 금지) → ② 그 org에 레포 생성(template / `gh repo create`) → ③ clone → 그다음 아래 install. **레포가 이미 있으면 이 국면은 건너뛴다.**
 
@@ -14,7 +14,9 @@ python infra/install.py --root . --yes                          # 도입자
 python infra/install.py --root . --member-name <영문이름> --yes  # 팀원
 # 3) 첫 가치: 팀 상황 보여주기
 python infra/teammode.py context --root . --json                # → 사람 말로 요약
-# 4) (물어보고) Obsidian 볼트 등록 — opt-in, 키 0
+# 4) 팀모드 켜기 — 설치는 자동 활성화하지 않는다(설치 ≠ 활성화). 켤지 제안하고 동의 시:
+python infra/teammode.py on --root . --install                  # 설치는 자동 활성화 안 함 (on 은 --install/--settings 필수)
+# 5) (물어보고) Obsidian 볼트 등록 — opt-in, 키 0
 python infra/install.py --root . --register-obsidian
 ```
 
