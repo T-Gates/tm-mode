@@ -856,20 +856,20 @@ def main(argv=None) -> int:
         return 2
 
     opts = il.parse_args(argv)
+    home = Path(os.path.expanduser("~"))
 
-    # --register-obsidian: 단독 opt-in 액션(부트스트랩과 별개). 비치명.
-    if opts.register_obsidian:
-        return register_obsidian(
-            opts,
-            home=Path(os.path.expanduser("~")),
-            platform=sys.platform,
-        )
+    # --register-obsidian 단독 액션은 설치 의도(--yes/--settings)가 없을 때만 obsidian 만 등록.
+    # ⚠️ onboarding 은 --yes(또는 --settings) + --register-obsidian 으로 온다. 예전엔 여기서
+    #    obsidian 만 하고 return 해버려 scaffold·훅·스킬이 통째로 누락됐다(설치 가로채기 버그).
+    #    설치 의도가 있으면 bootstrap 을 끝까지 돌리고, 성공 후 obsidian 도 등록한다.
+    if opts.register_obsidian and not opts.yes and not opts.settings:
+        return register_obsidian(opts, home=home, platform=sys.platform)
 
-    return bootstrap(
-        opts,
-        home=Path(os.path.expanduser("~")),
-        python_version=sys.version_info[:2],
-    )
+    rc = bootstrap(opts, home=home, python_version=sys.version_info[:2])
+    if rc == 0 and opts.register_obsidian:
+        # onboarding 중 obsidian 옵션 — 설치 성공 후 볼트 등록(비치명, 항상 exit 0).
+        register_obsidian(opts, home=home, platform=sys.platform)
+    return rc
 
 
 if __name__ == "__main__":
