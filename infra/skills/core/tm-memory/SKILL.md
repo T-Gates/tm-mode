@@ -1,25 +1,25 @@
 ---
-name: tm-knowledge
-description: Use when the user wants to load team knowledge into context. Triggers on "지식 불러와", "팀 지식", "메모리 로드", "knowledge", "지식 로드".
+name: tm-memory
+description: Use when the user wants to load team memory into context. Triggers on "메모리 불러와", "팀 메모리", "메모리 로드", "memory", "메모리 로드".
 ---
 
-# tm-knowledge — 팀 지식 로드
+# tm-memory — 팀 메모리 로드
 
 ## Overview
 
-`memory/` 하위 지식의 **INDEX(요약)를 컨텍스트에 로드**한다. 지식 로드의 목적은 "무엇이 어디 있는지" 맥락 파악이고, 그건 INDEX만으로 충분하다. 개별 파일 전문은 그 깊이가 실제로 필요한 작업에 들어갈 때만 읽는다.
+`memory/` 하위 메모리의 **INDEX(요약)를 컨텍스트에 로드**한다. 메모리 로드의 목적은 "무엇이 어디 있는지" 맥락 파악이고, 그건 INDEX만으로 충분하다. 개별 파일 전문은 그 깊이가 실제로 필요한 작업에 들어갈 때만 읽는다.
 
 ## When to Use
 
-- "지식 불러와", "팀 지식", "메모리 로드", "knowledge", "지식 로드"
+- "메모리 불러와", "팀 메모리", "메모리 로드", "memory", "메모리 로드"
 - "DB 스펙 좀 봐봐", "코드 컨벤션 읽어" 같이 **특정 문서를 콕 집은** 요청 → 제안 건너뛰고 그 파일만 바로 로드
 
 ## 절차
 
 ### 모드 A — INDEX 로드 (기본)
-1. **레포 최신화**: 팀 루트에서 `python infra/teammode.py pull --root .` 실행(엔진 동사) — 다른 팀원이 push한 지식 반영.
+1. **레포 최신화**: 팀 루트에서 `python infra/teammode.py pull --root .` 실행(엔진 동사) — 다른 팀원이 push한 메모리 반영.
 2. **INDEX 계층 발견 및 로드** — 먼저 `memory/INDEX.md`를 폴더 지도로 읽는다. 그다음 `find memory -name INDEX.md`로 하위 INDEX를 실제 발견해 **전부** 읽는다. teammode는 제품 구조에 무관하므로 경로를 하드코딩하지 않고 동적으로 발견한다. INDEX는 각 문서의 한 줄 요약을 담고 있어 이것만으로 "무엇이 어디 있는지"가 파악된다.
-3. **요약 제시** — 로드된 INDEX 기반으로 "지금 어떤 지식이 있는지"를 그룹별로 정리해 보여주고, **"특정 주제를 깊이 보려면 말해달라"**고 안내.
+3. **요약 제시** — 로드된 INDEX 기반으로 "지금 어떤 메모리가 있는지"를 그룹별로 정리해 보여주고, **"특정 주제를 깊이 보려면 말해달라"**고 안내.
 4. **전문 로드는 요청 시에만** — 사용자가 콕 집으면 그 파일만 Read.
 
 ### 모드 B — FTS (키워드 검색)

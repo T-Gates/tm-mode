@@ -33,7 +33,7 @@ description: Use right after a teammode install (`teammode init` / `teammode joi
 > 1. **코어 엔진**: `python infra/teammode.py context --root <팀루트> --json` 이 **에러 없이** state 를 출력하는가 (설치 직후 `state=off` 가 정상 — 설치 ≠ 활성화). 출력의 팀명·멤버수·세션수도 같이 적어라(가치 브리핑에 쓰임).
 > 2. **scaffold**: `memory/team/members.md` 에 `<멤버명>` 이 등재됐는가, `memory/INDEX.md` 가 있는가.
 > 3. **팀 config**: `team.config.json` 존재 + `agents` 가 기록됐는가.
-> 4. **스킬 심링크**: 에이전트 스킬 디렉토리(claude=`~/.claude/skills`, codex=해당 경로)에 `tm`·`tm-onboard`·`tm-knowledge` 등 teammode 스킬이 심링크/설치돼 있는가.
+> 4. **스킬 심링크**: 에이전트 스킬 디렉토리(claude=`~/.claude/skills`, codex=해당 경로)에 `tm`·`tm-onboard`·`tm-memory` 등 teammode 스킬이 심링크/설치돼 있는가.
 > 5. **훅 배선**: 에이전트 설정(claude=`~/.claude/settings.json`)에 teammode 훅(session-start 등)이 들어갔는가.
 >
 > 마지막 줄에 **전체 판정**(전부 정상 / 빠진 항목 목록)을 한 줄로.

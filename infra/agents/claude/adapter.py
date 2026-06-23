@@ -10,7 +10,7 @@ CLI:
 
 설계 불변식(스펙 02 §2):
   - 공통 스크립트는 직접 등록하지 않는다 — 반드시 normalize.py 경유로 배선(§5.1-2).
-  - 에이전트 고유 지식(이벤트·action·mcp 형식)은 전부 events.json에만. 코드 분기 0.
+  - 에이전트 고유 메모리(이벤트·action·mcp 형식)은 전부 events.json에만. 코드 분기 0.
   - teammode 소유 마커 = 커맨드가 팀 루트 하위 agents/<name>/normalize.py 를 가리킴(§5.1-5).
 """
 from __future__ import annotations

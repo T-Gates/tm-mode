@@ -9,9 +9,9 @@
 
 - **스킬 3계층(base/core/util)** 도입 + `tm-manage-utils`: util 스킬을 팀원별로 선택 설치·관리. `tm on` 시 core 자동 + 등록 util 심링크, `off` 시 제거(base 유지)
 - **`tm` ON 자동 업데이트**: 팀모드 켤 때 upstream 엔진을 자동 동기화·커밋(`infra/`·`NOTICE.md`만, push는 수동). dirty면 skip
-- **`tm-knowledge` 스킬**: 팀 지식 INDEX 계층 로드(읽기 전용, 동적 발견)
-- **`knowledge` 엔진 동사 + `tm-manage-knowledge` 스킬**: 지식 추가·수정·삭제(frontmatter·INDEX·편집일 자동, 폴더 화이트리스트·traversal 가드)
-- **KB 쓰기 거버넌스**: `memory/` 직접 편집(Write/Edit) 차단 — 지식은 동사로만 (claude PreToolUse deny + unlock 플래그/TTL). ⚠️ Write/Edit 가드 한정 — Bash 우회는 막지 않음
+- **`tm-memory` 스킬**: 팀 메모리 INDEX 계층 로드(읽기 전용, 동적 발견)
+- **`memory` 엔진 동사 + `tm-manage-memory` 스킬**: 메모리 추가·수정·삭제(frontmatter·INDEX·편집일 자동, 폴더 화이트리스트·traversal 가드)
+- **KB 쓰기 거버넌스**: `memory/` 직접 편집(Write/Edit) 차단 — 메모리는 동사로만 (claude PreToolUse deny + unlock 플래그/TTL). ⚠️ Write/Edit 가드 한정 — Bash 우회는 막지 않음
 
 ## 2026-06-17
 

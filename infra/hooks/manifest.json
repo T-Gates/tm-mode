@@ -105,6 +105,6 @@
     "strict": true,
     "mode": "on",
     "_timeout_unit": "seconds",
-    "_note": "KB 쓰기 거버넌스: memory/ 직접 편집 차단. knowledge 동사 경유만 허용."
+    "_note": "KB 쓰기 거버넌스: memory/ 직접 편집 차단. memory 동사 경유만 허용."
   }
 ]

@@ -8,14 +8,14 @@
 ── 역할 ────────────────────────────────────────────────────────────────────────
 "팀 메모리는 동사로만 쓴다(teammode 차별점)"를 **Write/Edit 직접 편집 도구**에 대해 강제한다.
 에이전트가 `Edit`/`Write` 도구로 `memory/` 하위를 **직접 편집**하려 하면 차단.
-→ 반드시 `python infra/teammode.py knowledge write …` 동사를 경유해야 한다.
+→ 반드시 `python infra/teammode.py memory write …` 동사를 경유해야 한다.
   (엔진 동사는 별도 프로세스 open()이라 PreToolUse 대상이 아님 → 자연 통과.)
 
 ⚠️  Bash 등 다른 경로를 통한 우회는 현 범위 밖(별도 정책 필요).
     Write/Edit 직접 편집 가드만 이 훅의 보장 범위다.
 
 ── unlock 플래그 ──────────────────────────────────────────────────────────────
-tm-manage-knowledge 스킬이 절차 시작 시 플래그를 touch, 완료(커밋 후) 시 rm 한다.
+tm-manage-memory 스킬이 절차 시작 시 플래그를 touch, 완료(커밋 후) 시 rm 한다.
 플래그 위치: $XDG_STATE_HOME/teammode/kb-unlock-<root_hash>-<session_id>
   없으면 $TMPDIR/teammode-kb-unlock-<USER>-<root_hash>-<session_id> 로 폴백.
   (root_hash: 팀루트 절대경로의 SHA-1 앞 8자리. 레포별·세션별 격리.)
@@ -175,7 +175,7 @@ def _is_own_session_log(file_path: str, team_root: str) -> bool:
     - env 미설정이면 False(fail-closed — 가드 유지).
     - 멤버명은 슬러그(영숫자·_-)만 허용 — env 오염·유니코드/공백/경로구분자 위장 차단
       (install/엔진의 이름 검증을 훅에서도 강제, env 를 신뢰하지 않는다).
-    - sessions/<member> 디렉토리 자체가 symlink 면 거부 — 지식·타인 폴더로의
+    - sessions/<member> 디렉토리 자체가 symlink 면 거부 — 메모리·타인 폴더로의
       resolve 우회를 막는다.
     - target.resolve() 가 own_dir 하위여야 통과 — .. ·중간 symlink 우회 차단.
     """
@@ -201,7 +201,7 @@ def _is_memory_path(file_path: str, team_root: str) -> bool | None:
     """file_path 가 팀 루트의 memory/ 하위인지 확인.
 
     Path.resolve() 기반 containment — symlink 우회(alias→memory)를 차단한다.
-    엔진 knowledge 의 memory.resolve() 가드와 동형.
+    엔진 memory 의 memory.resolve() 가드와 동형.
 
     ── 상대경로 fail-closed (S2-1) ────────────────────────────────────────────
     file_path 가 상대경로이면 CWD 가 무엇이냐에 따라 containment 판정이 달라진다.
@@ -320,7 +320,7 @@ def main() -> int:
     elif not isinstance(files_raw, list):
         _deny(
             "malformed 입력 — files 필드가 리스트가 아님(fail-closed). "
-            "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+            "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
         )
         return 2
     else:
@@ -332,7 +332,7 @@ def main() -> int:
     if len(files) > 1:
         _deny(
             "malformed 입력 — files 가 단일 경로가 아님(정규 스키마는 단일, fail-closed). "
-            "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+            "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
         )
         return 2
 
@@ -343,7 +343,7 @@ def main() -> int:
         if not isinstance(first, str):
             _deny(
                 "malformed 입력 — files[0] 이 문자열이 아님(fail-closed). "
-                "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
             )
             return 2
         file_path = first
@@ -355,7 +355,7 @@ def main() -> int:
         if raw is not None and not isinstance(raw, dict):
             _deny(
                 "malformed 입력 — raw 필드가 dict 가 아님(fail-closed). "
-                "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
             )
             return 2
         raw = raw or {}
@@ -364,7 +364,7 @@ def main() -> int:
         if tool_input is not None and not isinstance(tool_input, dict):
             _deny(
                 "malformed 입력 — raw.tool_input 이 dict 가 아님(fail-closed). "
-                "정규 스키마로 재시도하거나 tm-manage-knowledge 스킬을 사용하세요."
+                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
             )
             return 2
         tool_input = tool_input or {}
@@ -375,7 +375,7 @@ def main() -> int:
         _deny(
             "memory/ 경로 판별 실패 — 보수적 차단(fail-closed). "
             "파일 경로가 포함된 정규 스키마로 재시도하거나 "
-            "tm-manage-knowledge 스킬을 사용하세요."
+            "tm-manage-memory 스킬을 사용하세요."
         )
         return 2
 
@@ -384,7 +384,7 @@ def main() -> int:
         # resolve() 실패(심링크·권한 등) → fail-closed(P1-2)
         _deny(
             "memory/ 경로 판별 중 오류 — 보수적 차단(fail-closed). "
-            "tm-manage-knowledge 스킬을 사용하세요."
+            "tm-manage-memory 스킬을 사용하세요."
         )
         return 2
     if not in_memory:
@@ -402,10 +402,10 @@ def main() -> int:
 
     _deny(
         "memory/ 하위 직접 편집은 금지돼 있습니다. "
-        "KB(지식 베이스)는 '동사 경유 원칙' — Edit/Write 직접 편집 대신 엔진 동사를 써야 "
+        "KB(메모리 베이스)는 '동사 경유 원칙' — Edit/Write 직접 편집 대신 엔진 동사를 써야 "
         "충돌 없이 팀 공유 메모리에 기록됩니다. "
-        "지식은 tm-manage-knowledge 스킬을 통해서만 추가·수정·삭제하세요 "
-        "(엔진: python infra/teammode.py knowledge write …)."
+        "메모리는 tm-manage-memory 스킬을 통해서만 추가·수정·삭제하세요 "
+        "(엔진: python infra/teammode.py memory write …)."
     )
     return 2  # PreToolUse 차단
 

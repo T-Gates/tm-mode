@@ -1,17 +1,17 @@
-"""작업 C — knowledge 동사 테스트 (C-1·C-3).
+"""작업 C — memory 동사 테스트 (C-1·C-3).
 
 검증 목록:
-  - knowledge write: 파일 생성·frontmatter 스탬프·INDEX 행 등재
-  - knowledge write: 기존 파일 수정(updated_at 갱신, created_at 보존)
-  - knowledge write: 멱등(같은 내용 재호출 → 변경 없음)
-  - knowledge write: frontmatter 없는 기존 파일 수정 시 frontmatter 자동 추가
+  - memory write: 파일 생성·frontmatter 스탬프·INDEX 행 등재
+  - memory write: 기존 파일 수정(updated_at 갱신, created_at 보존)
+  - memory write: 멱등(같은 내용 재호출 → 변경 없음)
+  - memory write: frontmatter 없는 기존 파일 수정 시 frontmatter 자동 추가
   - INDEX upsert: 표 없으면 새로 생성, 있으면 행 추가/갱신
   - 편집일: 메타 커밋 제외 계산 (git repo 필요)
   - traversal 차단: folder에 .., filename에 ../, 절대경로 등
   - weight 필수: --weight 없으면 거부(exit 2)
-  - knowledge delete: 파일 삭제·INDEX 행 제거
-  - knowledge delete: 멱등(없는 파일 삭제 → exit 0)
-  - conformance: knowledge write → INDEX 존재 → tm-knowledge 가 INDEX 로 봄
+  - memory delete: 파일 삭제·INDEX 행 제거
+  - memory delete: 멱등(없는 파일 삭제 → exit 0)
+  - conformance: memory write → INDEX 존재 → tm-memory 가 INDEX 로 봄
 
 모든 테스트는 tmp_path 격리 — 실 호스트 무접촉.
 git 작업이 필요한 테스트는 tmp_path 안에 독립 git repo 생성.
@@ -36,7 +36,7 @@ sys.path.insert(0, str(REPO / "infra"))
 def _run(root: Path, *argv):
     """teammode.py 를 subprocess 로 직접 호출.
 
-    knowledge 동사는 settings 불필요(메모리 동사).
+    memory 동사는 settings 불필요(메모리 동사).
     """
     cmd = [sys.executable, str(ENGINE), *argv, "--root", str(root)]
     return subprocess.run(cmd, capture_output=True, text=True)
@@ -73,8 +73,8 @@ def _index_path(root: Path, folder: str) -> Path:
 # ── C-1: 파일 생성 ──────────────────────────────────────────────────
 
 def test_knowledge_write_creates_file(tmp_path):
-    """knowledge write: 파일이 생성된다."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: 파일이 생성된다."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "code-conventions.md",
              "--content", "커밋 메시지는 Conventional Commits.",
@@ -88,8 +88,8 @@ def test_knowledge_write_creates_file(tmp_path):
 
 
 def test_knowledge_write_frontmatter_stamped(tmp_path):
-    """knowledge write: frontmatter 4필드가 자동으로 추가된다."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: frontmatter 4필드가 자동으로 추가된다."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "groundrule.md",
              "--content", "미팅은 월·수·금.",
@@ -106,8 +106,8 @@ def test_knowledge_write_frontmatter_stamped(tmp_path):
 
 
 def test_knowledge_write_index_row_added(tmp_path):
-    """knowledge write: INDEX.md 에 행이 추가된다."""
-    _run(tmp_path, "knowledge", "write",
+    """memory write: INDEX.md 에 행이 추가된다."""
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "groundrule.md",
          "--content", "미팅은 월·수·금.",
@@ -121,8 +121,8 @@ def test_knowledge_write_index_row_added(tmp_path):
 
 
 def test_knowledge_write_index_table_format(tmp_path):
-    """knowledge write: INDEX.md 가 파이프 표 형식을 갖는다."""
-    _run(tmp_path, "knowledge", "write",
+    """memory write: INDEX.md 가 파이프 표 형식을 갖는다."""
+    _run(tmp_path, "memory", "write",
          "--folder", "soma",
          "--filename", "schedule.md",
          "--content", "소마 일정 정리.",
@@ -138,9 +138,9 @@ def test_knowledge_write_index_table_format(tmp_path):
 # ── C-1: 수정 ────────────────────────────────────────────────────────
 
 def test_knowledge_write_update_preserves_created_at(tmp_path):
-    """knowledge write: 기존 파일 수정 시 created_at 보존, updated_at 갱신."""
+    """memory write: 기존 파일 수정 시 created_at 보존, updated_at 갱신."""
     # 최초 생성
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "conventions.md",
          "--content", "초기 내용.",
@@ -152,7 +152,7 @@ def test_knowledge_write_update_preserves_created_at(tmp_path):
     assert "created_at: 2026-01-01" in text1
 
     # 수정
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "conventions.md",
          "--content", "수정된 내용.",
@@ -166,12 +166,12 @@ def test_knowledge_write_update_preserves_created_at(tmp_path):
 
 
 def test_knowledge_write_existing_no_frontmatter_gets_frontmatter(tmp_path):
-    """knowledge write: frontmatter 없는 기존 파일 수정 시 frontmatter 자동 추가."""
+    """memory write: frontmatter 없는 기존 파일 수정 시 frontmatter 자동 추가."""
     p = _knowledge_path(tmp_path, "product", "spec.md")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("기존 콘텐츠 (frontmatter 없음)\n", encoding="utf-8")
 
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "product",
          "--filename", "spec.md",
          "--content", "새 콘텐츠.",
@@ -186,9 +186,9 @@ def test_knowledge_write_existing_no_frontmatter_gets_frontmatter(tmp_path):
 # ── C-1: 멱등 ────────────────────────────────────────────────────────
 
 def test_knowledge_write_idempotent(tmp_path):
-    """knowledge write: 같은 내용 재호출 → 변경 없음 출력, 파일 동일."""
+    """memory write: 같은 내용 재호출 → 변경 없음 출력, 파일 동일."""
     args = [
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "idempotent.md",
         "--content", "반복 내용.",
@@ -208,8 +208,8 @@ def test_knowledge_write_idempotent(tmp_path):
 
 
 def test_knowledge_delete_idempotent(tmp_path):
-    """knowledge delete: 이미 없는 파일 삭제 → exit 0."""
-    r = _run(tmp_path, "knowledge", "delete",
+    """memory delete: 이미 없는 파일 삭제 → exit 0."""
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/nonexistent.md",
              "--author", "eunsu")
     assert r.returncode == 0, r.stderr
@@ -220,7 +220,7 @@ def test_knowledge_delete_idempotent(tmp_path):
 def test_knowledge_write_index_multiple_entries(tmp_path):
     """여러 파일 write → INDEX 에 각 행이 등재된다."""
     for name in ("a.md", "b.md", "c.md"):
-        _run(tmp_path, "knowledge", "write",
+        _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", name,
              "--content", f"내용 {name}.",
@@ -236,7 +236,7 @@ def test_knowledge_write_index_multiple_entries(tmp_path):
 def test_knowledge_write_index_row_updated_on_rewrite(tmp_path):
     """기존 INDEX 행이 있으면 갱신(중복 삽입 안 됨)."""
     for i in range(2):
-        _run(tmp_path, "knowledge", "write",
+        _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "single.md",
              "--content", f"내용 버전 {i}.",
@@ -252,8 +252,8 @@ def test_knowledge_write_index_row_updated_on_rewrite(tmp_path):
 # ── C-3: delete ────────────────────────────────────────────────────
 
 def test_knowledge_delete_removes_file_and_index_row(tmp_path):
-    """knowledge delete: 파일 삭제 + INDEX 행 제거."""
-    _run(tmp_path, "knowledge", "write",
+    """memory delete: 파일 삭제 + INDEX 행 제거."""
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "to-delete.md",
          "--content", "삭제할 파일.",
@@ -262,7 +262,7 @@ def test_knowledge_delete_removes_file_and_index_row(tmp_path):
     p = _knowledge_path(tmp_path, "team", "to-delete.md")
     assert p.is_file()
 
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/to-delete.md",
              "--author", "eunsu")
     assert r.returncode == 0, r.stderr
@@ -277,8 +277,8 @@ def test_knowledge_delete_removes_file_and_index_row(tmp_path):
 # ── C-3: traversal 차단 ───────────────────────────────────────────────
 
 def test_knowledge_write_rejects_dotdot_folder(tmp_path):
-    """knowledge write: --folder 에 '..' 세그먼트 → exit 2."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --folder 에 '..' 세그먼트 → exit 2."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "../evil",
              "--filename", "x.md",
              "--content", "evil.",
@@ -291,8 +291,8 @@ def test_knowledge_write_rejects_dotdot_folder(tmp_path):
 
 
 def test_knowledge_write_rejects_absolute_folder(tmp_path):
-    """knowledge write: --folder 가 절대경로이면 거부."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --folder 가 절대경로이면 거부."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "/tmp/evil",
              "--filename", "x.md",
              "--content", "evil.",
@@ -302,8 +302,8 @@ def test_knowledge_write_rejects_absolute_folder(tmp_path):
 
 
 def test_knowledge_write_rejects_slash_filename(tmp_path):
-    """knowledge write: --filename 에 슬래시 포함 → 거부."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --filename 에 슬래시 포함 → 거부."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "../../etc/passwd",
              "--content", "evil.",
@@ -313,8 +313,8 @@ def test_knowledge_write_rejects_slash_filename(tmp_path):
 
 
 def test_knowledge_delete_rejects_dotdot_path(tmp_path):
-    """knowledge delete: --path 에 '..' 포함 → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "delete",
+    """memory delete: --path 에 '..' 포함 → 거부(exit 2)."""
+    r = _run(tmp_path, "memory", "delete",
              "--path", "../etc/passwd",
              "--author", "eunsu")
     assert r.returncode == 2, "traversal path 가 거부되지 않았다"
@@ -323,8 +323,8 @@ def test_knowledge_delete_rejects_dotdot_path(tmp_path):
 # ── C-3: 필수 인자 검증 ───────────────────────────────────────────────
 
 def test_knowledge_write_requires_weight(tmp_path):
-    """knowledge write: --weight 없으면 exit 2 (추측 금지)."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --weight 없으면 exit 2 (추측 금지)."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "noweight.md",
              "--content", "내용.",
@@ -333,8 +333,8 @@ def test_knowledge_write_requires_weight(tmp_path):
 
 
 def test_knowledge_write_requires_folder(tmp_path):
-    """knowledge write: --folder 없으면 exit 2."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --folder 없으면 exit 2."""
+    r = _run(tmp_path, "memory", "write",
              "--filename", "x.md",
              "--content", "내용.",
              "--author", "eunsu",
@@ -343,8 +343,8 @@ def test_knowledge_write_requires_folder(tmp_path):
 
 
 def test_knowledge_write_requires_author(tmp_path):
-    """knowledge write: --author 없으면 exit 2."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --author 없으면 exit 2."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "x.md",
              "--content", "내용.",
@@ -353,8 +353,8 @@ def test_knowledge_write_requires_author(tmp_path):
 
 
 def test_knowledge_write_requires_content(tmp_path):
-    """knowledge write: --content 없으면 exit 2."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --content 없으면 exit 2."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "x.md",
              "--author", "eunsu",
@@ -363,22 +363,22 @@ def test_knowledge_write_requires_content(tmp_path):
 
 
 def test_knowledge_delete_requires_author(tmp_path):
-    """knowledge delete: --author 없으면 exit 2."""
-    r = _run(tmp_path, "knowledge", "delete",
+    """memory delete: --author 없으면 exit 2."""
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/x.md")
     assert r.returncode == 2
 
 
 def test_knowledge_delete_requires_path(tmp_path):
-    """knowledge delete: --path 없으면 exit 2."""
-    r = _run(tmp_path, "knowledge", "delete",
+    """memory delete: --path 없으면 exit 2."""
+    r = _run(tmp_path, "memory", "delete",
              "--author", "eunsu")
     assert r.returncode == 2
 
 
 def test_knowledge_unknown_action(tmp_path):
-    """knowledge: 알 수 없는 action → exit 2."""
-    r = _run(tmp_path, "knowledge", "badaction",
+    """memory: 알 수 없는 action → exit 2."""
+    r = _run(tmp_path, "memory", "badaction",
              "--folder", "team",
              "--filename", "x.md",
              "--content", "내용.",
@@ -393,7 +393,7 @@ def test_knowledge_edit_date_excludes_meta_commit(tmp_path):
     """편집일 계산(P1-3): 본문 미변경 재write 시 INDEX 기존 편집일이 보존된다.
 
     시뮬레이션:
-      1. 지식 파일 최초 생성 (편집일 = 과거 날짜로 고정)
+      1. 메모리 파일 최초 생성 (편집일 = 과거 날짜로 고정)
       2. weight 만 변경하는 재write (본문 동일)
       3. INDEX 편집일이 과거 날짜로 보존되는지 검증
 
@@ -404,8 +404,8 @@ def test_knowledge_edit_date_excludes_meta_commit(tmp_path):
     root.mkdir()
     _init_git(root)
 
-    # 1) 지식 파일 최초 write — 과거 날짜로 편집일 고정
-    _run(root, "knowledge", "write",
+    # 1) 메모리 파일 최초 write — 과거 날짜로 편집일 고정
+    _run(root, "memory", "write",
          "--folder", "team",
          "--filename", "edit-date-test.md",
          "--content", "콘텐츠 v1.",
@@ -422,7 +422,7 @@ def test_knowledge_edit_date_excludes_meta_commit(tmp_path):
     assert "2023-05-10" in text1, f"초기 편집일(2023-05-10)이 INDEX 에 없다: {text1!r}"
 
     # 2) 동일 본문으로 weight 만 변경하는 재write
-    _run(root, "knowledge", "write",
+    _run(root, "memory", "write",
          "--folder", "team",
          "--filename", "edit-date-test.md",
          "--content", "콘텐츠 v1.",   # 본문 동일
@@ -439,12 +439,12 @@ def test_knowledge_edit_date_excludes_meta_commit(tmp_path):
 
 
 def test_knowledge_write_commits_to_git(tmp_path):
-    """knowledge write: git repo 에서 파일 + INDEX 가 커밋된다."""
+    """memory write: git repo 에서 파일 + INDEX 가 커밋된다."""
     root = tmp_path / "gitroot"
     root.mkdir()
     _init_git(root)
 
-    _run(root, "knowledge", "write",
+    _run(root, "memory", "write",
          "--folder", "soma",
          "--filename", "soma-info.md",
          "--content", "소마 17기 정보.",
@@ -459,54 +459,54 @@ def test_knowledge_write_commits_to_git(tmp_path):
         f"커밋이 생성되지 않았거나 대상이 없음: {result.stdout!r}"
 
 
-# ── C-3: conformance — knowledge write → INDEX 존재 → tm-knowledge 참조 ──
+# ── C-3: conformance — memory write → INDEX 존재 → tm-memory 참조 ──
 
 def test_conformance_knowledge_visible_via_index(tmp_path):
-    """conformance: knowledge write → 파일 존재 + INDEX 에 등재 (tm-knowledge 가 발견 가능).
+    """conformance: memory write → 파일 존재 + INDEX 에 등재 (tm-memory 가 발견 가능).
 
-    tm-knowledge 스킬은 'find memory -name INDEX.md' 로 동적 발견한다.
-    knowledge write 후 해당 폴더 INDEX.md 가 존재해야 한다.
+    tm-memory 스킬은 'find memory -name INDEX.md' 로 동적 발견한다.
+    memory write 후 해당 폴더 INDEX.md 가 존재해야 한다.
     """
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "conformance-test.md",
-         "--content", "conformance 검증용 지식.",
+         "--content", "conformance 검증용 메모리.",
          "--author", "eunsu",
          "--weight", "📌")
 
     # 파일 존재
     p = _knowledge_path(tmp_path, "team", "conformance-test.md")
-    assert p.is_file(), "지식 파일이 없다"
+    assert p.is_file(), "메모리 파일이 없다"
 
     # INDEX.md 존재
     idx = _index_path(tmp_path, "team")
-    assert idx.is_file(), "INDEX.md 가 없다 — tm-knowledge 가 발견 불가"
+    assert idx.is_file(), "INDEX.md 가 없다 — tm-memory 가 발견 불가"
 
     # INDEX 에 파일 경로 등재
     idx_content = idx.read_text(encoding="utf-8")
     assert "conformance-test.md" in idx_content, "INDEX 에 파일이 등재되지 않았다"
 
-    # INDEX 가 가중치 표 형식을 가짐 (tm-knowledge 가 이 형식으로 읽음)
+    # INDEX 가 가중치 표 형식을 가짐 (tm-memory 가 이 형식으로 읽음)
     assert "| 가중치 |" in idx_content, "INDEX 에 가중치 표 형식 없음"
 
 
 # ── 스킬 파일 존재 검증 ───────────────────────────────────────────────
 
 def test_tm_manage_knowledge_skill_md_exists():
-    """infra/skills/core/tm-manage-knowledge/SKILL.md 가 존재한다."""
-    skill_md = REPO / "infra" / "skills" / "core" / "tm-manage-knowledge" / "SKILL.md"
-    assert skill_md.is_file(), "tm-manage-knowledge SKILL.md 가 없다"
+    """infra/skills/core/tm-manage-memory/SKILL.md 가 존재한다."""
+    skill_md = REPO / "infra" / "skills" / "core" / "tm-manage-memory" / "SKILL.md"
+    assert skill_md.is_file(), "tm-manage-memory SKILL.md 가 없다"
 
 
 def test_tm_manage_knowledge_frontmatter():
-    """tm-manage-knowledge SKILL.md frontmatter: name 필드가 정확하다."""
-    skill_md = REPO / "infra" / "skills" / "core" / "tm-manage-knowledge" / "SKILL.md"
+    """tm-manage-memory SKILL.md frontmatter: name 필드가 정확하다."""
+    skill_md = REPO / "infra" / "skills" / "core" / "tm-manage-memory" / "SKILL.md"
     text = skill_md.read_text(encoding="utf-8")
-    assert "name: tm-manage-knowledge" in text, "SKILL.md name 필드 없음"
+    assert "name: tm-manage-memory" in text, "SKILL.md name 필드 없음"
 
 
 def test_tm_manage_knowledge_in_core_sources(tmp_path):
-    """_skill_sources(layer='core') 에 tm-manage-knowledge 가 있다."""
+    """_skill_sources(layer='core') 에 tm-manage-memory 가 있다."""
     import shutil
     import runpy as _runpy
 
@@ -540,23 +540,23 @@ def test_tm_manage_knowledge_in_core_sources(tmp_path):
         skills_dir=str(tmp_path / "skills"),
     )
     core_names = {s.name for s in a._skill_sources(layer="core")}
-    assert "tm-manage-knowledge" in core_names, \
-        f"tm-manage-knowledge 가 core sources 에 없다: {core_names}"
+    assert "tm-manage-memory" in core_names, \
+        f"tm-manage-memory 가 core sources 에 없다: {core_names}"
 
 
-# ── knowledge 동사가 _KNOWN_VERBS 에 포함됐는지 ──
+# ── memory 동사가 _KNOWN_VERBS 에 포함됐는지 ──
 
 def test_knowledge_in_known_verbs():
-    """'knowledge' 가 엔진 _KNOWN_VERBS 에 있다."""
+    """'memory' 가 엔진 _KNOWN_VERBS 에 있다."""
     mod = runpy.run_path(str(ENGINE), run_name="__known_verbs_test__")
-    assert "knowledge" in mod["_KNOWN_VERBS"]
+    assert "memory" in mod["_KNOWN_VERBS"]
 
 
 # ── author traversal 가드 ──────────────────────────────────────────────
 
 def test_knowledge_write_rejects_traversal_author(tmp_path):
-    """knowledge write: --author 에 traversal 문자 → exit 2."""
-    r = _run(tmp_path, "knowledge", "write",
+    """memory write: --author 에 traversal 문자 → exit 2."""
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "x.md",
              "--content", "x",
@@ -566,8 +566,8 @@ def test_knowledge_write_rejects_traversal_author(tmp_path):
 
 
 def test_knowledge_delete_rejects_traversal_author(tmp_path):
-    """knowledge delete: --author 에 traversal 문자 → exit 2."""
-    r = _run(tmp_path, "knowledge", "delete",
+    """memory delete: --author 에 traversal 문자 → exit 2."""
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/x.md",
              "--author", "../evil")
     assert r.returncode == 2
@@ -577,7 +577,7 @@ def test_knowledge_delete_rejects_traversal_author(tmp_path):
 
 def test_knowledge_write_index_has_legend(tmp_path):
     """INDEX.md 에 범례 줄 (> 가중치: ...) 이 있다."""
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "product",
          "--filename", "legend-test.md",
          "--content", "범례 검증용.",
@@ -608,7 +608,7 @@ def test_knowledge_write_rejects_symlink_memory_escape(tmp_path):
     symlink_memory = team_root / "memory"
     symlink_memory.symlink_to(outside_dir)
 
-    r = _run(team_root, "knowledge", "write",
+    r = _run(team_root, "memory", "write",
              "--folder", "team",
              "--filename", "evil.md",
              "--content", "탈출 시도.",
@@ -636,7 +636,7 @@ def test_knowledge_delete_rejects_symlink_memory_escape(tmp_path):
     symlink_memory = team_root / "memory"
     symlink_memory.symlink_to(outside_dir)
 
-    r = _run(team_root, "knowledge", "delete",
+    r = _run(team_root, "memory", "delete",
              "--path", "team/victim.md",
              "--author", "eunsu")
     assert r.returncode == 2, f"symlink 탈출 delete 가 거부되지 않았다: {r.stderr}"
@@ -648,7 +648,7 @@ def test_knowledge_delete_rejects_symlink_memory_escape(tmp_path):
 
 def test_knowledge_write_rejects_disallowed_folder_sessions(tmp_path):
     """P1-1: team/sessions 는 허용 폴더 아님 → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team/sessions",
              "--filename", "log.md",
              "--content", "세션 로그.",
@@ -660,7 +660,7 @@ def test_knowledge_write_rejects_disallowed_folder_sessions(tmp_path):
 
 def test_knowledge_write_rejects_disallowed_folder_meeting(tmp_path):
     """P1-1: team/meeting 는 허용 폴더 아님 → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team/meeting",
              "--filename", "minutes.md",
              "--content", "회의록.",
@@ -671,7 +671,7 @@ def test_knowledge_write_rejects_disallowed_folder_meeting(tmp_path):
 
 def test_knowledge_write_rejects_arbitrary_folder(tmp_path):
     """P1-1: 허용 목록에 없는 임의 폴더 → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "custom-folder",
              "--filename", "x.md",
              "--content", "임의 폴더 시도.",
@@ -682,7 +682,7 @@ def test_knowledge_write_rejects_arbitrary_folder(tmp_path):
 
 def test_knowledge_delete_rejects_disallowed_folder(tmp_path):
     """P1-1: team/sessions 경로 delete → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/sessions/log.md",
              "--author", "eunsu")
     assert r.returncode == 2, "team/sessions delete 가 거부되지 않았다"
@@ -691,14 +691,14 @@ def test_knowledge_delete_rejects_disallowed_folder(tmp_path):
 def test_knowledge_delete_rejects_index_md(tmp_path):
     """P1-1: INDEX.md 직접 삭제 → 거부(exit 2)."""
     # INDEX.md 를 먼저 만들기 위해 write 한 번 호출
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "seed.md",
          "--content", "시드.",
          "--author", "eunsu",
          "--weight", "📎")
 
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/INDEX.md",
              "--author", "eunsu")
     assert r.returncode == 2, "INDEX.md 삭제가 거부되지 않았다"
@@ -714,7 +714,7 @@ def test_knowledge_write_edit_date_is_today_on_new_file(tmp_path):
     import datetime as _dt
     today = _dt.date.today().strftime("%Y-%m-%d")
 
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "edit-date-new.md",
          "--content", "오늘 날짜 검증.",
@@ -732,7 +732,7 @@ def test_knowledge_write_edit_date_is_today_on_content_change(tmp_path):
     today = _dt.date.today().strftime("%Y-%m-%d")
 
     # 초기 write (과거 날짜로)
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "edit-date-update.md",
          "--content", "초기 내용.",
@@ -741,7 +741,7 @@ def test_knowledge_write_edit_date_is_today_on_content_change(tmp_path):
          "--date", "2020-01-01")
 
     # 본문 변경 write
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "edit-date-update.md",
          "--content", "변경된 내용.",
@@ -759,7 +759,7 @@ def test_knowledge_write_edit_date_is_today_on_content_change(tmp_path):
 def test_knowledge_write_idempotent_mtime_unchanged(tmp_path):
     """멱등: 동일 내용 재호출 시 파일 mtime 이 변경되지 않는다."""
     args = [
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "mtime-test.md",
         "--content", "멱등 mtime 검증.",
@@ -780,7 +780,7 @@ def test_knowledge_write_idempotent_mtime_unchanged(tmp_path):
 # ── paths 한정: 무관 staged 변경 미포함 ───────────────────────────────
 
 def test_knowledge_write_does_not_sweep_unrelated_staged(tmp_path):
-    """knowledge write 커밋이 --paths 한정으로 무관한 staged 파일을 포함하지 않는다."""
+    """memory write 커밋이 --paths 한정으로 무관한 staged 파일을 포함하지 않는다."""
     root = tmp_path / "gitroot"
     root.mkdir()
     _init_git(root)
@@ -790,8 +790,8 @@ def test_knowledge_write_does_not_sweep_unrelated_staged(tmp_path):
     unrelated.write_text("무관 파일\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "unrelated.txt"], capture_output=True)
 
-    # knowledge write
-    _run(root, "knowledge", "write",
+    # memory write
+    _run(root, "memory", "write",
          "--folder", "team",
          "--filename", "scoped.md",
          "--content", "범위 한정 커밋 검증.",
@@ -818,7 +818,7 @@ def test_knowledge_write_does_not_sweep_unrelated_staged(tmp_path):
 
 def test_knowledge_write_rejects_invalid_weight(tmp_path):
     """P2: 허용되지 않는 weight → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "bad-weight.md",
              "--content", "잘못된 weight.",
@@ -831,7 +831,7 @@ def test_knowledge_write_rejects_invalid_weight(tmp_path):
 
 def test_knowledge_index_path_format_memory_prefix(tmp_path):
     """INDEX 에 기록된 경로가 'memory/team/...' 형식이다."""
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "path-format.md",
          "--content", "경로 포맷 검증.",
@@ -845,7 +845,7 @@ def test_knowledge_index_path_format_memory_prefix(tmp_path):
 
 def test_knowledge_delete_matches_memory_prefix_path(tmp_path):
     """delete 가 memory/ 접두사 포함 경로로 INDEX 행을 제대로 제거한다."""
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "prefix-delete.md",
          "--content", "삭제 테스트.",
@@ -853,7 +853,7 @@ def test_knowledge_delete_matches_memory_prefix_path(tmp_path):
          "--weight", "📎")
 
     # memory/ 접두사 없이 delete → 정상 처리돼야 함
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/prefix-delete.md",
              "--author", "eunsu")
     assert r.returncode == 0, r.stderr
@@ -883,7 +883,7 @@ def test_knowledge_write_preserves_extra_frontmatter_fields(tmp_path):
         encoding="utf-8"
     )
 
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "extra-fields.md",
          "--content", "수정된 내용.\n",
@@ -903,7 +903,7 @@ def test_knowledge_write_preserves_extra_frontmatter_fields(tmp_path):
 
 def test_knowledge_delete_rejects_sessions_folder(tmp_path):
     """P1-1: team/sessions 경로 delete → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/sessions/eunsu/2026-06-18.md",
              "--author", "eunsu")
     assert r.returncode == 2, "team/sessions delete 가 거부되지 않았다"
@@ -911,7 +911,7 @@ def test_knowledge_delete_rejects_sessions_folder(tmp_path):
 
 def test_knowledge_delete_rejects_meeting_folder(tmp_path):
     """P1-1: team/meeting 경로 delete → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "team/meeting/2026-06-18-standup.md",
              "--author", "eunsu")
     assert r.returncode == 2, "team/meeting delete 가 거부되지 않았다"
@@ -919,7 +919,7 @@ def test_knowledge_delete_rejects_meeting_folder(tmp_path):
 
 def test_knowledge_delete_rejects_arbitrary_folder(tmp_path):
     """P1-1: 허용 목록에 없는 임의 폴더 delete → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "arbitrary-folder/file.md",
              "--author", "eunsu")
     assert r.returncode == 2, "임의 폴더 delete 가 거부되지 않았다"
@@ -928,7 +928,7 @@ def test_knowledge_delete_rejects_arbitrary_folder(tmp_path):
 def test_knowledge_delete_rejects_root_memory_file(tmp_path):
     """P1-1: memory/ 바로 아래(허용 폴더 없는) 파일 delete → 거부(exit 2)."""
     # memory/evil.md — 폴더 부분 없음, 허용 목록에 해당 없음
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "memory/evil.md",
              "--author", "eunsu")
     assert r.returncode == 2, "root memory 파일 delete 가 거부되지 않았다"
@@ -937,7 +937,7 @@ def test_knowledge_delete_rejects_root_memory_file(tmp_path):
 def test_knowledge_delete_rejects_root_index(tmp_path):
     """P1-1: memory/INDEX.md(root-level) delete → 거부(exit 2)."""
     # 직접 memory/INDEX.md 를 delete 경로로 지정
-    r = _run(tmp_path, "knowledge", "delete",
+    r = _run(tmp_path, "memory", "delete",
              "--path", "memory/INDEX.md",
              "--author", "eunsu")
     assert r.returncode == 2, "root INDEX.md delete 가 거부되지 않았다"
@@ -955,7 +955,7 @@ def test_knowledge_write_commit_failure_returns_nonzero(tmp_path):
     lock_file = root / ".git" / "index.lock"
     lock_file.write_text("lock", encoding="utf-8")
 
-    r = _run(root, "knowledge", "write",
+    r = _run(root, "memory", "write",
              "--folder", "team",
              "--filename", "commit-fail.md",
              "--content", "커밋 실패 검증.",
@@ -986,7 +986,7 @@ def test_knowledge_delete_commit_failure_returns_nonzero(tmp_path):
     _init_git(root)
 
     # 먼저 파일 생성(정상 git 환경에서)
-    _run(root, "knowledge", "write",
+    _run(root, "memory", "write",
          "--folder", "team",
          "--filename", "del-commit-fail.md",
          "--content", "삭제될 파일\n",
@@ -999,7 +999,7 @@ def test_knowledge_delete_commit_failure_returns_nonzero(tmp_path):
     lock_file = root / ".git" / "index.lock"
     lock_file.write_text("lock", encoding="utf-8")
 
-    r = _run(root, "knowledge", "delete",
+    r = _run(root, "memory", "delete",
              "--path", "team/del-commit-fail.md",
              "--author", "eunsu")
 
@@ -1023,7 +1023,7 @@ def test_knowledge_delete_commit_failure_returns_nonzero(tmp_path):
 def test_knowledge_write_edit_date_preserved_on_no_content_change(tmp_path):
     """P1-3: 본문 미변경(weight/author 만 변경) 재write 시 기존 편집일이 보존된다."""
     # 초기 write — 편집일을 과거 날짜로 고정
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "preserve-date.md",
          "--content", "변경 없는 내용.",
@@ -1037,7 +1037,7 @@ def test_knowledge_write_edit_date_preserved_on_no_content_change(tmp_path):
     assert "2020-03-15" in text1, f"초기 편집일(2020-03-15)이 INDEX 에 없다: {text1!r}"
 
     # 동일 본문으로 weight 만 변경하는 재write (content 동일 → 본문 미변경)
-    _run(tmp_path, "knowledge", "write",
+    _run(tmp_path, "memory", "write",
          "--folder", "team",
          "--filename", "preserve-date.md",
          "--content", "변경 없는 내용.",

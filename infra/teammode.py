@@ -867,15 +867,15 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
 _VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now", "--message",
                 "--title", "--body", "--assignee", "--label", "--priority", "--paths",
                 "--member", "--skills-dir", "--skill",
-                # knowledge 동사 플래그
+                # memory 동사 플래그
                 "--folder", "--filename", "--content", "--weight", "--path", "--date")
 
 
 # ──────────────────────────────────────────────────────────────────
-# 작업 C — knowledge 동사 (기계 전담: frontmatter·파일 쓰기/삭제·INDEX 갱신·커밋)
+# 작업 C — memory 동사 (기계 전담: frontmatter·파일 쓰기/삭제·INDEX 갱신·커밋)
 # ──────────────────────────────────────────────────────────────────
 
-# 지식 파일이 놓일 수 있는 허용 폴더 목록 (sessions/meeting 은 다른 경로)
+# 메모리 파일이 놓일 수 있는 허용 폴더 목록 (sessions/meeting 은 다른 경로)
 _KNOWLEDGE_ALLOWED_FOLDERS = (
     "product",
     "team",
@@ -968,7 +968,7 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str
     # 먼저 명시 차단 목록 검사
     for bf in _KNOWLEDGE_BLOCKED_FOLDERS:
         if norm_folder == bf or norm_folder.startswith(bf + "/"):
-            return (f"folder '{folder}' 는 지식 저장 대상이 아닙니다(훅/tm-context 관리 경로): "
+            return (f"folder '{folder}' 는 메모리 저장 대상이 아닙니다(훅/tm-context 관리 경로): "
                     f"차단 목록: {', '.join(_KNOWLEDGE_BLOCKED_FOLDERS)}")
 
     allowed = False
@@ -1030,7 +1030,7 @@ def _index_get_edit_date(index_path: Path, rel_path: str) -> str | None:
 
 def _knowledge_frontmatter(author: str, weight: str, created_at: str,
                             updated_at: str) -> str:
-    """지식 파일 frontmatter(4필드: created_at/updated_at/author/weight) 생성."""
+    """메모리 파일 frontmatter(4필드: created_at/updated_at/author/weight) 생성."""
     return (f"---\n"
             f"created_at: {created_at}\n"
             f"updated_at: {updated_at}\n"
@@ -1040,7 +1040,7 @@ def _knowledge_frontmatter(author: str, weight: str, created_at: str,
 
 
 def _parse_knowledge_frontmatter(text: str) -> dict:
-    """지식 파일 frontmatter 파싱. 없거나 깨지면 빈 dict.
+    """메모리 파일 frontmatter 파싱. 없거나 깨지면 빈 dict.
 
     P2: 알 수 없는 필드도 보존(재작성이 4필드만 덮어쓰지 않도록).
     """
@@ -1198,7 +1198,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
                   content: str | None, author: str | None,
                   weight: str | None, rel_path: str | None,
                   date_str: str | None) -> int:
-    """knowledge 동사 — 지식 파일 write/delete (기계 전담).
+    """memory 동사 — 메모리 파일 write/delete (기계 전담).
 
     write:  frontmatter 스탬프 · 파일 write · folder INDEX 행 upsert · do_commit(paths).
     delete: 파일 삭제 · INDEX 행 제거 · do_commit(paths).
@@ -1214,37 +1214,37 @@ def cmd_knowledge(team_root: Path, action: str | None,
     if action == "write":
         # 필수 인자 검증
         if not folder:
-            print("[error] knowledge write: --folder 가 필요합니다.", file=sys.stderr)
+            print("[error] memory write: --folder 가 필요합니다.", file=sys.stderr)
             return 2
         if not filename:
-            print("[error] knowledge write: --filename 이 필요합니다.", file=sys.stderr)
+            print("[error] memory write: --filename 이 필요합니다.", file=sys.stderr)
             return 2
         if content is None:
-            print("[error] knowledge write: --content 가 필요합니다.", file=sys.stderr)
+            print("[error] memory write: --content 가 필요합니다.", file=sys.stderr)
             return 2
         if not author:
-            print("[error] knowledge write: --author 가 필요합니다.", file=sys.stderr)
+            print("[error] memory write: --author 가 필요합니다.", file=sys.stderr)
             return 2
         if not weight:
-            print("[error] knowledge write: --weight 가 필요합니다(추측 금지).", file=sys.stderr)
+            print("[error] memory write: --weight 가 필요합니다(추측 금지).", file=sys.stderr)
             return 2
 
         # weight 3-enum 검증 (P2)
         if weight not in _KNOWLEDGE_VALID_WEIGHTS:
-            print(f"[error] knowledge write: --weight 는 {_KNOWLEDGE_VALID_WEIGHTS} 중 하나여야 합니다: {weight!r}",
+            print(f"[error] memory write: --weight 는 {_KNOWLEDGE_VALID_WEIGHTS} 중 하나여야 합니다: {weight!r}",
                   file=sys.stderr)
             return 2
 
         # author traversal 가드
         err = _validate_author(author)
         if err is not None:
-            print(f"[error] knowledge write: --author: {err}", file=sys.stderr)
+            print(f"[error] memory write: --author: {err}", file=sys.stderr)
             return 2
 
         # folder/filename traversal + containment 가드 + 허용 폴더 검증 (P1-1 포함)
         err = _validate_knowledge_path(team_root, folder, filename)
         if err is not None:
-            print(f"[error] knowledge write: {err}", file=sys.stderr)
+            print(f"[error] memory write: {err}", file=sys.stderr)
             return 2
 
         # content 제어문자 거부 (개행·탭·CR 은 허용 — 문서 포맷에 필수)
@@ -1260,14 +1260,14 @@ def cmd_knowledge(team_root: Path, action: str | None,
             _cp = ord(_ch)
             # 고립 surrogate (U+D800–U+DFFF): category() 호출 전 직접 거부
             if 0xD800 <= _cp <= 0xDFFF:
-                print(f"[error] knowledge write: --content 에 허용되지 않는 문자가 "
+                print(f"[error] memory write: --content 에 허용되지 않는 문자가 "
                       f"있습니다(surrogate U+{_cp:04X}). 제어·포맷·surrogate 문자는 거부됩니다.",
                       file=sys.stderr)
                 return 2
             cat = unicodedata.category(_ch)
             # Cc=제어(C0+C1), Cf=포맷(ZWJ·ZWNJ·BOM 등), Cs=surrogate(이미 위에서 처리)
             if cat in ("Cc", "Cf", "Cs"):
-                print(f"[error] knowledge write: --content 에 허용되지 않는 문자가 "
+                print(f"[error] memory write: --content 에 허용되지 않는 문자가 "
                       f"있습니다(U+{_cp:04X}, category={cat}). "
                       f"제어·포맷·surrogate 문자는 거부됩니다.",
                       file=sys.stderr)
@@ -1288,7 +1288,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
             new_full = new_fm + content
             # 멱등: 같은 내용이면 무변경
             if new_full == existing_text:
-                print(f"teammode knowledge write — 변경 없음(멱등): {folder}/{filename}")
+                print(f"teammode memory write — 변경 없음(멱등): {folder}/{filename}")
                 return 0
             # 본문이 실제로 바뀌었는지 확인 (편집일 결정용)
             old_body = _knowledge_body(existing_text)
@@ -1334,7 +1334,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
             os.replace(str(_tmp_path), str(target_path))
             _tmp_path = None  # os.replace 성공 → 파일이 target 으로 이동됐으므로 정리 불필요
         except (OSError, PermissionError) as exc:
-            print(f"[error] knowledge write: 파일 쓰기 실패 — {exc}", file=sys.stderr)
+            print(f"[error] memory write: 파일 쓰기 실패 — {exc}", file=sys.stderr)
             return 2
         finally:
             # 예외 발생 여부와 무관하게 임시파일 잔류 방지
@@ -1369,10 +1369,10 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 elif _old_file_content is not None:
                     target_path.write_text(_old_file_content, encoding="utf-8")
             except Exception as rb_exc:
-                print(f"[error] knowledge write: INDEX 갱신 실패 + 파일 롤백도 실패 — "
+                print(f"[error] memory write: INDEX 갱신 실패 + 파일 롤백도 실패 — "
                       f"INDEX: {exc} / 롤백: {rb_exc}", file=sys.stderr)
                 return 2
-            print(f"[error] knowledge write: INDEX 갱신 실패(파일 롤백됨) — {exc}",
+            print(f"[error] memory write: INDEX 갱신 실패(파일 롤백됨) — {exc}",
                   file=sys.stderr)
             return 2
 
@@ -1392,33 +1392,33 @@ def cmd_knowledge(team_root: Path, action: str | None,
         _COMMIT_SILENT_DETAILS = ("nothing to commit", "no paths to stage",
                                   "not a git work tree")
         if not commit_result.ok and commit_result.detail not in _COMMIT_SILENT_DETAILS:
-            print(f"[warning] knowledge write: 커밋 실패 — {commit_result.detail}",
+            print(f"[warning] memory write: 커밋 실패 — {commit_result.detail}",
                   file=sys.stderr)
-            print(f"teammode knowledge write — {folder}/{filename} 완료(커밋 안 됨)")
+            print(f"teammode memory write — {folder}/{filename} 완료(커밋 안 됨)")
             return 1
 
-        print(f"teammode knowledge write — {folder}/{filename} 완료")
+        print(f"teammode memory write — {folder}/{filename} 완료")
         return 0
 
     if action == "delete":
         # 필수 인자 검증
         if not rel_path:
-            print("[error] knowledge delete: --path <memory/상대경로> 가 필요합니다.",
+            print("[error] memory delete: --path <memory/상대경로> 가 필요합니다.",
                   file=sys.stderr)
             return 2
         if not author:
-            print("[error] knowledge delete: --author 가 필요합니다.", file=sys.stderr)
+            print("[error] memory delete: --author 가 필요합니다.", file=sys.stderr)
             return 2
 
         # author traversal 가드
         err = _validate_author(author)
         if err is not None:
-            print(f"[error] knowledge delete: --author: {err}", file=sys.stderr)
+            print(f"[error] memory delete: --author: {err}", file=sys.stderr)
             return 2
 
         # .. 세그먼트 명시 차단 (early: resolve 전에)
         if ".." in rel_path:
-            print(f"[error] knowledge delete: 경로에 '..' 이 포함될 수 없습니다: {rel_path!r}",
+            print(f"[error] memory delete: 경로에 '..' 이 포함될 수 없습니다: {rel_path!r}",
                   file=sys.stderr)
             return 2
 
@@ -1428,7 +1428,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
         try:
             memory_dir.relative_to(real_root)
         except ValueError:
-            print(f"[error] knowledge delete: memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단)",
+            print(f"[error] memory delete: memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단)",
                   file=sys.stderr)
             return 2
 
@@ -1445,7 +1445,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 rel_for_index = "memory/" + rel_path
                 inner = rel_path
         except ValueError as exc:
-            print(f"[error] knowledge delete: 경로에 허용되지 않는 문자가 있습니다 — {exc}",
+            print(f"[error] memory delete: 경로에 허용되지 않는 문자가 있습니다 — {exc}",
                   file=sys.stderr)
             return 2
 
@@ -1456,7 +1456,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
 
         # INDEX.md 삭제 거부 (root-level INDEX 는 특히)
         if filename_part == "INDEX.md":
-            print(f"[error] knowledge delete: INDEX.md 는 직접 삭제할 수 없습니다: {rel_path!r}",
+            print(f"[error] memory delete: INDEX.md 는 직접 삭제할 수 없습니다: {rel_path!r}",
                   file=sys.stderr)
             return 2
 
@@ -1464,7 +1464,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
         # 제어문자·전각문자·비ASCII filename 거부 (NUL 등은 ValueError 전에 차단)
         fn_err = _validate_filename_chars(filename_part)
         if fn_err is not None:
-            print(f"[error] knowledge delete: --path 의 filename 검증 실패 — {fn_err}",
+            print(f"[error] memory delete: --path 의 filename 검증 실패 — {fn_err}",
                   file=sys.stderr)
             return 2
 
@@ -1473,14 +1473,14 @@ def cmd_knowledge(team_root: Path, action: str | None,
         norm_folder = folder_part.replace("\\", "/").rstrip("/") if folder_part else ""
         if not norm_folder:
             # memory/ 바로 아래 파일 — 허용 폴더 목록에 없음 → 거부
-            print(f"[error] knowledge delete: 허용 폴더 하위의 파일만 삭제할 수 있습니다. "
+            print(f"[error] memory delete: 허용 폴더 하위의 파일만 삭제할 수 있습니다. "
                   f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)}",
                   file=sys.stderr)
             return 2
         # 명시 차단 목록 먼저(blocked 우선 — write 와 동일 규칙)
         for bf in _KNOWLEDGE_BLOCKED_FOLDERS:
             if norm_folder == bf or norm_folder.startswith(bf + "/"):
-                print(f"[error] knowledge delete: folder '{folder_part}' 는 삭제 대상이 아닙니다"
+                print(f"[error] memory delete: folder '{folder_part}' 는 삭제 대상이 아닙니다"
                       f"(훅/tm-context 관리 경로)",
                       file=sys.stderr)
                 return 2
@@ -1490,7 +1490,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 del_allowed = True
                 break
         if not del_allowed:
-            print(f"[error] knowledge delete: folder '{folder_part}' 는 허용되지 않습니다. "
+            print(f"[error] memory delete: folder '{folder_part}' 는 허용되지 않습니다. "
                   f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)}",
                   file=sys.stderr)
             return 2
@@ -1499,14 +1499,14 @@ def cmd_knowledge(team_root: Path, action: str | None,
         try:
             candidate.relative_to(memory_dir)
         except ValueError:
-            print(f"[error] knowledge delete: 경로가 memory/ 를 벗어납니다: {rel_path!r}",
+            print(f"[error] memory delete: 경로가 memory/ 를 벗어납니다: {rel_path!r}",
                   file=sys.stderr)
             return 2
 
         target_path = candidate
 
         if not target_path.is_file():
-            print(f"teammode knowledge delete — 파일 없음(멱등): {rel_path}")
+            print(f"teammode memory delete — 파일 없음(멱등): {rel_path}")
             return 0
 
         # ── 파일 I/O (OSError/PermissionError → exit 2 + 친화 메시지) ─────────
@@ -1528,7 +1528,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
         try:
             _index_remove_row(index_path, rel_for_index)
         except (OSError, PermissionError) as exc:
-            print(f"[error] knowledge delete: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            print(f"[error] memory delete: INDEX 갱신 실패 — {exc}", file=sys.stderr)
             return 2
 
         try:
@@ -1539,10 +1539,10 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 if _index_backup is not None:
                     index_path.write_text(_index_backup, encoding="utf-8")
             except Exception as rb_exc:
-                print(f"[error] knowledge delete: 파일 삭제 실패 + INDEX 롤백도 실패 — "
+                print(f"[error] memory delete: 파일 삭제 실패 + INDEX 롤백도 실패 — "
                       f"unlink: {exc} / 롤백: {rb_exc}", file=sys.stderr)
                 return 2
-            print(f"[error] knowledge delete: 파일 삭제 실패(INDEX 롤백됨) — {exc}",
+            print(f"[error] memory delete: 파일 삭제 실패(INDEX 롤백됨) — {exc}",
                   file=sys.stderr)
             return 2
 
@@ -1562,15 +1562,15 @@ def cmd_knowledge(team_root: Path, action: str | None,
         _COMMIT_SILENT_DETAILS = ("nothing to commit", "no paths to stage",
                                   "not a git work tree")
         if not commit_result.ok and commit_result.detail not in _COMMIT_SILENT_DETAILS:
-            print(f"[warning] knowledge delete: 커밋 실패 — {commit_result.detail}",
+            print(f"[warning] memory delete: 커밋 실패 — {commit_result.detail}",
                   file=sys.stderr)
-            print(f"teammode knowledge delete — {rel_path} 삭제됨(커밋 안 됨)")
+            print(f"teammode memory delete — {rel_path} 삭제됨(커밋 안 됨)")
             return 1
 
-        print(f"teammode knowledge delete — {rel_path} 삭제됨")
+        print(f"teammode memory delete — {rel_path} 삭제됨")
         return 0
 
-    print(f"[error] knowledge: 알 수 없는 action: {action!r}. write/delete 중 하나.",
+    print(f"[error] memory: 알 수 없는 action: {action!r}. write/delete 중 하나.",
           file=sys.stderr)
     return 2
 
@@ -1893,7 +1893,7 @@ def _parse_now(now_str):
 # 동사는 ~/.claude 를 건드리지 않으므로 settings 요구가 무의미하다.
 _SETTINGS_VERBS = ("on", "off")
 _KNOWN_VERBS = ("on", "off", "log", "context", "pull", "commit", "update", "issue",
-                "util", "knowledge")
+                "util", "memory")
 
 
 def main(argv=None) -> int:
@@ -1968,7 +1968,7 @@ def main(argv=None) -> int:
                         opts.get("skill"), skills_dir=opts.get("skills-dir"),
                         settings_path=util_settings, install=opts["install"])
 
-    if verb == "knowledge":
+    if verb == "memory":
         positionals = opts.get("positionals") or []
         action = positionals[0] if positionals else None
         return cmd_knowledge(

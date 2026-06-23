@@ -460,7 +460,7 @@ def test_manifest_all_declared_scripts_exist():
 # ── deny 메시지 품질 ─────────────────────────────────────────────────────────
 
 def test_deny_message_mentions_tm_manage_knowledge(tmp_path):
-    """차단 사유에 tm-manage-knowledge 안내가 포함돼 있는지."""
+    """차단 사유에 tm-manage-memory 안내가 포함돼 있는지."""
     root = tmp_path / "team"
     root.mkdir()
     _active(root)
@@ -468,7 +468,7 @@ def test_deny_message_mentions_tm_manage_knowledge(tmp_path):
     assert proc.returncode == 2
     out = json.loads(proc.stdout)
     reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "tm-manage-knowledge" in reason
+    assert "tm-manage-memory" in reason
 
 
 def test_deny_stderr_contains_block_notice(tmp_path):
@@ -955,4 +955,4 @@ def test_deny_message_explains_kb_purpose(tmp_path):
     out = json.loads(proc.stdout)
     reason = out["hookSpecificOutput"]["permissionDecisionReason"]
     # KB 설명 키워드 포함 여부
-    assert "KB" in reason or "지식 베이스" in reason or "동사" in reason
+    assert "KB" in reason or "메모리 베이스" in reason or "동사" in reason

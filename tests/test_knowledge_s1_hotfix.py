@@ -71,7 +71,7 @@ def _init_git(root: Path) -> None:
 def _write_ok(root: Path, filename: str = "test-file.md",
               folder: str = "team", content: str = "테스트 내용.") -> subprocess.CompletedProcess:
     """정상 write 호출 헬퍼."""
-    return _run(root, "knowledge", "write",
+    return _run(root, "memory", "write",
                 "--folder", folder,
                 "--filename", filename,
                 "--content", content,
@@ -90,7 +90,7 @@ def test_content_rejects_c1_nel(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "c1-nel.md",
         "--content", "정상 텍스트\x85C1 제어",  # U+0085 NEL
@@ -109,7 +109,7 @@ def test_content_rejects_c1_csi(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "c1-csi.md",
         "--content", "정상 텍스트\x9bCSI 삽입",  # U+009B CSI
@@ -128,7 +128,7 @@ def test_content_rejects_cf_zwj(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "cf-zwj.md",
         "--content", "정상 텍스트‍ZWJ 삽입",  # U+200D ZWJ
@@ -147,7 +147,7 @@ def test_content_rejects_surrogate(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "surrogate.md",
         "--content", "정상 텍스트" + "\ud800" + "surrogate",  # 고립 surrogate
@@ -164,7 +164,7 @@ def test_content_allows_emoji(tmp_path):
 
     수정으로 이모지까지 막히면 안 된다.
     """
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "emoji-ok.md",
              "--content", "이모지 포함 내용 🔥✅🎉",
@@ -179,7 +179,7 @@ def test_content_allows_newline_tab_cr(tmp_path):
     """개행(\n)·탭(\t)·CR(\r)은 여전히 허용 — 문서 포맷에 필수."""
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "allowed-ctrl.md",
         "--content", "첫 줄\n둘째 줄\r\n\t들여쓰기",
@@ -203,7 +203,7 @@ def test_delete_rejects_control_char_in_filename(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "delete",
+        "memory", "delete",
         "--path", "team/bad\x01file.md",  # 제어문자(SOH)
         "--author", "eunsu",
     )
@@ -220,7 +220,7 @@ def test_delete_rejects_unicode_filename(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "delete",
+        "memory", "delete",
         "--path", "team/Ａ-file.md",  # 전각 A (U+FF21)
         "--author", "eunsu",
     )
@@ -237,7 +237,7 @@ def test_delete_rejects_nul_in_filename(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "delete",
+        "memory", "delete",
         "--path", "team/bad\x00file.md",  # NUL
         "--author", "eunsu",
     )
@@ -254,7 +254,7 @@ def test_delete_valid_filename_allowed(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "delete",
+        "memory", "delete",
         "--path", "team/valid-file.md",
         "--author", "eunsu",
     )
@@ -292,7 +292,7 @@ def test_write_atomicity_file_rollback_on_index_failure(tmp_path):
     os.chmod(str(folder_dir), stat.S_IRUSR | stat.S_IXUSR)
 
     try:
-        r = _run(tmp_path, "knowledge", "write",
+        r = _run(tmp_path, "memory", "write",
                  "--folder", "team",
                  "--filename", "rollback-new.md",
                  "--content", "정합성 테스트.",
@@ -332,7 +332,7 @@ def test_write_atomicity_existing_file_restored_on_index_failure(tmp_path):
     os.chmod(str(folder_dir), stat.S_IRUSR | stat.S_IXUSR)
 
     try:
-        r = _run(tmp_path, "knowledge", "write",
+        r = _run(tmp_path, "memory", "write",
                  "--folder", "team",
                  "--filename", "existing-file.md",
                  "--content", "수정된 내용.",
@@ -379,7 +379,7 @@ def test_delete_atomicity_index_restored_on_unlink_failure(tmp_path):
     mod = runpy.run_path(str(ENGINE), run_name="__delete_rollback_test__")
 
     args = [
-        "knowledge", "delete",
+        "memory", "delete",
         "--path", "team/delete-test.md",
         "--author", "eunsu",
         "--root", str(tmp_path),
@@ -424,7 +424,7 @@ def test_folder_segment_rejects_fullwidth_unicode(tmp_path):
     기존 코드: isalnum() 이 유니코드라 전각문자 통과.
     수정 후: isascii() 강제로 거부.
     """
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team/Ａsubdir",  # 전각 A (U+FF21)
              "--filename", "test.md",
              "--content", "테스트.",
@@ -440,7 +440,7 @@ def test_folder_segment_allows_normal_ascii(tmp_path):
 
     수정으로 정상 folder 가 막히면 안 된다.
     """
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "ascii-ok.md",
              "--content", "정상 content.",
