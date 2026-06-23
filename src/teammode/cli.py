@@ -218,6 +218,12 @@ def cmd_init(args) -> int:
         args.team_name = owner
 
     # ① 레포 "생성"만 (--clone 없음) — clone·셋업은 join 이 담당(생성 ↔ 참여 분리).
+    # 생성 직전 owner/repo 최종 확인 — 소유자 오선택 방어(엉뚱한 계정에 조용히 생성 방지).
+    # 비-TTY(인자로 OWNER/REPO 받은 경우 등)는 자동 진행.
+    if sys.stdin.isatty():
+        if _prompt(f"📦 새 팀 레포를 '{full}' 에 만듭니다. 맞나요? [Y/n]", "Y").strip().lower() == "n":
+            _err(f"취소됨 — 위치를 직접 지정하려면 `tm-mode init <OWNER>/{repo}` 로 다시 실행하세요.")
+            return 1
     print(f"{full} 레포를 생성합니다 (template: {TEMPLATE_REPO})")
     rc = subprocess.run(["gh", "repo", "create", full,
                         "--template", TEMPLATE_REPO, vis]).returncode
