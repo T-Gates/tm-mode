@@ -497,3 +497,81 @@ class TestCmdJoinTtyIntegration:
             rc = cli.main(["join", "https://github.com/org/team.git"])
         assert rc == 0
         assert not cloned, "clone skip 인데 git clone 이 호출됨"
+
+
+class TestCmdInitDelegatesToJoin:
+    """init = 레포 '생성'만(--clone 없이) → 곧바로 cmd_join 으로 넘어감(생성 ↔ 참여 분리)."""
+
+    def test_init_creates_then_joins(self):
+        runs = []
+
+        def fake_run(cmd, *a, **kw):
+            runs.append(cmd)
+            return MagicMock(returncode=0, stdout="")
+
+        join_calls = []
+
+        def fake_join(args, **kw):
+            join_calls.append((args, kw))
+            return 0
+
+        with patch("teammode.cli._have", return_value=True), \
+             patch("teammode.cli.subprocess.run", side_effect=fake_run), \
+             patch("teammode.cli.cmd_join", side_effect=fake_join):
+            rc = cli.main(["init", "myorg/myteam", "--public"])
+
+        assert rc == 0
+        # gh repo create 호출에 --clone 이 없어야(생성만).
+        creates = [c for c in runs if isinstance(c, list) and "create" in c]
+        assert creates, "gh repo create 가 호출되지 않음"
+        assert "--clone" not in creates[0]
+        assert "myorg/myteam" in creates[0]
+        # cmd_join 으로 넘어갔고 레포 URL + created=True(생성자 경유) 가 전달됐다.
+        assert len(join_calls) == 1
+        _jargs, _jkw = join_calls[0]
+        assert _jargs.url == "https://github.com/myorg/myteam.git"
+        assert _jkw.get("created") is True
+
+    def test_init_create_fail_does_not_join(self):
+        """레포 생성 실패면 join 으로 넘어가지 않고 비정상 종료."""
+        def fake_run(cmd, *a, **kw):
+            if isinstance(cmd, list) and "create" in cmd:
+                return MagicMock(returncode=1, stdout="")  # 생성 실패
+            return MagicMock(returncode=0, stdout="")      # auth status 등
+
+        join_calls = []
+
+        with patch("teammode.cli._have", return_value=True), \
+             patch("teammode.cli.subprocess.run", side_effect=fake_run), \
+             patch("teammode.cli.cmd_join",
+                   side_effect=lambda a, **k: join_calls.append(a) or 0):
+            rc = cli.main(["init", "myorg/myteam"])
+
+        assert rc != 0
+        assert join_calls == [], "생성 실패인데 join 으로 넘어감"
+
+
+def test_done_message_created_vs_joined(capsys):
+    """init 경유(created=True)면 '생성 완료', join 직접이면 '합류 완료'."""
+    cli._done(Path("/x/team"), created=True)
+    out = capsys.readouterr().out
+    assert "팀 생성 완료" in out and "팀 합류 완료" not in out
+
+    cli._done(Path("/x/team"), created=False)
+    out = capsys.readouterr().out
+    assert "팀 합류 완료" in out and "팀 생성 완료" not in out
+
+
+def test_init_injects_join_attrs_for_nontty():
+    """cmd_init 이 cmd_join 에 비-TTY 경로가 참조하는 속성을 다 채워 넘긴다(AttributeError 방지)."""
+    join_args = []
+    with patch("teammode.cli._have", return_value=True), \
+         patch("teammode.cli.subprocess.run",
+               return_value=MagicMock(returncode=0, stdout="")), \
+         patch("teammode.cli.cmd_join",
+               side_effect=lambda a, **k: join_args.append(a) or 0):
+        cli.main(["init", "o/r"])
+    assert len(join_args) == 1
+    a = join_args[0]
+    for attr in ("url", "member_name", "dir", "obsidian", "agent", "role"):
+        assert hasattr(a, attr), f"cmd_join 이 참조하는 args.{attr} 누락"
