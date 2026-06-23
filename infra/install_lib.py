@@ -1115,9 +1115,14 @@ def inject_env(shell: str, home: Path, team_root: Path,
 # Date.now/random 을 코드가 직접 호출하지 않는다 — 오케스트레이터가 주입.
 # 어떤 경우도 raise 로 install 흐름을 막지 않는다(비치명). merge 절대 clobber 금지.
 
-# 최소 .obsidian/ 구성(선택) — dataview 커뮤니티 플러그인 + 핵심 그래프/백링크/검색.
-# 없어도 빈 .obsidian/ 만으로 볼트 인식되므로 실패해도 비치명.
-_OBSIDIAN_CORE_PLUGINS = ["graph", "backlink", "global-search"]
+# .obsidian/ core-plugins — ⚠️ obsidian 은 이 배열에 *없는* 코어 플러그인을 전부 끈다.
+# file-explorer(좌측 파일 목록)가 빠지면 볼트를 열어도 파일 패널이 안 떠 "파일이 안 보인다"
+# (E2E 도그푸딩으로 발견). 그래서 file-explorer + 기본 UX(검색·빠른전환·명령 팔레트·아웃라인)를
+# 반드시 포함한다. 없어도 빈 .obsidian/ 만으로 볼트 인식되므로 쓰기 실패는 비치명.
+_OBSIDIAN_CORE_PLUGINS = [
+    "file-explorer", "global-search", "switcher", "command-palette",
+    "outline", "graph", "backlink",
+]
 _OBSIDIAN_COMMUNITY_PLUGINS = ["dataview"]
 
 

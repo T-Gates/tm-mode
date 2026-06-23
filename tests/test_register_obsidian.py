@@ -59,6 +59,17 @@ def test_ensure_vault_idempotent(tmp_path):
     assert (memory / ".obsidian").is_dir()
 
 
+def test_ensure_vault_enables_file_explorer(tmp_path):
+    """core-plugins 에 file-explorer 가 켜져야 한다 — 없으면 obsidian 이 파일 패널을 꺼서
+    '볼트 열어도 파일이 안 보임'(E2E 도그푸딩으로 발견한 회귀)."""
+    import json
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    il.ensure_obsidian_vault(memory)
+    cp = json.loads((memory / ".obsidian" / "core-plugins.json").read_text())
+    assert "file-explorer" in cp, "file-explorer 가 빠지면 obsidian 에서 파일이 안 보인다"
+
+
 # ─────────────────────────── 등록: merge·멱등·미설치 ───────────────────────────
 
 def _write_config(path: Path, vaults: dict):
