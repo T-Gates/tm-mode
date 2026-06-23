@@ -5,7 +5,7 @@
   pip:  pip install "git+https://github.com/T-Gates/teammode" && teammode join <url>
   curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/teammode/main/install.sh | sh -s -- join <url>
 
-  teammode init [OWNER/REPO]   새 팀: GitHub template 으로 레포 생성/clone → 셋업
+  teammode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
   teammode join <clone-url>    합류: 팀 레포 clone → 셋업
 
 설계(얇은 런처): 스킬·훅·엔진을 패키지에 번들하지 않는다. clone 된 팀 레포의
@@ -142,24 +142,25 @@ def _clone_dir_from_url(url: str) -> Path:
     return Path(name).resolve()
 
 
-def _done(repo_dir: Path, *, joined: bool) -> None:
+def _print_invite(url: str) -> None:
+    """팀원 초대 한 줄(pip·curl — 둘 다 동일) 출력. url = 팀 레포 clone URL."""
     print()
-    print(f"✅ 팀 {'합류' if joined else '생성'} 완료 — {repo_dir}")
+    print("   팀원에게 아래 중 한 줄을 공유하세요 (둘 다 동일):")
+    print(f'     pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
+    print(f'     curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
+          f'/main/install.sh | sh -s -- join {url}')
+
+
+def _done(repo_dir: Path, *, created: bool = False) -> None:
+    """셋업 완료 안내. created=True 면 '생성'(init 경유), 아니면 '합류'(join).
+
+    초대 안내는 여기서 안 한다 — init 이 레포 생성 직후 _print_invite 로 출력한다.
+    """
+    print()
+    print(f"✅ 팀 {'생성' if created else '합류'} 완료 — {repo_dir}")
     print("   설치는 됐지만 팀모드는 아직 꺼져 있습니다(설치 ≠ 활성화).")
     print(f"   다음: {repo_dir} 에서 Claude Code(또는 Codex)를 열고")
     print('        "tm-onboard" 또는 "팀모드 켜" 라고 하면 검증·브리핑·활성화를 마칩니다.')
-    if not joined:
-        try:
-            url = subprocess.run(["git", "-C", str(repo_dir), "remote", "get-url", "origin"],
-                                capture_output=True, text=True, timeout=5).stdout.strip()
-        except Exception:  # noqa: BLE001
-            url = ""
-        if url:
-            print()
-            print("   팀원에게 아래 중 한 줄을 공유하세요 (둘 다 동일):")
-            print(f'     pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
-            print(f'     curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
-                  f'/main/install.sh | sh -s -- join {url}')
 
 
 def cmd_init(args) -> int:
@@ -185,31 +186,31 @@ def cmd_init(args) -> int:
             return 2
         repo = target or _prompt("팀 레포 이름", "team")
     full = f"{owner}/{repo}"
-    dest = Path(args.dir).resolve() if args.dir else Path(repo).resolve()
-
     vis = "--public" if args.public else "--private"
-    print(f"[init] {full} 생성(template={TEMPLATE_REPO}) + clone → {dest}")
-    rc = subprocess.run(["gh", "repo", "create", full,
-                        "--template", TEMPLATE_REPO, vis, "--clone", str(dest)]).returncode
-    if rc != 0:
-        _err("레포 생성/clone 실패 — 권한·이름 중복을 확인하세요.")
-        return rc
-    if not (dest / "infra").is_dir():
-        alt = Path(repo).resolve()  # gh 가 dest 를 다르게 해석한 경우 fallback
-        if (alt / "infra").is_dir():
-            dest = alt
 
-    member = _resolve_member(args.member_name)
-    extra: list[str] = []
-    if args.team_name:
-        extra += ["--team-name", args.team_name]
-    if args.obsidian:
-        extra += ["--register-obsidian"]
-    rc = _delegate_install(dest, member, extra)
+    # ① 레포 "생성"만 (--clone 없음) — clone·셋업은 join 이 담당(생성 ↔ 참여 분리).
+    print(f"[init] {full} 생성 (template={TEMPLATE_REPO})")
+    rc = subprocess.run(["gh", "repo", "create", full,
+                        "--template", TEMPLATE_REPO, vis]).returncode
     if rc != 0:
+        _err("레포 생성 실패 — 권한·이름 중복을 확인하세요.")
         return rc
-    _done(dest, joined=False)
-    return 0
+
+    url = f"https://github.com/{full}.git"
+    # ② 팀원 초대 안내 (도입자 = 생성자).
+    _print_invite(url)
+
+    # ③ 곧바로 join 으로 — 방금 만든 레포를 본인 머신에 clone+셋업(생성 → 참여, 단일 경로).
+    print()
+    print("[init] 레포 생성 완료 — 이어서 본인 머신 셋업(join)으로 넘어갑니다.")
+    args.url = url
+    # init 파서엔 없는, cmd_join(특히 비-TTY 경로)이 참조하는 속성 보강.
+    # 셋업 정보는 TTY 면 wizard 가 묻고, 비-TTY 면 이 기본값으로 진행.
+    for _attr, _default in (("member_name", None), ("dir", None),
+                            ("obsidian", False), ("agent", None), ("role", None)):
+        if not hasattr(args, _attr):
+            setattr(args, _attr, _default)
+    return cmd_join(args, created=True)
 
 
 _ROLES_SUGGESTED = [
@@ -393,7 +394,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
     return dest, member or None, extra, clone_skip
 
 
-def cmd_join(args) -> int:
+def cmd_join(args, *, created: bool = False) -> int:
     if not _have("git"):
         _err("git 이 필요합니다.")
         return 2
@@ -438,10 +439,13 @@ def cmd_join(args) -> int:
         _err(f"clone 된 레포에 infra/ 가 없습니다: {dest}")
         return 3
 
+    # init → join 경유 시 팀명 전달(join 자체 파서엔 --team-name 없음; init 만 줌).
+    if getattr(args, "team_name", None):
+        extra += ["--team-name", args.team_name]
     rc = _delegate_install(dest, member, extra)
     if rc != 0:
         return rc
-    _done(dest, joined=True)
+    _done(dest, created=created)
     return 0
 
 
@@ -449,13 +453,11 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="teammode", description="팀모드 부트스트랩 런처")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pi = sub.add_parser("init", help="새 팀 레포 생성(template) + 셋업")
+    pi = sub.add_parser("init", help="새 팀 레포 생성(template) → 곧바로 join(clone+셋업)")
     pi.add_argument("repo", nargs="?", help="OWNER/REPO 또는 REPO (생략 시 대화형)")
-    pi.add_argument("--member-name")
-    pi.add_argument("--team-name")
-    pi.add_argument("--dir", help="clone 위치(기본: repo 명)")
-    pi.add_argument("--obsidian", action="store_true", help="Obsidian 볼트 등록")
+    pi.add_argument("--team-name", help="팀 이름(미지정 시 레포명 기본)")
     pi.add_argument("--public", action="store_true", help="공개 레포(기본 private)")
+    # 셋업 정보(설치위치·에이전트·멤버·역할·obsidian)는 join wizard 가 대화로 묻는다.
     pi.set_defaults(func=cmd_init)
 
     pj = sub.add_parser("join", help="기존 팀 레포 clone + 셋업")
