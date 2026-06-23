@@ -29,6 +29,7 @@ AGENTS = INFRA / "agents"
 
 sys.path.insert(0, str(INFRA))
 import install_lib as il  # noqa: E402
+import git_ops as _git_ops  # noqa: E402  — scaffold 자동 커밋+push(do_commit) 재사용
 # stdout/stderr UTF-8 보장 — Windows native 인코딩(cp949 등)에서 한글 print 깨짐·크래시 방지.
 from io_encoding import ensure_utf8_io  # noqa: E402
 
@@ -788,6 +789,20 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         err("[error] verify: context --json 출력이 JSON 이 아닙니다.")
         return 3
     out(f"[verify] 설치 검증 OK — members={len(ctx.get('members', []))} (팀모드는 꺼둠).")
+
+    # scaffold·members·config 자동 커밋+push — onboarding 은 "자기 등재가 바로 팀 레포에"가 맞다
+    # (Jane 결정 2026-06-23, "푸시는 사람" 철학 폐기). 실설치(--yes, 격리 아님)에서만 수행.
+    # do_commit 은 push 실패(원격/오프라인/권한)해도 커밋을 보존한다(비치명, 예외 전파 안 함).
+    if opts.yes and not opts.settings:
+        _cr = _git_ops.do_commit(
+            str(team_root),
+            message=f"팀 셋업: {member_name} 등록 + memory scaffold [auto]",
+            push=True, paths=["memory", "team.config.json"])
+        if getattr(_cr, "pushed", False):
+            out("[push] memory·members 를 팀 레포에 올렸습니다.")
+        elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
+            out("[push] 커밋 완료 — push 실패(원격/권한 확인 후 `git push` 하세요).")
+
     out("[done] 설치 완료. 팀모드를 켜려면 `tm on`(또는 /tm) 하세요.")
     return 0
 
