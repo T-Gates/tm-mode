@@ -284,6 +284,7 @@ class TestWizardTty:
         inputs = [
             str(tmp_path / "dest"),
             "2",      # codex 토글 off (installed=[claude,codex] 기준으로 codex 제거)
+            "",       # 에이전트 확정(Enter) — 토글 루프 종료
             "1",      # 새 팀원
             "alice",
             "",
@@ -296,6 +297,24 @@ class TestWizardTty:
         agent_args = [extra[i + 1] for i, x in enumerate(extra) if x == "--agent"]
         assert "claude" in agent_args
         assert "codex" not in agent_args
+
+    def test_agent_toggle_repeats_until_enter(self, tmp_path):
+        """번호를 여러 번 = 매번 토글(루프 살아있음). codex off→on 하면 다시 둘 다.
+
+        '토글이 한 번만 먹던' 버그 회귀 가드 — 루프가 없으면 두 번째 '2'가
+        다음 단계 입력으로 새어 시퀀스가 깨진다.
+        """
+        inputs = [
+            str(tmp_path / "dest"),
+            "2",      # codex off
+            "2",      # codex on (다시 토글 — 루프가 살아있어야 가능)
+            "",       # 확정
+            "1", "alice", "", "N", "Y",
+        ]
+        dest, member, extra, _, _cs = self._run_wizard(
+            tmp_path, inputs, installed_agents=["claude", "codex"])
+        agent_args = [extra[i + 1] for i, x in enumerate(extra) if x == "--agent"]
+        assert "claude" in agent_args and "codex" in agent_args
 
     def test_role_passed(self, tmp_path):
         """5단계: 역할 입력 → --role extra."""
@@ -531,6 +550,7 @@ class TestCmdInitDelegatesToJoin:
         _jargs, _jkw = join_calls[0]
         assert _jargs.url == "https://github.com/myorg/myteam.git"
         assert _jkw.get("created") is True
+        assert _jargs.team_name == "myorg"  # 팀 이름 기본 = owner
 
     def test_init_create_fail_does_not_join(self):
         """레포 생성 실패면 join 으로 넘어가지 않고 비정상 종료."""
@@ -611,3 +631,24 @@ def test_init_template_timeout_skips_join():
         rc = cli.main(["init", "o/r"])
     assert rc != 0
     assert join_calls == [], "template 미반영인데 join(빈 레포 clone)으로 넘어감"
+
+
+def test_init_default_repo_name_is_owner_team():
+    """init 인자 없이 owner 선택 → 레포명 기본값 = <owner>-team (team 아님)."""
+    prompts = []
+
+    def fake_prompt(label, default=""):
+        prompts.append((label, default))
+        return default
+
+    with patch("teammode.cli._have", return_value=True), \
+         patch("teammode.cli.subprocess.run",
+               return_value=MagicMock(returncode=0, stdout="")), \
+         patch("teammode.cli._pick_owner", return_value="Acme"), \
+         patch("teammode.cli._prompt", side_effect=fake_prompt), \
+         patch("teammode.cli._wait_template_ready", return_value=True), \
+         patch("teammode.cli.cmd_join", return_value=0):
+        cli.main(["init"])
+
+    repo_defaults = [d for label, d in prompts if "레포 이름" in label]
+    assert repo_defaults == ["acme-team"]
