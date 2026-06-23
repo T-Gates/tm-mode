@@ -387,7 +387,8 @@ class TestStatuslineScript:
         assert rc == 0
         assert "Acme" in stdout
         # ANSI cyan escape 포함
-        assert "\033[1;36m" in stdout or "\\033[1;36m" in stdout or "[Acme]" in stdout
+        assert "«Acme»" in stdout, f"길러멧 배지 «Acme» 형식이어야 함: {stdout!r}"
+        assert "\033[1;36m" in stdout, f"시안 ANSI escape 포함이어야 함: {stdout!r}"
 
     def test_C2_no_output_when_inactive(self, statusline_env):
         """.teammode-active 없을 때 무출력."""
