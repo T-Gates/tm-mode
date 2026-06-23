@@ -3,9 +3,11 @@
 이 레포의 에이전트 운영·셋업 지침은 **[AGENTS.md](AGENTS.md)** 를 단일 소스로 따른다 (Claude Code · Codex 공통).
 
 ## 빠른 시작
-사용자가 **"이 레포 셋업해줘"**(또는 "팀모드 셋업"·"온보딩")라고 하면, AGENTS.md의 **"첫 접촉"** 절차대로 `tm-onboard` 스킬(`infra/skills/base/tm-onboard/SKILL.md`)을 따른다 — 없으면 `python infra/install.py --root . --member-name <영문이름> --yes` 직접 실행.
+사용자가 **"이 레포 셋업해줘"**(또는 "팀모드 셋업"·"온보딩")라고 하면, AGENTS.md의 **"첫 접촉"** 절차대로 `tm-onboard` 스킬(`infra/skills/base/tm-onboard/SKILL.md`)을 따른다.
 
-- **install.py가 기계적인 건 다 한다.** 에이전트는 호출하고 결과를 사람 말로 옮긴다 — 단계를 손으로 재현하지 않는다.
+- **설치는 CLI가 끝낸다.** 새 팀: `teammode init`, 기존 팀 합류: `teammode join <url>` — CLI wizard가 모든 설정을 대화로 처리한다.
+- **스킬(tm-onboard)은 설치 후 검증·브리핑만 한다.** `install.py` 직접 호출·멤버명·팀명 묻기는 스킬이 하지 않는다.
+- 아직 설치 안 된 사람 → CLI(`teammode init` / `teammode join`) 안내 후 멈춘다.
 - 안전: 팀 루트는 `--root` 명시만(env 무신뢰). 실 설정 쓰기는 `--yes`/`--settings` 게이트. 푸시는 사람 결정.
 
 ## 서비스 연결 (L2)

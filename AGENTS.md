@@ -3,28 +3,24 @@
 이 레포는 **teammode**(크로스에이전트 팀 협업 툴킷)다. 에이전트(Claude Code · Codex)가 이 파일을 읽고 셋업·운영을 안내한다.
 
 ## 첫 접촉: "셋업해줘" / "온보딩"
-사용자가 팀모드를 켜달라고 하면 **`tm-onboard` 스킬**을 따른다(`infra/skills/base/tm-onboard/SKILL.md`). 스킬이 없거나 못 쓰는 환경이면 아래를 직접 실행한다(설치 절차의 단일 소스는 **[INSTALL.md](INSTALL.md)** — 상세·플래그는 거기):
+사용자가 팀모드를 켜달라고 하면 **`tm-onboard` 스킬**을 따른다(`infra/skills/base/tm-onboard/SKILL.md`).
 
-> **국면 0 — 도입자가 아직 팀 레포가 없으면 (install 보다 먼저).** 레포를 만들기 전에 ① 어느 GitHub **org·계정**에 만들지 **반드시 묻는다**(개인 계정 vs 팀 org 예 `T-Gates` — 임의 선택·자동 진행 금지) → ② 그 org에 레포 생성(template / `gh repo create`) → ③ clone → 그다음 아래 install. **레포가 이미 있으면 이 국면은 건너뛴다.**
+> **설치는 CLI가 끝낸다.** 팀 레포 생성·clone·scaffold·훅 배선까지 전부 아래 CLI 명령이 wizard로 처리한다. 에이전트(스킬)는 설치를 직접 실행하지 않는다.
+>
+> - **새 팀 (레포 없음)**: `teammode init` — org/계정·팀명·레포명을 대화로 정하고 레포 생성 → 곧바로 join(clone+셋업)
+> - **기존 팀 합류**: `teammode join <clone-url>` — 설치 위치·에이전트·이름·역할·Obsidian을 wizard로 묻고 clone+셋업
+>
+> 설치가 끝나면 CLI(`_done()`)가 *"Claude/Codex를 열고 'tm-onboard' 입력 → 검증·브리핑 자동 진행"*이라고 안내한다.
 
-```bash
-# 1) 상태 판별: team.config.json(또는 memory/) 있으면 팀원, 없으면 도입자
-# 2) 부트스트랩 (결정적 — install.py 가 스캐폴드·훅·env·verify 를 다 한다)
-python infra/install.py --root . --yes                          # 도입자
-python infra/install.py --root . --member-name <영문이름> --yes  # 팀원
-# 3) 첫 가치: 팀 상황 보여주기
-python infra/teammode.py context --root . --json                # → 사람 말로 요약
-# 4) 팀모드 켜기 — 설치는 자동 활성화하지 않는다(설치 ≠ 활성화). 켤지 제안하고 동의 시:
-python infra/teammode.py on --root . --install                  # 설치는 자동 활성화 안 함 (on 은 --install/--settings 필수)
-# 5) (물어보고) Obsidian 볼트 등록 — opt-in, 키 0
-python infra/install.py --root . --register-obsidian
-```
+**스킬(tm-onboard)이 하는 일은 딱 둘뿐:**
 
-- **install.py 가 기계적인 건 다 한다. 에이전트는 그걸 호출하고 결과를 사람 말로 옮긴다 — 단계를 손으로 재현하지 말 것.**
-- L1(세션로그·맥락주입)을 먼저 보여주고, 서비스 연결(이슈 트래커·채팅·문서·캘린더)은 **나중**에 사람이 원할 때.
+1. **설치 검증** — 검증 전용 서브에이전트에 위임(메인은 기다리지 않음)
+2. **팀모드 가치 전달** — `infra/skills/base/tm-onboard/value.md`를 읽고 사람에게 전달
+
+스킬은 `install.py`를 직접 호출하지 않으며, 멤버명·org·팀명·역할·에이전트·Obsidian을 묻지 않는다. 아직 설치 안 된 사람이 "셋업해줘"라고 하면 → `teammode init`(새 팀) / `teammode join <url>`(합류)을 터미널에서 실행하도록 안내 후 멈춘다.
 
 ## 서비스 연결: "연결해줘" / "서비스 붙여줘"
-역할 슬롯(issues / chat / docs / calendar)에 서비스를 붙이려면 **`tm-connect` 스킬**을 따른다(`infra/skills/core/tm-connect/SKILL.md`). tm-onboard 는 첫 가치 직후 연결을 *제안*만 하고, 실제 연결(토큰 안내·금고 저장·config 슬롯 기록·재배선)은 tm-connect 가 한다.
+역할 슬롯(issues / chat / docs / calendar)에 서비스를 붙이려면 **`tm-connect` 스킬**을 따른다(`infra/skills/core/tm-connect/SKILL.md`). tm-onboard 는 L2 서비스 연결을 다루지 않는다 — 필요한 순간 `tm-connect` 스킬이 트리거로 드러난다(progressive). 실제 연결(토큰 안내·금고 저장·config 슬롯 기록·재배선)은 tm-connect 가 한다.
 
 - 발급 링크·단계·연결방식은 `providers/<provider>.json` 의 `token_guide`·`auth`·`default_scope`·`resource_fields` 를 **데이터로 읽어** 안내한다(하드코딩 금지).
 - **각자 입력(v0.1)**: 각 멤버가 자기 토큰을 직접 입력 → 로컬 금고(`infra/credentials.py`, 0600). 팀 자동공유 없음.
@@ -42,7 +38,8 @@ python infra/install.py --root . --register-obsidian
 - 푸시·PR은 사람이 결정. 에이전트가 임의 푸시하지 않는다.
 
 ## 핵심 파일
+- **진입 CLI**: `src/teammode/cli.py` (`teammode init` / `teammode join` — wizard로 설치 전담)
 - 엔진: `infra/teammode.py` (동사 on/off/log/context/pull/commit/update)
-- 셋업: `infra/install.py` (+ `install_lib.py`)
+- 셋업: `infra/install.py` (+ `install_lib.py`) — CLI가 subprocess로 위임 호출
 - 훅: `infra/hooks/` · 어댑터: `infra/agents/<name>/` · 스킬: `infra/skills/`
 - 동작이 예상과 다르면 설계 스펙([설치·부트스트랩](docs/spec/onboarding.md) · [온보딩 스킬](docs/spec/skills.md)) 확인.
