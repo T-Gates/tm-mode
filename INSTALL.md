@@ -1,74 +1,63 @@
 # 설치 — teammode
 
-teammode 설치 절차의 **단일 소스**다. 사람이 직접 따라 해도 되고, 에이전트에게 맡겨도 된다.
-
-> **권장 — 에이전트에게 맡기기 (사람 정독 0):**
-> 에이전트(Claude Code · Codex)에게 그대로 말하세요:
-> ```
-> 이 https://github.com/T-Gates/teammode 레포 셋업해줘
-> ```
-> 에이전트가 `AGENTS.md`를 거쳐 이 문서의 절차를 읽고 알아서 실행합니다. 클론·설정·정독은 에이전트 몫.
->
-> **직접 하기:** 아래 절차를 따른다.
+teammode 설치의 **단일 소스**다. 진입은 `teammode` CLI 한 줄 — 레포 생성/clone·scaffold·훅 배선·스킬 배포·env 주입까지 wizard가 전부 처리한다.
 
 ## 요구사항
+- **Python 3.9+**, **git**
+- 새 팀 생성(`init`)은 **GitHub CLI(`gh`)** 도 필요(인증된 상태 — `gh auth login`)
 
-- **Python 3.9+**
-- **git** (메모리가 git 기반)
-
-## 1. 설치
-
-### 도입자 — 팀을 새로 시작
-이 레포를 템플릿으로 새 팀 레포를 만든 뒤, 그 안에서:
-
+## 1. 런처 설치 (pip 또는 curl — 택1)
 ```bash
-python infra/install.py --root . --yes
+# pip
+pip install "git+https://github.com/T-Gates/teammode"
+
+# 또는 curl (pip 없이) — 아래 2단계 명령을 그대로 이어붙인다:
+#   curl -fsSL https://raw.githubusercontent.com/T-Gates/teammode/main/install.sh | sh -s -- <명령>
 ```
 
-### 팀원 — 기존 팀에 합류
-팀 레포를 clone 한 뒤:
+## 2. 팀 만들기 / 합류
 
+### 새 팀 — 도입자
 ```bash
-python infra/install.py --root . --member-name <영문이름> --yes
+teammode init
 ```
+org·계정, 팀명, 레포명을 wizard가 묻고 → 레포 생성(template) → 곧바로 본인 머신에 설치(clone+셋업)까지 한 번에. (비대화로 지정하려면 `teammode init OWNER/REPO`.)
 
-`install.py`가 기계적인 것(스캐폴드·훅 배선·스킬 배포·env 주입·검증)을 전부 한다. 끝나면 설치는 됐지만 **팀모드는 아직 꺼져 있다** — 다음 단계에서 켠다.
-
-## 2. 팀모드 켜기 (활성화)
-
-**설치는 팀모드를 자동으로 켜지 않는다 — 설치 ≠ 활성화.** 사용자가 명시적으로 켜야 한다:
-
+### 기존 팀 합류 — 팀원
 ```bash
-python infra/teammode.py on --root . --install   # 또는 에이전트에게 "팀모드 켜"
+teammode join <팀레포 clone-url>
 ```
+설치 위치·에이전트(claude/codex)·이름·역할·Obsidian을 wizard가 묻고 clone+셋업.
 
-`on`/`off`는 어디에 배선할지 알아야 하므로 `--install`(실 호스트) 또는 `--settings <경로>`(격리)가 **필수**다.
+> curl 진입도 동일하다 — `... | sh -s -- init` / `... | sh -s -- join <url>`.
 
-- 설치 직후 `tm-onboard`가 **"지금 팀모드를 켤까요?"** 하고 제안한다 — 동의하면 그때 켜진다.
-- 켜면 다음 세션부터 `session-start` 훅이 팀 맥락을 자동 주입한다. 끄려면 `teammode.py off --root . --install`.
+설치가 끝나면 CLI가 안내한다: **Claude Code나 Codex를 열고 `tm-onboard`라고 입력** → 설치 검증·팀모드 가치 브리핑이 자동으로 진행된다. (설치는 됐지만 팀모드는 아직 꺼져 있다 — **설치 ≠ 활성화.**)
 
-## 3. (선택) Obsidian 볼트 등록
-
-`memory/`를 Obsidian으로 그래프처럼 보려면 — 온보딩 때 안 했어도 언제든:
-
+## 3. 팀모드 켜기 (활성화)
+설치는 팀모드를 자동으로 켜지 않는다. 작업을 시작할 때 켠다:
 ```bash
-python infra/install.py --root . --register-obsidian
+# 에이전트에게 "팀모드 켜" / "tm on"   (또는 직접:)
+python infra/teammode.py on --root . --install
 ```
+켜면 다음 세션부터 `session-start` 훅이 팀 맥락을 자동 주입한다. 끄려면 `... off --root . --install`.
 
-Obsidian 미설치면 우아하게 skip(아무것도 안 만듦). `obsidian.json`은 실 호스트 설정이라 이 opt-in 명령으로만 건드린다.
+## 4. (선택) Obsidian 볼트
+`join` wizard가 묻는다. 나중에 다시 붙이려면 같은 위치에서 `teammode join <url>`을 다시 실행한다(멱등). `memory/`를 Obsidian 그래프로 본다. 미설치면 우아하게 skip(아무것도 안 만듦).
 
-## 플래그
+---
+
+## 부록 — `install.py` / 플래그 (고급·내부)
+정상 진입에선 직접 쓸 일이 없다 — `teammode init/join`이 clone된 레포의 `infra/install.py`를 subprocess로 위임 호출한다(`--root . --yes`). 디버그·격리·되돌리기 시에만 참고:
 
 | 플래그 | 역할 |
 |---|---|
-| `--yes` | 실 에이전트 설정(`~/.claude/settings.json` 등)에 배선 허용. **없으면 안 씀**(안전 게이트) |
-| `--settings <디렉토리>` | 격리 실행 — 실 호스트 무접촉 (테스트·CI). 경로는 디렉토리(그 아래 에이전트별 설정 파일 생성) |
+| `--yes` | 실 에이전트 설정(`~/.claude/settings.json` 등)에 배선 허용. **없으면 안 씀**(안전 게이트). CLI는 항상 `--yes`로 호출 |
+| `--settings <디렉토리>` | 격리 실행 — 실 호스트 무접촉(테스트·CI). 경로는 디렉토리(그 아래 에이전트별 설정 생성) |
 | `--dry-run` | 변경 없이 계획만 출력 |
-| `--register-obsidian` | Obsidian 볼트 등록 (opt-in) |
+| `--register-obsidian` | Obsidian 볼트 등록(opt-in) |
 | `--uninstall` | install이 호스트에 더한 것(훅·스킬·env·마커)을 역순 제거 |
 
-## 설치 후 — 엔진 동사 (teammode.py)
-
+### 엔진 동사 (teammode.py)
 | 동사 | 역할 |
 |---|---|
 | `on` / `off` | 팀모드 켜기·끄기 (배너·훅·active 마커) |
@@ -78,8 +67,8 @@ Obsidian 미설치면 우아하게 skip(아무것도 안 만듦). `obsidian.json
 
 모든 동사는 팀 루트를 `--root`로 명시받는다(환경변수 무신뢰 — 안전).
 
-## 제거
-
+### 제거
+`teammode` CLI에는 uninstall이 없다. 호스트에서 제거하려면 팀 레포 안에서:
 ```bash
 python infra/install.py --root . --uninstall
 ```

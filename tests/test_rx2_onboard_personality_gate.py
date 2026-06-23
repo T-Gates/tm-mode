@@ -41,6 +41,11 @@ def test_tm_customize_always_guided():
 
 
 def test_next_steps_still_functional():
-    """다음 단계 섹션이 여전히 존재하고 비어 있지 않다."""
+    """셋업 직후 '다음 한 걸음'(tm on) 안내가 살아 있어야 한다.
+
+    새 계약에서 옛 '## 다음 단계' 섹션은 제거됐고(설치·메뉴 로직은 CLI/각 스킬 몫),
+    다음 한 걸음은 §② 가치 전달 안의 'tm on' 권유로 흡수됐다 —
+    헤더 문자열이 아니라 그 의도(다음 행동 안내)를 검증한다.
+    """
     text = _text()
-    assert "## 다음 단계" in text, "다음 단계 섹션이 없다"
+    assert "tm on" in text, "다음 한 걸음(tm on) 안내가 SKILL.md에서 사라졌다"

@@ -59,29 +59,27 @@ teammode SPEC v0.2 — tm-onboard·tm-connect (§5)
 
 ## §5. 온보딩 스킬 (tm-onboard)
 
-> 이 절의 ground truth는 현재 워킹트리의 `infra/skills/base/tm-onboard/SKILL.md`, `infra/skills/core/tm-connect/SKILL.md`이다. 2026-06-16 현재 워킹트리에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으며, 이 절은 커밋 여부와 무관하게 **현재 구현된 스킬 본문**을 반영한다.
+> 이 절의 ground truth는 현재 워킹트리의 `infra/skills/base/tm-onboard/SKILL.md`, `infra/skills/core/tm-connect/SKILL.md`, `src/teammode/cli.py`이다. 2026-06-16 현재 워킹트리에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으며, 이 절은 커밋 여부와 무관하게 **현재 구현된 스킬 본문**을 반영한다.
 >
-> 공통 원칙: 사람이 할 판단·동의·권한 부여는 스킬이 대화로 처리하고, 결정적 파일 조작·배선·검증·되돌리기는 `install.py`/엔진/credentials 모듈에 맡긴다. 스킬은 install.py 단계를 손으로 재현하지 않는다.
+> **핵심 계약 변경(2026-06)**: 설치는 CLI(`teammode init` / `teammode join`)가 끝낸다. 스킬은 설치 후 ① 검증(서브에이전트 위임) ② 가치 전달(value.md)만 한다. 스킬이 `install.py`를 직접 호출하거나 멤버명·org·팀명·역할을 묻는 것은 **구 계약이며 폐기됐다.**
 
 ### 5.1 정체성·트리거
 
 ```yaml
 name: tm-onboard
-description: Use at first contact with teammode — setting up a team repo or joining a team —
-  or to register the team memory as an Obsidian vault at any time later.
+description: Use right after a teammode install (`teammode init` / `teammode join`) — when
+  entering Claude Code/Codex in a freshly set-up team repo. Dispatches a verification
+  subagent to confirm the install landed, and meanwhile conveys what teammode does for you.
 triggers:
-  - "이 레포 셋업해줘"
-  - "팀모드 셋업"
+  - "tm-onboard"
+  - "팀모드 온보딩"
   - "팀모드 시작"
-  - "온보딩"
-  - "팀모드 합류"
-  - "teammode setup"
-  - "Obsidian 등록"
-  - "옵시디언 볼트 만들어줘"
-  - when handed a teammode repo to set up
+  - "설치 잘 됐나"
+  - "팀모드 셋업 확인"
+  - when the CLI tells the user to open an agent and run tm-onboard
 ```
 
-`tm-onboard`는 teammode를 처음 켜는 스킬이다. 생애주기상 **팀 셋업(도입자 1회) → 개인 셋업(각 멤버) → 서비스 연결(L2, 나중)** 중 앞의 L1 부트스트랩과 첫 가치 내레이션을 담당한다. L1은 세션로그와 세션 시작 맥락 자동 주입이다.
+`tm-onboard`는 **`teammode init` / `teammode join` 설치 직후**, 에이전트로 처음 들어왔을 때 실행하는 스킬이다. 설치·레포 생성·clone은 CLI wizard가 이미 끝냈다. 스킬이 하는 일은 **딱 둘**: ① 설치 검증(검증 서브에이전트에 위임, 메인은 기다리지 않음), ② 팀모드 가치 전달(`value.md` 읽어 사람에게 전달).
 
 같은 절에서 다루는 관련 스킬:
 
@@ -102,116 +100,57 @@ triggers:
 
 `tm-connect`는 `tm-onboard`가 첫 가치 직후 제안한 L2 연결을 실제로 수행한다. 토큰 안내, 로컬 금고 저장, config 슬롯 기록, 재배선은 `tm-connect`의 책임이다.
 
-### 5.2 install.py ↔ tm-onboard 분업
+### 5.2 CLI ↔ tm-onboard ↔ install.py 분업
 
 | 단계 | 주체 |
 |---|---|
-| preflight·detect·role 판정·scaffold·wire·env·verify | `install.py`. 스킬은 명령을 호출하고 결과를 사람 말로 옮긴다. |
-| 도입자/팀원 자동 판정 설명 | `tm-onboard`. 단, 판정 자체는 `install.py`가 `team.config.json` 유효성으로 한다. |
-| 이름 제안·이름 충돌 안내 | `tm-onboard`가 안내, `install.py`가 검증·충돌 판정. |
-| 첫 가치(context) 실행과 요약 | `tm-onboard`가 `teammode.py context --json`를 실행하고 사람 말로 요약. |
-| personality 커스텀 opt-in | `tm-onboard`. greeting/farewell은 도입자 config, banner는 `memory/banner.txt`. |
-| Obsidian 등록 opt-in | `tm-onboard`가 `install.py --register-obsidian`만 호출. |
-| L2 서비스 연결 제안 | `tm-onboard`. 실행은 하지 않는다. |
-| L2 서비스 연결 실행 | `tm-connect`. provider 데이터 안내, credentials 저장, config 슬롯 기록, install 재배선. |
-| 호스트 설치 되돌리기 | `install.py --uninstall` 직접 실행(`python infra/install.py --uninstall --root . --yes`). 파괴적이라 사람 확인 먼저. |
+| 레포 생성(`gh repo create --template`) | `cli.py` `cmd_init` |
+| 팀 레포 clone | `cli.py` `cmd_join` (wizard 2단계 후 실행) |
+| 멤버명·org·팀명·역할·에이전트·Obsidian 대화 | `cli.py` `_wizard_join` (TTY) / 인자 경로 (비-TTY) |
+| preflight·detect·role 판정·scaffold·wire·env·verify | `install.py`. CLI가 subprocess로 위임 호출한다. |
+| 설치 완료 안내("에이전트 열고 tm-onboard 입력") | `cli.py` `_done()` |
+| 설치 검증(서브에이전트 위임) | `tm-onboard`. 메인은 기다리지 않고 병렬로 가치 전달. |
+| 팀모드 가치 전달(`value.md` 읽어 사람에게) | `tm-onboard`. 검증 서브가 도는 동안 메인이 진행. |
+| personality 커스텀 opt-in | `tm-customize` 스킬 (tm-onboard 범위 밖 — progressive). |
+| Obsidian 등록 opt-in | CLI wizard 5단계에서 이미 묻거나, `install.py --register-obsidian` 직접. |
+| L2 서비스 연결 제안 | `tm-onboard`는 다루지 않는다 — 각 스킬(`tm-connect`)이 그때 드러난다. |
+| L2 서비스 연결 실행 | `tm-connect`. provider 데이터 안내, credentials 저장, config 슬롯 기록, 재배선. |
+| 호스트 설치 되돌리기 | `install.py --uninstall` 직접 실행. 파괴적이라 사람 확인 먼저. |
 
-도입자/팀원 분기는 `--member-name`으로 하지 않는다. `install.py`가 `team.config.json`의 유효성을 보고 자동 판정한다.
+**스킬이 하지 않는 것 (폐기된 옛 계약):**
+- `install.py` 직접 호출 — CLI가 끝냈다. 재설치가 필요하면 `teammode join <url>` 재실행(멱등) 안내.
+- 멤버명·org·팀명·역할 대화 — CLI wizard가 이미 받았다.
+- 도입자/팀원 판정 설명 — CLI wizard가 처리했다.
+- 설치 안 된 사람에게 설치를 시작 → `teammode init` / `teammode join <url>` CLI 안내 후 멈춤.
 
-- config 없음 또는 미초기화: 도입자/팀 셋업. config를 새로 쓴다.
-- 유효 config 존재: 팀원/개인 셋업. config는 팀 상태의 근거로 읽으며, 현 구현은 `team.config.json.members`의 **자기 엔트리만** upsert할 수 있다. team/services/admin 등 팀 공통 필드는 보존한다.
-- `--member-name`은 양쪽 경로에서 author/member 이름을 정하는 인자일 뿐 role 스위치가 아니다.
-- `install.py`는 아직 role을 `--json`으로 출력하지 않는다. 스킬이 실행 전에 굳이 알아야 하면 `team.config.json` 유효성, 즉 `team.name`이 placeholder가 아니고 `spec_version`이 있는지를 직접 확인한다. `--json`이 생기면 그쪽으로 전환한다.
+### 5.3 흐름 (설치 후 첫 진입 — 병렬)
 
-호스트 안전 게이트:
-
-- `--yes`는 단순 동의 플래그가 아니라 실 `~/.claude/settings.json` 등에 훅·스킬·MCP를 배선하는 실설치 의도다.
-- 격리 설치는 `--settings <경로>`로 한다.
-- 변경 없이 보려면 `--dry-run`을 쓴다.
-- `--yes`와 `--settings`가 모두 없으면 install은 wire를 건너뛰고 끝난다. 실호스트를 건드리지 않는다.
-- reset의 `--yes`는 실 settings에서 teammode 훅을 제거하는 쓰기 의도다. 격리 되돌리기는 `--settings <경로>`를 쓴다. 둘 다 없으면 uninstall은 실호스트를 건드리지 않고 거부한다.
-
-### 5.3 흐름 (progressive — L1 먼저, L2 당길 때)
+> **전제**: `teammode init` 또는 `teammode join <url>` 이 이미 완료됐다. 에이전트는 clone된 팀 레포 루트에서 실행된다.
 
 ```
-"이 레포 셋업해줘"
- 1. 도입자/팀원은 install.py가 자동 판정한다고 알린다.
- 2. python infra/install.py --root . --member-name <영문이름> --yes
- 3. 실패(exit != 0)면 사유를 사람 말로 옮기고 멈춘다.
- 4. python infra/teammode.py context --root . --json
- 5. context 결과를 "지금 팀 상황: ..."으로 요약한다.
- 6. 필요하면 personality 커스텀과 Obsidian 등록을 opt-in으로 묻는다.
- 7. L2 서비스 연결을 강요 없이 제안한다. 예: "서비스(이슈 트래커·채팅·문서·캘린더) 연결할래요? 나중에 해도 돼요."
+"tm-onboard" (또는 "팀모드 시작" / "설치 잘 됐나")
+ 1. 검증 서브에이전트를 즉시 디스패치한다 — 읽기 전용·수정 금지. 메인은 기다리지 않는다.
+ 2. (서브가 도는 동안) infra/skills/base/tm-onboard/value.md 를 읽고 가치를 사람에게 전달한다.
+ 3. 검증 결과 도착 → 종합:
+    - 전부 ✅ → "설치도 정상 확인됐어요" 한 줄 매듭.
+    - ❌ 항목 있음 → 무엇이 안 됐는지 짚고 → `teammode join <팀레포 URL>` 재실행 안내(멱등).
+ 4. 마무리: "작업 시작할 땐 `tm on` 하세요." 한 걸음 안내로 끝낸다.
 ```
 
-공통 셋업 명령:
+검증 서브에이전트 확인 항목(SKILL.md §① 기준):
+1. `python infra/teammode.py context --root <팀루트> --json` — 에러 없이 state 출력 (`state=off` 정상 — 설치 ≠ 활성화)
+2. `memory/team/members.md` 멤버 등재, `memory/INDEX.md` 존재
+3. `team.config.json` 존재 + `agents` 기록
+4. 스킬 심링크 (claude=`~/.claude/skills`, codex 해당 경로)
+5. 훅 배선 (`~/.claude/settings.json` 등)
 
-```bash
-python infra/install.py --root . --member-name <영문이름> --yes
-```
+install.py가 내부적으로 하는 일(참고 — 스킬이 재현하지 않는다):
 
-인자와 기본 동작:
-
-- `--root .`는 필수 관행이다. 팀 루트는 환경변수로 추측하지 않고 명시한다.
-- `--member-name <영문이름>`은 권장이다. 생략하면 install이 git `user.name` 기반 제안을 쓴다. 팀원은 이름 충돌 회피를 위해 명시하는 편이 안전하다.
-- `--yes`는 실호스트 배선까지 포함한 설치다. 격리 검증은 `--settings <경로>`, 무접촉 계획 확인은 `--dry-run`을 쓴다.
-
-install.py가 하는 일:
-
-- preflight
-- 팀 상태 감지
-- role 자동 판정
+- preflight, detect, role 자동 판정
 - scaffold: `memory/INDEX.md`, `memory/team/members.md`, `memory/team/sessions/<이름>/`, 도입자면 빈 services config 등
 - 훅 sync와 실 settings write(`--yes`일 때)
 - env 주입
-- verify: `context`로 설치를 확인한다(`on` 미사용 — active marker·settings 안 만듦).
-
-멱등성과 분기:
-
-- 재실행은 정상 경로다. scaffold·등록·배선은 중복을 만들지 않는 방향으로 install.py가 처리한다.
-- 이름 충돌, 즉 다른 사람이 같은 이름으로 등재된 것으로 판정되면 install.py가 exit 3과 안내를 낸다. 스킬은 추측해 고치지 않고 사람이 `--member-name <다른 영문이름>`으로 재실행하게 한다.
-- 어떤 실패든 exit code가 0이 아니면 스킬은 사유를 전달하고 멈춘다. 후속 context·연결을 추측 진행하지 않는다.
-
-첫 가치:
-
-```bash
-python infra/teammode.py context --root . --json
-```
-
-- 결과를 그대로 덤프하지 않고 사람 말로 요약한다.
-- 설치는 팀모드를 자동으로 켜지 않는다 — `--yes`/`--settings`로 wire+verify까지 완주해도 `state=off`가 정상이다(설치 ≠ 활성화). verify는 `context`로 설치를 확인하고 **팀모드는 켜지 않는다**(on 미사용 — on의 auto_update 부작용 회피). `state=on`은 사용자가 `tm on`(또는 tm-onboard 제안 동의)으로 명시했을 때만 — 설치하며 켜는 단축 플래그는 두지 않는다.
-- 갓 만든 팀은 세션로그가 0개일 수 있다. 이때는 "구조는 섰고, 다음 작업부터 자동 기록·주입됩니다"라고 설명한다.
-- 팀원은 기존 팀 로그가 있으면 context에서 보인다. 다음 세션부터는 `session-start.py` 훅이 팀원별 최근 세션로그를 자동 주입한다.
-
-팀 personality 커스텀은 opt-in이다.
-
-- 먼저 "배너·시작멘트(greeting)·끝맺음말(farewell) 커스텀할래요? 기본값 그대로 둬도 됩니다"라고 묻는다.
-- 예라고 하면 시작 멘트와 끝맺음말은 `team.config.json`의 `team.greeting`, `team.farewell`을 교체한다. 도입자 config에는 기본값 `"<팀> 팀모드 ON"`, `"수고하셨습니다 — <팀>"`이 있다.
-- 엔진 `on`/`off`는 **배너를 stdout에 출력하지 않는다**(toolkit 패턴 — Bash 툴 출력이 접혀 안 보이던 문제 회피). 배너는 `tm` 스킬이 `memory/banner.txt`를 Read해 코드펜스로 출력한다(`on`=웰컴 첫 요소, `off`=farewell 직전). 엔진 `on`은 greeting만(있으면) 출력하고 banner.txt 캐시를 보장한다(없으면 fallback 생성). 엔진 `off`는 farewell만 출력한다(없으면 "상태 저장됨").
-- 배너는 **picker**로 고른다. `infra/banners/`에 ansi_shadow·slant·chunky·cyberlarge·larry3d·speed 6종의 정적 ASCII 아트 후보가 있다. 각 후보를 `cat`으로 보여주고 사용자가 고른 폰트를 `cp infra/banners/<폰트명>.txt memory/banner.txt`로 복사해 적용한다. 배너는 TEAM/MODE 텍스트 고정이며, 팀명은 엔진이 greeting으로 동적 출력한다. 6종 중 원하는 것이 없으면 `memory/banner.txt`를 직접 작성해도 된다(임의 ASCII 아트 자유).
-- 아니오면 기본 greeting/farewell과 자동 배너(`=== <팀> ===`)를 그대로 둔다.
-- config의 greeting/farewell은 팀 스코프다. 도입자가 바꾸고 커밋하면 팀원에게 공유된다. 팀원은 개인 취향으로 이 값을 바꾸지 않는다.
-
-Obsidian 뷰도 opt-in이다.
-
-```bash
-python infra/install.py --root . --register-obsidian
-```
-
-- `memory/`가 Markdown이므로 Obsidian 볼트로 볼 수 있다.
-- 예라고 하면 위 명령만 실행한다. `.obsidian/` dataview·graph 설정 생성과 `obsidian.json` merge 등록을 install.py가 처리한다.
-- 기존 볼트는 보존하고 멱등으로 등록한다.
-- Obsidian이 미설치면 우아하게 skip한다. 안 쓰는 사람에게 영향이 없다.
-- 아니오 또는 미설치면 수동 대안으로 `<repo>/memory`를 Obsidian의 "Open folder as vault"로 열라고 안내한다. `obsidian://open?path=<memory 절대경로>` 링크도 가능하다.
-- 키·토큰은 없다. 다만 `obsidian.json`은 실 호스트 설정이므로 동의 뒤에만 건드린다.
-- 이 액션은 독립 실행된다. 온보딩 때 건너뛰었더라도 나중에 "Obsidian 등록해줘"라고 하면 다른 온보딩 단계 없이 이 명령만 실행한다.
-
-L2 연결 제안:
-
-- `tm-onboard`의 L2 책임은 제안과 트리거뿐이다.
-- 사용자가 예라고 하면 `tm-connect` 스킬로 넘긴다.
-- 아니오 또는 나중에 하겠다고 하면 L1만으로 끝낸다. 빈 슬롯은 정상 상태다.
-- `tm-onboard`는 토큰을 받거나 config 서비스 슬롯을 직접 채우지 않는다.
+- verify: `context`로 설치 확인 (`on` 미사용 — active marker·settings 안 만듦, 설치 ≠ 활성화)
 
 ### 5.4 서비스 연결 스킬 (tm-connect)
 
@@ -332,16 +271,23 @@ Common mistakes:
 
 | 실수 | 올바른 방법 |
 |---|---|
-| `--member-name`으로 도입자/팀원을 가른다고 봄 | role은 install.py가 config 유효성으로 자동 판정한다. |
+| **tm-onboard가 install.py를 직접 호출** | 설치는 CLI가 끝냈다. 스킬은 검증·가치 전달만. |
+| **tm-onboard가 멤버명·org·팀명·역할을 다시 묻는다** | CLI wizard가 이미 받았다. 묻지 않는다. |
+| **"셋업해줘"에 스킬이 설치를 시작** | `teammode init`(새 팀) / `teammode join <url>`(합류) 터미널 안내 후 멈춘다. |
+| 검증을 메인이 동기로 붙잡고 함 | 검증 서브에이전트 디스패치 + 그 동안 메인이 가치 전달(병렬). |
+| 검증 건너뛰고 "설치됐겠지" 가정 | 서브에게 실제 파일/명령으로 확인시킨다 — 특히 훅·스킬 심링크. |
+| `install.py` 단계를 손으로 재현 | 안 됐으면 `teammode join <url>` 재실행 안내(멱등). |
+| L2·Obsidian·personality를 메뉴로 나열 | 다루지 않는다. 각 스킬이 그때 드러난다(progressive). |
+| 빈 팀(세션로그 0)을 실패로 말함 | 정상 — "지금부터 쌓인다"로 내레이션. |
+| `--member-name`으로 도입자/팀원을 가른다고 봄 | role은 install.py가 config 유효성으로 자동 판정한다. (install.py 내부 참고용) |
 | `--yes`를 단순 동의로만 안내 | `--yes`는 실호스트 settings write/remove 의도다. 격리는 `--settings`. |
-| tm-onboard가 서비스 연결을 직접 실행 | tm-onboard는 제안과 트리거까지만, 실행은 tm-connect. |
+| tm-connect: 서비스 연결을 tm-onboard가 직접 실행 | tm-onboard는 다루지 않는다. tm-connect 스킬이 그때 드러난다. |
 | 발급 링크·단계를 하드코딩 | `providers/<provider>.json`의 `token_guide`와 `auth`를 읽어 안내. |
 | 팀 scope면 도입자 1회로 끝난다고 안내 | 0.2는 각자 입력이다. 팀 scope도 각 멤버가 자기 토큰을 저장한다. |
 | 토큰을 config·세션로그에 기록 | 토큰은 로컬 credentials 금고에만 둔다. config에는 인스턴스 값만 쓴다. |
 | 평문 금고를 동기화 폴더에 둬도 된다고 안내 | 0.2 금고는 평문 JSON이다. 동기화 폴더 금지. |
 | 빈 슬롯을 에러로 취급 | 빈 슬롯은 정상이다. 엔진은 `[info]` 비치명 안내를 낸다. |
 | uninstall이 memory까지 지운다고 안내 | uninstall은 호스트 흔적만 되돌리고 `memory/`는 보존한다. |
-| scratch repo가 uninstall로 사라진다고 봄 | 폴더는 남는다. 통째 정리는 별도 삭제다. |
 
 ---
 

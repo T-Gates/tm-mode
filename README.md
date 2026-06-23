@@ -7,13 +7,15 @@
 
 ## 도입은 이 한 줄
 
-에이전트(Claude Code · Codex)에게 그대로 말하세요:
+런처(pip 또는 curl)를 깔고 한 줄:
 
-```
-이 https://github.com/T-Gates/teammode 레포 셋업해줘
+```bash
+pip install "git+https://github.com/T-Gates/teammode"
+teammode init                      # 새 팀 (도입자) — 레포 생성 → 곧바로 셋업
+teammode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 ```
 
-→ 에이전트가 `AGENTS.md`를 읽고 알아서 설치합니다. **클론·설정·문서 정독 0. 진입장벽 0.** 이게 도입의 전부예요.
+→ CLI wizard가 org·팀명·이름·에이전트·설치 위치를 묻고 **레포 생성/clone·훅·스킬·env까지 한 번에.** 클론·설정·정독 0, 진입장벽 0. 설치가 끝나면 에이전트(Claude Code·Codex)를 열고 `tm-onboard`라고 치면 검증·가치 브리핑이 자동입니다. (curl도 동일 — `... | sh -s -- init|join`.)
 
 > 상태: **WIP.** L1(팀 메모리·맥락 자동주입·Obsidian 뷰)이 동작·검증 완료. L2(서비스 연동)·호스팅은 진행 중.
 
@@ -86,7 +88,7 @@
 
 ## 설치
 
-**에이전트에게 "이 레포 셋업해줘" 한 줄이면 끝**(위 [도입은 이 한 줄](#도입은-이-한-줄)). 직접 설치하거나 상세 절차 — 요구사항·도입자/팀원 셋업·**활성화**·플래그·엔진 동사 — 가 필요하면 **→ [INSTALL.md](INSTALL.md)**.
+**`teammode init`(새 팀) / `teammode join <url>`(합류) 한 줄이면 끝**(위 [도입은 이 한 줄](#도입은-이-한-줄)). 요구사항·**활성화**(`tm on`)·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
 
 ## 구조
 
