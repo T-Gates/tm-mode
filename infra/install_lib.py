@@ -70,10 +70,11 @@ class Options:
     dry_run: bool = False
     register_obsidian: bool = False
     obsidian_config: str | None = None
+    team_name: str | None = None  # init 위저드 팀명(team.name·배너·배지 소스). 미지정 시 레포명 폴백.
 
 
 _VALUE_FLAGS = {"--root", "--agent", "--member-name", "--role", "--settings",
-                "--obsidian-config"}
+                "--obsidian-config", "--team-name"}
 
 
 def parse_args(argv) -> Options:
@@ -111,6 +112,8 @@ def parse_args(argv) -> Options:
             opts.register_obsidian = True
         elif a == "--obsidian-config":
             opts.obsidian_config = next(it, None)
+        elif a == "--team-name":
+            opts.team_name = next(it, None)
         # 그 외 토큰은 무시
     return opts
 

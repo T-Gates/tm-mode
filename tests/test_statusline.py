@@ -283,24 +283,22 @@ class TestClaudeStatusLine:
         sl = _get_status_line(settings_after)
         assert sl is None, "팀모드 OFF 시 teammode statusLine이 제거돼야 한다"
 
-    def test_B4_user_statusline_untouched(self, claude_env):
-        """개인 statusLine(bash 미확인 — 확장자·shebang 없는 바이너리) 있음
-        → sync --on 시 건드리지 않는다 (판단불가 = 보수적 무접촉).
-
-        bash 호환 확인 불가(확장자·shebang·sh/bash 접두사 없음) 명령은
-        auto-wrap 대상이 아니라 경고+무접촉이다.
+    def test_B4_user_statusline_wrapped_or_punted_by_platform(self, claude_env):
+        """개인 statusLine(PowerShell 아닌 바이너리) 처리는 플랫폼별:
+        비-Windows → wrapper(bash -c)로 감쌈 / Windows → 보수적 무접촉(bash 불명).
         """
-        user_sl = {
-            "type": "command",
-            # 확장자 없는 바이너리 경로 — bash 호환 여부 판단 불가 → 무접촉
-            "command": "/usr/local/bin/my-statusline-binary",
-        }
+        cmd = "/usr/local/bin/my-statusline-binary"  # 확장자·shebang 없음
+        user_sl = {"type": "command", "command": cmd}
         claude_env.settings.write_text(json.dumps({"statusLine": user_sl}))
         claude_env.make_adapter().sync(mode="on")
         settings = _read_settings(claude_env.settings)
         sl = _get_status_line(settings)
-        # 사용자 원본 그대로
-        assert sl == user_sl
+        if os.name == "nt":
+            assert sl == user_sl  # Windows: bash 불명 → 무접촉
+        else:
+            assert sl.get("_teammode_wrapped") is True
+            assert sl.get("_wrapped_command") == cmd
+            assert "teammode_statusline.py" in sl.get("command", "")
 
     def test_B5_teammode_statusline_removed_on_off(self, claude_env):
         """이미 teammode statusLine 설치 + sync --off → 제거."""
@@ -907,8 +905,12 @@ class TestAutoWrapPersonalStatusLine:
         assert len(warnings_list) > 0
         assert any("판단필요" in w for w in warnings_list)
 
-    def test_F7b_undecidable_personal_statusline_no_touch(self, claude_env):
-        """판단 불가 개인 statusLine (bash 미확인) → 무접촉 + 경고."""
+    def test_F7b_non_powershell_personal_statusline_wrapped_non_windows(self, claude_env):
+        """비-Windows: PowerShell 아닌 개인 statusLine(파이썬·바이너리)은 wrapper로 감싼다.
+
+        wrapper 가 bash -c 로 원본을 돌리므로 mac/linux 에선 명령 종류 무관 wrap 가능.
+        Windows(bash 불명) 보수 경로는 _can_wrap_statusline 단위테스트로 별도 커버.
+        """
         personal_cmd = "/usr/local/bin/my-status"  # 확장자도 shebang도 없음
         user_sl = {"type": "command", "command": personal_cmd}
         claude_env.settings.write_text(json.dumps({"statusLine": user_sl}))
@@ -919,8 +921,59 @@ class TestAutoWrapPersonalStatusLine:
         adapter._sync_status_line(settings_dict, mode="on", warnings=warnings_list)
 
         sl = settings_dict.get("statusLine")
-        assert sl == user_sl, f"미확인 statusLine은 변경되지 않아야 함: {sl!r}"
-        assert len(warnings_list) > 0
+        if os.name == "nt":
+            assert sl == user_sl  # Windows: 보수적 무접촉
+            assert any("판단필요" in w for w in warnings_list)
+        else:
+            assert sl.get("_teammode_wrapped") is True
+            assert sl.get("_wrapped_command") == personal_cmd
+            assert "teammode_statusline.py" in sl.get("command", "")
+
+
+class TestCanWrapStatusline:
+    """_can_wrap_statusline: wrapper(bash -c)로 감쌀 수 있는 statusLine 판정(플랫폼별)."""
+
+    def test_non_windows_wraps_python(self, claude_env):
+        a = claude_env.make_adapter()
+        assert a._can_wrap_statusline(
+            "python3 ~/.claude/statusline.py", is_windows=False) is True
+
+    def test_non_windows_wraps_bare_binary(self, claude_env):
+        a = claude_env.make_adapter()
+        assert a._can_wrap_statusline("/usr/local/bin/my-status", is_windows=False) is True
+
+    def test_powershell_never_wraps(self, claude_env):
+        a = claude_env.make_adapter()
+        assert a._can_wrap_statusline("pwsh ~/sl.ps1", is_windows=False) is False
+        assert a._can_wrap_statusline("powershell foo", is_windows=True) is False
+
+    def test_windows_conservative_non_bash_not_wrapped(self, claude_env):
+        a = claude_env.make_adapter()
+        assert a._can_wrap_statusline("python3 sl.py", is_windows=True) is False
+
+    def test_windows_bash_wraps(self, claude_env):
+        a = claude_env.make_adapter()
+        assert a._can_wrap_statusline("bash ~/sl.sh", is_windows=True) is True
+
+    def test_empty_returns_false(self, claude_env):
+        a = claude_env.make_adapter()
+        assert a._can_wrap_statusline("", is_windows=False) is False
+
+
+class TestWrapperBadgePlacement:
+    """wrapper 활성 시 배지가 원본 출력 **앞**(prepend)에 온다."""
+
+    def test_badge_prepended_before_original(self, statusline_env):
+        _write_team_config(statusline_env.root, "Acme")
+        hello = statusline_env.root / "hello_prepend.py"
+        hello.write_text("print('ORIGINAL_OUTPUT', end='')\n", encoding="utf-8")
+        stdout, rc = _run_statusline_wrapped(
+            statusline_env.agent_dir,
+            wrapped_cmd=f"{sys.executable} {hello}",
+            active=True, team_name="Acme", root=statusline_env.root)
+        assert rc == 0
+        assert stdout.index("Acme") < stdout.index("ORIGINAL_OUTPUT"), \
+            f"배지가 원본 앞에 와야 함(prepend): {stdout!r}"
 
 
 class TestWrappedRestoreAndIdempotency:

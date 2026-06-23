@@ -766,6 +766,27 @@ class Adapter:
 
         return False
 
+    def _can_wrap_statusline(self, command: str,
+                            *, is_windows: Optional[bool] = None) -> bool:
+        """teammode wrapper 로 이 개인 statusLine 을 감쌀 수 있는가.
+
+        wrapper(teammode_statusline.py)는 원본을 `bash -c <command>` 로 실행한다
+        (_run_wrapped). → mac/linux 는 bash 가 항상 있어 **명령 종류 무관**(파이썬·노드·
+        바이너리 등) 감쌀 수 있다. `bash -c` 로 못 돌리는 PowerShell(.ps1/pwsh)만 제외.
+        Windows 는 Git Bash 유무가 불확실하므로 보수적 — _is_bash_compatible(확실한 bash)만.
+
+        is_windows: 테스트 주입용(미지정 시 os.name 으로 판정).
+        """
+        if not command:
+            return False
+        if any(kw in command.lower() for kw in ("powershell", "pwsh", ".ps1")):
+            return False  # bash -c 로 못 돌림
+        if is_windows is None:
+            is_windows = os.name == "nt"
+        if not is_windows:
+            return True  # mac/linux: bash -c 로 어떤 명령이든 wrap 가능
+        return self._is_bash_compatible(command)  # Windows: 확실한 bash 만
+
     def _build_status_line_entry(self, wrapped_command: Optional[str] = None,
                                 original_entry: Optional[dict] = None) -> dict:
         """teammode 소유 statusLine 항목 생성.
@@ -858,8 +879,9 @@ class Adapter:
                 # 개인 statusLine 있음
                 personal_cmd = (existing_sl.get("command", "")
                                 if isinstance(existing_sl, dict) else "")
-                if self._is_bash_compatible(personal_cmd):
-                    # bash 호환 → auto-wrap: 원본 보존 wrapper로 교체
+                if self._can_wrap_statusline(personal_cmd):
+                    # wrap 가능(비-Windows 거의 전부 / Windows 는 확실한 bash) → auto-wrap.
+                    # wrapper 가 bash -c 로 원본을 돌리므로 파이썬 statusLine 도 감싸진다.
                     # original_entry=existing_sl: padding·custom 등 모든 속성을 _wrapped_entry에 보존 → off 시 원상복원
                     settings["statusLine"] = self._build_status_line_entry(
                         wrapped_command=personal_cmd,
@@ -867,10 +889,10 @@ class Adapter:
                     )
                     changes.append("[statusline] 개인 statusLine을 teammode wrapper로 감쌌습니다(원본 보존)")
                 else:
-                    # bash 불명 → 무접촉 + 판단필요 경고
+                    # wrap 불가(PowerShell / Windows bash 불명) → 무접촉 + 판단필요 경고
                     warnings.append(
-                        "[판단필요] 개인 statusLine 셸 불명(bash 미확인) — 자동 연동 보류. "
-                        "AI가 스크립트를 확인 후 수동 연동하세요."
+                        "[판단필요] 개인 statusLine 을 자동 감쌀 수 없습니다(PowerShell 또는 "
+                        "Windows bash 불명) — AI가 확인 후 수동 연동하세요."
                     )
         else:
             # off (또는 None)

@@ -204,10 +204,16 @@ def cmd_init(args) -> int:
         if not owner:
             _err("org/계정을 정할 수 없습니다 — `teammode init OWNER/REPO` 형태로 지정하세요.")
             return 2
-        repo = target or _prompt("레포 이름 (팀 레포)", f"{owner}-team")
+        # 팀명을 레포명보다 **먼저** 묻는다 — 배너·상태줄 배지·인사말·레포명기본의 단일 소스.
+        # team.config.json 은 팀 레포에 커밋(공유)되므로 창립자가 여기서 한 번 정하면
+        # 모든 팀원에게 같은 정체성이 퍼진다.
+        if not getattr(args, "team_name", None):
+            args.team_name = _prompt(
+                "팀명이 뭐예요?  (팀 배너·상태줄 배지·인사말에 쓰여요)", owner) or owner
+        repo = target or _prompt("레포 이름 (팀 레포)", f"{_slugify(args.team_name)}-team")
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
-    # 팀 이름 기본값 = owner (미지정 시). 레포명은 <owner>-team, 팀명은 owner.
+    # 팀명 미정(OWNER/REPO 직접지정 등 비대화 경로) 폴백 = owner.
     if not getattr(args, "team_name", None):
         args.team_name = owner
 

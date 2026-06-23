@@ -633,12 +633,42 @@ def test_init_template_timeout_skips_join():
     assert join_calls == [], "template 미반영인데 join(빈 레포 clone)으로 넘어감"
 
 
-def test_init_default_repo_name_is_owner_team():
-    """init 인자 없이 owner 선택 → 레포명 기본값 = <owner>-team (team 아님)."""
+def test_init_asks_team_name_before_repo_and_defaults_repo_from_slug():
+    """init: 팀명을 레포명보다 **먼저** 묻고, 레포명 기본값 = <팀명 슬러그>-team.
+
+    팀명 미입력(엔터=기본 owner) → team_name=owner → 레포 기본 = slug(owner)-team.
+    """
     prompts = []
 
     def fake_prompt(label, default=""):
         prompts.append((label, default))
+        return default
+
+    with patch("teammode.cli._have", return_value=True), \
+         patch("teammode.cli.subprocess.run",
+               return_value=MagicMock(returncode=0, stdout="")), \
+         patch("teammode.cli._pick_owner", return_value="Acme"), \
+         patch("teammode.cli._prompt", side_effect=fake_prompt), \
+         patch("teammode.cli._wait_template_ready", return_value=True), \
+         patch("teammode.cli.cmd_join", return_value=0):
+        cli.main(["init"])
+
+    labels = [label for label, _ in prompts]
+    team_idx = next(i for i, l in enumerate(labels) if "팀명" in l)
+    repo_idx = next(i for i, l in enumerate(labels) if "레포 이름" in l)
+    assert team_idx < repo_idx, "팀명을 레포명보다 먼저 물어야 함"
+    repo_defaults = [d for label, d in prompts if "레포 이름" in label]
+    assert repo_defaults == ["t-gates-team"]
+
+
+def test_init_repo_default_derives_from_entered_team_name():
+    """팀명을 직접 입력하면 레포명 기본이 그 팀명 슬러그에서 파생된다."""
+    prompts = []
+
+    def fake_prompt(label, default=""):
+        prompts.append((label, default))
+        if "팀명" in label:
+            return "ACME"
         return default
 
     with patch("teammode.cli._have", return_value=True), \

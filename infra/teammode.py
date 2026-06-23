@@ -47,12 +47,44 @@ def _banner_file(team_root: Path) -> Path:
     return team_root / "memory" / "banner.txt"
 
 
+def render_name_banner(team_root: Path, text: str, font: str = "ansi_shadow") -> str | None:
+    """팀명 text 를 글리프 타일로 stitch 해 ASCII 아트로 렌더한다(의존성 0).
+
+    빌드타임에 뽑아둔 infra/banners/glyphs/<font>.json 의 글자별 글리프(고정 height)를
+    가로로 이어붙인다. ansi_shadow 는 smushing 이 없어 per-char stitch = native figlet(실측).
+    text 에 글리프 테이블에 없는 글자(비-ASCII 등)가 하나라도 있으면 None → 호출부 폴백.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    glyph_path = team_root / "infra" / "banners" / "glyphs" / f"{font}.json"
+    try:
+        data = json.loads(glyph_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    glyphs = data.get("glyphs") if isinstance(data, dict) else None
+    height = data.get("height") if isinstance(data, dict) else None
+    if not isinstance(glyphs, dict) or not isinstance(height, int) or height <= 0:
+        return None
+    cols = []
+    for ch in text:
+        g = glyphs.get(ch)
+        if not isinstance(g, list) or len(g) != height:
+            return None  # 미지원 글자 → 폴백
+        cols.append(g)
+    return "\n".join("".join(col[r] for col in cols) for r in range(height))
+
+
 def default_banner_content(team_root: Path, team_name: str) -> str:
     """기본 배너 content — install_lib.write_banner 와 _personality_customized 공용 단일소스.
 
-    ansi_shadow 아트 + 팀색 안내 한 줄. 아트 부재 시 팀명 기반 fallback.
+    우선순위: ① 팀명 글리프 아트(render_name_banner) → ② 고정 ansi_shadow.txt 아트
+    → ③ 팀명 plain fallback. 팀명이 ASCII면 ①로 '팀명 그 자체'가 배너가 된다.
     이 함수가 단일소스라 '기본 배너인가' 판정과 '기본 배너 기록'이 어긋나지 않는다(#2).
     """
+    art = render_name_banner(team_root, team_name)
+    if art is not None:
+        return art + "\n💡 팀색 입히기: tm-customize\n"
     ansi_shadow = team_root / "infra" / "banners" / "ansi_shadow.txt"
     if ansi_shadow.is_file():
         art = ansi_shadow.read_text(encoding="utf-8").rstrip("\n")

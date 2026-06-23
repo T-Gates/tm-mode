@@ -636,7 +636,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     # 추측 금지: 이름을 못 정하면 exit 3(신원 추측 금지, §12-3).
     role = det["role"]
     member_name = opts.member_name or det["member_name_suggestion"]
-    team_name_default = det["team_name_default"] or team_root.name
+    # 팀명 우선순위: init 위저드 --team-name(opts.team_name) → 레포명 감지 → 폴더명.
+    team_name_default = opts.team_name or det["team_name_default"] or team_root.name
 
     # 에이전트 집합 결정: --agent 선택 있으면 감지 결과와 교집합, 없으면(auto) 감지 전부.
     _detected = det["agents"]
