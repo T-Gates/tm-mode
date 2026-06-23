@@ -108,7 +108,7 @@ def _pick_owner() -> str | None:
     choices = [c for c in ([me] + orgs.splitlines()) if c]
     if not choices:
         return None
-    print("어디에 만들까요?")
+    print("레포를 어디에 만들까요?  (계정 또는 org를 선택하세요)")
     for i, c in enumerate(choices, 1):
         print(f"  {i}) {c}{' (개인 계정)' if i == 1 else ' (org)'}")
     sel = _prompt("선택", "1")
@@ -150,7 +150,7 @@ def _wait_template_ready(full: str, *, attempts: int = 30, interval: float = 1.0
     생성 직후 clone 하면 빈 레포가 잡힌다(E2E 로 확인). infra/ 가 보일 때까지 대기.
     True=준비됨, False=시간 초과(호출부가 안내·보류).
     """
-    print("[init] template 반영 대기 중...")
+    print("레포 내용 복사를 기다리는 중입니다...")
     for _ in range(attempts):
         if subprocess.run(["gh", "api", f"repos/{full}/contents/infra"],
                           capture_output=True).returncode == 0:
@@ -162,9 +162,10 @@ def _wait_template_ready(full: str, *, attempts: int = 30, interval: float = 1.0
 def _print_invite(url: str) -> None:
     """팀원 초대 한 줄(pip·curl — 둘 다 동일) 출력. url = 팀 레포 clone URL."""
     print()
-    print("   팀원에게 아래 중 한 줄을 공유하세요 (둘 다 동일):")
-    print(f'     pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
-    print(f'     curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
+    print("팀원에게 아래 명령 중 하나를 공유하세요 (pip·curl 어느 쪽이든 동일합니다):")
+    print()
+    print(f'  pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
+    print(f'  curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
           f'/main/install.sh | sh -s -- join {url}')
 
 
@@ -174,10 +175,12 @@ def _done(repo_dir: Path, *, created: bool = False) -> None:
     초대 안내는 여기서 안 한다 — init 이 레포 생성 직후 _print_invite 로 출력한다.
     """
     print()
-    print(f"✅ 팀 {'생성' if created else '합류'} 완료 — {repo_dir}")
-    print("   설치는 됐지만 팀모드는 아직 꺼져 있습니다(설치 ≠ 활성화).")
-    print(f"   다음: {repo_dir} 에서 Claude Code(또는 Codex)를 열고")
-    print('        "tm-onboard" 또는 "팀모드 켜" 라고 하면 검증·브리핑·활성화를 마칩니다.')
+    print(f"팀 {'생성' if created else '합류'} 완료  {repo_dir}")
+    print()
+    print("설치는 끝났지만 팀모드는 아직 꺼져 있습니다.")
+    print(f"다음 단계: {repo_dir} 에서 Claude Code 또는 Codex를 열고")
+    print('           "tm-onboard" 또는 "팀모드 켜" 라고 입력하면')
+    print("           검증 · 브리핑 · 활성화가 자동으로 진행됩니다.")
 
 
 def cmd_init(args) -> int:
@@ -201,12 +204,15 @@ def cmd_init(args) -> int:
         if not owner:
             _err("org/계정을 정할 수 없습니다 — `teammode init OWNER/REPO` 형태로 지정하세요.")
             return 2
-        repo = target or _prompt("팀 레포 이름", "team")
+        repo = target or _prompt("레포 이름 (팀 레포)", f"{owner}-team")
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
+    # 팀 이름 기본값 = owner (미지정 시). 레포명은 <owner>-team, 팀명은 owner.
+    if not getattr(args, "team_name", None):
+        args.team_name = owner
 
     # ① 레포 "생성"만 (--clone 없음) — clone·셋업은 join 이 담당(생성 ↔ 참여 분리).
-    print(f"[init] {full} 생성 (template={TEMPLATE_REPO})")
+    print(f"{full} 레포를 생성합니다 (template: {TEMPLATE_REPO})")
     rc = subprocess.run(["gh", "repo", "create", full,
                         "--template", TEMPLATE_REPO, vis]).returncode
     if rc != 0:
@@ -228,7 +234,7 @@ def cmd_init(args) -> int:
 
     # ③ 곧바로 join 으로 — 방금 만든 레포를 본인 머신에 clone+셋업(생성 → 참여, 단일 경로).
     print()
-    print("[init] 레포 생성 완료 — 이어서 본인 머신 셋업(join)으로 넘어갑니다.")
+    print("레포가 준비됐습니다. 이어서 본인 머신에 설치(join)합니다.")
     args.url = url
     # init 파서엔 없는, cmd_join(특히 비-TTY 경로)이 참조하는 속성 보강.
     # 셋업 정보는 TTY 면 wizard 가 묻고, 비-TTY 면 이 기본값으로 진행.
@@ -283,6 +289,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
     """
     home = Path.home()
 
+    print("팀에 합류합니다 — 5단계예요.\n")
+
     while True:  # 7단계에서 n → 전체 재시작
         # ── 1단계: 설치 위치 ──────────────────────────────────────────────
         repo_name = url.rstrip("/").split("/")[-1]
@@ -290,12 +298,13 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             repo_name = repo_name[:-4]
         default_dest = home / "teammode" / repo_name
 
+        print("[1/5] 설치 위치  (팀 레포를 받을 폴더)")
         while True:
-            raw = _prompt(f"1) 설치 위치", str(default_dest))
+            raw = _prompt(f"  ›", str(default_dest))
             dest = Path(raw).expanduser().resolve()
             if dest.exists() and any(dest.iterdir()):
-                print(f"  ⚠ '{dest}' 이(가) 이미 있고 비어있지 않습니다.")
-                choice = _prompt("  ① 다른 위치 입력  ② 기존에 재설치(clone skip) [1/2]", "1")
+                print(f"  '{dest}' 가 이미 있고 비어있지 않습니다.")
+                choice = _prompt("  1) 다른 위치 입력   2) 기존 폴더에 재설치 [1/2]", "1")
                 if choice.strip() == "2":
                     # clone skip 플래그를 반환값으로 표시 — sentinel Path 활용
                     dest = dest  # 그대로 사용
@@ -310,36 +319,38 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         installed = _detect_agents_from_install_lib(home)
         all_agents = ["claude", "codex"]
         if not installed:
-            print("  ⚠ 설치된 에이전트를 감지할 수 없습니다. 계속 진행합니다.")
+            print("  설치된 에이전트를 감지할 수 없습니다. 계속 진행합니다.")
         selected_agents: list[str] = list(installed) if installed else []
 
-        print("2) 에이전트 선택 (Enter=전부, 번호=토글):")
-        for i, ag in enumerate(all_agents, 1):
-            mark = "x" if ag in selected_agents else " "
-            note = "" if ag in installed else "  (미설치)"
-            print(f"  [{mark}] {i}) {ag}{note}")
-
-        raw = _prompt("  번호 입력 또는 Enter", "")
-        if raw.strip():
+        print("\n[2/5] 에이전트 선택  (번호=켜고끄기, Enter=확정)")
+        while True:
+            for i, ag in enumerate(all_agents, 1):
+                mark = "x" if ag in selected_agents else " "
+                note = "" if ag in installed else "  (미설치)"
+                print(f"  [{mark}] {i}) {ag}{note}")
+            raw = _prompt("  ›", "")
+            if not raw.strip():
+                break  # Enter → 현재 선택 그대로 확정 (비-TTY 도 여기서 즉시 확정)
             for token in raw.replace(",", " ").split():
                 try:
                     idx = int(token) - 1
-                    if 0 <= idx < len(all_agents):
-                        ag = all_agents[idx]
-                        if ag not in installed:
-                            print(f"  '{ag}'은(는) 미설치라 선택할 수 없습니다.")
-                            continue
-                        if ag in selected_agents:
-                            selected_agents.remove(ag)
-                        else:
-                            selected_agents.append(ag)
                 except ValueError:
-                    pass
+                    continue
+                if 0 <= idx < len(all_agents):
+                    ag = all_agents[idx]
+                    if ag not in installed:
+                        print(f"  '{ag}'은(는) 미설치라 선택할 수 없습니다.")
+                        continue
+                    if ag in selected_agents:
+                        selected_agents.remove(ag)
+                    else:
+                        selected_agents.append(ag)
+            print()  # 토글 후 갱신된 목록을 루프 상단에서 다시 출력
 
         # ── clone (단계 2.5): members.md 읽기 전에 실행 → 기존멤버 목록 정확하게 읽힘 ──
         # clone_skip 이거나 clone_fn 이 없으면 건너뜀(테스트·재사용 경로).
         if not clone_skip and clone_fn is not None:
-            print(f"[join] clone {url} → {dest}")
+            print(f"clone 중...  {url} → {dest}")
             ok = clone_fn(url, dest)
             if not ok:
                 _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
@@ -350,28 +361,29 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         members_file = dest / "memory" / "team" / "members.md"
         existing_members = _parse_members_md(members_file)
 
-        choice3 = _prompt("3) 새 팀원/기존? [1=새/2=기존]", "1")
+        print("\n[3/5] 멤버  (처음 합류하시나요?)")
+        choice3 = _prompt("  1) 새로 합류   2) 기존 팀원  ›", "1")
         is_new = choice3.strip() != "2"
 
-        # ── 4단계: 이름 ───────────────────────────────────────────────────
+        # ── 4단계: 이름 (3단계 안에서 처리) ─────────────────────────────
         if is_new:
             guess = _git_user_name()
             slug = _slugify(guess) if guess else ""
             if not slug:
                 # 빈 슬러그: 반복 강제
                 while True:
-                    val = _prompt("4) 멤버 이름(영문, 필수)").strip()
+                    val = _prompt("  이름(영문, 필수)  ›").strip()
                     if val:
                         member = val
                         break
             else:
-                member = _prompt("4) 멤버 이름(영문)", slug) or slug
+                member = _prompt("  이름(영문)  ›", slug) or slug
         else:
             if existing_members:
-                print("4) 기존 팀원 목록:")
+                print("  기존 팀원 목록:")
                 for i, n in enumerate(existing_members, 1):
-                    print(f"  {i}) {n}")
-                sel = _prompt("  번호 선택", "1")
+                    print(f"    {i}) {n}")
+                sel = _prompt("  번호 선택  ›", "1")
                 try:
                     idx = int(sel) - 1
                     member = existing_members[idx] if 0 <= idx < len(existing_members) \
@@ -382,29 +394,30 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                 print("  (members.md 없음 — 이름을 직접 입력하세요)")
                 guess = _git_user_name()
                 slug = _slugify(guess) if guess else ""
-                member = _prompt("4) 멤버 이름(영문)", slug or None) or None
+                member = _prompt("  이름(영문)  ›", slug or None) or None
 
-        # ── 5단계: 역할 ───────────────────────────────────────────────────
-        print("5) 역할 (권장: " + " / ".join(_ROLES_SUGGESTED) + ")")
-        role = _prompt("  역할 입력(Enter=생략)", "")
+        # ── 5단계(구 5): 역할 ────────────────────────────────────────────
+        print("\n[4/5] 역할  (권장: " + " / ".join(_ROLES_SUGGESTED) + ")")
+        role = _prompt("  › (Enter=생략)", "")
 
-        # ── 6단계: Obsidian ───────────────────────────────────────────────
-        obsidian_raw = _prompt("6) Obsidian 볼트 등록? [y/N]", "N")
+        # ── 6단계(구 6): Obsidian ─────────────────────────────────────────
+        print("\n[5/5] Obsidian  (볼트에 팀 레포를 연결할까요?)")
+        obsidian_raw = _prompt("  › [y/N]", "N")
         register_obsidian = obsidian_raw.strip().lower() == "y"
 
-        # ── 7단계: 요약 확인 ──────────────────────────────────────────────
+        # ── 요약 확인 ─────────────────────────────────────────────────────
         print()
-        print("── 설치 요약 ─────────────────────────────")
-        print(f"  위치   : {dest}")
-        print(f"  에이전트: {', '.join(selected_agents) if selected_agents else '(없음)'}")
-        print(f"  멤버   : {member or '(미지정)'}")
-        print(f"  역할   : {role or '(생략)'}")
-        print(f"  Obsidian: {'등록' if register_obsidian else '건너뜀'}")
-        print(f"  clone  : {'skip(기존 재사용)' if clone_skip else '새로 clone'}")
-        print("──────────────────────────────────────────")
-        confirm = _prompt("[Y/n]", "Y")
+        print("── 설치 요약 ─────────────────────────────────────")
+        print(f"  위치      : {dest}")
+        print(f"  에이전트  : {', '.join(selected_agents) if selected_agents else '(없음)'}")
+        print(f"  이름      : {member or '(미지정)'}")
+        print(f"  역할      : {role or '(생략)'}")
+        print(f"  Obsidian  : {'등록' if register_obsidian else '건너뜀'}")
+        print(f"  clone     : {'skip — 기존 폴더 재사용' if clone_skip else '새로 clone'}")
+        print("──────────────────────────────────────────────────")
+        confirm = _prompt("이대로 진행할까요? [Y/n]", "Y")
         if confirm.strip().lower() == "n":
-            print("  처음부터 다시 시작합니다...\n")
+            print("  처음부터 다시 시작합니다.\n")
             continue  # while True 재시작
         break  # 확인 완료
 
@@ -439,12 +452,12 @@ def cmd_join(args, *, created: bool = False) -> int:
             return int(_se.code) if _se.code is not None else 1
 
         if clone_skip:
-            print(f"[join] clone skip — 기존 폴더 재사용: {dest}")
+            print(f"기존 폴더를 재사용합니다: {dest}")
     else:
         # ── 비-TTY: 인자 경로 (input 절대 호출 안 함) ────────────────────
         dest = Path(args.dir).resolve() if args.dir else None
         cmd = ["git", "clone", args.url] + ([str(dest)] if dest else [])
-        print(f"[join] clone {args.url}")
+        print(f"clone 중...  {args.url}")
         if subprocess.run(cmd).returncode != 0:
             _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
             return 1
