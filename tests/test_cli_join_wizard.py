@@ -345,6 +345,34 @@ class TestWizardTty:
         dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
         assert "--register-obsidian" in extra
 
+    def test_obsidian_default_yes(self, tmp_path):
+        """6단계: 빈 입력(엔터=기본값) → 기본 Y라 --register-obsidian extra (기본값 변경 락)."""
+        inputs = [
+            str(tmp_path / "dest"),
+            "",
+            "1",
+            "alice",
+            "",
+            "",   # obsidian: 엔터 = 기본 Y
+            "Y",
+        ]
+        dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
+        assert "--register-obsidian" in extra
+
+    def test_obsidian_explicit_no(self, tmp_path):
+        """6단계: 'n' 입력 → 등록 스킵 (--register-obsidian 없음)."""
+        inputs = [
+            str(tmp_path / "dest"),
+            "",
+            "1",
+            "alice",
+            "",
+            "n",
+            "Y",
+        ]
+        dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
+        assert "--register-obsidian" not in extra
+
     def test_existing_member_pick(self, tmp_path):
         """3단계: 기존 팀원 2 선택 → members.md 파싱 후 번호 선택."""
         # dest 를 pre-populate 하면 step1 에서 "비어있지 않음" 분기가 뜬다 → 2(재설치) 선택

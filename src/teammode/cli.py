@@ -408,8 +408,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
 
         # ── 6단계(구 6): Obsidian ─────────────────────────────────────────
         print("\n[5/5] Obsidian  (볼트에 팀 레포를 연결할까요?)")
-        obsidian_raw = _prompt("  › [y/N]", "N")
-        register_obsidian = obsidian_raw.strip().lower() == "y"
+        obsidian_raw = _prompt("  › [Y/n]", "Y")
+        register_obsidian = obsidian_raw.strip().lower() != "n"
 
         # ── 요약 확인 ─────────────────────────────────────────────────────
         print()
