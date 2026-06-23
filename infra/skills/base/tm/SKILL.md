@@ -33,11 +33,11 @@ description: Use when the user wants to enable or disable team mode. Triggers on
    - 실패해도 비치명 — 오프라인이거나 이미 최신이면 계속 진행.
 
 2. **팀모드 켜기**: `python infra/teammode.py on --root . --install`
-   - 엔진이 배너 출력, greeting 출력(team.config.json에 있으면), adapter sync(mode=on),
+   - 엔진이 greeting 출력(team.config.json에 있으면), adapter sync(mode=on),
      `.teammode-active` 마커 생성, upstream fetch + NOTICE 비교 알림까지 한다.
    - NOTICE 알림: upstream `NOTICE.md`가 로컬과 다르면 `[공지] teammode 최신 업데이트: …
      — 받으려면 \`teammode update\`` 를 출력. 같으면 조용히 생략(매번 도배 방지).
-   - ⚠️ **배너(ASCII 아트)는 엔진이 이미 코드블록(\`\`\`)으로 감싸 출력한다. 에이전트는 엔진이 출력한 코드블록을 한 글자도 바꾸지 말고 그대로 옮겨라 — 직접 \`\`\`를 다시 덧씌우지 마라(중복 펜스 금지). 축약·요약·재구성·"배너 생략" 절대 금지.** (코드블록 없이 옮기면 ASCII 줄이 깨지고 축약된다 — teammode 배너가 안 보이던 원인. 엔진이 감싼 걸 그대로 전달하는 것이 원칙.)
+   - ⚠️ **배너는 엔진 stdout 에 없다.** 에이전트가 아래 5단계에서 직접 `memory/banner.txt`를 Read 해 코드펜스로 출력한다.
 
 3. **맥락 주입**: `python infra/teammode.py context --root . --json`
    - JSON 결과를 파싱해 아래 웰컴 포맷으로 출력한다.
@@ -47,7 +47,13 @@ description: Use when the user wants to enable or disable team mode. Triggers on
    - SessionStart 훅과 **동일 소스** — 세션 시작 시엔 훅이 자동 주입하지만, **세션 도중 `tm on`으로 켤 땐 훅이 안 도므로** 이 단계가 그 누락을 메운다(Jane 결정: tm on 때도 지침 주입).
    - Read 도구로 읽어 **컨텍스트에만** 넣는다 — 사용자 화면에 전문을 출력하지 않는다(노이즈 0).
 
-5. **웰컴 메시지** — context JSON을 파싱해 다음 포맷으로 출력한다:
+5. **웰컴 메시지** — 다음 순서로 출력한다:
+
+   **5-a. 배너 출력 (필수 첫 번째)**: `memory/banner.txt`를 **Read 도구**로 읽어 내용을 코드펜스(\`\`\`)로 감싸 **웰컴 메시지의 가장 첫 번째 요소**로 출력한다.
+   - 파일이 없거나 내용이 공백이면 `_render_banner(team_root)` fallback 텍스트를 쓰는 대신 해당 섹션 자체를 생략하고 다음으로 넘어간다.
+   - ⚠️ 배너 줄이 깨지지 않도록 **반드시 \`\`\` 코드펜스** 안에 넣어야 한다. 직접 \`\`\`를 다시 덧씌우지 마라(중복 펜스 금지). 축약·요약·재구성 절대 금지 — 파일 내용 그대로 출력.
+
+   **5-b. 팀 맥락** — context JSON을 파싱해 다음 포맷으로 이어서 출력한다:
 
    ```
    환영합니다! <팀명>에 오신 것을 환영합니다.
@@ -96,8 +102,8 @@ description: Use when the user wants to enable or disable team mode. Triggers on
    - **push 는 하지 않는다** — commit 까지만. push 는 사람이 직접 결정.
 
 3. **팀모드 끄기**: `python infra/teammode.py off --root . --install`
-   - 엔진이 adapter sync(mode=off), `.teammode-active` 마커 삭제, 펜스 배너, farewell 출력을 한다.
-   - ⚠️ **엔진 출력(배너 + farewell)은 한 글자도 바꾸지 말고 그대로 사용자에게 옮긴다. 배너(펜스 코드블록)는 축약·생략·재구성 금지. 엔진이 펜스로 감싼 배너를 그대로 전달하는 것이 원칙.**
+   - 엔진이 adapter sync(mode=off), `.teammode-active` 마커 삭제, farewell 출력을 한다. **배너는 엔진 stdout 에 없다**(toolkit 패턴, ON 과 동일).
+   - ⚠️ **farewell 직전에 에이전트가 `memory/banner.txt`를 Read 해 코드펜스(\`\`\`)로 출력한다** (ON 5-a 와 동일 방식). 파일이 없거나 내용이 공백이면 배너 생략. farewell(엔진 stdout)은 한 글자도 바꾸지 말고 그대로 옮긴다. 직접 \`\`\`를 다시 덧씌우지 마라(중복 펜스 금지) · 축약·재구성 금지.
 
 4. **세션 요약 표시**: 1단계에서 기록한 세션로그 파일(`memory/team/sessions/<이름>/<오늘>.md`)을 Read 도구로 읽어 "작업 내역" 섹션을 3~5줄로 요약해 사용자에게 보여준다.
    - 이 단계는 **에이전트(스킬)가 LLM 요약으로** 수행한다 — 엔진이 하지 않는다.
@@ -132,7 +138,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 | ON — 맥락 | `teammode.py context --root . --json` | 스킬이 파싱해 요약 |
 | OFF — 세션로그 | (스킬이 Read(끝 offset)+Edit 로 직접 기록) | `log` 동사 deprecated — 엔진 아님 |
 | OFF — 커밋 | `teammode.py commit --root . --paths "memory/" --message <메시지>` | memory/ 만 stage · push 절대 금지 |
-| OFF — 훅 해제 | `teammode.py off --root . --install` | sync=off·마커 삭제·펜스 배너·farewell |
+| OFF — 훅 해제 | `teammode.py off --root . --install` | sync=off·마커 삭제·farewell (배너는 에이전트가 banner.txt Read) |
 | OFF — 세션 요약 | (스킬이 세션로그 Read 후 LLM 요약) | 엔진 동사 아님 — 에이전트 단계 |
 
 ## Common Mistakes

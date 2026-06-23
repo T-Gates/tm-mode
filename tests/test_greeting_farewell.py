@@ -43,15 +43,14 @@ def test_on_no_greeting_when_absent(tmp_path):
     _write_config(tmp_path)  # greeting 키 없음
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
-    # 배너만 출력 — greeting 으로 새 줄 추가 안 됨(현행 유지)
-    assert "===" in r.stdout
+    # toolkit 패턴: 배너는 stdout 에 없다. greeting 도 없으니 펜스/배너가 안 나와야 함.
+    assert "```" not in r.stdout
 
 
 def test_on_no_config_is_nonfatal(tmp_path):
     # config 파일 자체가 없어도 on 성공(greeting 미출력, 비치명)
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
-    assert "===" in r.stdout
 
 
 def test_on_broken_config_is_nonfatal(tmp_path):
@@ -59,15 +58,15 @@ def test_on_broken_config_is_nonfatal(tmp_path):
                                                encoding="utf-8")
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
-    assert "===" in r.stdout
 
 
-def test_on_greeting_after_banner(tmp_path):
-    # 배너 → greeting 순서(배너 다음에 멘트가 와야 함)
+def test_on_greeting_without_banner_in_stdout(tmp_path):
+    # toolkit 패턴: 배너는 stdout 에 없고 greeting 만 나온다(배너는 에이전트가 Read).
     _write_config(tmp_path, greeting="GREETING_TOKEN")
     r = _run(tmp_path, "on")
     assert r.returncode == 0, r.stderr
-    assert r.stdout.index("===") < r.stdout.index("GREETING_TOKEN")
+    assert "GREETING_TOKEN" in r.stdout
+    assert "```" not in r.stdout  # 배너 펜스가 stdout 에 없어야 함
 
 
 # ── off: farewell ──

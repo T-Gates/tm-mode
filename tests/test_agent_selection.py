@@ -322,7 +322,6 @@ class TestCmdOnAgentsFromConfig:
             return adp
 
         with patch.object(tm, "_adapter_for", side_effect=fake_adapter_for), \
-             patch.object(tm, "_print_fenced_banner"), \
              patch.object(tm, "_read_team_field", return_value=None), \
              patch.object(tm, "_migrate_legacy_credentials"), \
              patch.object(tm, "auto_update_on_start"), \
@@ -353,7 +352,6 @@ class TestCmdOnAgentsFromConfig:
             return adp
 
         with patch.object(tm, "_adapter_for", side_effect=fake_adapter_for), \
-             patch.object(tm, "_print_fenced_banner"), \
              patch.object(tm, "_read_team_field", return_value=None), \
              patch.object(tm, "_migrate_legacy_credentials"), \
              patch.object(tm, "auto_update_on_start"), \
@@ -389,7 +387,6 @@ class TestCmdOnAgentsFromConfig:
             return adp
 
         with patch.object(tm, "_adapter_for", side_effect=fake_adapter_for), \
-             patch.object(tm, "_print_fenced_banner"), \
              patch.object(tm, "_read_team_field", return_value=None), \
              patch.object(tm, "_migrate_legacy_credentials"), \
              patch.object(tm, "auto_update_on_start"), \
@@ -441,7 +438,6 @@ class TestCmdOffAgentsFromConfig:
 
         with patch.object(tm, "_adapter_for", side_effect=fake_adapter_for), \
              patch.object(tm, "_uninstall_layer"), \
-             patch.object(tm, "_print_fenced_banner"), \
              patch.object(tm, "_read_team_field", return_value=None), \
              patch.object(_il_mod, "detect_agents", return_value=["claude"]), \
              patch.object(tm, "_active_marker") as mock_marker:
@@ -473,7 +469,6 @@ class TestCmdOffAgentsFromConfig:
 
         with patch.object(tm, "_adapter_for", side_effect=fake_adapter_for), \
              patch.object(tm, "_uninstall_layer"), \
-             patch.object(tm, "_print_fenced_banner"), \
              patch.object(tm, "_read_team_field", return_value=None), \
              patch.object(_il_mod, "detect_agents", return_value=["claude"]), \
              patch.object(tm, "_active_marker") as mock_marker:

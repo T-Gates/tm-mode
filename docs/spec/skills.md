@@ -187,8 +187,8 @@ python infra/teammode.py context --root . --json
 
 - 먼저 "배너·시작멘트(greeting)·끝맺음말(farewell) 커스텀할래요? 기본값 그대로 둬도 됩니다"라고 묻는다.
 - 예라고 하면 시작 멘트와 끝맺음말은 `team.config.json`의 `team.greeting`, `team.farewell`을 교체한다. 도입자 config에는 기본값 `"<팀> 팀모드 ON"`, `"수고하셨습니다 — <팀>"`이 있다.
-- 엔진 `on`은 배너 직후 greeting을 출력하고, `off`는 farewell을 출력한다. farewell이 없으면 "상태 저장됨"을 출력한다.
-- 배너는 **picker**로 고른다. `infra/banners/`에 ansi_shadow·slant·chunky·cyberlarge·larry3d·speed 6종의 정적 ASCII 아트 후보가 있다. 각 후보를 `cat`으로 보여주고 사용자가 고른 폰트를 `cp infra/banners/<폰트명>.txt memory/banner.txt`로 복사해 적용한다. 배너는 TEAM/MODE 텍스트 고정이며, 팀명은 엔진이 배너 아래 greeting으로 동적 출력한다. 6종 중 원하는 것이 없으면 `memory/banner.txt`를 직접 작성해도 된다(임의 ASCII 아트 자유).
+- 엔진 `on`/`off`는 **배너를 stdout에 출력하지 않는다**(toolkit 패턴 — Bash 툴 출력이 접혀 안 보이던 문제 회피). 배너는 `tm` 스킬이 `memory/banner.txt`를 Read해 코드펜스로 출력한다(`on`=웰컴 첫 요소, `off`=farewell 직전). 엔진 `on`은 greeting만(있으면) 출력하고 banner.txt 캐시를 보장한다(없으면 fallback 생성). 엔진 `off`는 farewell만 출력한다(없으면 "상태 저장됨").
+- 배너는 **picker**로 고른다. `infra/banners/`에 ansi_shadow·slant·chunky·cyberlarge·larry3d·speed 6종의 정적 ASCII 아트 후보가 있다. 각 후보를 `cat`으로 보여주고 사용자가 고른 폰트를 `cp infra/banners/<폰트명>.txt memory/banner.txt`로 복사해 적용한다. 배너는 TEAM/MODE 텍스트 고정이며, 팀명은 엔진이 greeting으로 동적 출력한다. 6종 중 원하는 것이 없으면 `memory/banner.txt`를 직접 작성해도 된다(임의 ASCII 아트 자유).
 - 아니오면 기본 greeting/farewell과 자동 배너(`=== <팀> ===`)를 그대로 둔다.
 - config의 greeting/farewell은 팀 스코프다. 도입자가 바꾸고 커밋하면 팀원에게 공유된다. 팀원은 개인 취향으로 이 값을 바꾸지 않는다.
 

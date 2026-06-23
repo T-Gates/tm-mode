@@ -1,6 +1,6 @@
 {
   "id": "01-on-banner",
-  "title": "on → 팀 배너가 출력된다",
+  "title": "on → 배너 캐시(banner.txt)가 보장된다 (배너는 에이전트가 Read 해 출력)",
   "spec_refs": ["02 §11.5", "01 §2.2"],
   "tier_signal": "deterministic",
   "steps": [
@@ -8,12 +8,11 @@
       "name": "팀 모드 켜기",
       "action": { "kind": "command", "argv": ["on"] },
       "expect": [
-        { "kind": "exit_code", "value": 0 },
-        { "kind": "stdout_contains", "value": "teammode" }
+        { "kind": "exit_code", "value": 0 }
       ]
     },
     {
-      "name": "배너 캐시가 표준 위치에 존재",
+      "name": "배너 캐시가 표준 위치에 존재 (에이전트가 Read 할 소스)",
       "action": { "kind": "noop" },
       "expect": [
         { "kind": "file_exists", "path": "memory/banner.txt" }

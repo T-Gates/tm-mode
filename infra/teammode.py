@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import unicodedata
 from datetime import datetime
@@ -125,20 +124,6 @@ def _render_banner(team_root: Path) -> str:
     banner_file.parent.mkdir(parents=True, exist_ok=True)
     banner_file.write_text(banner, encoding="utf-8")
     return banner
-
-
-def _print_fenced_banner(team_root: Path) -> None:
-    """배너를 CommonMark 동적 펜스 코드블록으로 stdout에 출력한다.
-
-    배너 내 가장 긴 백틱 run보다 최소 1 더 긴(그리고 최소 3) 펜스를 동적 생성해
-    배너 내 ``` 줄로 인한 조기 종료 버그를 방지한다(cmd_on·cmd_off 공용).
-    """
-    banner_content = _render_banner(team_root).rstrip("\n")
-    longest_run = max(
-        (len(m) for m in re.findall(r"`+", banner_content)), default=0
-    )
-    fence = "`" * max(3, longest_run + 1)
-    print(f"{fence}\n{banner_content}\n{fence}")
 
 
 def _read_team_field(team_root: Path, field: str) -> str | None:
@@ -312,8 +297,11 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     install=False (--settings <격리경로> 모드)면 claude 만 배선 — 실호스트
     ~/.codex 등 무접촉. 경로 비교는 보조 진단으로만 사용하고 정책 판정에 쓰지 않는다.
     """
-    _print_fenced_banner(team_root)
-    # 시작 멘트(greeting): 배너 직후, config 에 있으면 출력(없으면 미출력 — §3.1).
+    # 배너는 엔진이 stdout 에 찍지 않는다(toolkit 패턴) — 에이전트가 memory/banner.txt 를
+    # Read 해 코드펜스(```)로 감싸 웰컴 메시지의 첫 번째 요소로 출력한다.
+    # 단, 에이전트가 Read 할 수 있도록 banner.txt 캐시는 보장한다(없으면 fallback 생성).
+    _render_banner(team_root)  # side-effect: banner.txt 보장 (반환값 미사용 — stdout 출력 안 함)
+    # 시작 멘트(greeting): config 에 있으면 출력(없으면 미출력 — §3.1).
     greeting = _read_team_field(team_root, "greeting")
     if greeting:
         print(greeting)
@@ -576,8 +564,8 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
         return 1
     if marker.exists():
         marker.unlink()
-    # OFF 출력 순서: 펜스 배너 → farewell (ON 과 동일 배너 소스 사용).
-    _print_fenced_banner(team_root)
+    # 배너는 엔진이 stdout 에 찍지 않는다(toolkit 패턴, ON 과 동일) — 에이전트가
+    # memory/banner.txt 를 Read 해 farewell 앞에 코드펜스로 출력한다.
     # 끝맺음 말(farewell): config 에 있으면 그걸, 없으면 "상태 저장됨" 폴백(§3.1).
     farewell = _read_team_field(team_root, "farewell")
     print(farewell if farewell else "teammode off — 상태 저장됨")
