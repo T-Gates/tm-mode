@@ -1,11 +1,11 @@
 ---
 name: tm-connect
-description: Use to connect a service slot (issues / chat / docs / calendar) to a teammode team — guiding token issuance, storing it in the local credentials vault, and recording the resource in team config. Triggers on "서비스 연결", "이슈 트래커 연결", "채팅 연결", "문서 연결", "캘린더 연결", "팀모드 서비스 붙여줘", "teammode connect", "connect service", or after tm-onboard offers L2.
+description: Use to connect a service slot (issues / chat / docs / calendar) to a tm-mode team — guiding token issuance, storing it in the local credentials vault, and recording the resource in team config. Triggers on "서비스 연결", "이슈 트래커 연결", "채팅 연결", "문서 연결", "캘린더 연결", "팀모드 서비스 붙여줘", "tm-mode connect", "connect service", or after tm-onboard offers L2.
 ---
 
 # tm-connect — 서비스 슬롯 연결 (L2)
 
-teammode 의 **역할 슬롯**(issues / chat / docs / calendar)에 서비스를 붙이는 스킬. tm-onboard 가 첫 가치(L1) 직후 "연결할래요?" 하고 제안하면, **실행은 이 스킬**이 한다.
+tm-mode 의 **역할 슬롯**(issues / chat / docs / calendar)에 서비스를 붙이는 스킬. tm-onboard 가 첫 가치(L1) 직후 "연결할래요?" 하고 제안하면, **실행은 이 스킬**이 한다.
 
 ```
 tm-onboard (제안+트리거)  →  tm-connect (실행)
@@ -185,14 +185,14 @@ OAuth 크리덴셜 키 계약:
 
 ### 6-A. 재배선
 
-연결을 마치면 어댑터가 새 슬롯의 역할 도구 서버를 등록하도록 **install-mcp 를 재실행**한다(빈 슬롯이 채워졌으니 핸들러 기반 teammode 서버가 활성화됨). 팩의 `mcp.register_hint` 를 참고로 옮긴다.
+연결을 마치면 어댑터가 새 슬롯의 역할 도구 서버를 등록하도록 **install-mcp 를 재실행**한다(빈 슬롯이 채워졌으니 핸들러 기반 tm-mode 서버가 활성화됨). 팩의 `mcp.register_hint` 를 참고로 옮긴다.
 
 ```bash
-python infra/install.py --root . --yes        # 재배선(어댑터에 teammode 서버 등록 + sync)
+python infra/install.py --root . --yes        # 재배선(어댑터에 tm-mode 서버 등록 + sync)
 ```
 
 재배선 후 확인:
-- teammode 서버가 에이전트 설정에 등록됐는지 확인
+- tm-mode 서버가 에이전트 설정에 등록됐는지 확인
 - 해당 역할의 도구가 에이전트에 노출됐는지 확인 (에이전트에서 `<역할>_create` 등 도구 호출 가능)
 
 ### 6-B. 첫 가치 검증 (도그푸딩 체크포인트)
@@ -209,7 +209,7 @@ python infra/install.py --root . --yes        # 재배선(어댑터에 teammode 
    ```
    응답에 `issues_create` 가 포함돼 있으면 핸들러 로드 성공.
 
-2. **에이전트에서 issues 역할의 create 도구 직접 호출** — 에이전트가 teammode 서버의 `issues_create` 도구를 호출한다.
+2. **에이전트에서 issues 역할의 create 도구 직접 호출** — 에이전트가 tm-mode 서버의 `issues_create` 도구를 호출한다.
    - 이 호출이 normalize → confirm-action.py 게이트를 경유하는지 confirm hook 로그로 확인.
    - confirm hook 가 **차단(exit 2)** 을 반환하면 게이트 정상 동작.
 

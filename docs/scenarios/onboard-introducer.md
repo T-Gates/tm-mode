@@ -6,19 +6,19 @@
 
 ## 시나리오 1 — 도입자
 
-**나는 팀에서 teammode 를 처음 켜는 사람이다.** 빈(또는 기존 코드만 있는) 레포에 `team.config.json` 이 없다. 내가 실행하면 `install.py` 가 `detect_role()` 로 config 부재를 보고 **`role=introducer`** 로 판정하고, **config 를 새로 쓴다**(팀 이름·기본 greeting/farewell·빈 services). 이후 합류하는 팀원들이 이 config 를 읽는다.
+**나는 팀에서 tm-mode 를 처음 켜는 사람이다.** 빈(또는 기존 코드만 있는) 레포에 `team.config.json` 이 없다. 내가 실행하면 `install.py` 가 `detect_role()` 로 config 부재를 보고 **`role=introducer`** 로 판정하고, **config 를 새로 쓴다**(팀 이름·기본 greeting/farewell·빈 services). 이후 합류하는 팀원들이 이 config 를 읽는다.
 
 > 관찰자 시점: 도입자 경로의 분기점은 `install_lib.detect_role()` → `config_is_valid()` 이다. `team.config.json` 이 없거나, `spec_version` 이 없거나, `team.name` 이 placeholder(`""`/`changeme`/`todo`/`your-team-name`/`team-name`/`tbd`/`placeholder`) 면 **introducer**. 그래서 도입자만 `scaffold_memory()` 안에서 `write_introducer_config()` 가 호출돼 config 가 생긴다(`install_lib.py:592`).
 
 ### 국면 ① 레포 clone
 
-**(a) 입력** — 나는 빈 팀 레포(또는 teammode 템플릿)를 클론하고 그 안에서 에이전트를 띄운다.
+**(a) 입력** — 나는 빈 팀 레포(또는 tm-mode 템플릿)를 클론하고 그 안에서 에이전트를 띄운다.
 ```bash
 git clone git@github.com:our-team/our-repo.git
 cd our-repo
 ```
 **(b) 에이전트** — 아직 아무것도 안 한다. 내가 말을 걸 때까지 대기.
-**(c) 화면** — 셸 프롬프트뿐. teammode 흔적 없음(`team.config.json`·`memory/`·`.teammode-active` 전부 없음).
+**(c) 화면** — 셸 프롬프트뿐. tm-mode 흔적 없음(`team.config.json`·`memory/`·`.teammode-active` 전부 없음).
 **(d) 다음** — 보통은 바로 셋업을 부탁하지만, 처음 보는 레포라 호기심에 "뭐하는 레포냐"부터 물을 수 있다. → 국면 ①.5 (또는 곧장 국면 ②).
 
 ### 국면 ①.5 첫 호기심 — "이거 뭐하는 레포야?"

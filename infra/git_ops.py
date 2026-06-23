@@ -380,7 +380,7 @@ def upstream_changes(team_root: str, upstream_ref: str = "upstream/main",
 # ──────────────────────────────────────────────────────────────────
 #
 # 왜 merge 가 아니라 파일 동기화인가:
-#   도입 레포는 GitHub *template* 으로 생성돼 upstream(T-Gates/teammode)과 공통 조상이
+#   도입 레포는 GitHub *template* 으로 생성돼 upstream(T-Gates/tm-mode)과 공통 조상이
 #   0이다(unrelated histories). 그래서 `git merge`/`pull --ff-only` 는 영원히
 #   `fatal: refusing to merge unrelated histories` 로 막힌다. → merge 를 버리고
 #   upstream 에서 **엔진 파일만** `git checkout` 으로 덮어쓰는 파일 동기화로 바꾼다.

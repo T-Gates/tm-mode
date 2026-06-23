@@ -1,4 +1,4 @@
-# 백로그: KB 쓰기 거버넌스 (teammode L1 메모리 차별점)
+# 백로그: KB 쓰기 거버넌스 (tm-mode L1 메모리 차별점)
 
 착안: 2026-06-15 (acme-toolkit 실작업 중 체감). 상태: **설계 메모, 미구현 — 다음에 구현**.
 
@@ -19,9 +19,9 @@
 - 핵심 약점: 스킬이 중간에 비정상 종료하면 unlock 플래그가 **잔류 → 영구 unlock**(이후 아무 직접 Edit이나 통과).
 - 가드안:
   1. 플래그에 **세션 ID 매칭** 또는 **TTL**(예: 플래그 mtime이 N분 지나면 무효).
-  2. (Claude Code 한정) PreToolUse 훅이 직전 `Skill` 호출을 transcript로 확인 — 단 크로스에이전트 이식성 떨어짐. teammode는 에이전트 무관이 원칙이라 **플래그+TTL/세션ID가 정답**.
+  2. (Claude Code 한정) PreToolUse 훅이 직전 `Skill` 호출을 transcript로 확인 — 단 크로스에이전트 이식성 떨어짐. tm-mode는 에이전트 무관이 원칙이라 **플래그+TTL/세션ID가 정답**.
 
-## teammode 편입 위치
+## tm-mode 편입 위치
 - L1 메모리 시스템(`spec/01-team-memory.md`)에 "쓰기 거버넌스" 절로 편입.
 - 차별점 메시지: **"팀 메모리는 동사로만 쓴다"** = 여러 에이전트·팀원이 만져도 INDEX/커밋/알림 일관성이 코드로 보장됨. L1 delight 후보.
 
@@ -52,13 +52,13 @@
 | 결과물 | 팀 memory 시드(저장) | 일회 요약 아님 — 지속 가치 |
 | 저장 위치 | `memory/team/memory/<주제>.md` (신설 영역) | members/sessions로는 "팀 메모리" 담을 곳 없음 |
 | scope | **팀 scope** — 도입자 1회 시드 → git 공유, 팀원은 pull로 수령(0회) | memory는 비밀 아니라 git 추적 → credentials가 못 한 팀당1회를 공짜로 |
-| 토큰 | **credentials 금고 안 씀** — 에이전트에 이미 연결된 notion MCP를 빌려 읽기만 | teammode 토큰 무접촉. 토큰은 MCP 연결 소관(각자) |
+| 토큰 | **credentials 금고 안 씀** — 에이전트에 이미 연결된 notion MCP를 빌려 읽기만 | tm-mode 토큰 무접촉. 토큰은 MCP 연결 소관(각자) |
 | 분류 | AI가 주제별 분류(통째 덤프 X) | "분류는 시킬거" |
 | 수집 주체 | **페이지별 fan-out** — 오케스트레이터가 페이지마다 서브에이전트 디스패치(백그라운드 병렬), 오케스트레이터는 취합·정리만 | 노션 트리 양 많음 → 병렬·비차단. L2 빌드 오케스트레이션 패턴 재사용 |
 | 트리거 | tm-onboard 통합. 도입자+memory 비어있으면 제안. 나중 재실행으로 추가 | "온보딩 통합", "메모리 업로드 기능으로 추가" |
 | 범위 | 준 링크 + 관련 하위 "쭉" 긁기, 도입자에게 "이만큼" 확인 | "정보 쭉 긁어와서" |
 
-### 3. 컴포넌트 (teammode 철칙: 엔진=기계, 스킬=판단)
+### 3. 컴포넌트 (tm-mode 철칙: 엔진=기계, 스킬=판단)
 
 #### 3.1 엔진 동사 `memory` (기계적 — `log` 형제)
 ```
@@ -133,7 +133,7 @@ teammode.py memory --root <팀루트> --topic <주제> --text <내용> [--source
 ### 기능 (Jane 구상, 우선순위 순)
 1. **메모리 스켈레톤 + 채우기 유도** — 메모리 폴더 뼈대를 미리 깔고(얇게, acme-toolkit의 `team/`·`product/`·`decisions/` 구조를 제품특정 빼고 범용화), 에이전트가 칸을 채우도록 유도. ⚠️ 빈 깡통 남발 금지(`.gitkeep`·INDEX 안내 위주), 유도는 ②가이드라인 주입으로(강제 X).
 2. **팀모드 가이드라인 파일 세션 시작 주입** — 세션 시작에 "팀모드 잘 쓰는 법" 강령을 INDEX·최근활동과 함께 주입(6/16 AI강령 3계층의 ①). 범용 강령=`infra/`(upstream 소유·update로 갱신) vs 팀 커스텀=`memory/`(팀 소유) **분리**, 매 세션이라 **얇게**, AGENTS.md(셋업 진입점)와 **채널 구분**. session-start.py가 ②③ 이미 주입 → ①만 추가.
-3. **툴킷 강력 스킬 이식** — acme-toolkit의 검증된 스킬을 teammode로. **on/off 토글 스킬 포함**(엔진 `on`/`off` 동사는 있으나 사용자용 스킬 래퍼 부재): on=pull+맥락주입+배너 / off=세션로그+커밋+push. 어느 스킬을 이식할지 선별 필요.
+3. **툴킷 강력 스킬 이식** — acme-toolkit의 검증된 스킬을 tm-mode로. **on/off 토글 스킬 포함**(엔진 `on`/`off` 동사는 있으나 사용자용 스킬 래퍼 부재): on=pull+맥락주입+배너 / off=세션로그+커밋+push. 어느 스킬을 이식할지 선별 필요.
 4. **statusline 팀명** — on 시 상태줄에 팀명 표시. ⚠️ 에이전트별 표면 다름(claude=`settings.json` statusLine command, codex=대안/스킵) → **어댑터 레이어가 처리**(크로스에이전트 어댑터의 좋은 쓰임새). 팀명은 `team.config.json`에서, `--yes` 게이트. **③(on 스킬) 이후** 자연스러움.
    - ✅ **배너 picker 구현 완료**(23886a9): `infra/banners/` 6종(ansi_shadow·slant·chunky·cyberlarge·larry3d·speed) 정적 렌더 + 온보딩 personality에서 선택→`cp`로 `memory/banner.txt` 적용. pyfiglet은 빌드타임만(런타임 의존성 0).
 
@@ -172,7 +172,7 @@ teammode.py memory --root <팀루트> --topic <주제> --text <내용> [--source
 ## 스킬 구성 개선 (2026-06-20 Jane 착안, 도그푸딩 중)
 - ~~**tm-reset 스킬 삭제**~~ — ✅ 완료(2026-06-20 제거). 되돌리기 기능은 `python infra/install.py --uninstall --root . --yes` 직접 실행으로 유지.
 - **tm-manage-utils → 커스터마이즈 스킬로 전환** — 유틸 설치/제거 관리 대신 "팀별 커스터마이즈" 용도 스킬로 재정의.
-- (출처: acme→teammode 마이그레이션 도그푸딩 중 발견. 상세 설계는 teammode 본격 작업 시.)
+- (출처: acme→tm-mode 마이그레이션 도그푸딩 중 발견. 상세 설계는 tm-mode 본격 작업 시.)
 
 ## personality 완료판정 결함 (2026-06-20 도그푸딩 발견 — Jane)
 - tm-onboard 체크표의 "팀 personality = greeting/farewell 기본값과 다름" 판정이 **코드 미구현**. install_lib에 비교 로직 없음 → 스킬 마크다운 기준만 보고 **에이전트가 임의 판정 → 오탐**(마이그레이션 중 팀명만 Acme로 바꿨는데 personality ✅로 잘못 잡힘. 실제론 greeting이 기본 공식 그대로).
@@ -180,7 +180,7 @@ teammode.py memory --root <팀루트> --topic <주제> --text <내용> [--source
 - **개선**: teammode.py context(또는 doctor)가 `personality_customized` 플래그를 결정적으로 뱉게. 기본 공식 `f"{name} 팀모드 ON"`·`f"수고하셨습니다 — {name}"`과 정확 비교 + `banner.txt` 존재 여부로 판정. 체크표 항목은 코드가 판정, 에이전트 임의판정 금지.
 
 ## tm-customize 스킬 신설 + 스킬 재구성 (2026-06-20 Jane, 도그푸딩 중 확정)
-teammode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
+tm-mode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
 - **신설 `tm-customize`**: 팀 personality(배너 picker · greeting/farewell 멘트) + 기존 tm-manage-utils(유틸 스킬 관리) 흡수. "팀색 입히기"를 한곳에.
 - **tm-onboard에서 personality 커스텀 절차(배너·멘트) 제거** → 온보딩은 L1 가치 + 서비스(L2) 제안에 집중, 길이 단축. 체크표의 personality 항목도 제거하거나 "tm-customize로" 안내만.
 - **tm-manage-utils → tm-customize로 전환/흡수** (위 마이그레이션 착안 통합).
@@ -188,12 +188,12 @@ teammode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
 - 연계: 위 "personality 완료판정 결함"도 tm-customize 쪽에서 결정적 판정으로 해소.
 
 ## 흡수 경로 탐지 결함 — check-mcp가 _teammode_managed만 인식 (2026-06-20 도그푸딩 — Jane)
-- tm-connect §1② 흡수 = "팀이 이미 다른 경로로 연결한 서비스 탐지"인데, check-mcp(install.py:182)는 `entry.get("_teammode_managed") is True`만 connected 판정 → **teammode가 등록한 MCP만 인식**.
-- 결과: 기존 비-teammode 연결(acme-toolkit이 등록한 linear/slack/notion MCP)을 흡수 대상으로 **탐지 못 함**. 흡수 의도 ↔ 탐지 메커니즘 불일치.
+- tm-connect §1② 흡수 = "팀이 이미 다른 경로로 연결한 서비스 탐지"인데, check-mcp(install.py:182)는 `entry.get("_teammode_managed") is True`만 connected 판정 → **tm-mode가 등록한 MCP만 인식**.
+- 결과: 기존 비-tm-mode 연결(acme-toolkit이 등록한 linear/slack/notion MCP)을 흡수 대상으로 **탐지 못 함**. 흡수 의도 ↔ 탐지 메커니즘 불일치.
 - 부수 발견: 그 linear MCP args가 `acme-toolkit/infra/mcp/linear-mcp/dist/server.js` 의존 → acme 정리 시 깨짐. 흡수로 끊어야 하는데 자동흡수 불가.
 - 개선안: 흡수 탐지가 _teammode_managed 외 "역할 provider와 매칭되는 기존 MCP"도 후보로 띄워 사람 확인. 또는 흡수=수동(핸들러 생성 + 기존 토큰키 재사용) 경로를 스킬에 명시(현재 §1②가 check-mcp 자동탐지에만 의존).
 
-## 온보딩 발견성 + "왜+다음" 침묵 — teammode 전반 불친절 (2026-06-20 도그푸딩, Jane 핵심지적)
+## 온보딩 발견성 + "왜+다음" 침묵 — tm-mode 전반 불친절 (2026-06-20 도그푸딩, Jane 핵심지적)
 "불친절"의 정체 = 자동화 부족이 아니라 **발견성·피드백 부재**:
 - **KB 발견성**: 메모리(KB) 개념은 README §기둥②에 있으나 **tm-onboard에 소개 0** → 새 팀원은 KB 존재를 모르고, 첫 마주침이 kb-write-guard 차단("memory 직접편집 금지→memory write 경유")인데 "왜/KB가 뭔지"가 없음. 문서엔 있으나 필요한 순간엔 없음.
 - **침묵하는 실패(공통 뿌리)**: check-mcp `{"connected":false}`(왜인지 X)·훅 직접실행 무출력·personality 오탐(✅로 거짓보고)·흡수 막다른길. 전부 "왜+다음 액션"을 안 알려줌.
@@ -209,12 +209,12 @@ teammode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
   - 개선: install scaffold가 기본 폰트(예: ansi_shadow) banner.txt를 박아두거나, 자동 배너 자체를 ASCII 렌더로. personality 커스텀 = "기본에서 바꾸기"여야지 "빈손 채우기"가 아니게.
 - **배너↔config 비동기**: banner.txt 있으면 무조건 우선 → team.name 바꿔도 배너 안 따라옴(마이그레이션 시 acme 잔재 배너가 그대로 노출). 위 personality 결정적판정 항목과 연결 — 배너 출처가 banner.txt면 team.name 변경 시 경고하거나, 자동 배너는 team.name 추종.
 
-## UX 포팅 — acme엔 있고 teammode가 안 가져온 것들 (2026-06-20 도그푸딩, Jane)
-메타: acme→teammode 마이그레이션이 엔진(L1)만 가져오고 UX/첫경험을 안 가져옴. 재발명 말고 **포팅**.
-- **tm on 출력 포팅**: acme on(acme SKILL.md:39-65)은 [환영 + 📊팀원별 상태(🔧하는일/⏭다음/🚧막힌것, 세션로그+Linear In Progress) + 📋지난성과 3~5줄 + 📅일정(Google Cal 오늘~+3일) + 멤버 이모지 🌙Jane/😛Jonathon/👽Jonathan]. teammode tm on은 배너+greeting+summary 한줄 → 빈약.
+## UX 포팅 — acme엔 있고 tm-mode가 안 가져온 것들 (2026-06-20 도그푸딩, Jane)
+메타: acme→tm-mode 마이그레이션이 엔진(L1)만 가져오고 UX/첫경험을 안 가져옴. 재발명 말고 **포팅**.
+- **tm on 출력 포팅**: acme on(acme SKILL.md:39-65)은 [환영 + 📊팀원별 상태(🔧하는일/⏭다음/🚧막힌것, 세션로그+Linear In Progress) + 📋지난성과 3~5줄 + 📅일정(Google Cal 오늘~+3일) + 멤버 이모지 🌙Jane/😛Jonathon/👽Jonathan]. tm-mode tm on은 배너+greeting+summary 한줄 → 빈약.
   - L2 불요: 환영·팀원별 상태·지난성과(세션로그 기반). L2 필요: Linear In Progress·Google Calendar 일정.
   - 구현: tm SKILL.md ON §3-4를 acme식 웰컴 포맷으로. 이모지는 members.md/team.config.
-- **statusline 포팅**: acme는 statusline-command.sh:52 `[Acme]`(노란 하드코딩) + `.acme-active` 마커 조건부. teammode: ①statusline-command.sh에 `.teammode-active` 체크 추가(개인 statusline 유지·병합) ②team.config team.name 동적 읽기(bash+python3) ③settings.json TEAMMODE_HOME 배선(미구현) ④마커 우선순위 teammode>acme. teammode.py 마커는 이미 구현(:43,:1446).
+- **statusline 포팅**: acme는 statusline-command.sh:52 `[Acme]`(노란 하드코딩) + `.acme-active` 마커 조건부. tm-mode: ①statusline-command.sh에 `.teammode-active` 체크 추가(개인 statusline 유지·병합) ②team.config team.name 동적 읽기(bash+python3) ③settings.json TEAMMODE_HOME 배선(미구현) ④마커 우선순위 tm-mode>acme. teammode.py 마커는 이미 구현(:43,:1446).
 - 이 묶음 전체가 "친절성·가시성 P0 테마". 계획 에이전트 로드맵에 누락됐으니 다음 세션 P0 묶음으로 신설.
 
 ## tm-customize 동작 수정 — 오버라이드 레이어 설계 (2026-06-20 Jane+논의)
@@ -262,18 +262,18 @@ tm-customize 범위 4층으로 확장 — persona 추가:
 ## statusline codex 쪽 누락 — 진짜 발견 (2026-06-20, Jane 끝까지 추적·Jonathan 단서)
 초기 조사가 Claude statusLine만 봐서 3번 "없다" 오판. 실제론 **codex** 쪽에 있었음:
 - **acme는 codex statusline 건드림**: `infra/hooks/sync.py:196`이 codex `config.toml` hooks 블록에 `statusMessage = "acme hook"` 주입(커밋 `c14e746` "Codex Acme setup support"; 과거엔 "Checking/Saving acme session log"). codex CLI는 훅 실행 시 상태줄에 이 메시지 표시 → **Jonathan(codex 사용자)이 본 게 이것**.
-- **teammode는 codex statusMessage 안 넣음** — `infra/agents/codex/adapter.py`가 hooks 블록 생성하되 statusMessage 누락. 마이그레이션 시 빠짐. Jonathan이 teammode 쓰면 codex statusline 비어있음.
+- **tm-mode는 codex statusMessage 안 넣음** — `infra/agents/codex/adapter.py`가 hooks 블록 생성하되 statusMessage 누락. 마이그레이션 시 빠짐. Jonathan이 tm-mode 쓰면 codex statusline 비어있음.
 - **할 일 (statusline 두 갈래)**:
   - Claude statusLine = 동적 팀명(오늘 우리 환경에 수동 구현, statusline-command.sh) → install 자동주입 제품화 필요(기존 작업4).
-  - **Codex statusMessage = teammode codex adapter에 포팅** (acme 원본 있음). 단 "acme hook" 고정 → **동적**(팀명/팀모드 ON, team.config에서)으로 개선.
+  - **Codex statusMessage = tm-mode codex adapter에 포팅** (acme 원본 있음). 단 "acme hook" 고정 → **동적**(팀명/팀모드 ON, team.config에서)으로 개선.
 - 교훈: 에이전트별 statusline 표면이 다름 — claude=`settings.json` statusLine / codex=`config.toml` statusMessage. **둘 다 봐야** 함. 조사 시 한쪽만 보면 놓침.
 
 ## statusline 구현 설계 확정 (2026-06-20 크로스OS·에이전트 검토 — Jane 푸시백)
-초기 "범용 wrapper 한 방"(settings.json statusLine.command를 teammode wrapper로 감싸 개인 원본 호출+팀블록 prepend)은 **크로스OS에서 기각**.
+초기 "범용 wrapper 한 방"(settings.json statusLine.command를 tm-mode wrapper로 감싸 개인 원본 호출+팀블록 prepend)은 **크로스OS에서 기각**.
 - **기각 근거(셸 미스매치)**: claude statusLine은 윈도우서 Git Bash(있으면)/PowerShell(없으면)로 실행(공식문서 https://code.claude.com/docs/en/statusline.md). wrapper가 개인 원본 command를 subprocess 재실행하면 python `shell=True`=윈도우 cmd.exe ≠ claude의 GitBash/PS → 원본이 `bash xxx.sh`면 깨진다. **원본 재실행을 피하는 경로만** 견고.
 - **확정 설계**:
   - **codex**: statusMessage는 config.toml **정적 문자열**(동적렌더 X) → codex adapter sync가 `[<팀명>] 팀모드 ON`을 team.config team.name에서 **동적**으로 박기. wrapper 불요. (acme `statusMessage="acme hook"` 고정 → 동적화)
-  - **claude 케이스 분기**: ①개인 statusLine **없음** → teammode python statusline 단독설치(`sys.executable`+`io_encoding`, 셸무관 — 전 훅 패턴 일관). ②개인 **있음** → 안 덮고 **정직한 수동안내**(BACKLOG "왜+다음" 원칙). ③멱등+원복(`_teammode_managed` 마커, hooks sync 패턴 모방). 팀명 동적, 하드코딩 금지.
+  - **claude 케이스 분기**: ①개인 statusLine **없음** → tm-mode python statusline 단독설치(`sys.executable`+`io_encoding`, 셸무관 — 전 훅 패턴 일관). ②개인 **있음** → 안 덮고 **정직한 수동안내**(BACKLOG "왜+다음" 원칙). ③멱등+원복(`_teammode_managed` 마커, hooks sync 패턴 모방). 팀명 동적, 하드코딩 금지.
   - **후속 이월**: "개인 bash statusLine에 마커 블록 자동삽입"(우리 현재 수동방식)은 남의 파일 편집·언어의존이라 이번 범위 밖. ②케이스를 수동안내→자동삽입으로 올리는 건 별도 백로그.
 - 상태: 코더(sonnet) TDD 구현 착수 — claude adapter + codex adapter + 신규 `teammode_statusline.py` + 테스트. 완료선=기존 1089 + 신규 green.
 
@@ -293,13 +293,13 @@ PowerShell call operator(`&`) 없이 문자열 평가로 처리돼 실행되지 
 **결정: L2 = 팀이 합의한 벤더 MCP 툴셋을 각 멤버 에이전트에 크로스에이전트로 등록해주는 "MCP 등록기".** 자체 role_server 프록시 + 역할(issues/chat/docs/calendar) handler 추상화는 **버린다.**
 
 ### 왜 (현 L2가 무거운 근원)
-- 현재 L2(tm-connect)는 teammode 자체 MCP(`role_server`) + 역할별 `handlers/<role>.py` 수제코드로 서비스를 **프록시**한다 = 벤더 공식 MCP(Linear·Notion·GCal)를 **재발명**.
+- 현재 L2(tm-connect)는 tm-mode 자체 MCP(`role_server`) + 역할별 `handlers/<role>.py` 수제코드로 서비스를 **프록시**한다 = 벤더 공식 MCP(Linear·Notion·GCal)를 **재발명**.
 - "표준 인터페이스(역할 추상화)"의 이득 = provider 교체 무관인데, 팀이 Linear→Jira 갈아탈 일은 거의 없음(YAGNI). 그 보험료로 handler 유지비 + 무거운 절차(핸들러 생성·재배선)를 평생 짐.
 
 ### 채택 방향 (B = 표준 툴셋)
-- "표준화"의 대상을 **인터페이스 → 툴셋**으로 이동. teammode가 하는 일:
+- "표준화"의 대상을 **인터페이스 → 툴셋**으로 이동. tm-mode가 하는 일:
   1. 팀이 "우리 쓰는 MCP는 이것들"(예: linear, notion, gcal)을 **합의·공유**(git, team.config 또는 별도 목록).
-  2. 합류자/멤버 셋업 시 teammode가 그 **벤더 MCP를 각 에이전트(claude `.mcp.json`/settings + codex `config.toml`)에 대신 등록**(크로스에이전트 배선 대행).
+  2. 합류자/멤버 셋업 시 tm-mode가 그 **벤더 MCP를 각 에이전트(claude `.mcp.json`/settings + codex `config.toml`)에 대신 등록**(크로스에이전트 배선 대행).
   3. 토큰은 보안상 여전히 **각자 1회 붙여넣기**(단일 금고 default.json 재사용 — 이미 구현).
 - 가치: "MCP 깔고 양쪽 에이전트에 배선하는 귀찮음 대행 + 팀 합의 공유". handler·role_server·재배선 소멸.
 

@@ -1,6 +1,6 @@
 # 스킬 시스템
 
-teammode SPEC v0.2 — 스킬 계층(base/core) + acme 이식 로드맵 + 온보딩 스킬 명세(§5)
+tm-mode SPEC v0.2 — 스킬 계층(base/core) + acme 이식 로드맵 + 온보딩 스킬 명세(§5)
 
 ## 스킬 계층 (base / core)
 
@@ -11,11 +11,11 @@ teammode SPEC v0.2 — 스킬 계층(base/core) + acme 이식 로드맵 + 온보
 
 - **base** = 팀모드를 켜고·끄고·셋업하는 최소 스킬. 항상 설치된다.
 - **core** = 팀모드가 켜졌을 때만 활성(맥락·메모리 운영). `off` 시 비활성.
-- **util**(선택 설치) 계층은 현재 비어 있음. `dev-cycle` 등은 보류 — 범용 개발 메타라 teammode 코어(맥락 공유·서비스 연결) 정체성과 결이 다르다.
+- **util**(선택 설치) 계층은 현재 비어 있음. `dev-cycle` 등은 보류 — 범용 개발 메타라 tm-mode 코어(맥락 공유·서비스 연결) 정체성과 결이 다르다.
 
-## 이식 로드맵 (acme-toolkit → teammode)
+## 이식 로드맵 (acme-toolkit → tm-mode)
 
-acme-toolkit의 검증된 스킬을 범용 teammode로 이식한다. acme 특정 의존(`LEGACY_TOOL_HOME`·하드코딩 채널/DB ID)은 teammode 범용(`--root` 명시·`team.config.json` services 슬롯)으로 번역한다.
+acme-toolkit의 검증된 스킬을 범용 tm-mode로 이식한다. acme 특정 의존(`LEGACY_TOOL_HOME`·하드코딩 채널/DB ID)은 tm-mode 범용(`--root` 명시·`team.config.json` services 슬롯)으로 번역한다.
 
 ### 이번 이식 — L1 4개
 
@@ -48,28 +48,28 @@ acme-toolkit의 검증된 스킬을 범용 teammode로 이식한다. acme 특정
 
 | 스킬 | 이유 |
 |---|---|
-| `acme-onboard` · `credentials` | teammode에 `tm-onboard`·금고 이미 있음 (중복) |
+| `acme-onboard` · `credentials` | tm-mode에 `tm-onboard`·금고 이미 있음 (중복) |
 | `3d-modeling` · `acme-browse` | Acme/팀 팀특정 |
 | `check-health` · `lint` · `cheer` | 제품/툴킷 특정 · 우선순위 낮음 |
 | `dev-cycle` | 범용 개발 메타 — 코어 정체성과 결 다름 (보류) |
 
 ---
 
-teammode SPEC v0.2 — tm-onboard·tm-connect (§5)
+tm-mode SPEC v0.2 — tm-onboard·tm-connect (§5)
 
 ## §5. 온보딩 스킬 (tm-onboard)
 
 > 이 절의 ground truth는 현재 워킹트리의 `infra/skills/base/tm-onboard/SKILL.md`, `infra/skills/core/tm-connect/SKILL.md`, `src/teammode/cli.py`이다. 2026-06-16 현재 워킹트리에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으며, 이 절은 커밋 여부와 무관하게 **현재 구현된 스킬 본문**을 반영한다.
 >
-> **핵심 계약 변경(2026-06)**: 설치는 CLI(`teammode init` / `teammode join`)가 끝낸다. 스킬은 설치 후 ① 검증(서브에이전트 위임) ② 가치 전달(value.md)만 한다. 스킬이 `install.py`를 직접 호출하거나 멤버명·org·팀명·역할을 묻는 것은 **구 계약이며 폐기됐다.**
+> **핵심 계약 변경(2026-06)**: 설치는 CLI(`tm-mode init` / `tm-mode join`)가 끝낸다. 스킬은 설치 후 ① 검증(서브에이전트 위임) ② 가치 전달(value.md)만 한다. 스킬이 `install.py`를 직접 호출하거나 멤버명·org·팀명·역할을 묻는 것은 **구 계약이며 폐기됐다.**
 
 ### 5.1 정체성·트리거
 
 ```yaml
 name: tm-onboard
-description: Use right after a teammode install (`teammode init` / `teammode join`) — when
+description: Use right after a tm-mode install (`tm-mode init` / `tm-mode join`) — when
   entering Claude Code/Codex in a freshly set-up team repo. Dispatches a verification
-  subagent to confirm the install landed, and meanwhile conveys what teammode does for you.
+  subagent to confirm the install landed, and meanwhile conveys what tm-mode does for you.
 triggers:
   - "tm-onboard"
   - "팀모드 온보딩"
@@ -79,13 +79,13 @@ triggers:
   - when the CLI tells the user to open an agent and run tm-onboard
 ```
 
-`tm-onboard`는 **`teammode init` / `teammode join` 설치 직후**, 에이전트로 처음 들어왔을 때 실행하는 스킬이다. 설치·레포 생성·clone은 CLI wizard가 이미 끝냈다. 스킬이 하는 일은 **딱 둘**: ① 설치 검증(검증 서브에이전트에 위임, 메인은 기다리지 않음), ② 팀모드 가치 전달(`value.md` 읽어 사람에게 전달).
+`tm-onboard`는 **`tm-mode init` / `tm-mode join` 설치 직후**, 에이전트로 처음 들어왔을 때 실행하는 스킬이다. 설치·레포 생성·clone은 CLI wizard가 이미 끝냈다. 스킬이 하는 일은 **딱 둘**: ① 설치 검증(검증 서브에이전트에 위임, 메인은 기다리지 않음), ② 팀모드 가치 전달(`value.md` 읽어 사람에게 전달).
 
 같은 절에서 다루는 관련 스킬:
 
 ```yaml
 name: tm-connect
-description: Connect a service slot (issues / chat / docs / calendar) to a teammode team.
+description: Connect a service slot (issues / chat / docs / calendar) to a tm-mode team.
 triggers:
   - "서비스 연결"
   - "이슈 트래커 연결"
@@ -93,7 +93,7 @@ triggers:
   - "문서 연결"
   - "캘린더 연결"
   - "팀모드 서비스 붙여줘"
-  - "teammode connect"
+  - "tm-mode connect"
   - "connect service"
   - after tm-onboard offers L2
 ```
@@ -118,14 +118,14 @@ triggers:
 | 호스트 설치 되돌리기 | `install.py --uninstall` 직접 실행. 파괴적이라 사람 확인 먼저. |
 
 **스킬이 하지 않는 것 (폐기된 옛 계약):**
-- `install.py` 직접 호출 — CLI가 끝냈다. 재설치가 필요하면 `teammode join <url>` 재실행(멱등) 안내.
+- `install.py` 직접 호출 — CLI가 끝냈다. 재설치가 필요하면 `tm-mode join <url>` 재실행(멱등) 안내.
 - 멤버명·org·팀명·역할 대화 — CLI wizard가 이미 받았다.
 - 도입자/팀원 판정 설명 — CLI wizard가 처리했다.
-- 설치 안 된 사람에게 설치를 시작 → `teammode init` / `teammode join <url>` CLI 안내 후 멈춤.
+- 설치 안 된 사람에게 설치를 시작 → `tm-mode init` / `tm-mode join <url>` CLI 안내 후 멈춤.
 
 ### 5.3 흐름 (설치 후 첫 진입 — 병렬)
 
-> **전제**: `teammode init` 또는 `teammode join <url>` 이 이미 완료됐다. 에이전트는 clone된 팀 레포 루트에서 실행된다.
+> **전제**: `tm-mode init` 또는 `tm-mode join <url>` 이 이미 완료됐다. 에이전트는 clone된 팀 레포 루트에서 실행된다.
 
 ```
 "tm-onboard" (또는 "팀모드 시작" / "설치 잘 됐나")
@@ -133,7 +133,7 @@ triggers:
  2. (서브가 도는 동안) infra/skills/base/tm-onboard/value.md 를 읽고 가치를 사람에게 전달한다.
  3. 검증 결과 도착 → 종합:
     - 전부 ✅ → "설치도 정상 확인됐어요" 한 줄 매듭.
-    - ❌ 항목 있음 → 무엇이 안 됐는지 짚고 → `teammode join <팀레포 URL>` 재실행 안내(멱등).
+    - ❌ 항목 있음 → 무엇이 안 됐는지 짚고 → `tm-mode join <팀레포 URL>` 재실행 안내(멱등).
  4. 마무리: "작업 시작할 땐 `tm on` 하세요." 한 걸음 안내로 끝낸다.
 ```
 
@@ -273,10 +273,10 @@ Common mistakes:
 |---|---|
 | **tm-onboard가 install.py를 직접 호출** | 설치는 CLI가 끝냈다. 스킬은 검증·가치 전달만. |
 | **tm-onboard가 멤버명·org·팀명·역할을 다시 묻는다** | CLI wizard가 이미 받았다. 묻지 않는다. |
-| **"셋업해줘"에 스킬이 설치를 시작** | `teammode init`(새 팀) / `teammode join <url>`(합류) 터미널 안내 후 멈춘다. |
+| **"셋업해줘"에 스킬이 설치를 시작** | `tm-mode init`(새 팀) / `tm-mode join <url>`(합류) 터미널 안내 후 멈춘다. |
 | 검증을 메인이 동기로 붙잡고 함 | 검증 서브에이전트 디스패치 + 그 동안 메인이 가치 전달(병렬). |
 | 검증 건너뛰고 "설치됐겠지" 가정 | 서브에게 실제 파일/명령으로 확인시킨다 — 특히 훅·스킬 심링크. |
-| `install.py` 단계를 손으로 재현 | 안 됐으면 `teammode join <url>` 재실행 안내(멱등). |
+| `install.py` 단계를 손으로 재현 | 안 됐으면 `tm-mode join <url>` 재실행 안내(멱등). |
 | L2·Obsidian·personality를 메뉴로 나열 | 다루지 않는다. 각 스킬이 그때 드러난다(progressive). |
 | 빈 팀(세션로그 0)을 실패로 말함 | 정상 — "지금부터 쌓인다"로 내레이션. |
 | `--member-name`으로 도입자/팀원을 가른다고 봄 | role은 install.py가 config 유효성으로 자동 판정한다. (install.py 내부 참고용) |

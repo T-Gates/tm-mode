@@ -1,4 +1,4 @@
-# teammode
+# tm-mode
 
 > Turn your team mode on. — AI 코딩 에이전트(Claude Code · Codex)를 위한 **크로스에이전트 팀 협업 툴킷.**
 
@@ -10,9 +10,9 @@
 런처(pip 또는 curl)를 깔고 한 줄:
 
 ```bash
-pip install "git+https://github.com/T-Gates/teammode"
-teammode init                      # 새 팀 (도입자) — 레포 생성 → 곧바로 셋업
-teammode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
+pip install "git+https://github.com/T-Gates/tm-mode"
+tm-mode init                      # 새 팀 (도입자) — 레포 생성 → 곧바로 셋업
+tm-mode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 ```
 
 → CLI wizard가 org·팀명·이름·에이전트·설치 위치를 묻고 **레포 생성/clone·훅·스킬·env까지 한 번에.** 클론·설정·정독 0, 진입장벽 0. 설치가 끝나면 에이전트(Claude Code·Codex)를 열고 `tm-onboard`라고 치면 검증·가치 브리핑이 자동입니다. (curl도 동일 — `... | sh -s -- init|join`.)
@@ -21,10 +21,10 @@ teammode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 
 ---
 
-## 왜 teammode?
+## 왜 tm-mode?
 
 > **한 줄로:** 팀 메모리의 **기록·열람 주체가 사람 → 에이전트로** 넘어간다.
-> Slack·Notion·위키는 *사람이 쓰고 사람이 읽지만*, teammode는 양쪽 다 **에이전트가** 한다 → 사람의 추가 노동 0.
+> Slack·Notion·위키는 *사람이 쓰고 사람이 읽지만*, tm-mode는 양쪽 다 **에이전트가** 한다 → 사람의 추가 노동 0.
 
 이게 핵심이고, 두 기둥으로 나타난다:
 
@@ -44,7 +44,7 @@ teammode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 
 ### 왜 Slack·Notion·회의가 아니라?
 
-| | Slack · Notion · 위키 | teammode |
+| | Slack · Notion · 위키 | tm-mode |
 |---|---|---|
 | 누가 **쓰나** | 사람 (퇴근 전 정리) | **에이전트가 자동으로** |
 | 누가 **읽나** | 사람 (검색·복붙) | **에이전트가 세션 시작에 자동** |
@@ -88,7 +88,7 @@ teammode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 
 ## 설치
 
-**`teammode init`(새 팀) / `teammode join <url>`(합류) 한 줄이면 끝**(위 [도입은 이 한 줄](#도입은-이-한-줄)). 요구사항·**활성화**(`tm on`)·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
+**`tm-mode init`(새 팀) / `tm-mode join <url>`(합류) 한 줄이면 끝**(위 [도입은 이 한 줄](#도입은-이-한-줄)). 요구사항·**활성화**(`tm on`)·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
 
 ## 구조
 

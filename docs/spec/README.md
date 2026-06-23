@@ -1,6 +1,6 @@
-# teammode SPEC
+# tm-mode SPEC
 
-teammode SPEC v0.2 — 인덱스
+tm-mode SPEC v0.2 — 인덱스
 
 spec_version: **0.2**
 

@@ -419,12 +419,12 @@ def _git(args, cwd) -> str | None:
 
 ENGINE = INFRA / "teammode.py"
 
-# 템플릿(upstream) 추적 — teammode 원본 레포. `teammode update`(UPSTREAM_REMOTE="upstream")
+# 템플릿(upstream) 추적 — teammode 원본 레포. `tm-mode update`(UPSTREAM_REMOTE="upstream")
 # 가 이 remote 를 fetch 한 뒤 엔진 경로(infra/)만 파일 동기화(git checkout)로 덮어쓴다.
 # merge 가 아니다 — template 로 만든 레포는 teammode 와 unrelated histories(공통 조상 0)라
 # merge 가 막히기 때문. origin=자기 레포(출처는 GitHub API 에만)이므로 셋업 때 upstream 을 박아준다.
 # A안(상수 하드코딩) — 초기 단계라 config 필드 대신 고정(Jane 결정 2026-06-17).
-UPSTREAM_URL = "https://github.com/T-Gates/teammode.git"
+UPSTREAM_URL = "https://github.com/T-Gates/tm-mode.git"
 UPSTREAM_REMOTE = "upstream"
 
 
@@ -690,7 +690,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         err(f"[error] 이름 충돌(사람이 해소 필요): {e}")
         return 3
     out(f"[scaffold] memory/ 구조·members.md 등재 완료 (role={role}).")
-    # 템플릿 추적: upstream remote 등록(없을 때만). teammode update 가 이걸 fetch 후 infra/ 동기화.
+    # 템플릿 추적: upstream remote 등록(없을 때만). tm-mode update 가 이걸 fetch 후 infra/ 동기화.
     # 레포 내 git 변경(scaffold 류)이라 --yes 게이트 무관 — dry-run 은 위에서 이미 return.
     if _ensure_upstream(team_root):
         out(f"[upstream] 템플릿 추적 등록 — {UPSTREAM_REMOTE} → {UPSTREAM_URL}")

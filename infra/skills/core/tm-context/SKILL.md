@@ -63,7 +63,7 @@ python infra/teammode.py context --root . --json
 
 ### decisions.md
 `memory/team/decisions/current.md` 파일이 있으면 최근 결정사항을 추가 출력한다.
-없으면 조용히 skip (teammode에 decisions 매니페스트 미구현 — graceful).
+없으면 조용히 skip (tm-mode에 decisions 매니페스트 미구현 — graceful).
 
 ```python
 decisions_path = Path(".") / "memory" / "team" / "decisions" / "current.md"

@@ -15,7 +15,7 @@
 ```
 
 - `infra/` 와 **동일 레벨** — `SYNC_PATHS = ["infra/", "NOTICE.md"]`만 덮어쓰므로 `handlers/`는
-  upstream `teammode update`에 의해 덮어쓰이지 않는다.
+  upstream `tm-mode update`에 의해 덮어쓰이지 않는다.
 - 실제 서비스 연결 코드는 S7 도그푸딩 단계에서 팀이 작성한다. 그 전까지 디렉토리가
   없거나 비어 있어도 정상이다.
 

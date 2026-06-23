@@ -443,7 +443,7 @@ def cmd_update(team_root: Path, dry_run: bool = False) -> int:
 
     # dirty 가드 — 사람 판단 요청(추측 수리 금지)
     if res.blocked:
-        print(f"teammode update — 중단: {res.detail}.\n"
+        print(f"tm-mode update — 중단: {res.detail}.\n"
               f"  동기화 대상({paths})에 커밋 안 된 변경이 있습니다. 덮어쓰면 유실됩니다.\n"
               f"  먼저 변경을 커밋하거나 되돌린 뒤 다시 실행하세요(사람 판단 필요).",
               file=sys.stderr)
@@ -453,7 +453,7 @@ def cmd_update(team_root: Path, dry_run: bool = False) -> int:
 
     if not res.ok:
         # upstream 미등록·오프라인·git 아님 등 — 비치명. install 이 upstream 을 등록한다.
-        print(f"teammode update — 건너뜀(비치명): {res.detail}.\n"
+        print(f"tm-mode update — 건너뜀(비치명): {res.detail}.\n"
               f"  upstream remote 가 없으면 install.py 가 등록합니다. 수동 등록:\n"
               f"  git remote add {UPSTREAM_REMOTE} {_install_upstream_url()}",
               file=sys.stderr)
@@ -464,19 +464,19 @@ def cmd_update(team_root: Path, dry_run: bool = False) -> int:
     # "이미 최신"으로 잘못 출력되는 P2 버그가 난다 — 적대검수 발견.)
     if dry_run:
         if res.diff:
-            print(f"teammode update [dry-run] — 동기화하면 바뀔 파일({paths}):")
+            print(f"tm-mode update [dry-run] — 동기화하면 바뀔 파일({paths}):")
             print(res.diff)
             print("  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)")
         else:
-            print("teammode update [dry-run] — 이미 최신입니다(변경 없음).")
+            print("tm-mode update [dry-run] — 이미 최신입니다(변경 없음).")
         return 0
 
     if not res.changed:
-        print("teammode update — 이미 최신입니다.")
+        print("tm-mode update — 이미 최신입니다.")
         return 0
 
     # 적용됨(staged) — 무엇이 바뀌었나 사람이 읽는 요약. push·commit 안 함.
-    print(f"teammode update — 엔진 파일 동기화 완료({paths}, staged). 바뀐 파일:")
+    print(f"tm-mode update — 엔진 파일 동기화 완료({paths}, staged). 바뀐 파일:")
     print(res.diff)
     print("  변경은 스테이지됨(자동 커밋·push 안 함). 검토 후 직접 커밋하세요:\n"
           "  git commit -m 'chore: sync teammode engine from upstream'")
@@ -492,7 +492,7 @@ def _install_upstream_url() -> str:
         import install as _install  # noqa: PLC0415 — 안내용 lazy import
         return _install.UPSTREAM_URL
     except Exception:  # noqa: BLE001
-        return "https://github.com/T-Gates/teammode.git"
+        return "https://github.com/T-Gates/tm-mode.git"
 
 
 def _uninstall_layer(adapter, layer: str) -> None:
@@ -600,7 +600,7 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
     # memory/banner.txt 를 Read 해 farewell 앞에 코드펜스로 출력한다.
     # 끝맺음 말(farewell): config 에 있으면 그걸, 없으면 "상태 저장됨" 폴백(§3.1).
     farewell = _read_team_field(team_root, "farewell")
-    print(farewell if farewell else "teammode off — 상태 저장됨")
+    print(farewell if farewell else "tm-mode off — 상태 저장됨")
     return 0
 
 

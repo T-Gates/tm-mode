@@ -40,7 +40,7 @@ def test_install_sh_help_delegates_to_cli():
     """--help → cli.py argparse usage 가 떠야 위임 파이프라인이 동작한 것."""
     r = _run(["--help"])
     assert r.returncode == 0, r.stderr
-    assert "teammode" in r.stdout
+    assert "tm-mode" in r.stdout
     assert "{init,join}" in r.stdout
 
 

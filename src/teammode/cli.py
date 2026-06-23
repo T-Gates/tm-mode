@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""teammode — 팀모드 부트스트랩 런처 (pip·curl 진입 스킨; 스펙 "코어 ≠ 스킨").
+"""tm-mode — 팀모드 부트스트랩 런처 (pip·curl 진입 스킨; 스펙 "코어 ≠ 스킨").
 
 진입 2종(등가 — 둘 다 이 cli.py 로 위임):
-  pip:  pip install "git+https://github.com/T-Gates/teammode" && teammode join <url>
-  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/teammode/main/install.sh | sh -s -- join <url>
+  pip:  pip install "git+https://github.com/T-Gates/tm-mode" && tm-mode join <url>
+  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/main/install.sh | sh -s -- join <url>
 
-  teammode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
-  teammode join <clone-url>    합류: 팀 레포 clone → 셋업
+  tm-mode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
+  tm-mode join <clone-url>    합류: 팀 레포 clone → 셋업
 
 설계(얇은 런처): 스킬·훅·엔진을 패키지에 번들하지 않는다. clone 된 팀 레포의
 `infra/install.py` 를 **subprocess 로 실행**(import 아님) → 모든 `__file__` 기반
@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-TEMPLATE_REPO = "T-Gates/teammode"
+TEMPLATE_REPO = "T-Gates/tm-mode"
 
 
 def _err(msg: str) -> None:
@@ -164,7 +164,7 @@ def _print_invite(url: str) -> None:
     print()
     print("팀원에게 아래 명령 중 하나를 공유하세요 (pip·curl 어느 쪽이든 동일합니다):")
     print()
-    print(f'  pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
+    print(f'  pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && tm-mode join {url}')
     print(f'  curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
           f'/main/install.sh | sh -s -- join {url}')
 
@@ -189,7 +189,7 @@ def cmd_init(args) -> int:
         return 2
     if not _have("gh"):
         _err("새 팀 레포 생성에는 GitHub CLI(gh)가 필요합니다 — https://cli.github.com "
-             "(이미 만든 레포면 `teammode join <url>`).")
+             "(이미 만든 레포면 `tm-mode join <url>`).")
         return 2
     if subprocess.run(["gh", "auth", "status"], capture_output=True).returncode != 0:
         _err("GitHub 인증이 필요합니다 — `gh auth login` 후 다시 실행하세요.")
@@ -202,7 +202,7 @@ def cmd_init(args) -> int:
     else:
         owner = _pick_owner()
         if not owner:
-            _err("org/계정을 정할 수 없습니다 — `teammode init OWNER/REPO` 형태로 지정하세요.")
+            _err("org/계정을 정할 수 없습니다 — `tm-mode init OWNER/REPO` 형태로 지정하세요.")
             return 2
         # 팀명을 레포명보다 **먼저** 묻는다 — 배너·상태줄 배지·인사말·레포명기본의 단일 소스.
         # team.config.json 은 팀 레포에 커밋(공유)되므로 창립자가 여기서 한 번 정하면
@@ -232,7 +232,7 @@ def cmd_init(args) -> int:
     # 때까지 폴링 대기한 뒤 join 으로 넘어간다.
     if not _wait_template_ready(full):
         _err(f"template 반영이 지연됩니다(레포는 생성됨). 잠시 후 "
-             f"`teammode join {url}` 로 셋업을 마치세요.")
+             f"`tm-mode join {url}` 로 셋업을 마치세요.")
         return 1
 
     # ② 팀원 초대 안내 (도입자 = 생성자).
@@ -495,7 +495,7 @@ def cmd_join(args, *, created: bool = False) -> int:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="teammode", description="팀모드 부트스트랩 런처")
+    p = argparse.ArgumentParser(prog="tm-mode", description="팀모드 부트스트랩 런처")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("init", help="새 팀 레포 생성(template) → 곧바로 join(clone+셋업)")

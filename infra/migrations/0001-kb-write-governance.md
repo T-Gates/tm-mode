@@ -5,7 +5,7 @@ PR/커밋: (작업 E 첫 릴리스)
 
 ## 요약
 
-"팀 메모리는 동사로만 쓴다(teammode 차별점)"를 PreToolUse 훅으로 강제한다.
+"팀 메모리는 동사로만 쓴다(tm-mode 차별점)"를 PreToolUse 훅으로 강제한다.
 
 에이전트가 `Edit`/`Write` 도구로 `memory/` 하위를 **직접 편집**하려 하면 차단 →
 반드시 `python infra/teammode.py memory write …` 동사를 경유해야 한다.
@@ -37,7 +37,7 @@ PreToolUse 훅 스크립트.
 }
 ```
 
-- `mode: "on"` — teammode 활성 시에만 동기화
+- `mode: "on"` — tm-mode 활성 시에만 동기화
 - `enforcement: "block"` — claude 강제, codex 폴백(events.json PreToolUse=null)
 
 ### 변경: `infra/skills/core/tm-manage-memory/SKILL.md`

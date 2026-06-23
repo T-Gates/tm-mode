@@ -156,9 +156,9 @@ def test_detect_member_name_from_git_user(tmp_path):
 def test_detect_team_name_from_remote():
     # git remote URL → repo 명 추출 (도입자 team.name 기본값)
     assert il.repo_name_from_remote(
-        "git@github.com:T-Gates/teammode.git") == "teammode"
+        "git@github.com:T-Gates/tm-mode.git") == "tm-mode"
     assert il.repo_name_from_remote(
-        "https://github.com/T-Gates/teammode") == "teammode"
+        "https://github.com/T-Gates/tm-mode") == "tm-mode"
     assert il.repo_name_from_remote(None) is None
 
 
