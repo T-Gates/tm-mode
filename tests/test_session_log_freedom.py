@@ -79,7 +79,7 @@ class TestIsOwnSessionLog:
         assert fn(fp, str(tmp_path)) is False
 
     def test_knowledge_path_returns_false(self, monkeypatch, tmp_path):
-        """지식 경로(team/decisions/x.md) → False."""
+        """메모리 경로(team/decisions/x.md) → False."""
         _make_sessions_dir(tmp_path, "jane-doe")
         fn = self._fn(monkeypatch, "jane-doe", tmp_path)
         fp = str(tmp_path / "memory" / "team" / "decisions" / "x.md")

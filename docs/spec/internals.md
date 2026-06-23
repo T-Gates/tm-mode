@@ -144,7 +144,7 @@ infra/
 
 **구조 원칙과 현 reference 예외:**
 1. 설계 목표는 공통 스크립트와 스킬에 에이전트 고유 표기를 두지 않는 것이다. 단 현 reference 공통 훅 일부는 예외적으로 Claude 출력 스키마(`hookSpecificOutput`/`permissionDecision`)와 Codex의 `PreToolUse` 한계를 직접 알고 있다(`session-start.py`, `session-log-remind.py`, `confirm-action.py`; 부록 A.3). `session-log-remind.py`는 2026-06-22 재설계에서 `hookSpecificOutput.additionalContext`+`systemMessage` **JSON stdout**(session-start 와 동형)으로 전환했다 — normalize가 그대로 재방출해 Claude가 수신한다.
-2. 에이전트별 settings 렌더링·manifest 번역·normalize 입력 변환 지식은 `agents/<name>/` 아래에 둔다. 위 예외 때문에 "모든 에이전트 고유 지식이 전부 `agents/<name>/` 아래에만 있다"는 강한 명제는 현 reference에는 맞지 않는다.
+2. 에이전트별 settings 렌더링·manifest 번역·normalize 입력 변환 메모리는 `agents/<name>/` 아래에 둔다. 위 예외 때문에 "모든 에이전트 고유 메모리가 전부 `agents/<name>/` 아래에만 있다"는 강한 명제는 현 reference에는 맞지 않는다.
 3. 설치 시점 배선은 어댑터 CLI에 위임한다. `install.py`/`install_lib.py`는 에이전트별 settings 경로·격리 경로·동사 호출 순서만 알고, manifest 번역·훅 문자열 생성·MCP/스킬 설치 세부는 어댑터가 한다.
 4. 런타임 공통 스크립트는 정규 스키마만 읽는다. 에이전트 원어 JSON은 반드시 `normalize.py`에서 변환한 뒤 공통 스크립트 stdin으로 전달한다.
 
@@ -1119,7 +1119,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 
 ### A.3 잔여 갭 (코드가 스펙 목표에 아직 미달 — 비규범)
 
-- **공통 훅의 에이전트 지식 누출**: 설계 목표는 에이전트 고유 지식을 `agents/<name>/` 아래로 격리하는 것이나, 현 `session-start.py`/`confirm-action.py`는 Claude 출력 스키마와 Codex 한계를 직접 알고 있다. `session-log-remind.py`는 2026-06-21 재설계에서 평문 stdout 출력으로 전환해 이 갭을 해소했다.
+- **공통 훅의 에이전트 메모리 누출**: 설계 목표는 에이전트 고유 메모리를 `agents/<name>/` 아래로 격리하는 것이나, 현 `session-start.py`/`confirm-action.py`는 Claude 출력 스키마와 Codex 한계를 직접 알고 있다. `session-log-remind.py`는 2026-06-21 재설계에서 평문 stdout 출력으로 전환해 이 갭을 해소했다.
 - ~~**bootstrap verify의 Claude 고정**: wire는 감지 에이전트별 어댑터를 호출하지만 verify는 감지 결과와 무관하게 `teammode.py on`을 실행하고, 엔진 `on`은 항상 Claude 어댑터만 로드한다.~~ → **닫힘**: verify가 `on` 호출을 제거하고 `context`만 쓰게 되어(`auto_update_on_start` 자동 커밋 부작용 회피, 이종 적대검수 B1) 어댑터 로드 자체가 사라졌다.
 - **Codex 디스패치 게이트 불일치**: Codex 어댑터 설정 옵션은 `--config`지만 `install.py --<agent>` 디스패처 게이트는 `--settings`/`--install`만 인정한다. `--codex --config <path> sync`는 어댑터 도달 전 exit 2다.
 - **주입 스케일 분기 미구현(§1.6)**: reference `session-start.py`는 항상 summary 라인 기반 주입, ~4인 전문/5인+ 분기 없음. 0.2 자동검사 대상 아님이라 비준수는 아니나 스펙 목표 대비 갭.

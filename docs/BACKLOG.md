@@ -34,15 +34,15 @@
 
 ---
 
-## 06 — 지식 업로드 (노션 → 팀 knowledge) 설계
+## 06 — 메모리 업로드 (노션 → 팀 memory) 설계
 
 > 상태: design (brainstorm 2026-06-16, Jane) / 다음: writing-plans
 > 의존: L2(notion provider·install-mcp·docs 슬롯), 엔진 동사 체계(§3), tm-onboard(§5)
-> spec_version 영향: 엔진 동사 `knowledge` 추가 = §3 동사 계약 변경 → **minor bump(0.2→0.3)**
+> spec_version 영향: 엔진 동사 `memory` 추가 = §3 동사 계약 변경 → **minor bump(0.2→0.3)**
 
 ### 1. 정체
 
-**"지식 업로드" = 연결된 노션 MCP의 페이지를 긁어 주제별로 분류해 팀 knowledge로 저장하는 기능.**
+**"메모리 업로드" = 연결된 노션 MCP의 페이지를 긁어 주제별로 분류해 팀 memory로 저장하는 기능.**
 콜드스타트(세션로그 0인 신규 팀)를 기존 노션 자료로 워밍업한다. tm-onboard에 통합되며, 온보딩이 한 진입점이다.
 
 ### 2. 핵심 결정 (brainstorm 확정)
@@ -50,34 +50,34 @@
 | 항목 | 결정 | 근거 |
 |------|------|------|
 | 결과물 | 팀 memory 시드(저장) | 일회 요약 아님 — 지속 가치 |
-| 저장 위치 | `memory/team/knowledge/<주제>.md` (신설 영역) | members/sessions로는 "팀 지식" 담을 곳 없음 |
-| scope | **팀 scope** — 도입자 1회 시드 → git 공유, 팀원은 pull로 수령(0회) | knowledge는 비밀 아니라 git 추적 → credentials가 못 한 팀당1회를 공짜로 |
+| 저장 위치 | `memory/team/memory/<주제>.md` (신설 영역) | members/sessions로는 "팀 메모리" 담을 곳 없음 |
+| scope | **팀 scope** — 도입자 1회 시드 → git 공유, 팀원은 pull로 수령(0회) | memory는 비밀 아니라 git 추적 → credentials가 못 한 팀당1회를 공짜로 |
 | 토큰 | **credentials 금고 안 씀** — 에이전트에 이미 연결된 notion MCP를 빌려 읽기만 | teammode 토큰 무접촉. 토큰은 MCP 연결 소관(각자) |
 | 분류 | AI가 주제별 분류(통째 덤프 X) | "분류는 시킬거" |
 | 수집 주체 | **페이지별 fan-out** — 오케스트레이터가 페이지마다 서브에이전트 디스패치(백그라운드 병렬), 오케스트레이터는 취합·정리만 | 노션 트리 양 많음 → 병렬·비차단. L2 빌드 오케스트레이션 패턴 재사용 |
-| 트리거 | tm-onboard 통합. 도입자+knowledge 비어있으면 제안. 나중 재실행으로 추가 | "온보딩 통합", "지식 업로드 기능으로 추가" |
+| 트리거 | tm-onboard 통합. 도입자+memory 비어있으면 제안. 나중 재실행으로 추가 | "온보딩 통합", "메모리 업로드 기능으로 추가" |
 | 범위 | 준 링크 + 관련 하위 "쭉" 긁기, 도입자에게 "이만큼" 확인 | "정보 쭉 긁어와서" |
 
 ### 3. 컴포넌트 (teammode 철칙: 엔진=기계, 스킬=판단)
 
-#### 3.1 엔진 동사 `knowledge` (기계적 — `log` 형제)
+#### 3.1 엔진 동사 `memory` (기계적 — `log` 형제)
 ```
-teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--source <노션URL/제목>]
+teammode.py memory --root <팀루트> --topic <주제> --text <내용> [--source <노션URL/제목>]
 ```
-- `memory/team/knowledge/<주제>.md` 생성/이어쓰기. 주제 파일명은 author 검증과 동형(경로 traversal·footgun 차단).
+- `memory/team/memory/<주제>.md` 생성/이어쓰기. 주제 파일명은 author 검증과 동형(경로 traversal·footgun 차단).
 - frontmatter: `topic`, `source`(출처 노션 링크/페이지), `updated`(작업일 06시컷). 출처 명시 = "외부유래" 표시.
-- `memory/team/knowledge/INDEX.md`(또는 기존 INDEX)에 주제 등재(기계적).
+- `memory/team/memory/INDEX.md`(또는 기존 INDEX)에 주제 등재(기계적).
 - **요약·분류 안 함**(§3 "엔진은 판단 안 함") — 받은 `--text`를 그대로 저장. 분류·요약은 스킬이 끝낸 결과.
 - 멱등: 같은 주제 재호출 = 이어쓰기/갱신(append vs replace는 §6 미결).
 
 #### 3.2 tm-onboard 확장 (오케스트레이터 — 페이지별 fan-out)
-- 온보딩 흐름: `L1셋업 → context(첫가치) → docs 슬롯(notion) 연결(tm-connect) → [신규] 지식 시드 제안`.
-- 도입자 + `knowledge/` 비어있음 → "연결된 노션에서 팀 지식 가져올까요?" → **오케스트레이션**:
+- 온보딩 흐름: `L1셋업 → context(첫가치) → docs 슬롯(notion) 연결(tm-connect) → [신규] 메모리 시드 제안`.
+- 도입자 + `memory/` 비어있음 → "연결된 노션에서 팀 메모리 가져올까요?" → **오케스트레이션**:
   1. **오케스트레이터(tm-onboard)**: notion MCP로 트리 구조/페이지 목록만 가볍게 파악(본문 X). 도입자에게 "페이지 N개 가져올게요" 확인.
   2. **페이지별 fan-out**: 페이지마다 서브에이전트 **백그라운드 병렬** 디스패치. 각 서브에이전트 = 자기 페이지 1개 본문 읽기 → 요약 + 주제 태깅 → 구조화 결과 반환(파일 직접 안 씀).
-  3. **오케스트레이터 취합·정리만**: 서브에이전트 결과들을 주제별로 묶어 → 주제마다 `knowledge` 동사 1회 호출(저장). 오케스트레이터는 노션 본문을 직접 안 읽음(서브에이전트가 함) — 정리·저장 지휘만.
+  3. **오케스트레이터 취합·정리만**: 서브에이전트 결과들을 주제별로 묶어 → 주제마다 `memory` 동사 1회 호출(저장). 오케스트레이터는 노션 본문을 직접 안 읽음(서브에이전트가 함) — 정리·저장 지휘만.
   4. 온보딩 메인 흐름은 안 막힘(백그라운드), 완료 시 "N개 주제 시드됨" 안내.
-- `knowledge/` 이미 있음(팀원·재온보딩) → 수집 skip + "팀 지식 N개 있음"(context가 표시).
+- `memory/` 이미 있음(팀원·재온보딩) → 수집 skip + "팀 메모리 N개 있음"(context가 표시).
 
 ### 4. 데이터 흐름
 
@@ -89,42 +89,42 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
           ├ 페이지2 → 서브에이전트B (백그라운드) ─┤ → 구조화 결과 반환
           └ 페이지N → 서브에이전트… (병렬)      ─┘
               └ 오케스트레이터 취합·정리(본문 직접 안 읽음)
-                  └ 주제마다 `teammode.py knowledge --topic X --text ... --source ...`
-                      └ memory/team/knowledge/X.md + INDEX 등재
+                  └ 주제마다 `teammode.py memory --topic X --text ... --source ...`
+                      └ memory/team/memory/X.md + INDEX 등재
                           └ git commit + push (도입자)
 팀원 온보딩
-  └ git pull → knowledge/ 자동 수령 → 수집 skip, context에 "팀 지식 N개" 표시
+  └ git pull → memory/ 자동 수령 → 수집 skip, context에 "팀 메모리 N개" 표시
 ```
 
-### 5. 온보딩 분기 (install.py role 판정 + knowledge 존재)
+### 5. 온보딩 분기 (install.py role 판정 + memory 존재)
 
 | 상황 | 동작 |
 |------|------|
-| 도입자 + knowledge 비어있음 | 노션 연결됐으면 "지식 시드?" 제안 → 서브에이전트 수집 |
-| 도입자 + 노션 미연결 | "노션 연결하면 지식 시드 가능" 안내, skip |
-| knowledge 이미 있음(팀원/재온보딩) | 수집 skip + "팀 지식 N개" 안내 |
-| 온보딩 후 "이 노션 지식 추가해" | 같은 수집 경로 재실행(서브에이전트) — 새 주제 추가/기존 갱신 |
+| 도입자 + memory 비어있음 | 노션 연결됐으면 "메모리 시드?" 제안 → 서브에이전트 수집 |
+| 도입자 + 노션 미연결 | "노션 연결하면 메모리 시드 가능" 안내, skip |
+| memory 이미 있음(팀원/재온보딩) | 수집 skip + "팀 메모리 N개" 안내 |
+| 온보딩 후 "이 노션 메모리 추가해" | 같은 수집 경로 재실행(서브에이전트) — 새 주제 추가/기존 갱신 |
 
 ### 6. 미결 (writing-plans 전 확정)
 
 - **같은 주제 재업로드**: append(누적) vs replace(덮어쓰기) vs 병합. → 멱등성·중복 방지 관점에서 결정.
 - **주제 분류 카테고리**: 고정 어휘(제품/로드맵/용어/결정/회의) vs AI 자유 주제명. 자유면 파일명 정규화 규칙.
 - **노션 범위 상한**: "쭉" 긁되 페이지 N개/깊이 상한(폭주 방지)? 도입자 확인 UX.
-- **INDEX**: 기존 `memory/INDEX.md` 재사용 vs `knowledge/INDEX.md` 별도. (자가유지 설계의 INDEX 거버넌스와 정합 필요 — INDEX 자동쓰기 merge churn 주의.)
-- **권한**: 팀원도 지식 업로드 가능(git 추적이라 누구나 add 가능)? 도입자 중심? 충돌은 git_ops ff-only.
-- **스킬 발견**: tm-onboard 통합이라 별도 스킬 발견 불요. 단 "지식 추가해" 재실행 트리거를 tm-onboard description에 넣을지.
+- **INDEX**: 기존 `memory/INDEX.md` 재사용 vs `memory/INDEX.md` 별도. (자가유지 설계의 INDEX 거버넌스와 정합 필요 — INDEX 자동쓰기 merge churn 주의.)
+- **권한**: 팀원도 메모리 업로드 가능(git 추적이라 누구나 add 가능)? 도입자 중심? 충돌은 git_ops ff-only.
+- **스킬 발견**: tm-onboard 통합이라 별도 스킬 발견 불요. 단 "메모리 추가해" 재실행 트리거를 tm-onboard description에 넣을지.
 
 ### 7. 테스트 전략
 
-- 엔진 `knowledge` 동사: 파일 생성·이어쓰기·INDEX 등재·frontmatter·경로 traversal 차단·멱등 (tmp 격리, log 동사 테스트 패턴).
-- conformance 골든: "지식 시드 → knowledge/ 파일 존재 → context에 표시" 시나리오 추가(06).
-- 온보딩 분기: 도입자/팀원/knowledge유무 (install golden 패턴, --settings 격리).
-- 서브에이전트 수집은 notion MCP 모킹(실 노션 무접촉) — 픽스처 페이지 → 분류 → knowledge 호출 검증.
+- 엔진 `memory` 동사: 파일 생성·이어쓰기·INDEX 등재·frontmatter·경로 traversal 차단·멱등 (tmp 격리, log 동사 테스트 패턴).
+- conformance 골든: "메모리 시드 → memory/ 파일 존재 → context에 표시" 시나리오 추가(06).
+- 온보딩 분기: 도입자/팀원/memory유무 (install golden 패턴, --settings 격리).
+- 서브에이전트 수집은 notion MCP 모킹(실 노션 무접촉) — 픽스처 페이지 → 분류 → memory 호출 검증.
 - 호스트 무접촉: 실 노션·실 memory 무접촉, tmp+monkeypatch.
 
 ### 8. 범위 밖 (이월)
 - 지속 자동 동기화(노션 변경 주기 반영) — 변경추적·충돌 복잡, v0.2+.
-- 노션 외 docs provider(구글독스 등) 지식 업로드 — provider팩 확장 시.
+- 노션 외 docs provider(구글독스 등) 메모리 업로드 — provider팩 확장 시.
 
 ---
 
@@ -149,10 +149,10 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
 
 915fa70 push 후 7-시나리오 병렬 검증 + 윈도우 실설치 도그푸딩에서 나온 견고성 결함. **P0 0**(핵심 안전 traversal·symlink·커밋오염·고아청소·실호스트오염·거버넌스 실발동 전부 정상). 아래는 입력검증/예외처리 P1 — 출시 막을 결함 아니라 묶음 hotfix.
 
-### knowledge 동사 입력 견고성 (수렴 P1)
+### memory 동사 입력 견고성 (수렴 P1)
 - **미처리 예외 → 트레이스백 + exit 1** (친화 메시지 X): 긴 파일명(255자↑ → `OSError`), 권한 문제(`chmod`된 INDEX → `PermissionError`). → write/delete를 try/except로 감싸 **exit 2 + 친화 메시지**로.
 - **유니코드 author/filename 통과**: `_validate_author`가 `isalnum()` 쓰는데 파이썬 `isalnum()`은 유니코드라 한글 author·filename이 통과(예: author "햄버거"). → **`isascii()` 강제** 추가(영문/숫자/제한기호만).
-- **content 제어문자 미필터 (P2)**: knowledge content에 제어문자 들어가도 그대로 저장. → 정규화 or 거부.
+- **content 제어문자 미필터 (P2)**: memory content에 제어문자 들어가도 그대로 저장. → 정규화 or 거부.
 
 ### 거버넌스(kb-write-guard) 경미 (P1)
 - **상대경로 fail-closed 여부 경미**: file_path가 상대경로일 때 containment 판정이 CWD 의존(경미 — 실제 훅 입력은 보통 절대경로). → 명시적 처리.
@@ -163,9 +163,9 @@ teammode.py knowledge --root <팀루트> --topic <주제> --text <내용> [--sou
 - **`install.py --help`가 `--root` 요구 → exit 2**: help는 root 없이 출력되게.
 - **PowerShell git stderr 빨강 래핑**: 윈도우 특유 비치명 — 문서에 주의 한 줄(선택).
 
-### knowledge 동시 write race (P2, 백로그 — dev-cycle 2차 검수서 codex 적발)
+### memory 동시 write race (P2, 백로그 — dev-cycle 2차 검수서 codex 적발)
 - atomic write 반영 후, 같은 topic 동시 write 중 한 writer 의 INDEX 실패 롤백이 다른 writer 가 방금 쓴 파일을 삭제/과거 내용으로 복원할 수 있음(race, fault injection 확인).
-- **접은 이유**: teammode knowledge 는 단일 CLI 순차 사용 모델 — 동시 same-topic write 비현실적. lock 도입은 P1 핫픽스 범위 과대. 실제 동시성 요구 생기면 topic/folder 단위 lock 또는 롤백 전 "내가 쓴 내용인지" 비교 후 unlink/restore.
+- **접은 이유**: teammode memory 는 단일 CLI 순차 사용 모델 — 동시 same-topic write 비현실적. lock 도입은 P1 핫픽스 범위 과대. 실제 동시성 요구 생기면 topic/folder 단위 lock 또는 롤백 전 "내가 쓴 내용인지" 비교 후 unlink/restore.
 
 > 출처: 2026-06-18 push 후 검증·윈도우 end-to-end 도그푸딩 (세션로그 jane-doe 2026-06-18). 핵심 안전은 전부 통과, 위는 견고성/UX 개선분.
 
@@ -195,11 +195,11 @@ teammode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
 
 ## 온보딩 발견성 + "왜+다음" 침묵 — teammode 전반 불친절 (2026-06-20 도그푸딩, Jane 핵심지적)
 "불친절"의 정체 = 자동화 부족이 아니라 **발견성·피드백 부재**:
-- **KB 발견성**: 지식(KB) 개념은 README §기둥②에 있으나 **tm-onboard에 소개 0** → 새 팀원은 KB 존재를 모르고, 첫 마주침이 kb-write-guard 차단("memory 직접편집 금지→knowledge write 경유")인데 "왜/KB가 뭔지"가 없음. 문서엔 있으나 필요한 순간엔 없음.
+- **KB 발견성**: 메모리(KB) 개념은 README §기둥②에 있으나 **tm-onboard에 소개 0** → 새 팀원은 KB 존재를 모르고, 첫 마주침이 kb-write-guard 차단("memory 직접편집 금지→memory write 경유")인데 "왜/KB가 뭔지"가 없음. 문서엔 있으나 필요한 순간엔 없음.
 - **침묵하는 실패(공통 뿌리)**: check-mcp `{"connected":false}`(왜인지 X)·훅 직접실행 무출력·personality 오탐(✅로 거짓보고)·흡수 막다른길. 전부 "왜+다음 액션"을 안 알려줌.
 - 구분: 토큰발급·핸들러 커밋확인 같은 **의도된 보안 마찰은 유지**(없애면 위험), 단 "왜 필요한지" 안내로 부드럽게.
 - 개선(P0급 UX):
-  ① tm-onboard에 "기둥② 지식(KB)" 한 단락 + tm-knowledge/tm-manage-knowledge 존재 안내 (L1·L2처럼 progressive 소개)
+  ① tm-onboard에 "기둥② 메모리(KB)" 한 단락 + tm-memory/tm-manage-memory 존재 안내 (L1·L2처럼 progressive 소개)
   ② kb-write-guard 차단 메시지에 KB 개념·이유 1줄
   ③ **실패/차단/빈슬롯 출력에 "왜 + 다음 액션" 원칙** 전반 적용 (check-mcp가 "연결 없음, 흡수하려면 X"까지)
   ④ 상태 보고 정직성 (personality 등 오탐 제거 — 위 결정적 판정 항목과 연결)

@@ -100,7 +100,7 @@ def test_index_atomic_new_file_index_not_created_on_failure(tmp_path):
     with mock.patch("os.replace", _patched_replace):
         rc, out, err = _run_main(
             tmp_path,
-            "knowledge", "write",
+            "memory", "write",
             "--folder", "team",
             "--filename", "atomic-new.md",
             "--content", "INDEX atomic 테스트.",
@@ -162,7 +162,7 @@ def test_index_atomic_existing_index_preserved_on_failure(tmp_path):
     with mock.patch("os.replace", _patched_replace):
         rc, out, err = _run_main(
             tmp_path,
-            "knowledge", "write",
+            "memory", "write",
             "--folder", "team",
             "--filename", "new-entry.md",
             "--content", "신규 항목 내용.",
@@ -234,7 +234,7 @@ def test_temp_file_no_leak_on_write_failure(tmp_path):
     with mock.patch("tempfile.NamedTemporaryFile", _FailingNTF):
         rc, out, err = _run_main(
             tmp_path,
-            "knowledge", "write",
+            "memory", "write",
             "--folder", "team",
             "--filename", "temp-leak-test.md",
             "--content", "temp 누수 테스트.",
@@ -274,7 +274,7 @@ def test_temp_file_no_leak_on_replace_failure(tmp_path):
     with mock.patch("os.replace", _patched_replace):
         rc, out, err = _run_main(
             tmp_path,
-            "knowledge", "write",
+            "memory", "write",
             "--folder", "team",
             "--filename", "replace-fail-test.md",
             "--content", "replace 실패 테스트.",

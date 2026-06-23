@@ -7,10 +7,10 @@ teammode SPEC v0.2 — 스킬 계층(base/core) + acme 이식 로드맵 + 온보
 | 계층 | 설치·활성 시점 | 스킬 |
 |---|---|---|
 | **base** | 셋업 시 항상(install) | `tm-onboard` · `tm`(on/off 토글) |
-| **core** | 팀모드 `on` 시 활성 | `tm-connect` · `tm-context` · `tm-customize` · `tm-knowledge` · `tm-manage-knowledge` |
+| **core** | 팀모드 `on` 시 활성 | `tm-connect` · `tm-context` · `tm-customize` · `tm-memory` · `tm-manage-memory` |
 
 - **base** = 팀모드를 켜고·끄고·셋업하는 최소 스킬. 항상 설치된다.
-- **core** = 팀모드가 켜졌을 때만 활성(맥락·지식 운영). `off` 시 비활성.
+- **core** = 팀모드가 켜졌을 때만 활성(맥락·메모리 운영). `off` 시 비활성.
 - **util**(선택 설치) 계층은 현재 비어 있음. `dev-cycle` 등은 보류 — 범용 개발 메타라 teammode 코어(맥락 공유·서비스 연결) 정체성과 결이 다르다.
 
 ## 이식 로드맵 (acme-toolkit → teammode)
@@ -22,12 +22,12 @@ acme-toolkit의 검증된 스킬을 범용 teammode로 이식한다. acme 특정
 | 스킬 | 출처(acme) | L1 코어 (즉시 동작) | L2 graceful (연결 시 추가) | 선행 |
 |---|---|---|---|---|
 | **tm** (on/off) | `acme` | 엔진 `on`/`off` 동사 래퍼 + 맥락 주입 + 세션로그(`log`/`commit`) | — | 경량 sync |
-| **tm-load-knowledge** | `load-knowledge` | `memory/` INDEX 계층 로드(읽기 전용) | — | INDEX 구조 정책 |
+| **tm-memory** | `load-knowledge` | `memory/` INDEX 계층 로드(읽기 전용) | — | INDEX 구조 정책 |
 | **tm-context** | `get-context` | 세션로그·decisions 요약 | Linear In Progress · Calendar | decisions 매니페스트 |
-| **tm-manage-knowledge** | `manage-knowledge` | 파일 CRUD·INDEX 갱신·`commit` | Slack 알림 | INDEX 자동갱신(편집일) |
+| **tm-manage-memory** | `manage-knowledge` | 파일 CRUD·INDEX 갱신·`commit` | Slack 알림 | INDEX 자동갱신(편집일) |
 
 - **L1 코어로 즉시 동작**하고, L2 서비스(Linear/Calendar/Slack)는 연결됐을 때만 graceful 추가(미연결이면 조용히 skip).
-- 이식 순서: `tm-load-knowledge`(제일 쉬움) → `tm` → `tm-context` → `tm-manage-knowledge`.
+- 이식 순서: `tm-memory`(제일 쉬움) → `tm` → `tm-context` → `tm-manage-memory`.
 
 ### L2 후속 (provider 연결 후 — 자리만)
 

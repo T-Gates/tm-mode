@@ -1,4 +1,4 @@
-"""P1 핫픽스 — knowledge 동사 입력 견고성 테스트 (RED→GREEN TDD).
+"""P1 핫픽스 — memory 동사 입력 견고성 테스트 (RED→GREEN TDD).
 
 항목:
   1. 파일 I/O 미처리 예외 → exit 2 + 친화 메시지 (OSError/PermissionError)
@@ -71,7 +71,7 @@ def _init_git(root: Path) -> None:
 
 def test_knowledge_write_rejects_korean_author(tmp_path):
     """한글 author(예: '햄버거') → 거부(exit 2). isascii() 강제."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "x.md",
              "--content", "테스트.",
@@ -84,7 +84,7 @@ def test_knowledge_write_rejects_korean_author(tmp_path):
 
 def test_knowledge_write_rejects_unicode_author(tmp_path):
     """비ASCII author(예: 'über') → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "x.md",
              "--content", "테스트.",
@@ -97,7 +97,7 @@ def test_knowledge_write_rejects_unicode_author(tmp_path):
 
 def test_knowledge_write_rejects_korean_filename(tmp_path):
     """한글 filename(topic, 예: '한글주제.md') → 거부(exit 2). isascii() 강제."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "한글주제.md",
              "--content", "테스트.",
@@ -122,7 +122,7 @@ def test_log_rejects_korean_author(tmp_path):
 def test_ascii_author_still_accepted(tmp_path):
     """정상 ASCII author('jane-doe', 'alice-dev', 'bob123') 는 여전히 통과."""
     for author in ("jane-doe", "alice-dev", "bob123"):
-        r = _run(tmp_path, "knowledge", "write",
+        r = _run(tmp_path, "memory", "write",
                  "--folder", "team",
                  "--filename", f"{author}-test.md",
                  "--content", "정상 author 테스트.",
@@ -143,7 +143,7 @@ def test_knowledge_write_long_filename_exit2(tmp_path):
     # 255바이트 초과 파일명 (Linux ext4 등의 한계: 255바이트)
     # 260 + ".md" = 264자 → OSError 발생
     long_name = "a" * 260 + ".md"
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", long_name,
              "--content", "테스트.",
@@ -177,7 +177,7 @@ def test_knowledge_write_permission_error_exit2(tmp_path):
     _init_git(root)
 
     # 정상 write 로 INDEX.md 생성
-    _run(root, "knowledge", "write",
+    _run(root, "memory", "write",
          "--folder", "team",
          "--filename", "seed.md",
          "--content", "시드.",
@@ -197,7 +197,7 @@ def test_knowledge_write_permission_error_exit2(tmp_path):
         return original_replace(src, dst)
 
     mod = _runpy.run_path(str(ENGINE), run_name="__p1_perm_test__")
-    args = ["knowledge", "write",
+    args = ["memory", "write",
             "--folder", "team",
             "--filename", "another.md",
             "--content", "또 다른 내용.",
@@ -228,13 +228,13 @@ def test_knowledge_write_permission_error_exit2(tmp_path):
 
 @pytest.mark.skipif(os.getuid() == 0, reason="root 는 chmod 무시 → 테스트 불가")
 def test_knowledge_delete_permission_error_exit2(tmp_path):
-    """지식 파일 권한 제거(PermissionError) → delete 시 exit 2 + 친화 메시지."""
+    """메모리 파일 권한 제거(PermissionError) → delete 시 exit 2 + 친화 메시지."""
     root = tmp_path / "root"
     root.mkdir()
     _init_git(root)
 
     # 파일 생성
-    _run(root, "knowledge", "write",
+    _run(root, "memory", "write",
          "--folder", "team",
          "--filename", "perm-test.md",
          "--content", "삭제 권한 테스트.",
@@ -249,7 +249,7 @@ def test_knowledge_delete_permission_error_exit2(tmp_path):
     parent_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # r-x: 쓰기 불가
 
     try:
-        r = _run(root, "knowledge", "delete",
+        r = _run(root, "memory", "delete",
                  "--path", "team/perm-test.md",
                  "--author", "jane-doe")
     finally:
@@ -277,7 +277,7 @@ def test_knowledge_write_rejects_null_byte_in_content(tmp_path):
     """
     rc, out, err = _run_main(
         tmp_path,
-        "knowledge", "write",
+        "memory", "write",
         "--folder", "team",
         "--filename", "ctrl-test.md",
         "--content", "정상 텍스트\x00악성 삽입",
@@ -291,7 +291,7 @@ def test_knowledge_write_rejects_null_byte_in_content(tmp_path):
 
 def test_knowledge_write_rejects_escape_in_content(tmp_path):
     """content 에 ESC(\x1b) → 거부(exit 2). 터미널 제어 시퀀스 삽입 차단."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "esc-test.md",
              "--content", "정상 텍스트\x1b[31mred",
@@ -304,7 +304,7 @@ def test_knowledge_write_rejects_escape_in_content(tmp_path):
 
 def test_knowledge_write_rejects_bell_in_content(tmp_path):
     """content 에 BEL(\x07) → 거부(exit 2)."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "bell-test.md",
              "--content", "정상\x07벨소리",
@@ -317,7 +317,7 @@ def test_knowledge_write_rejects_bell_in_content(tmp_path):
 
 def test_knowledge_write_allows_newline_and_tab_in_content(tmp_path):
     """content 에 개행(\n)·탭(\t)은 허용 — 문서 포맷에 필수."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "newline-tab-test.md",
              "--content", "첫 줄\n둘째 줄\n\t들여쓰기",
@@ -330,10 +330,10 @@ def test_knowledge_write_allows_newline_and_tab_in_content(tmp_path):
 
 def test_knowledge_write_allows_korean_in_content(tmp_path):
     """content 에 한글·유니코드는 허용 (제어문자만 거부)."""
-    r = _run(tmp_path, "knowledge", "write",
+    r = _run(tmp_path, "memory", "write",
              "--folder", "team",
              "--filename", "korean-content.md",
-             "--content", "한글 내용이 있는 지식. 🔥 이모지도 포함.",
+             "--content", "한글 내용이 있는 메모리. 🔥 이모지도 포함.",
              "--author", "jane-doe",
              "--weight", "📎")
     assert r.returncode == 0, (
