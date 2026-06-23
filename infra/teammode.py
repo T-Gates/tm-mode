@@ -688,7 +688,7 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
             f.write(_frontmatter(author, date_str, summary))
             f.write(entry)
 
-    print(f"teammode log — {author}/{date_str}.md 기록됨")
+    print(f"tm-mode log — {author}/{date_str}.md 기록됨")
     return 0
 
 
@@ -1584,10 +1584,10 @@ def cmd_pull(team_root: Path) -> int:
     """
     result = _git_ops.do_pull(str(team_root))
     if result.ok:
-        print(f"teammode pull — 최신화됨: {result.detail or 'up-to-date'}")
+        print(f"tm-mode pull — 최신화됨: {result.detail or 'up-to-date'}")
         return 0
     # 비치명: 작업을 막지 않되, 무엇이 안 됐는지 알린다(스킬/사람이 판단).
-    print(f"teammode pull — 건너뜀(비치명): {result.detail}", file=sys.stderr)
+    print(f"tm-mode pull — 건너뜀(비치명): {result.detail}", file=sys.stderr)
     return 1
 
 
@@ -1605,10 +1605,10 @@ def cmd_commit(team_root: Path, message: str, push: bool,
     if result.ok:
         suffix = " (pushed)" if result.pushed else (
             " (push 실패·커밋은 보존)" if push else "")
-        print(f"teammode commit — 커밋됨{suffix}: {result.detail}")
+        print(f"tm-mode commit — 커밋됨{suffix}: {result.detail}")
         return 0
     # 변경 없음/git 아님 등 — 비치명. 작업을 막지 않되 사유를 알린다.
-    print(f"teammode commit — 건너뜀(비치명): {result.detail}", file=sys.stderr)
+    print(f"tm-mode commit — 건너뜀(비치명): {result.detail}", file=sys.stderr)
     return 1
 
 
@@ -1743,7 +1743,7 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
         }, ensure_ascii=False))
         return 0
 
-    lines = ["=== teammode context ===", f"state: {state}", "", "--- INDEX ---"]
+    lines = ["=== tm-mode context ===", f"state: {state}", "", "--- INDEX ---"]
     lines.append(index_text.rstrip() if index_text else "(INDEX.md 없음)")
     lines.append("")
     lines.append("--- members (멤버별 최근 작업일 1파일 summary) ---")

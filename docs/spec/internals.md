@@ -606,7 +606,7 @@ python infra/teammode.py log --root <팀루트> --author <이름> --text <내용
   - 파일이 있으면 frontmatter를 읽거나 검증하거나 고치지 않는다.
   - UTF-8 append 모드로 entry만 붙인다.
   - 같은 작업일 하루 1파일 불변식은 파일명으로만 적용된다. 이미 잘못된 frontmatter가 있어도 엔진은 수정하지 않는다.
-- 성공 출력: `teammode log — <author>/<date_str>.md 기록됨`을 stdout에 쓰고 exit 0.
+- 성공 출력: `tm-mode log — <author>/<date_str>.md 기록됨`을 stdout에 쓰고 exit 0.
 
 ### 3.3 context (맥락 수집 — `--root` 필수, `--json` 선택)
 
@@ -649,7 +649,7 @@ python infra/teammode.py context --root <팀루트> [--json]
   - config 부재·파싱 실패·타입 불일치·예외는 모두 빈 dict로 흡수한다.
   - 수집된 각 member dict에 `role = roles.get(author)`를 추가한다. 없으면 Python `None`, JSON에서는 `null`.
 - 텍스트 출력:
-  - 첫 줄은 `=== teammode context ===`.
+  - 첫 줄은 `=== tm-mode context ===`.
   - INDEX 섹션은 `--- INDEX ---` 뒤에 `index_text.rstrip()`를 넣는다. 빈 문자열이면 `(INDEX.md 없음)`.
   - 멤버 섹션 제목은 `--- members (멤버별 최근 작업일 1파일 summary) ---`.
   - 멤버가 없으면 `(세션로그 없음 — summary 수집 대상 0)`.
@@ -688,8 +688,8 @@ python infra/teammode.py pull --root <팀루트>
 - 실행 예외면 detail은 `exec error: <exc>`.
 - rc 0이면 `ok=True`, detail은 stdout strip 앞 200자다. stdout이 비면 engine 출력에서 `up-to-date`로 대체한다.
 - rc non-zero면 `ok=False`, detail은 stderr 또는 stdout strip 앞 200자다.
-- engine 성공 출력: `teammode pull — 최신화됨: <detail-or-up-to-date>` stdout, exit 0.
-- engine 실패 출력: `teammode pull — 건너뜀(비치명): <detail>` stderr, exit 1.
+- engine 성공 출력: `tm-mode pull — 최신화됨: <detail-or-up-to-date>` stdout, exit 0.
+- engine 실패 출력: `tm-mode pull — 건너뜀(비치명): <detail>` stderr, exit 1.
 - `--ff-only`라서 non-ff merge나 conflict를 자동 생성하지 않는다.
 
 #### 3.4.2 commit
@@ -724,11 +724,11 @@ python infra/teammode.py commit --root <팀루트> --message <메시지> [--push
   - push 성공이면 `ok=True, committed=True, pushed=True, detail="committed and pushed"`.
   - push timeout·실행 예외·rc non-zero는 **로컬 커밋을 되돌리지 않는다**. 결과는 `ok=True, committed=True, pushed=False`, detail은 `committed; push timeout` / `committed; push exec error: ...` / `committed; push failed: ...`.
 - engine 성공 출력:
-  - push 성공: `teammode commit — 커밋됨 (pushed): committed and pushed`
-  - push 요청했으나 push 실패: `teammode commit — 커밋됨 (push 실패·커밋은 보존): <detail>`
-  - push 미요청: `teammode commit — 커밋됨: <detail>`
+  - push 성공: `tm-mode commit — 커밋됨 (pushed): committed and pushed`
+  - push 요청했으나 push 실패: `tm-mode commit — 커밋됨 (push 실패·커밋은 보존): <detail>`
+  - push 미요청: `tm-mode commit — 커밋됨: <detail>`
   - 모두 exit 0이다. push 실패는 exit 1이 아니다.
-- engine 실패 출력: 변경 없음·git 아님·add/commit 실패 등은 `teammode commit — 건너뜀(비치명): <detail>` stderr, exit 1.
+- engine 실패 출력: 변경 없음·git 아님·add/commit 실패 등은 `tm-mode commit — 건너뜀(비치명): <detail>` stderr, exit 1.
 
 #### 3.4.3 update
 

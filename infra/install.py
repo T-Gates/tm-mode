@@ -420,7 +420,7 @@ def _git(args, cwd) -> str | None:
 
 ENGINE = INFRA / "teammode.py"
 
-# 템플릿(upstream) 추적 — teammode 원본 레포. `tm-mode update`(UPSTREAM_REMOTE="upstream")
+# 템플릿(upstream) 추적 — tm-mode 원본 레포. `tm-mode update`(UPSTREAM_REMOTE="upstream")
 # 가 이 remote 를 fetch 한 뒤 엔진 경로(infra/)만 파일 동기화(git checkout)로 덮어쓴다.
 # merge 가 아니다 — template 로 만든 레포는 teammode 와 unrelated histories(공통 조상 0)라
 # merge 가 막히기 때문. origin=자기 레포(출처는 GitHub API 에만)이므로 셋업 때 upstream 을 박아준다.
@@ -781,7 +781,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     # (state=off 가 정상). ※ 실제 맥락 *주입*은 다음 세션 SessionStart 훅이 한다(여기 아님).
     res_ctx = _engine_capture(["context", "--root", str(team_root), "--json"])
     if res_ctx.returncode != 0:
-        err(f"[error] verify: teammode context 실패(rc={res_ctx.returncode}).")
+        err(f"[error] verify: tm-mode context 실패(rc={res_ctx.returncode}).")
         return 3
     try:
         ctx = json.loads(res_ctx.stdout)
@@ -825,7 +825,7 @@ teammode 결정적 부트스트랩 + 어댑터 디스패처.
   --yes                실 ~/.claude/settings.json 배선 허용 (실설치)
   --settings PATH      격리 settings 경로 (테스트·CI)
   --dry-run            변경 없이 계획만 출력
-  --update             infra/ 파일을 upstream(teammode)으로 동기화
+  --update             infra/ 파일을 upstream(tm-mode)으로 동기화
   --register-obsidian  memory/ 를 Obsidian 볼트로 등록 (opt-in)
   --uninstall          install 이 호스트에 더한 것을 역순 제거
 
