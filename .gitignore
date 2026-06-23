@@ -35,3 +35,8 @@ docs/archive/
 
 # 에이전트 작업 산물(worktree·리뷰 출력) — 제품 레포에 넣지 않음
 .claude/
+
+# obsidian 볼트 설정 — 각 팀원 install 이 memory/.obsidian/(core-plugins 등)을 생성하고
+# obsidian 앱이 workspace.json(개인 레이아웃·열린 파일)을 갱신한다. 팀원·세션마다 churn 이고
+# 각자 생성하므로 추적 금지(2026-06-23 도그푸딩 적발 — 안 막으면 git add memory/ 로 새어듦).
+.obsidian/
