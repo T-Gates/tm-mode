@@ -1,6 +1,6 @@
 ---
 name: tm
-description: Use when the user wants to enable or disable team mode. Triggers on "팀 모드 켜", "tm on", "tm off", "팀 모드 꺼", "teammode on", "teammode off".
+description: Use when the user wants to enable or disable team mode. Triggers on "팀 모드 켜", "tm on", "tm off", "팀 모드 꺼", "tm-mode on", "tm-mode off".
 ---
 
 # tm — 팀 모드 토글
@@ -12,8 +12,8 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 
 ## When to Use
 
-- "팀 모드 켜", "tm on", "teammode on"
-- "팀 모드 꺼", "tm off", "teammode off"
+- "팀 모드 켜", "tm on", "tm-mode on"
+- "팀 모드 꺼", "tm off", "tm-mode off"
 
 ## 안 하는 것
 
@@ -35,8 +35,8 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 2. **팀모드 켜기**: `python infra/teammode.py on --root . --install`
    - 엔진이 greeting 출력(team.config.json에 있으면), adapter sync(mode=on),
      `.teammode-active` 마커 생성, upstream fetch + NOTICE 비교 알림까지 한다.
-   - NOTICE 알림: upstream `NOTICE.md`가 로컬과 다르면 `[공지] teammode 최신 업데이트: …
-     — 받으려면 \`teammode update\`` 를 출력. 같으면 조용히 생략(매번 도배 방지).
+   - NOTICE 알림: upstream `NOTICE.md`가 로컬과 다르면 `[공지] tm-mode 최신 업데이트: …
+     — 받으려면 \`tm-mode update\`` 를 출력. 같으면 조용히 생략(매번 도배 방지).
    - ⚠️ **배너는 엔진 stdout 에 없다.** 에이전트가 아래 5단계에서 직접 `memory/banner.txt`를 Read 해 코드펜스로 출력한다.
 
 3. **맥락 주입**: `python infra/teammode.py context --root . --json`

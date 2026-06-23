@@ -1,10 +1,10 @@
 # 설치 · 부트스트랩
 
-teammode SPEC v0.2 — 설치·부트스트랩
+tm-mode SPEC v0.2 — 설치·부트스트랩
 
 ## §4. 설치 · 부트스트랩 (install.py)
 
-> **진입 계약**: 사람은 에이전트에 "셋업해줘"라고 치지 않는다. 설치는 **CLI(`src/teammode/cli.py`)가 wizard로 끝낸다** — `teammode init`(새 팀: 레포 생성 → 곧바로 join) 또는 `teammode join <url>`(합류: clone+셋업). CLI가 멤버명·org·팀명·역할·에이전트·Obsidian을 대화로 묻고, clone 완료 후 팀 레포의 `infra/install.py`를 subprocess로 위임 호출한다. 설치가 끝나면 CLI가 *"Claude/Codex를 열고 'tm-onboard' 입력 → 검증·브리핑 자동"*이라고 안내한다(`cli.py _done()`).
+> **진입 계약**: 사람은 에이전트에 "셋업해줘"라고 치지 않는다. 설치는 **CLI(`src/teammode/cli.py`)가 wizard로 끝낸다** — `tm-mode init`(새 팀: 레포 생성 → 곧바로 join) 또는 `tm-mode join <url>`(합류: clone+셋업). CLI가 멤버명·org·팀명·역할·에이전트·Obsidian을 대화로 묻고, clone 완료 후 팀 레포의 `infra/install.py`를 subprocess로 위임 호출한다. 설치가 끝나면 CLI가 *"Claude/Codex를 열고 'tm-onboard' 입력 → 검증·브리핑 자동"*이라고 안내한다(`cli.py _done()`).
 >
 > **install.py의 역할**: CLI로부터 위임받아 이미 clone된 팀 레포 안에서 실행된다. 스캐폴딩·에이전트 배선·env·훅까지 한 번에 서고, 끝에서 `context --json`으로 **L1 데이터가 읽히는지** 확인한다. install.py의 일반 bootstrap 경로는 **결정적 고정 스크립트**이며 LLM 판단(서비스 선택)은 하지 않는다. 단 `--register-obsidian` 신규 등록 경로는 `time.time()`/`os.urandom()`으로 `ts`/`vault_id`를 생성할 수 있다.
 >

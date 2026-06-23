@@ -1,14 +1,14 @@
-# AGENTS.md — teammode
+# AGENTS.md — tm-mode
 
-이 레포는 **teammode**(크로스에이전트 팀 협업 툴킷)다. 에이전트(Claude Code · Codex)가 이 파일을 읽고 셋업·운영을 안내한다.
+이 레포는 **tm-mode**(크로스에이전트 팀 협업 툴킷)다. 에이전트(Claude Code · Codex)가 이 파일을 읽고 셋업·운영을 안내한다.
 
 ## 첫 접촉: "셋업해줘" / "온보딩"
 사용자가 팀모드를 켜달라고 하면 **`tm-onboard` 스킬**을 따른다(`infra/skills/base/tm-onboard/SKILL.md`).
 
 > **설치는 CLI가 끝낸다.** 팀 레포 생성·clone·scaffold·훅 배선까지 전부 아래 CLI 명령이 wizard로 처리한다. 에이전트(스킬)는 설치를 직접 실행하지 않는다.
 >
-> - **새 팀 (레포 없음)**: `teammode init` — org/계정·팀명·레포명을 대화로 정하고 레포 생성 → 곧바로 join(clone+셋업)
-> - **기존 팀 합류**: `teammode join <clone-url>` — 설치 위치·에이전트·이름·역할·Obsidian을 wizard로 묻고 clone+셋업
+> - **새 팀 (레포 없음)**: `tm-mode init` — org/계정·팀명·레포명을 대화로 정하고 레포 생성 → 곧바로 join(clone+셋업)
+> - **기존 팀 합류**: `tm-mode join <clone-url>` — 설치 위치·에이전트·이름·역할·Obsidian을 wizard로 묻고 clone+셋업
 >
 > 설치가 끝나면 CLI(`_done()`)가 *"Claude/Codex를 열고 'tm-onboard' 입력 → 검증·브리핑 자동 진행"*이라고 안내한다.
 
@@ -17,7 +17,7 @@
 1. **설치 검증** — 검증 전용 서브에이전트에 위임(메인은 기다리지 않음)
 2. **팀모드 가치 전달** — `infra/skills/base/tm-onboard/value.md`를 읽고 사람에게 전달
 
-스킬은 `install.py`를 직접 호출하지 않으며, 멤버명·org·팀명·역할·에이전트·Obsidian을 묻지 않는다. 아직 설치 안 된 사람이 "셋업해줘"라고 하면 → `teammode init`(새 팀) / `teammode join <url>`(합류)을 터미널에서 실행하도록 안내 후 멈춘다.
+스킬은 `install.py`를 직접 호출하지 않으며, 멤버명·org·팀명·역할·에이전트·Obsidian을 묻지 않는다. 아직 설치 안 된 사람이 "셋업해줘"라고 하면 → `tm-mode init`(새 팀) / `tm-mode join <url>`(합류)을 터미널에서 실행하도록 안내 후 멈춘다.
 
 ## 서비스 연결: "연결해줘" / "서비스 붙여줘"
 역할 슬롯(issues / chat / docs / calendar)에 서비스를 붙이려면 **`tm-connect` 스킬**을 따른다(`infra/skills/core/tm-connect/SKILL.md`). tm-onboard 는 L2 서비스 연결을 다루지 않는다 — 필요한 순간 `tm-connect` 스킬이 트리거로 드러난다(progressive). 실제 연결(토큰 안내·금고 저장·config 슬롯 기록·재배선)은 tm-connect 가 한다.
@@ -38,7 +38,7 @@
 - 푸시·PR은 사람이 결정. 에이전트가 임의 푸시하지 않는다.
 
 ## 핵심 파일
-- **진입 CLI**: `src/teammode/cli.py` (`teammode init` / `teammode join` — wizard로 설치 전담)
+- **진입 CLI**: `src/teammode/cli.py` (`tm-mode init` / `tm-mode join` — wizard로 설치 전담)
 - 엔진: `infra/teammode.py` (동사 on/off/log/context/pull/commit/update)
 - 셋업: `infra/install.py` (+ `install_lib.py`) — CLI가 subprocess로 위임 호출
 - 훅: `infra/hooks/` · 어댑터: `infra/agents/<name>/` · 스킬: `infra/skills/`
