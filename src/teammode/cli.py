@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 TEMPLATE_REPO = "T-Gates/teammode"
@@ -142,6 +143,22 @@ def _clone_dir_from_url(url: str) -> Path:
     return Path(name).resolve()
 
 
+def _wait_template_ready(full: str, *, attempts: int = 30, interval: float = 1.0) -> bool:
+    """gh template 로 만든 레포의 infra/ 가 채워질 때까지 폴링(비동기 복사 대비).
+
+    `gh repo create --template` 는 레포만 즉시 만들고 내용 복사는 GitHub 백그라운드라,
+    생성 직후 clone 하면 빈 레포가 잡힌다(E2E 로 확인). infra/ 가 보일 때까지 대기.
+    True=준비됨, False=시간 초과(호출부가 안내·보류).
+    """
+    print("[init] template 반영 대기 중...")
+    for _ in range(attempts):
+        if subprocess.run(["gh", "api", f"repos/{full}/contents/infra"],
+                          capture_output=True).returncode == 0:
+            return True
+        time.sleep(interval)
+    return False
+
+
 def _print_invite(url: str) -> None:
     """팀원 초대 한 줄(pip·curl — 둘 다 동일) 출력. url = 팀 레포 clone URL."""
     print()
@@ -197,6 +214,15 @@ def cmd_init(args) -> int:
         return rc
 
     url = f"https://github.com/{full}.git"
+
+    # ②-pre: template 내용 복사는 GitHub 백그라운드(비동기)다 — 생성 직후엔 빈 레포라
+    # 곧바로 clone 하면 infra/ 가 없어 join 이 실패한다(E2E 로 확인). infra/ 가 채워질
+    # 때까지 폴링 대기한 뒤 join 으로 넘어간다.
+    if not _wait_template_ready(full):
+        _err(f"template 반영이 지연됩니다(레포는 생성됨). 잠시 후 "
+             f"`teammode join {url}` 로 셋업을 마치세요.")
+        return 1
+
     # ② 팀원 초대 안내 (도입자 = 생성자).
     _print_invite(url)
 

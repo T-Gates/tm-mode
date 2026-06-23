@@ -575,3 +575,39 @@ def test_init_injects_join_attrs_for_nontty():
     a = join_args[0]
     for attr in ("url", "member_name", "dir", "obsidian", "agent", "role"):
         assert hasattr(a, attr), f"cmd_join 이 참조하는 args.{attr} 누락"
+
+
+def test_wait_template_ready_polls_until_infra(monkeypatch):
+    """gh template 비동기 복사: infra/ 가 처음엔 404 였다가 나타나면 True(폴링)."""
+    n = {"c": 0}
+
+    def fake_run(cmd, **kw):
+        n["c"] += 1
+        return MagicMock(returncode=0 if n["c"] >= 3 else 1)  # 3번째에 채워짐
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    assert cli._wait_template_ready("o/r", attempts=10, interval=0) is True
+    assert n["c"] == 3
+
+
+def test_wait_template_ready_timeout(monkeypatch):
+    """계속 404 면 False(시간 초과 → 호출부가 보류 안내)."""
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda *a, **k: MagicMock(returncode=1))
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    assert cli._wait_template_ready("o/r", attempts=3, interval=0) is False
+
+
+def test_init_template_timeout_skips_join():
+    """template 반영이 끝내 안 되면 join 으로 안 넘어가고 비정상 종료(빈 레포 clone 방지)."""
+    join_calls = []
+    with patch("teammode.cli._have", return_value=True), \
+         patch("teammode.cli.subprocess.run",
+               return_value=MagicMock(returncode=0, stdout="")), \
+         patch("teammode.cli._wait_template_ready", return_value=False), \
+         patch("teammode.cli.cmd_join",
+               side_effect=lambda a, **k: join_calls.append(a) or 0):
+        rc = cli.main(["init", "o/r"])
+    assert rc != 0
+    assert join_calls == [], "template 미반영인데 join(빈 레포 clone)으로 넘어감"
