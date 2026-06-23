@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""teammode — 팀모드 부트스트랩 런처 (pip 진입 스킨; 스펙 "코어 ≠ 스킨").
+"""teammode — 팀모드 부트스트랩 런처 (pip·curl 진입 스킨; 스펙 "코어 ≠ 스킨").
+
+진입 2종(등가 — 둘 다 이 cli.py 로 위임):
+  pip:  pip install "git+https://github.com/T-Gates/teammode" && teammode join <url>
+  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/teammode/main/install.sh | sh -s -- join <url>
 
   teammode init [OWNER/REPO]   새 팀: GitHub template 으로 레포 생성/clone → 셋업
   teammode join <clone-url>    합류: 팀 레포 clone → 셋업
@@ -152,8 +156,10 @@ def _done(repo_dir: Path, *, joined: bool) -> None:
             url = ""
         if url:
             print()
-            print("   팀원에게 이 한 줄을 공유하세요:")
-            print(f'     pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
+            print("   팀원에게 아래 중 한 줄을 공유하세요 (둘 다 동일):")
+            print(f'     pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && teammode join {url}')
+            print(f'     curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
+                  f'/main/install.sh | sh -s -- join {url}')
 
 
 def cmd_init(args) -> int:
