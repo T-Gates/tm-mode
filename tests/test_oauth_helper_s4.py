@@ -520,53 +520,5 @@ class TestStdlibOnly:
                     )
 
 
-# ── role_server 토큰 로드 분기 ────────────────────────────────────────────────
-
-class TestRoleServerTokenBranching:
-    """role_server 가 auth 타입에 따라 올바른 키로 credentials.load 를 호출하는지 확인."""
-
-    def test_get_token_for_role_function_exists(self):
-        """role_server 에 get_token_for_role 함수가 존재한다."""
-        server_mod = _load_mod(
-            REPO / "infra" / "mcp" / "role_server.py", "_test_rs_tok_exists"
-        )
-        assert hasattr(server_mod, "get_token_for_role"), (
-            "role_server 에 get_token_for_role 함수가 없음"
-        )
-
-    def test_get_token_for_oauth_role_uses_access_token_key(self, tmp_path, monkeypatch):
-        """oauth 타입: credentials.load(team, scope, role_access_token) — _access_token 키."""
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
-        creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_branching_test")
-        creds_mod.store("tgates", "personal", "docs_access_token", "ya29.test")
-
-        server_mod = _load_mod(
-            REPO / "infra" / "mcp" / "role_server.py", "_test_rs_tok_oauth"
-        )
-        result = server_mod.get_token_for_role("tgates", "personal", "docs", "oauth")
-        assert result == "ya29.test"
-
-    def test_get_token_for_api_key_role_reads_role_key(self, tmp_path, monkeypatch):
-        """api_key 타입: credentials.load 가 role 이름 키를 읽는다."""
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
-        creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_apikey_test")
-        creds_mod.store("tgates", "personal", "issues", "sk-api-123")
-
-        server_mod = _load_mod(
-            REPO / "infra" / "mcp" / "role_server.py", "_test_rs_tok_apikey"
-        )
-        result = server_mod.get_token_for_role("tgates", "personal", "issues", "api_key")
-        assert result == "sk-api-123"
-
-    def test_get_token_for_bot_token_role_reads_role_key(self, tmp_path, monkeypatch):
-        """bot_token 타입: credentials.load 가 role 이름 키를 읽는다."""
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
-        creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_bot_test")
-        _bot_tok2 = "xoxb" + "-bot-456"
-        creds_mod.store("tgates", "personal", "chat", _bot_tok2)
-
-        server_mod = _load_mod(
-            REPO / "infra" / "mcp" / "role_server.py", "_test_rs_tok_bot"
-        )
-        result = server_mod.get_token_for_role("tgates", "personal", "chat", "bot_token")
-        assert result == _bot_tok2
+# [P1 삭제] role_server 폐기 — TestRoleServerTokenBranching(get_token_for_role 토큰
+# 로드 분기 4건)은 제거됐다. OAuth 헬퍼 자체 테스트는 위에 그대로 보존된다.

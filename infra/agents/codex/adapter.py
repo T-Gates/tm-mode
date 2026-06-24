@@ -297,46 +297,15 @@ class Adapter(BaseAdapter):
         self.settings_path.write_text(updated, encoding="utf-8")
         return True
 
-    def _render_teammode_toml(self) -> str:
-        """teammode 단일 MCP 서버 TOML 섹션 문자열 반환 (S5).
-
-        handlers/ 디렉토리가 있을 때만 호출된다. command/args/cwd 를 포함한
-        실 서버 실행 가능한 완전한 섹션을 반환한다.
-        """
-        import json as _json  # 로컬 import — 모듈 최상단 import 와 충돌 없음
-        team_root = self.team_root
-        handlers_dir = team_root / "handlers"
-        team_name = team_root.name
-        if self.config_path.is_file():
-            try:
-                cfg = _json.loads(self.config_path.read_text(encoding="utf-8"))
-                team_name = cfg.get("team", {}).get("name", team_name) or team_name
-            except (ValueError, OSError, AttributeError):
-                pass
-        args_toml = (
-            "[\n"
-            "    '-m', 'infra.mcp.role_server',\n"
-            f"    '--team', {self._toml_str(str(team_name))},\n"
-            f"    '--handlers-dir', {self._toml_str(str(handlers_dir))},\n"
-            "]"
-        )
-        return (
-            f"[mcp_servers.teammode]\n"
-            f"_teammode_managed = true\n"
-            f"_canonical_server = 'teammode'\n"
-            f"command = 'python'\n"
-            f"args = {args_toml}\n"
-            f"cwd = {self._toml_str(str(team_root))}\n"
-        )
+    # [P1 삭제] handlers/role_server 폐기 — _render_teammode_toml() 제거.
+    # teammode 단일 MCP 서버(role_server 기동) TOML 블록 자체가 사라졌다.
+    # TODO P4: 벤더 MCP 등록기 — 공식/자작 MCP 마련 + 정규 서버명 alias 등록 정합.
 
     def install_mcp(self) -> list:
         """config services 의 연결 provider 를 Codex config.toml [mcp_servers.*] 로 등록. 멱등.
 
         claude 와 동일 계약(services 읽기·정규명 등록·별칭 항등·멱등·빈 슬롯 [info])이되,
         등록 포맷만 Codex TOML 블록으로 재정의.
-
-        S5 공존 전략: handlers/ 에 .py 파일 있으면 teammode 서버도 블록에 추가.
-        기존 provider alias 와 teammode 둘 다 동일 teammode-mcp 블록에 공존.
         """
         import providers as _prov  # 부모와 동일 모듈(infra/ on sys.path)
         changes = []
@@ -363,11 +332,9 @@ class Adapter(BaseAdapter):
             providers_with_packs.append((alias, pack))
             aliases.append(alias)
 
-        # S5: handlers/ 있으면 teammode 서버 추가 (공존)
-        has_tm = self._has_handlers()
-
-        if providers_with_packs or has_tm:
-            # 블록 본문 구성: 기존 provider + teammode(있으면)
+        # [P1 삭제] handlers/role_server 폐기 — teammode 서버 공존 분기 제거.
+        if providers_with_packs:
+            # 블록 본문 구성: 벤더 provider alias 만 등록
             lines = [self.MCP_BLOCK_START, ""]
             for provider, pack in providers_with_packs:
                 hint = pack.mcp.get("register_hint", "") if pack else ""
@@ -376,10 +343,6 @@ class Adapter(BaseAdapter):
                 lines.append(f"_canonical_server = {self._toml_str(provider)}")
                 lines.append(f"_register_hint = {self._toml_str(hint)}")
                 lines.append("")
-            if has_tm:
-                lines.append(self._render_teammode_toml())
-                if "teammode" not in aliases:
-                    aliases.append("teammode")
             lines.append(self.MCP_BLOCK_END)
             block = "\n".join(lines)
             changed = self._write_mcp_block(block)
@@ -391,7 +354,7 @@ class Adapter(BaseAdapter):
             else:
                 changes.append(f"[ok] 변경 없음 ({len(aliases)}개 provider 등록됨)")
         else:
-            # 연결 provider 없음 + handlers 없음 → 기존 teammode-mcp 블록 제거(멱등 빈상태).
+            # 연결 provider 없음 → 기존 teammode-mcp 블록 제거(멱등 빈상태).
             # 안전(P1-1): 블록이 없으면(부재 config 포함) 파일 무접촉 — pattern.search 가
             # 없을 때 write 하지 않으므로 빈 슬롯에서 config.toml 을 touch 하지 않는다.
             existing = self._read_config()
