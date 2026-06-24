@@ -359,6 +359,216 @@ def _secret_hit_line(line: str) -> bool:
     return False
 
 
+# ── 자작 MCP(infra/mcp/**/*.py) 전용 토큰 리터럴 딥스캔 (P4-B) ──
+#
+# P1 에서 handlers/ 폐기와 함께 handlers/*.py 전용 토큰 딥스캔을 제거했다. 그러나 L2
+# 재설계에서 infra/mcp/<provider>/ 는 **자작 MCP 보관소**다 — 공식 MCP 가 없을 때 AI 가
+# provider API 를 감싼 MCP 서버를 작성해 두는 곳이고, 토큰은 env/금고(0600)에서만 받아야
+# 한다(archive "MCP 마련" 4단계). 자작 MCP 소스에 토큰 리터럴이 embed 될 수 있으므로,
+# 일반 데이터-파일 린트(.py 는 skip)와 별개로 infra/mcp/**/*.py 를 **데이터처럼** 강제
+# 딥스캔한다. 키-이름 기반이 아니라 **값의 접두사**(Bearer·sk-·xoxb- …)로 판단하며,
+# tokenize 기반으로 문자열 분할·bytes·base64·f-string 우회까지 탐지한다.
+# (P1 에서 지운 handlers 딥스캔과 동등 로직 — 대상 디렉토리만 handlers/ → infra/mcp/.)
+#
+# infra/mcp/ 가 비어있을 수 있다(자작 MCP 아직 없음) — 그 경우 no-op(대상 없으면 통과).
+_HANDLER_TOKEN_RE = re.compile(
+    r'(?:["\'])'
+    r'(?P<val>'
+    r'Bearer\s+\S+'                      # Authorization: Bearer <token>
+    r'|sk-[A-Za-z0-9_-]{10,}'           # OpenAI / Anthropic sk- 키 (하이픈 포함)
+    r'|xoxb-[\w-]{10,}'                  # Slack bot token
+    r'|xoxp-[\w-]{10,}'                  # Slack user token
+    r'|xoxa-[\w-]{10,}'                  # Slack workspace token
+    r'|xoxr-[\w-]{10,}'                  # Slack refresh token
+    r'|gh[pousr]_[A-Za-z0-9]{10,}'      # GitHub personal/oauth/user/server/refresh token
+    r'|github_pat_[A-Za-z0-9_]{10,}'    # GitHub fine-grained PAT
+    r'|AKIA[A-Z0-9]{16}'                 # AWS access key ID
+    r'|ASIA[A-Z0-9]{16}'                 # AWS temporary access key ID
+    r'|Basic\s+[A-Za-z0-9+/]{10,}={0,2}'  # HTTP Basic base64 인증
+    r'|[0-9a-f]{40}'                     # 40자 hex (git SHA / 레거시 토큰)
+    r')'
+    r'(?:["\'])',
+    re.IGNORECASE,
+)
+
+# bytes literal 안의 토큰 패턴 (b"sk-proj-..." 우회)
+_HANDLER_TOKEN_BYTES_RE = re.compile(
+    r'b["\']'
+    r'(?P<val>'
+    r'sk-[A-Za-z0-9_-]{10,}'
+    r'|xox[bpar]-[\w-]{10,}'
+    r'|gh[pousr]_[A-Za-z0-9]{10,}'
+    r'|github_pat_[A-Za-z0-9_]{10,}'
+    r'|AKIA[A-Z0-9]{16}'
+    r'|ASIA[A-Z0-9]{16}'
+    r'|Bearer\s+\S+'
+    r'|Basic\s+[A-Za-z0-9+/]{10,}={0,2}'
+    r'|[0-9a-f]{40}'
+    r')'
+    r'["\']',
+    re.IGNORECASE,
+)
+
+# base64 디코딩 후 재검사용 — base64로 인코딩된 토큰을 숨기는 우회 탐지
+_BASE64_CANDIDATE_RE = re.compile(
+    r'["\']([A-Za-z0-9+/]{20,}={0,2})["\']'
+)
+
+# 연결 합산 후 토큰이 되는 문자열 분할 우회 탐지
+_CONCAT_TOKEN_RE = re.compile(
+    r'(?:xox[bpasr]|sk-proj|Bearer|github_pat_|AKIA|ASIA|gh[pousr]_)',
+    re.IGNORECASE,
+)
+
+
+def _decode_base64_token(s: str):
+    """base64 문자열을 디코딩해 토큰성 값이 있으면 반환, 아니면 None."""
+    try:
+        pad = (4 - len(s) % 4) % 4
+        decoded = base64.b64decode(s + "=" * pad).decode("utf-8", errors="replace")
+        return decoded
+    except Exception:
+        return None
+
+
+def _extract_string_inner(raw: str):
+    """Python 문자열 토큰 raw 값에서 내부 값을 추출. 실패 시 None."""
+    try:
+        val = ast.literal_eval(raw)
+        if isinstance(val, (str, bytes)):
+            return (val.decode("utf-8", errors="replace")
+                    if isinstance(val, bytes) else val)
+        return None
+    except Exception:
+        return None
+
+
+def _raw_token_match(s: str) -> bool:
+    """문자열 s 에 토큰 패턴이 있는지 (placeholder 정확일치 제외)."""
+    s_lower = s.strip().lower()
+    if s_lower in _SECRET_VALUE_ALLOW:
+        return False
+    if _HANDLER_TOKEN_RE.search(f'"{s}"'):
+        return True
+    if _HANDLER_TOKEN_BYTES_RE.search(f'b"{s}"'):
+        return True
+    if _CONCAT_TOKEN_RE.search(s) and len(s) >= 15:
+        return True
+    return False
+
+
+def _handler_secret_hit_line_raw(line: str) -> bool:
+    """단일 라인에서 토큰 리터럴 직접값 탐지 (tokenize 미사용 폴백·라인보고용)."""
+    if _HANDLER_TOKEN_BYTES_RE.search(line):
+        for m in _HANDLER_TOKEN_BYTES_RE.finditer(line):
+            val = m.group("val").strip().lower()
+            if val not in _SECRET_VALUE_ALLOW:
+                return True
+    for m in _HANDLER_TOKEN_RE.finditer(line):
+        val = m.group("val").strip().lower()
+        if val not in _SECRET_VALUE_ALLOW:
+            return True
+    for m in _BASE64_CANDIDATE_RE.finditer(line):
+        decoded = _decode_base64_token(m.group(1))
+        if decoded and _raw_token_match(decoded):
+            return True
+    return False
+
+
+def _handler_secret_hit_multiline(source: str) -> bool:
+    """tokenize 실패 시 폴백: 라인 기반 패턴 검사."""
+    for line in source.splitlines():
+        if _handler_secret_hit_line_raw(line):
+            return True
+    return False
+
+
+def _source_has_handler_token(source: str) -> bool:
+    """자작 MCP 소스 전체를 tokenize 기반으로 스캔(분할·bytes·base64·f-string 우회 포함).
+
+    placeholder 값(전체 정확일치)은 허용. (P1 폐기 handlers 딥스캔과 동등.)
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        # malformed = 차단이 안전 — 라인 기반 폴백.
+        return _handler_secret_hit_multiline(source)
+
+    string_values: list = []
+    prev_was_string = False
+    _FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", None)
+
+    for tok_type, tok_string, _ts, _te, _tl in tokens:
+        if tok_type == tokenize.COMMENT:
+            inner = tok_string.lstrip("#").strip()
+            if _raw_token_match(inner):
+                return True
+            prev_was_string = False
+            continue
+
+        if _FSTRING_MIDDLE is not None and tok_type == _FSTRING_MIDDLE:
+            if _CONCAT_TOKEN_RE.search(tok_string):
+                return True
+            if _raw_token_match(tok_string):
+                return True
+            continue
+
+        if tok_type == tokenize.STRING:
+            raw = tok_string
+            if raw.startswith(("b'", 'b"', "B'", 'B"', "rb", "br", "RB", "BR")):
+                inner = _extract_string_inner(raw)
+                if inner and _raw_token_match(inner):
+                    return True
+                prev_was_string = False
+                continue
+            _FSTRING_PREFIXES = ("f'", 'f"', "F'", 'F"',
+                                 "rf'", 'rf"', "RF'", 'RF"',
+                                 "fr'", 'fr"', "FR'", 'FR"')
+            if raw.startswith(_FSTRING_PREFIXES):
+                if _handler_secret_hit_line_raw(raw):
+                    return True
+                if _CONCAT_TOKEN_RE.search(raw):
+                    return True
+                prev_was_string = False
+                continue
+            inner = _extract_string_inner(raw)
+            if inner is None:
+                if _handler_secret_hit_line_raw(raw):
+                    return True
+                prev_was_string = False
+                continue
+            if inner.strip().lower() in _SECRET_VALUE_ALLOW:
+                prev_was_string = False
+                continue
+            if _raw_token_match(inner):
+                return True
+            for m in _BASE64_CANDIDATE_RE.finditer(raw):
+                decoded = _decode_base64_token(m.group(1))
+                if decoded and _raw_token_match(decoded):
+                    return True
+            if prev_was_string:
+                accumulated = (string_values[-1] + inner) if string_values else inner
+                if _CONCAT_TOKEN_RE.search(accumulated) and _raw_token_match(accumulated):
+                    return True
+                if string_values:
+                    string_values[-1] = accumulated
+                else:
+                    string_values.append(inner)
+            else:
+                string_values.append(inner)
+            prev_was_string = True
+            continue
+
+        if tok_type == tokenize.OP and tok_string == "+":
+            continue  # string + string 연결 — prev_was_string 유지
+
+        if tok_type not in (tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
+                            tokenize.DEDENT, tokenize.ENCODING):
+            prev_was_string = False
+
+    return False
+
+
 # 비밀이 절대 들어가면 안 되는 추적 **데이터** 파일 패턴 (이름 기반).
 _SECRET_TARGET_GLOBS = ("team.config.json", "team.config.*.json",
                         "*credentials*", "*secret*", "*.token",
@@ -419,18 +629,48 @@ def lint_no_tracked_secrets(root, *, files=None) -> tuple:
             if p not in seen:
                 seen.add(p)
                 candidates.append(p)
-        # [P1 삭제] handlers/role_server 폐기로 handlers/**/*.py 전용 강제 스캔 제거.
-        # 이제 이 린트는 데이터 파일(config/credentials/.env 류)만 대상으로 한다.
-        handler_files: set = set()
+        # P4-B: infra/mcp/**/*.py — 자작 MCP 보관소. suffix skip(.py) 없이 강제 딥스캔.
+        # _SECRET_TARGET_SKIP_SUFFIXES 에 .py 가 있어 일반 소스는 데이터-린트에서 빠지지만,
+        # 자작 MCP 코드는 토큰이 직접 embed 될 수 있어 "데이터처럼 취급"한다(P1 폐기 handlers
+        # 딥스캔과 동등 — 대상만 handlers/ → infra/mcp/). 비어있으면 no-op(대상 없으면 통과).
+        # .venv·__pycache__ 등은 prune(거짓양성·외부 패키지 차단).
+        _PRUNE_DIRS = frozenset({".venv", "venv", "__pycache__", ".git", "site-packages"})
+        mcp_files: set = set()
+        mcp_dir = root / "infra" / "mcp"
+        if mcp_dir.is_dir():
+            for hp in sorted(mcp_dir.rglob("*.py")):
+                if not hp.is_file():
+                    continue
+                if any(part in _PRUNE_DIRS for part in hp.parts):
+                    continue
+                if hp not in seen:
+                    seen.add(hp)
+                    candidates.append(hp)
+                    mcp_files.add(hp)
     else:
         # files= 입력을 먼저 정규화 — 상대경로는 root / f 로 변환 (codex fault injection #4).
         # 절대경로라면 그대로, 상대경로라면 root 기준으로 해석한다.
-        # 이렇게 해야 candidates/handler 분류가 동일 객체를 기준으로 동작한다.
+        # 이렇게 해야 candidates/mcp 분류가 동일 객체를 기준으로 동작한다.
         candidates = [
             Path(f) if Path(f).is_absolute() else root / f
             for f in files
         ]
-        # [P1 삭제] handlers/ 분류 제거 — 이 린트는 데이터 파일만 대상.
+        # files= 경로에서도 infra/mcp/ 하위 .py 를 자작 MCP 로 분류해 딥스캔 우회 차단.
+        mcp_files = set()
+        mcp_dir = root / "infra" / "mcp"
+        if root.is_dir() and mcp_dir.is_dir():
+            for p in candidates:
+                try:
+                    Path(p).resolve().relative_to(mcp_dir.resolve())
+                    mcp_files.add(Path(p))
+                except (ValueError, OSError):
+                    pass
+        else:
+            # root 가 tmp 등일 때: 경로 문자열로 infra/mcp/ 포함 여부 판정.
+            for p in candidates:
+                parts = Path(p).parts
+                if "mcp" in parts and "infra" in parts:
+                    mcp_files.add(Path(p))
 
     hits = []
     for p in candidates:
@@ -442,9 +682,22 @@ def lint_no_tracked_secrets(root, *, files=None) -> tuple:
             rel = p.relative_to(root)
         except ValueError:
             rel = p
-        for i, line in enumerate(text.splitlines(), 1):
-            if _secret_hit_line(line):
-                hits.append(f"{rel}:{i}")
+        # P4-B: infra/mcp/**/*.py 는 전용 tokenize 딥스캔 우선(분할·bytes·base64·f-string
+        # 우회 포함). 라인 기반 _secret_hit_line 은 비-MCP 데이터 파일용으로 유지.
+        if p in mcp_files:
+            if _source_has_handler_token(text):
+                line_hit = False
+                for i, line in enumerate(text.splitlines(), 1):
+                    if _handler_secret_hit_line_raw(line):
+                        hits.append(f"{rel}:{i}")
+                        line_hit = True
+                if not line_hit:
+                    # tokenize 가 잡았지만 라인별로 못 잡은 경우(분할·base64 우회).
+                    hits.append(f"{rel}:?")
+        else:
+            for i, line in enumerate(text.splitlines(), 1):
+                if _secret_hit_line(line):
+                    hits.append(f"{rel}:{i}")
     return ("토큰키 추적 거부", not hits,
             f"토큰키 진입 발견(.gitignore 우회 위험): {hits}" if hits else "")
 
