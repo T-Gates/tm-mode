@@ -265,16 +265,41 @@ class Adapter(BaseAdapter):
             servers[name] = {"_teammode_managed": True}
         return servers
 
+    def _toml_str_list(self, items: list) -> str:
+        """문자열 리스트 → TOML 배열 리터럴(args 등). 각 항목은 _toml_str 로 안전 인용."""
+        return "[" + ", ".join(self._toml_str(str(a)) for a in items) + "]"
+
+    def _render_mcp_server_lines(self, provider: str, pack) -> list:
+        """단일 provider 의 [mcp_servers.<provider>] TOML 섹션 라인들.
+
+        archive "MCP 마련" + §2.8 공식/자작 동일 처리:
+          - 팩 mcp 에 실 기동 데이터(command/args 또는 path)가 있으면 → command·args 를
+            실제로 적어 Codex 가 기동 가능한 등록을 한다.
+          - 없으면(P2 미기재) → 소유 마커 + register_hint placeholder 만(자리만 + 안내).
+            추측 패키지명/repo 금지.
+        정규명=별칭(항등, §2.8-2). 소유 마커는 어느 경우든 유지.
+        """
+        hint = pack.mcp.get("register_hint", "") if pack else ""
+        lines = [f"[mcp_servers.{provider}]"]
+        lines.append("_teammode_managed = true")
+        lines.append(f"_canonical_server = {self._toml_str(provider)}")
+        lines.append(f"_register_hint = {self._toml_str(hint)}")
+        launch = self._mcp_launch_command(pack)  # 부모(claude) 상속 — 팩 mcp 해석 공유
+        if launch is not None:
+            command, args = launch
+            lines.append(f"command = {self._toml_str(command)}")
+            if args:
+                lines.append(f"args = {self._toml_str_list(args)}")
+            src = (pack.mcp.get("source") if pack else None)
+            if isinstance(src, str) and src:
+                lines.append(f"_mcp_source = {self._toml_str(src)}")
+        return lines
+
     def _render_mcp_block(self, providers_with_packs: list) -> str:
         """연결 provider 목록 → teammode-mcp TOML 블록 문자열."""
         lines = [self.MCP_BLOCK_START, ""]
         for provider, pack in providers_with_packs:
-            hint = pack.mcp.get("register_hint", "") if pack else ""
-            lines.append(f"[mcp_servers.{provider}]")
-            # teammode 소유 마커 + 안내(사람/LLM 이 실 커맨드 채움). 정규명=별칭(항등, §2.8-2).
-            lines.append("_teammode_managed = true")
-            lines.append(f"_canonical_server = {self._toml_str(provider)}")
-            lines.append(f"_register_hint = {self._toml_str(hint)}")
+            lines.extend(self._render_mcp_server_lines(provider, pack))
             lines.append("")
         lines.append(self.MCP_BLOCK_END)
         return "\n".join(lines)
@@ -334,23 +359,20 @@ class Adapter(BaseAdapter):
 
         # [P1 삭제] handlers/role_server 폐기 — teammode 서버 공존 분기 제거.
         if providers_with_packs:
-            # 블록 본문 구성: 벤더 provider alias 만 등록
-            lines = [self.MCP_BLOCK_START, ""]
-            for provider, pack in providers_with_packs:
-                hint = pack.mcp.get("register_hint", "") if pack else ""
-                lines.append(f"[mcp_servers.{provider}]")
-                lines.append("_teammode_managed = true")
-                lines.append(f"_canonical_server = {self._toml_str(provider)}")
-                lines.append(f"_register_hint = {self._toml_str(hint)}")
-                lines.append("")
-            lines.append(self.MCP_BLOCK_END)
-            block = "\n".join(lines)
+            # 블록 본문 구성: 벤더 provider alias 만 등록. 공식/자작 동일 처리 —
+            # 팩에 기동 데이터(command/args/path) 있으면 실 등록, 없으면 placeholder.
+            block = self._render_mcp_block(providers_with_packs)
             changed = self._write_mcp_block(block)
             # N2: claude 와 대칭 — 실제 파일 변경 시에만 [mcp] 등록, 멱등 무변경은
             # [ok]. (_write_mcp_block 의 changed 반환값을 반영, 거짓 등록 보고 금지.)
             if changed:
-                for alias in aliases:
-                    changes.append(f"[mcp] {alias} 등록")
+                for alias, pack in providers_with_packs:
+                    if self._mcp_launch_command(pack) is not None:
+                        changes.append(f"[mcp] {alias} 등록(기동 커맨드)")
+                    else:
+                        changes.append(
+                            f"[mcp] {alias} 등록(자리만 — 기동 커맨드 미정, "
+                            f"register_hint 참고)")
             else:
                 changes.append(f"[ok] 변경 없음 ({len(aliases)}개 provider 등록됨)")
         else:

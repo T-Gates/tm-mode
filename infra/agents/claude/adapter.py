@@ -339,20 +339,66 @@ class Adapter:
         """teammode 가 등록한 MCP 서버 항목인지 — 소유 마커로 식별(사용자 항목 무접촉)."""
         return isinstance(entry, dict) and entry.get("_teammode_managed") is True
 
+    def _mcp_launch_command(self, pack):
+        """provider 팩 mcp 필드 → 실 MCP 서버 기동 커맨드(command/args) 또는 None.
+
+        archive "MCP 마련"·§2.8 공식/자작 정합: install-mcp 는 공식/자작을 **동일 처리**한다
+        — 분기는 "마련 방법"(공식 가져옴 vs 자작)뿐이고 등록 경로는 같다. 여기서는 팩에
+        실제 기동 데이터가 있는지만 본다:
+          - mcp.command 있음 → 그 커맨드(+ mcp.args)로 기동(공식 official + command,
+            또는 자작 custom 의 실행 메타가 command 로 적힌 경우).
+          - mcp.command 없고 mcp.path 있음 → 자작/벤더드 서버 경로(infra/mcp/<provider>/)를
+            현재 인터프리터로 기동(`<python> <path>`). path 가 상대면 team_root 기준 해석.
+          - 둘 다 없음 → None(P2 미기재). 추측 패키지명/repo 를 만들지 않는다 — 호출부가
+            register_hint placeholder 로 graceful 등록.
+
+        반환: (command:str, args:list[str]) 또는 None. command 만 있고 args 없으면 args=[].
+        """
+        if pack is None:
+            return None
+        mcp = getattr(pack, "mcp", None) or {}
+        command = mcp.get("command")
+        args = mcp.get("args")
+        if isinstance(command, str) and command.strip():
+            arglist = [str(a) for a in args] if isinstance(args, list) else []
+            return (command, arglist)
+        path = mcp.get("path")
+        if isinstance(path, str) and path.strip():
+            # 자작/벤더드 서버 경로 — team_root 기준 절대화 후 현재 인터프리터로 기동.
+            p = Path(path)
+            if not p.is_absolute():
+                p = self.team_root / path
+            return (self.python, [str(p)])
+        return None
+
     def _build_mcp_entry(self, provider: str, pack) -> dict:
         """provider 팩 → MCP 서버 등록 항목(자기 방식 = Claude ~/.claude.json shape).
 
-        ⚠️ teammode 는 MCP 서버 자체를 제작·유지하지 않는다(§7.4) — 실제 실행
-        커맨드는 provider/환경마다 다르고 v0.1 스펙에 미고정이다. 따라서 보수적으로
-        **소유 마커 + provider 팩 register_hint(사람·LLM 이 채울 안내)** 를 담은
-        관리형 placeholder 항목을 등록한다. 정규 서버명으로 키가 잡히는 것(별칭 항등,
-        §2.8-2)·멱등·소유권이 핵심 계약이며, 구체 실행 커맨드는 v0.2 확장 여지.
+        archive "MCP 마련" + §2.8: install-mcp 는 공식/자작을 **동일 처리**한다.
+          - 팩 mcp 에 실 기동 데이터(command/args 또는 path)가 있으면 → 그 커맨드로
+            **실제 등록**(claude mcpServers shape: command + args). 소유 마커도 함께 담아
+            멱등·소유권 관리 가능하게 한다.
+          - 데이터가 없으면(P2 미기재) → 추측 금지, 소유 마커 + register_hint placeholder
+            만 등록(자리만 잡고 사람/LLM 안내). teammode 관리 마커는 어느 경우든 유지.
+
+        정규 서버명으로 키가 잡히는 것(별칭 항등, §2.8-2)·멱등·소유권이 핵심 계약이다.
         """
-        return {
+        entry = {
             "_teammode_managed": True,
             "_canonical_server": provider,
             "_register_hint": pack.mcp.get("register_hint", "") if pack else "",
         }
+        launch = self._mcp_launch_command(pack)
+        if launch is not None:
+            command, args = launch
+            entry["command"] = command
+            if args:
+                entry["args"] = args
+            # 마련 방법(공식/자작) 표기 — 등록 경로는 같으나 출처 추적용(있으면).
+            src = (pack.mcp.get("source") if pack else None)
+            if isinstance(src, str) and src:
+                entry["_mcp_source"] = src
+        return entry
 
     # [P1 삭제] handlers/role_server 폐기 — _build_teammode_entry()/_has_handlers() 제거.
     # teammode 단일 MCP 서버(role_server 기동) 등록 자체가 사라졌다. 벤더 MCP alias
@@ -417,7 +463,12 @@ class Adapter:
                 desired_aliases.discard(alias)
                 continue
             servers[alias] = entry
-            changes.append(f"[mcp] {alias} 등록")
+            # 데이터 있으면 실 기동 커맨드로 등록, 없으면 placeholder(자리만 + 안내).
+            if "command" in entry:
+                changes.append(f"[mcp] {alias} 등록(기동 커맨드)")
+            else:
+                changes.append(
+                    f"[mcp] {alias} 등록(자리만 — 기동 커맨드 미정, register_hint 참고)")
 
         # [P1 삭제] handlers/role_server 폐기 — teammode 단일 MCP 서버 등록 블록 제거.
         # 이제 install_mcp 는 config services 의 벤더 provider alias 만 등록한다.

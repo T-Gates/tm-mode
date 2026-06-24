@@ -301,3 +301,138 @@ def test_cross_agent_same_config_both_register(tmp_path):
     codex_txt = Path(tmp_path / "codex.config.toml").read_text()
     assert "linear" in claude_data["mcpServers"]   # claude: top-level mcpServers
     assert "[mcp_servers.linear]" in codex_txt      # codex: config.toml 블록
+
+
+# ─────────────── P4-A: mcp.source 반영 (공식 command/args · 자작 path) ───────────────
+#
+# 실 providers/ 의 팩들은 P2 에서 command/repo/path 를 미기재("추측금지")라 placeholder
+# 만 등록한다(위 기존 테스트가 그 경로를 커버). 여기서는 **데이터가 있을 때** install-mcp
+# 가 그 기동 커맨드를 실제 등록에 반영하는지를 tmp provider 팩으로 검증한다.
+# archive "MCP 마련"·§2.8: 공식/자작은 동일 처리(분기는 마련 방법뿐, 등록 경로 같음).
+
+def _providers_dir_with(tmp_path, provider, mcp_extra):
+    """tmp providers/ 디렉토리에 <provider>.json 한 개를 작성하고 경로 반환.
+
+    mcp_extra = mcp 필드에 추가로 넣을 키(command/args/path/source 등). register_hint 는 필수.
+    """
+    pdir = tmp_path / "providers_custom"
+    pdir.mkdir(exist_ok=True)
+    pack = {
+        "provider": provider,
+        "token_guide": {"url": "https://example/tok", "steps": ["s1"]},
+        "default_scope": "team",
+        "auth": "api_key",
+        "services": ["issues"],
+        "resource_fields": [],
+        "mcp": {"register_hint": "테스트 팩", **mcp_extra},
+    }
+    (pdir / f"{provider}.json").write_text(json.dumps(pack))
+    return str(pdir)
+
+
+def _claude_pd(root, tmp_path, providers_dir, name="settings"):
+    return ClaudeAdapter(
+        agent_dir=str(root / "infra" / "agents" / "claude"),
+        manifest_path=str(root / "infra" / "hooks" / "manifest.json"),
+        settings_path=str(tmp_path / f"{name}.json"),
+        python="python3", team_root=str(root),
+        mcp_config_path=str(tmp_path / f"{name}.claude.json"),
+        providers_dir=providers_dir,
+    )
+
+
+def _codex_pd(root, tmp_path, providers_dir, name="codex"):
+    return CodexAdapter(
+        agent_dir=str(root / "infra" / "agents" / "codex"),
+        manifest_path=str(root / "infra" / "hooks" / "manifest.json"),
+        settings_path=str(tmp_path / f"{name}.config.toml"),
+        python="python3", team_root=str(root),
+        providers_dir=providers_dir,
+    )
+
+
+def test_claude_install_mcp_reflects_official_command(tmp_path):
+    """팩 mcp.source=official + command/args 있음 → claude entry 에 command·args 실제 등록."""
+    pd = _providers_dir_with(
+        tmp_path, "linear",
+        {"source": "official", "command": "npx",
+         "args": ["-y", "@vendor/linear-mcp"]})
+    root = _scaffold(tmp_path, LINEAR_CONNECTED)
+    out = _claude_pd(root, tmp_path, pd).install_mcp()
+    data = json.loads(Path(tmp_path / "settings.claude.json").read_text())
+    entry = data["mcpServers"]["linear"]
+    assert entry["command"] == "npx"
+    assert entry["args"] == ["-y", "@vendor/linear-mcp"]
+    assert entry["_teammode_managed"] is True           # 소유 마커 유지
+    assert entry.get("_mcp_source") == "official"
+    assert any("기동 커맨드" in c for c in out)
+
+
+def test_claude_install_mcp_reflects_custom_path(tmp_path):
+    """팩 mcp.source=custom + path(infra/mcp/<provider>/) → <python> <path> 로 등록."""
+    pd = _providers_dir_with(
+        tmp_path, "linear",
+        {"source": "custom", "path": "infra/mcp/linear/server.py"})
+    root = _scaffold(tmp_path, LINEAR_CONNECTED)
+    ad = _claude_pd(root, tmp_path, pd)
+    ad.install_mcp()
+    data = json.loads(Path(tmp_path / "settings.claude.json").read_text())
+    entry = data["mcpServers"]["linear"]
+    assert entry["command"] == "python3"                # adapter python
+    # path 는 team_root 기준 절대화돼 args 에 들어간다
+    assert entry["args"][0].endswith("infra/mcp/linear/server.py")
+    assert str(root) in entry["args"][0]
+    assert entry.get("_mcp_source") == "custom"
+
+
+def test_claude_install_mcp_no_launch_data_is_placeholder(tmp_path):
+    """command/path 둘 다 없으면(P2 미기재) → 추측 없이 placeholder(자리만)로 등록."""
+    pd = _providers_dir_with(tmp_path, "linear", {"source": "official"})
+    root = _scaffold(tmp_path, LINEAR_CONNECTED)
+    out = _claude_pd(root, tmp_path, pd).install_mcp()
+    entry = json.loads(
+        Path(tmp_path / "settings.claude.json").read_text())["mcpServers"]["linear"]
+    assert "command" not in entry                        # 추측 커맨드 없음
+    assert entry["_teammode_managed"] is True
+    assert entry["_register_hint"] == "테스트 팩"
+    assert any("자리만" in c for c in out)
+
+
+def test_codex_install_mcp_reflects_official_command(tmp_path):
+    """codex: 팩 command/args 있음 → TOML 블록에 command·args 실제 등록."""
+    pd = _providers_dir_with(
+        tmp_path, "linear",
+        {"source": "official", "command": "npx",
+         "args": ["-y", "@vendor/linear-mcp"]})
+    root = _scaffold(tmp_path, LINEAR_CONNECTED)
+    out = _codex_pd(root, tmp_path, pd).install_mcp()
+    txt = Path(tmp_path / "codex.config.toml").read_text()
+    assert "[mcp_servers.linear]" in txt
+    assert "command = 'npx'" in txt
+    assert "args = ['-y', '@vendor/linear-mcp']" in txt
+    assert "_mcp_source = 'official'" in txt
+    assert any("기동 커맨드" in c for c in out)
+
+
+def test_codex_install_mcp_no_launch_data_is_placeholder(tmp_path):
+    """codex: command/path 없음 → command 행 없이 placeholder TOML 블록."""
+    pd = _providers_dir_with(tmp_path, "linear", {"source": "official"})
+    root = _scaffold(tmp_path, LINEAR_CONNECTED)
+    out = _codex_pd(root, tmp_path, pd).install_mcp()
+    txt = Path(tmp_path / "codex.config.toml").read_text()
+    assert "[mcp_servers.linear]" in txt
+    assert "command =" not in txt                        # 추측 커맨드 없음
+    assert "_register_hint = '테스트 팩'" in txt
+    assert any("자리만" in c for c in out)
+
+
+def test_install_mcp_launch_command_is_idempotent(tmp_path):
+    """기동 커맨드 등록도 멱등(두 번 돌려 바이트 동일)."""
+    pd = _providers_dir_with(
+        tmp_path, "linear",
+        {"source": "official", "command": "npx", "args": ["-y", "x"]})
+    root = _scaffold(tmp_path, LINEAR_CONNECTED)
+    _claude_pd(root, tmp_path, pd).install_mcp()
+    first = Path(tmp_path / "settings.claude.json").read_text()
+    _claude_pd(root, tmp_path, pd).install_mcp()
+    assert first == Path(tmp_path / "settings.claude.json").read_text()
