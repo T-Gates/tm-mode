@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
@@ -1364,94 +1363,4 @@ def unregister_obsidian_vault(config_path, vault_path) -> bool:
             encoding="utf-8")
     except OSError:
         return False
-    return True
-
-
-# ─────────────────────────── handlers/ 규약 검증 (S1) ───────────────────────────
-#
-# handlers/<역할>.py 는 팀 레포 루트 레벨에 위치(infra/ 와 동일 레벨).
-# SYNC_PATHS=["infra/"] 만 덮어쓰므로 handlers/ 는 upstream update 무영향.
-# 실제 서비스 연결은 S7 도그푸딩 때 — 여기서는 계약·검증·lint 인프라만.
-
-# 역할별 필수 함수 목록 (SPEC S1-1B 인터페이스 계약 표).
-_HANDLER_REQUIRED_FUNCS: dict[str, list[str]] = {
-    "issues":   ["issues_create", "issues_list", "issues_get", "issues_update"],
-    "chat":     ["chat_send", "chat_list"],
-    "docs":     ["docs_read", "docs_write", "docs_list", "docs_create"],
-    "calendar": ["calendar_list", "calendar_create"],
-}
-
-# 토큰 리터럴 heuristic — AST 문자열 노드 값에 이 접두사가 있으면 의심(비밀 리터럴).
-# credentials.load() 경로가 아닌 직접 embed 탐지용.
-_TOKEN_LITERAL_PREFIXES = ("Bearer ", "sk-", "xoxb-", "xoxp-", "xoxa-")
-# 명백한 placeholder 값 — 테스트/예시용으로 허용.
-_TOKEN_PLACEHOLDER_VALUES = {
-    "your-token-here", "changeme", "placeholder", "todo",
-    "tbd", "example", "redacted", "xxx", "...", "<...>",
-}
-
-
-def _has_token_literal(tree: ast.AST) -> bool:
-    """AST 에서 문자열 리터럴 중 토큰성 접두사를 탐지. placeholder 는 허용."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            val = node.value.strip()
-            if val.lower() in _TOKEN_PLACEHOLDER_VALUES:
-                continue
-            for prefix in _TOKEN_LITERAL_PREFIXES:
-                if val.startswith(prefix):
-                    return True
-    return False
-
-
-def handlers_are_valid(handlers_dir: Path) -> bool:
-    """handlers/ 디렉토리의 .py 파일들이 계약을 만족하는지 검증.
-
-    검증 항목:
-    1. 디렉토리 부재 / 빈 디렉토리 → True (아직 미연결, S7 이전은 정상)
-    2. Python 문법 파싱 — ast.parse() (실행 아님)
-    3. 역할별 필수 함수 존재 대조 (_HANDLER_REQUIRED_FUNCS)
-    4. 토큰 리터럴 heuristic — Bearer·sk-·xoxb- 등 직접 embed 탐지
-
-    실패 조건: 문법 오류 · 필수 함수 누락 · 토큰 리터럴 embed.
-    """
-    handlers_dir = Path(handlers_dir)
-    if not handlers_dir.is_dir():
-        return True  # 없으면 빈 것과 동일 취급 — S7 이전 정상
-
-    py_files = list(handlers_dir.glob("*.py"))
-    if not py_files:
-        return True  # 빈 디렉토리 — 아직 미연결
-
-    for py_file in py_files:
-        role = py_file.stem  # 파일명 = 역할 이름
-        try:
-            source = py_file.read_text(encoding="utf-8")
-        except OSError:
-            return False
-
-        # 1. 문법 파싱
-        try:
-            tree = ast.parse(source, filename=str(py_file))
-        except SyntaxError:
-            return False
-
-        # 2. 역할별 필수 함수 존재 확인 (role 이 _HANDLER_REQUIRED_FUNCS 에 있을 때만)
-        # top-level FunctionDef 만 인정 — tree.body 직속만 수집 (codex fault injection #3).
-        # nested function(내부 함수)·class method 는 계약 함수로 인정하지 않는다.
-        # async 함수(AsyncFunctionDef) 는 허용 — asyncio 기반 SDK 지원.
-        if role in _HANDLER_REQUIRED_FUNCS:
-            defined = {
-                node.name
-                for node in tree.body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            }
-            for fn in _HANDLER_REQUIRED_FUNCS[role]:
-                if fn not in defined:
-                    return False
-
-        # 3. 토큰 리터럴 heuristic
-        if _has_token_literal(tree):
-            return False
-
     return True

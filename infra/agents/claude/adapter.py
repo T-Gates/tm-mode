@@ -207,14 +207,8 @@ class Adapter:
 
         provider 팩의 services(역할 목록) 중 하나라도 config services 에서 같은
         provider 로 채워져 있으면 연결됨. services 가 dict 이어야 호출된다.
-
-        S6 일반화: `teammode` 단일 MCP 서버는 provider 팩 시스템과 별개로 handlers/ 존재
-        여부로 연결 판정한다. handlers/ 에 .py 파일이 하나라도 있으면 "연결됨".
         """
-        # S6: teammode 단일 서버는 handlers/ 존재 여부로 연결 판정 (provider 팩 무관)
-        if canonical_server == "teammode":
-            return self._has_handlers()
-
+        # [P1 삭제] handlers/role_server 폐기 — `teammode` 단일 서버 판정 분기 제거.
         roles = self._provider_roles(canonical_server)
         if not roles:
             # provider 팩을 못 찾으면 역할 매핑 불가 → 보수적으로 "미연결" 취급
@@ -360,40 +354,10 @@ class Adapter:
             "_register_hint": pack.mcp.get("register_hint", "") if pack else "",
         }
 
-    def _build_teammode_entry(self) -> dict:
-        """teammode 단일 MCP 서버 등록 항목 (S5).
-
-        handlers/ 디렉토리가 있을 때만 호출된다. 실 command/args/cwd 를 포함해
-        role_server.py 를 기동할 수 있는 완전한 항목을 반환한다.
-        """
-        team_root = self.team_root  # 절대경로 (Adapter.__init__ 에서 resolve 됨)
-        handlers_dir = team_root / "handlers"
-        # team name: team.config.json의 team.name 필드, 없으면 팀루트 디렉토리 이름 사용
-        team_name = team_root.name
-        if self.config_path.is_file():
-            try:
-                cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
-                team_name = cfg.get("team", {}).get("name", team_name) or team_name
-            except (ValueError, OSError, AttributeError):
-                pass
-        return {
-            "_teammode_managed": True,
-            "_canonical_server": "teammode",
-            "command": "python",
-            "args": [
-                "-m", "infra.mcp.role_server",
-                "--team", str(team_name),
-                "--handlers-dir", str(handlers_dir),
-            ],
-            "cwd": str(team_root),
-        }
-
-    def _has_handlers(self) -> bool:
-        """team_root/handlers/ 에 .py 파일이 하나 이상 있으면 True."""
-        handlers_dir = self.team_root / "handlers"
-        if not handlers_dir.is_dir():
-            return False
-        return any(handlers_dir.glob("*.py"))
+    # [P1 삭제] handlers/role_server 폐기 — _build_teammode_entry()/_has_handlers() 제거.
+    # teammode 단일 MCP 서버(role_server 기동) 등록 자체가 사라졌다. 벤더 MCP alias
+    # 등록(linear 등)은 install_mcp 의 connected-provider 루프로 유지된다.
+    # TODO P4: 벤더 MCP 등록기 — 공식/자작 MCP 마련 + 정규 서버명 alias 등록 정합.
 
     def install_mcp(self) -> list:
         """config services 의 연결 provider 를 MCP 서버로 등록(자기 방식). 멱등.
@@ -455,23 +419,8 @@ class Adapter:
             servers[alias] = entry
             changes.append(f"[mcp] {alias} 등록")
 
-        # S5: teammode 단일 MCP 서버 등록 (공존 전략).
-        # handlers/ 디렉토리에 .py 파일이 있으면 teammode alias 를 desired 에 추가.
-        # 기존 provider alias(linear 등) 와 공존 — desired_aliases 에 둘 다 포함.
-        if self._has_handlers():
-            tm_alias = "teammode"
-            tm_entry = self._build_teammode_entry()
-            desired_aliases.add(tm_alias)
-            existing_tm = servers.get(tm_alias)
-            if self._is_owned_mcp(existing_tm) and existing_tm == tm_entry:
-                pass  # 멱등: 변경 없음
-            elif existing_tm is not None and not self._is_owned_mcp(existing_tm):
-                # 사용자가 직접 등록한 teammode 서버 — 무접촉.
-                changes.append(f"[warn] {tm_alias}: 사용자 등록 MCP 서버 존재 → 무접촉")
-                desired_aliases.discard(tm_alias)
-            else:
-                servers[tm_alias] = tm_entry
-                changes.append(f"[mcp] {tm_alias} 등록")
+        # [P1 삭제] handlers/role_server 폐기 — teammode 단일 MCP 서버 등록 블록 제거.
+        # 이제 install_mcp 는 config services 의 벤더 provider alias 만 등록한다.
 
         # 제거: teammode 소유지만 더 이상 연결되지 않는 항목.
         for alias in list(servers.keys()):

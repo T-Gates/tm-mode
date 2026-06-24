@@ -15,7 +15,6 @@ import json
 import os
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -24,21 +23,17 @@ REPO = Path(__file__).resolve().parents[1]
 NORMALIZE = REPO / "infra" / "agents" / "claude" / "normalize.py"
 CONFIRM = REPO / "infra" / "hooks" / "confirm-action.py"
 MANIFEST = REPO / "infra" / "hooks" / "manifest.json"
-ROLE_SERVER = REPO / "infra" / "mcp" / "role_server.py"
 PY = sys.executable
+
+# [P1 삭제] role_server 폐기 — _load_role_server 헬퍼 및 #2/#3 role_server 의존
+# 테스트(get_token_for_role·call_tool·async/sync 핸들러)는 제거됐다.
+# #1(confirm 게이트 normalize 경유)·#6(fail-closed)·normalize _lookup_entry 테스트는
+# role_server 모듈을 import 하지 않고 confirm-action 체인만 검증하므로 보존한다.
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # 헬퍼
 # ═══════════════════════════════════════════════════════════════════════
-
-def _load_role_server():
-    """role_server 모듈을 동적 로드."""
-    spec = importlib.util.spec_from_file_location("_rs_fault_test", ROLE_SERVER)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
 
 def _make_teammode_payload(server: str, tool: str) -> dict:
     """normalize 경유 테스트용 Claude 원어 PreToolUse 페이로드."""
@@ -150,179 +145,9 @@ def test_confirm_gate_passes_with_allow_signal_via_normalize(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# #2 [major] get_token_for_role 계약 — 핸들러 자율 원칙 + 헬퍼 동작
+# [P1 삭제] #2/#3 (role_server get_token_for_role·call_tool·async/sync 핸들러)
+# 테스트 제거 — role_server 폐기. confirm 게이트(#1)·fail-closed(#6) 는 아래 유지.
 # ═══════════════════════════════════════════════════════════════════════
-
-def test_get_token_for_role_exists_in_role_server():
-    """#2 — get_token_for_role 가 role_server 에 헬퍼로 존재한다."""
-    mod = _load_role_server()
-    assert hasattr(mod, "get_token_for_role"), (
-        "get_token_for_role 함수가 role_server.py 에 없음 — 헬퍼 계약 위반"
-    )
-    fn = mod.get_token_for_role
-    import inspect
-    sig = inspect.signature(fn)
-    params = list(sig.parameters.keys())
-    assert "auth_type" in params, (
-        f"get_token_for_role 시그니처에 auth_type 없음: {params}"
-    )
-
-
-def test_get_token_for_role_oauth_key(tmp_path):
-    """#2 — oauth auth_type 은 <role>_access_token 키로 credentials.load() 호출."""
-    # credentials.py stub 생성
-    creds_dir = tmp_path
-    creds_stub = creds_dir / "credentials.py"
-    creds_stub.write_text(textwrap.dedent("""\
-        _calls = []
-        def load(team, scope, key):
-            _calls.append((team, scope, key))
-            return "tok-" + key
-        def get_calls():
-            return _calls
-    """), encoding="utf-8")
-
-    # role_server 를 수정해 credentials stub 경로 주입
-    import importlib.util as ilu
-    spec = ilu.spec_from_file_location("_creds_stub", creds_stub)
-    creds_mod = ilu.module_from_spec(spec)
-    spec.loader.exec_module(creds_mod)
-
-    # _load_credentials_module 을 monkeypatch 하기 어려우므로
-    # get_token_for_role 의 키 계약만 함수 소스로 확인
-    src = ROLE_SERVER.read_text(encoding="utf-8")
-    assert "_access_token" in src, (
-        "get_token_for_role 에서 oauth → <role>_access_token 키 계약이 없음"
-    )
-    assert 'auth_type == "oauth"' in src or "auth_type==" in src.replace(" ", ""), (
-        "get_token_for_role 에 oauth 분기가 없음"
-    )
-
-
-def test_call_tool_does_not_inject_token(tmp_path):
-    """#2 — role_server.call_tool 은 핸들러에 토큰을 주입하지 않는다(핸들러 자율).
-
-    call_tool 소스에 credentials·token 주입 코드가 없음을 정적으로 확인.
-    """
-    src = ROLE_SERVER.read_text(encoding="utf-8")
-    # call_tool 함수 소스 추출 (간단히 fn(**arguments) 호출만 있어야 함)
-    assert "fn(**arguments)" in src or "fn(" in src, "call_tool 에 함수 호출 없음"
-    # call_tool 이 auth_type 을 핸들러에 넘기지 않음을 확인
-    # (get_token_for_role 을 call_tool 내부에서 호출하면 안 됨)
-    import ast as _ast
-    tree = _ast.parse(src)
-    call_tool_fn = None
-    for node in _ast.walk(tree):
-        if isinstance(node, _ast.FunctionDef) and node.name == "call_tool":
-            call_tool_fn = node
-            break
-    assert call_tool_fn is not None, "call_tool 함수를 찾을 수 없음"
-    # call_tool 내부에서 get_token_for_role 호출 없음
-    injections = [
-        n for n in _ast.walk(call_tool_fn)
-        if isinstance(n, _ast.Call)
-        and getattr(getattr(n, "func", None), "id", "") == "get_token_for_role"
-    ]
-    assert not injections, (
-        "call_tool 이 get_token_for_role 을 내부 호출함 — 핸들러 자율 위반"
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# #3 [major] async 핸들러 tools/call 정상 결과
-# ═══════════════════════════════════════════════════════════════════════
-
-def test_async_handler_tools_call_returns_result(tmp_path):
-    """#3 — async 핸들러의 tools/call 이 coroutine 직렬화 실패 없이 정상 결과 반환."""
-    handlers_dir = tmp_path / "handlers"
-    handlers_dir.mkdir()
-    # async issues 핸들러 작성
-    (handlers_dir / "issues.py").write_text(textwrap.dedent("""\
-        async def issues_create(title, body="", assignee=None, label=None, priority=None):
-            return {"id": "async-1", "title": title}
-
-        async def issues_list(filter=None):
-            return [{"id": "async-1"}]
-
-        async def issues_get(id):
-            return {"id": id}
-
-        async def issues_update(id, **kwargs):
-            return {"id": id, "updated": True}
-    """), encoding="utf-8")
-
-    mod = _load_role_server()
-    server = mod.TeammodeMCPServer(team="test", handlers_dir=handlers_dir)
-
-    result = server.call_tool("issues_create", {"title": "비동기 이슈"})
-    assert not result.get("isError"), (
-        f"async 핸들러 tools/call 에서 오류 발생: {result}"
-    )
-    content = result.get("content", [])
-    assert content, "결과 content 가 비어 있음"
-    # content[0]["text"] 가 JSON 직렬화된 결과여야 함
-    data = json.loads(content[0]["text"])
-    assert data.get("id") == "async-1", (
-        f"async 핸들러 결과 불일치: {data}"
-    )
-
-
-def test_async_handler_coroutine_not_serialized_as_string(tmp_path):
-    """#3 — async 핸들러 결과가 coroutine 문자열이 아닌 실제 dict 로 반환."""
-    handlers_dir = tmp_path / "handlers"
-    handlers_dir.mkdir()
-    (handlers_dir / "issues.py").write_text(textwrap.dedent("""\
-        async def issues_create(title, body="", assignee=None, label=None, priority=None):
-            return {"id": "ok", "title": title}
-
-        async def issues_list(filter=None):
-            return []
-
-        async def issues_get(id):
-            return {"id": id}
-
-        async def issues_update(id, **kwargs):
-            return {"id": id, "updated": True}
-    """), encoding="utf-8")
-
-    mod = _load_role_server()
-    server = mod.TeammodeMCPServer(team="test", handlers_dir=handlers_dir)
-    result = server.call_tool("issues_create", {"title": "test"})
-
-    assert not result.get("isError"), f"에러 발생: {result}"
-    text = result["content"][0]["text"]
-    # coroutine 직렬화 실패 시 "<coroutine object ...>" 같은 문자열이 나옴
-    assert "coroutine" not in text.lower(), (
-        f"coroutine 이 직렬화되지 않고 그대로 반환됨: {text}"
-    )
-    data = json.loads(text)
-    assert isinstance(data, dict), f"결과가 dict 가 아님: {data}"
-
-
-def test_sync_handler_still_works(tmp_path):
-    """#3 — async 처리 추가 후 기존 동기 핸들러도 정상 동작."""
-    handlers_dir = tmp_path / "handlers"
-    handlers_dir.mkdir()
-    (handlers_dir / "issues.py").write_text(textwrap.dedent("""\
-        def issues_create(title, body="", assignee=None, label=None, priority=None):
-            return {"id": "sync-1", "title": title}
-
-        def issues_list(filter=None):
-            return []
-
-        def issues_get(id):
-            return {"id": id}
-
-        def issues_update(id, **kwargs):
-            return {"id": id, "updated": True}
-    """), encoding="utf-8")
-
-    mod = _load_role_server()
-    server = mod.TeammodeMCPServer(team="test", handlers_dir=handlers_dir)
-    result = server.call_tool("issues_create", {"title": "동기 이슈"})
-    assert not result.get("isError"), f"동기 핸들러 에러: {result}"
-    data = json.loads(result["content"][0]["text"])
-    assert data["id"] == "sync-1"
 
 
 # ═══════════════════════════════════════════════════════════════════════
