@@ -119,6 +119,51 @@ def test_placeholder_value_is_allowed(tmp_path):
     assert ok, detail
 
 
+# ── Bearer 과탐 완화 (P4 검수 WARN): 안전한 헤더 조립은 통과, 실토큰은 FAIL ──
+
+def test_fstring_bearer_interpolation_is_allowed(tmp_path):
+    """f"Bearer {token}" — 보간 placeholder 헤더는 실토큰 아님 → 통과."""
+    _write_mcp(tmp_path, "linear/server.py",
+               'def auth_header(token):\n'
+               '    return {"Authorization": f"Bearer {token}"}\n')
+    _, ok, detail = _lint(tmp_path)
+    assert ok, detail
+
+
+def test_format_bearer_interpolation_is_allowed(tmp_path):
+    '''"Bearer {}".format(tok) / "Bearer {tok}".format() — 안전 조립 → 통과.'''
+    _write_mcp(tmp_path, "linear/srv.py",
+               'def h1(tok):\n'
+               '    return "Bearer {}".format(tok)\n'
+               'def h2(tok):\n'
+               '    return "Bearer {tok}".format(tok=tok)\n')
+    _, ok, detail = _lint(tmp_path)
+    assert ok, detail
+
+
+def test_percent_bearer_interpolation_is_allowed(tmp_path):
+    '''"Bearer %s" % tok — printf 보간 헤더 → 통과.'''
+    _write_mcp(tmp_path, "x/s.py", 'H = "Bearer %s" % tok\n')
+    _, ok, detail = _lint(tmp_path)
+    assert ok, detail
+
+
+def test_real_bearer_token_literal_still_fires(tmp_path):
+    """실토큰 리터럴 'Bearer sk-abc123...' 은 여전히 FAIL — 완화가 구멍 아님."""
+    _write_mcp(tmp_path, "linear/server.py",
+               'AUTH = "Bearer sk-abc123def456ghi789jkl"\n')
+    _, ok, detail = _lint(tmp_path)
+    assert not ok, detail
+
+
+def test_real_bearer_token_in_fstring_still_fires(tmp_path):
+    """f-string 안에 박힌 실토큰 f"Bearer sk-..." 도 FAIL."""
+    _write_mcp(tmp_path, "x/s.py",
+               'AUTH = f"Bearer sk-abc123def456ghi789xyz"\n')
+    _, ok, detail = _lint(tmp_path)
+    assert not ok, detail
+
+
 def test_py_suffix_does_not_exempt_mcp(tmp_path):
     """일반 데이터-린트는 .py 를 skip 하지만 infra/mcp/ 강제 스캔으로 잡힌다."""
     # 같은 토큰을 infra/ 밖 일반 .py 에 두면(데이터-린트 skip) 안 잡히는 게 정상.

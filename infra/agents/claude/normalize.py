@@ -140,7 +140,8 @@ def _lookup_entry(manifest: list, script: str, event: str,
     """(script, 정규 이벤트) + canonical/args 로 manifest 엔트리 정확히 조회(§6.2-2).
 
     같은 (script, event) 쌍이 여러 엔트리에 등록될 수 있다(예: confirm-action.py 가
-    linear/create_issue 와 teammode/issues_create 등을 각각 처리하는 경우).
+    linear/create_issue 와 notion/create_page 등 서로 다른 벤더 MCP 도구를 각각
+    처리하는 경우).
     단순히 첫 항목을 반환하면 실제 발동과 무관한 엔트리가 선택돼 자가필터가
     오작동한다 — 이를 방지하기 위해 아래 우선순위로 엔트리를 선택한다:
 
