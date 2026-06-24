@@ -109,21 +109,25 @@ def test_confirm_gate_fires_via_normalize(tmp_path, entry):
         )
 
 
-def test_confirm_gate_fires_teammode_issues_create_via_normalize(tmp_path):
-    """#1 blocker 핵심 케이스 — teammode/issues_create 가 normalize 경유로 차단."""
+def test_confirm_gate_fires_linear_create_issue_via_normalize(tmp_path):
+    """#1 blocker 핵심 케이스 — 살아있는 벤더 매처(linear/create_issue)가 normalize 경유로 차단.
+
+    [P2] teammode 단일 서버 매처 폐기 → 입력을 살아있는 벤더 MCP confirm 게이트로 교체.
+    테스트 의도(normalize→confirm 게이트 차단)는 그대로 보존한다.
+    """
     proc = _run_normalize_then_confirm(
-        tmp_path, "teammode", "issues_create",
-        "teammode-issues-create-allow",
+        tmp_path, "linear", "create_issue",
+        "teammode-linear-create-allow",
     )
     assert proc.returncode != 0, (
-        f"#1 blocker: teammode/issues_create normalize 경유 차단 실패\n"
+        f"#1 blocker: linear/create_issue normalize 경유 차단 실패\n"
         f"exit={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
     )
 
 
 def test_confirm_gate_passes_with_allow_signal_via_normalize(tmp_path):
     """#1 — allow 신호 있으면 normalize 경유도 통과(exit 0)."""
-    marker = "teammode-issues-create-allow"
+    marker = "teammode-linear-create-allow"
     team_root = tmp_path / "team2"
     team_root.mkdir(exist_ok=True)
     (team_root / ".teammode-active").write_text("")
@@ -131,7 +135,7 @@ def test_confirm_gate_passes_with_allow_signal_via_normalize(tmp_path):
     confirm_dir.mkdir()
     (confirm_dir / marker).write_text("")
 
-    payload = _make_teammode_payload("teammode", "issues_create")
+    payload = _make_teammode_payload("linear", "create_issue")
     proc = subprocess.run(
         [PY, str(NORMALIZE), "confirm-action.py", marker],
         input=json.dumps(payload),

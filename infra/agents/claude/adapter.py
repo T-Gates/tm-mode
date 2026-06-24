@@ -512,12 +512,9 @@ class Adapter:
             if isinstance(match, dict) and "mcp" in match and isinstance(services, dict):
                 canonical = match["mcp"].get("server")
                 if not self._mcp_server_connected(canonical, services):
-                    # S6: teammode 단일 서버는 handlers/ 없으면 완전 미설정 상태(opt-in).
-                    # handlers/ 없음 = 팀이 아직 tm-connect 를 실행하지 않은 것 → 조용히 생략.
-                    # provider 기반 서버와 달리 [info] 메시지 없음(팀 모르게 silent skip).
-                    if canonical == "teammode":
-                        continue
-                    # 기존 provider 기반 서버: 빈 슬롯 우선 규칙 + [info]
+                    # [P2 삭제] teammode 단일 서버 silent-skip 특례 폐기 — teammode 매처가
+                    # manifest 에서 사라졌으므로 일반 provider 경로로 자연 처리(빈 슬롯 우선 +
+                    # [info]). 벤더 provider(linear 등) 슬롯 미연결이면 매처 생략 + 안내.
                     infos.append(
                         f"[info] {entry['script']}: '{canonical}' 역할 슬롯 미연결 "
                         f"→ MCP 매처 생략(빈 슬롯, 슬롯 연결 후 sync 재실행)")

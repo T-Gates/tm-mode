@@ -13,7 +13,7 @@
   "services": ["docs"],
   "resource_fields": ["database_id"],
   "mcp": {
-    "register_hint": "Notion MCP 서버를 정규 서버명 'notion' 로 등록(integration 토큰 사용, 도입자 1회)."
-  },
-  "action_map": {}
+    "source": "official",
+    "register_hint": "Notion 공식 MCP 서버를 정규 서버명 'notion' 로 등록(integration 토큰 사용, 도입자 1회). 정확한 패키지/기동 커맨드는 install-mcp(P4) 가 확정한다(추측 패키지명 미기재)."
+  }
 }

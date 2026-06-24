@@ -13,7 +13,7 @@
   "services": ["calendar"],
   "resource_fields": ["calendar_id"],
   "mcp": {
-    "register_hint": "Google Calendar MCP 서버를 정규 서버명 'google' 로 등록(localhost OAuth/PKCE)."
-  },
-  "action_map": {}
+    "source": "official",
+    "register_hint": "Google Calendar 공식 MCP 서버를 정규 서버명 'google' 로 등록(localhost OAuth/PKCE). 정확한 패키지/기동 커맨드는 install-mcp(P4) 가 확정한다(추측 패키지명 미기재)."
+  }
 }
