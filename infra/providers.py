@@ -2,16 +2,23 @@
 """provider 팩 (providers/<name>.json) load·validate·lookup — L2-A (SPEC §7, 부록 B-1).
 
 provider 팩 = 한 provider(linear·slack·notion·google …)가 teammode 슬롯에 연결될 때
-필요한 **데이터**(역할·연결방식·scope 성향·config 가 요구하는 인스턴스 필드·토큰 안내).
-번역표·연결성향을 코드 분기에 숨기지 않고 데이터로 둔다(events.json 과 같은 정신).
+필요한 **데이터**(역할·연결방식·scope 성향·config 가 요구하는 인스턴스 필드·토큰 안내·
+MCP 등록 스펙). 번역표·연결성향을 코드 분기에 숨기지 않고 데이터로 둔다(events.json 과
+같은 정신).
 
 핵심 불변식(SPEC §2.5):
 - **항등 불변식**: `provider` 필드 == 파일이 선언하는 정규 서버명. v0.1 은 둘을 분리하지
   않으므로(canonical_server 미도입) `provider` 하나가 정규 서버명을 겸한다. 위반 시 reject.
 
-action_map(부록 B-1):
-- v0.1 **예약 필드**. 소비자 부재(어댑터는 §2.5 정규 서버명 직사용). 존재 시 shape 만
-  검증하고 컴파일 소비는 하지 않는다(가짜 테스트 방지 — 죽은 필드를 산 척 만들지 않음).
+mcp(L2 재설계, 2026-06-25 — 등록 스펙):
+- L2 = 슬롯에 공식/자작 MCP 를 꽂는 등록기. mcp 필드가 그 등록 스펙을 담는다.
+  - `register_hint` (필수): 등록 안내 문자열(사람·LLM 용).
+  - `source` (선택): "official"(공식 레포 가져옴) | "custom"(자작). 있으면 값 검증.
+  - `repo` (선택): 공식 MCP 의 git 레포 URL/식별자(official 일 때).
+  - `command`·`args` (선택): MCP 서버 기동 커맨드(등록 시 사용). args 는 리스트.
+  - `path` (선택): 자작/벤더드 official 의 배치 경로(infra/mcp/<provider>/).
+- 검증은 "있으면 타입 체크" 수준(register_hint 외 전부 선택). 정확한 패키지명을 모르면
+  추측으로 박지 않고 register_hint 에 서술 + source 만 둔다(추측이 더 위험).
 
 설계 원칙(install_lib 와 동일): 호스트 무접촉. 디렉토리는 인자 주입(테스트는 tmp).
 """
@@ -29,6 +36,8 @@ DEFAULT_PROVIDERS_DIR = _REPO_ROOT / "providers"
 VALID_AUTH = {"api_key", "oauth", "bot_token"}
 # 허용 scope 값 (SPEC §7.1).
 VALID_SCOPE = {"team", "personal"}
+# 허용 mcp.source 값 (L2 등록 스펙). 공식 레포 가져옴 vs 자작.
+VALID_MCP_SOURCE = {"official", "custom"}
 
 # 스키마 필수 키 (부록 B-1).
 _REQUIRED_KEYS = {
@@ -40,8 +49,9 @@ _REQUIRED_KEYS = {
     "resource_fields",
     "mcp",
 }
-# 예약 선택 키 — 존재해도 거부하지 않으나, 그 외 미지 키는 거부(오타 검출).
-_OPTIONAL_KEYS = {"action_map"}
+# 선택 키 — 존재해도 거부하지 않으나, 그 외 미지 키는 거부(오타 검출).
+# (L2 재설계: action_map 폐기 — 등록 스펙은 mcp 필드 하위로 이동.)
+_OPTIONAL_KEYS: set = set()
 _KNOWN_KEYS = _REQUIRED_KEYS | _OPTIONAL_KEYS
 
 
@@ -60,7 +70,6 @@ class ProviderPack:
     services: list
     resource_fields: list
     mcp: dict
-    action_map: dict | None = None
     raw: dict | None = None
 
     # 정규 서버명 == provider (항등 불변식, §2.5). 별 메서드로 의도 명시.
@@ -131,11 +140,19 @@ def validate_pack(data, *, expected_name: str | None = None) -> ProviderPack:
              and mcp.get("register_hint"),
              "mcp.register_hint 은 비어있지 않은 문자열이어야 합니다.")
 
-    # action_map = v0.1 예약. 존재 시 shape(dict) 만 검증. 컴파일 소비 안 함.
-    action_map = data.get("action_map")
-    if action_map is not None:
-        _require(isinstance(action_map, dict),
-                 "action_map(예약 필드)은 존재 시 object 여야 합니다.")
+    # mcp 등록 스펙(L2) — 전부 선택. "있으면 타입 체크"만(official/custom 따라 다름).
+    if "source" in mcp:
+        _require(mcp["source"] in VALID_MCP_SOURCE,
+                 f"mcp.source 는 {sorted(VALID_MCP_SOURCE)} 중 하나여야 합니다 "
+                 f"(받음: {mcp['source']!r}).")
+    for _k in ("repo", "command", "path"):
+        if _k in mcp:
+            _require(isinstance(mcp[_k], str) and mcp[_k].strip(),
+                     f"mcp.{_k} 은 비어있지 않은 문자열이어야 합니다.")
+    if "args" in mcp:
+        _require(isinstance(mcp["args"], list)
+                 and all(isinstance(a, str) for a in mcp["args"]),
+                 "mcp.args 는 문자열 리스트여야 합니다.")
 
     return ProviderPack(
         provider=provider,
@@ -145,7 +162,6 @@ def validate_pack(data, *, expected_name: str | None = None) -> ProviderPack:
         services=list(services),
         resource_fields=list(resource_fields),
         mcp=mcp,
-        action_map=action_map,
         raw=data,
     )
 

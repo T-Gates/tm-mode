@@ -19,10 +19,11 @@ manifest args 첫 인자 = marker (예 "teammode-issues-create-allow").
   4) allow 신호 없으면 차단(exit 2 + deny JSON)
   5) 일치 엔트리 없으면 통과(exit 0) — 대상 아님
 
-역할: teammode side-effect 도구(issues_create·issues_update·chat_send·docs_write·
-docs_create·calendar_create 등)처럼 되돌리기 어려운 외부 부수효과 동작을 사람이
-의식적으로 확인하도록 **기본 차단**한다. 사람이 의식적으로 남긴 allow 신호(아래)가
-있을 때만 통과. read 계열(issues_list·issues_get 등)은 manifest 미등록 → 이 훅 미도달.
+역할: 되돌리기 어려운 외부 부수효과 동작(예: 벤더 MCP 의 linear/create_issue 처럼
+이슈를 실제 생성하는 도구)을 사람이 의식적으로 확인하도록 **기본 차단**한다. 사람이
+의식적으로 남긴 allow 신호(아래)가 있을 때만 통과. read 계열(list/get 등)은 manifest
+미등록 → 이 훅 미도달. (L2: 동작은 AI 가 벤더 MCP 도구를 직접 호출하고, confirm 게이트는
+그 벤더 도구에 manifest 엔트리로 붙는다 — teammode 단일 서버 매처는 P2 에서 폐기됨.)
 
 차단 시맨틱(§2.10-3 시맨틱 전파):
   Claude Code PreToolUse 차단은 **exit 2 + stdout 의 permissionDecision="deny" JSON** 두

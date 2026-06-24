@@ -97,7 +97,8 @@ def test_issue_omits_unset_fields(tmp_path):
 # ── B-4: action_map 해석 안 함(echo 까지만) ──
 
 def test_issue_does_not_interpret_action_map(tmp_path):
-    # linear.json 의 action_map(예약 필드)이 echo 출력에 새지 않는다 — 엔진은 변환 안 함.
+    # 엔진은 페이로드 변환을 하지 않는다 — echo 출력에 action_map 키가 없어야 한다.
+    # (action_map 은 L2 에서 폐기됐고, 엔진은 애초에 그런 변환을 하지 않았다.)
     _connect_issues(tmp_path)
     r = _run_harness_style(tmp_path, ["issue", "create", "--title", "t"])
     out = json.loads(r.stdout)

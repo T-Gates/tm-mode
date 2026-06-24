@@ -35,8 +35,7 @@ _GOOD_PACK = {
     "auth": "api_key",
     "services": ["docs"],
     "resource_fields": ["database_id"],
-    "mcp": {"register_hint": "register notion"},
-    "action_map": {},
+    "mcp": {"source": "official", "register_hint": "register notion"},
 }
 
 
@@ -123,18 +122,86 @@ def test_identity_invariant_via_filename(tmp_providers):
         P.load_pack(f)
 
 
-# ─────────── action_map 예약 필드 (shape 만) ───────────
+# ─────────── action_map 폐기 (L2 재설계) ───────────
 
-def test_action_map_reserved_shape_only():
+def test_action_map_key_now_rejected_as_unknown():
+    # action_map 은 L2 에서 폐기 — 더 이상 알려진 키가 아니므로 미지 키로 거부(오타 검출).
     data = dict(_GOOD_PACK)
-    data["action_map"] = {"create": "issue.create"}  # 임의 shape
+    data["action_map"] = {}
+    with pytest.raises(P.ProviderValidationError):
+        P.validate_pack(data, expected_name="notion")
+
+
+def test_provider_pack_has_no_action_map_field():
+    # dataclass 에서 action_map 필드 자체가 제거됨.
+    pack = P.validate_pack(dict(_GOOD_PACK), expected_name="notion")
+    assert not hasattr(pack, "action_map")
+
+
+# ─────────── mcp 등록 스펙 (L2) — 있으면 타입 체크 ───────────
+
+def test_mcp_source_official_accepted():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"source": "official", "register_hint": "h"}
     pack = P.validate_pack(data, expected_name="notion")
-    assert pack.action_map == {"create": "issue.create"}  # 보존만, 소비 없음
+    assert pack.mcp["source"] == "official"
 
 
-def test_action_map_non_object_rejected():
+def test_mcp_source_custom_accepted():
     data = dict(_GOOD_PACK)
-    data["action_map"] = ["not", "object"]
+    data["mcp"] = {"source": "custom", "register_hint": "h"}
+    pack = P.validate_pack(data, expected_name="notion")
+    assert pack.mcp["source"] == "custom"
+
+
+def test_mcp_source_bad_value_rejected():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"source": "vendored", "register_hint": "h"}
+    with pytest.raises(P.ProviderValidationError):
+        P.validate_pack(data, expected_name="notion")
+
+
+def test_mcp_source_optional():
+    # source 없어도(register_hint 만) valid — 전부 필수 아님.
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h"}
+    pack = P.validate_pack(data, expected_name="notion")
+    assert "source" not in pack.mcp
+
+
+def test_mcp_register_hint_still_required():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"source": "official"}  # register_hint 누락
+    with pytest.raises(P.ProviderValidationError):
+        P.validate_pack(data, expected_name="notion")
+
+
+def test_mcp_repo_command_path_type_checked():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"source": "official", "register_hint": "h",
+                   "repo": "github.com/x/y", "command": "node",
+                   "path": "infra/mcp/notion"}
+    pack = P.validate_pack(data, expected_name="notion")
+    assert pack.mcp["command"] == "node"
+
+
+def test_mcp_command_empty_rejected():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h", "command": "   "}
+    with pytest.raises(P.ProviderValidationError):
+        P.validate_pack(data, expected_name="notion")
+
+
+def test_mcp_args_must_be_string_list():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h", "args": ["--port", "3000"]}
+    pack = P.validate_pack(data, expected_name="notion")
+    assert pack.mcp["args"] == ["--port", "3000"]
+
+
+def test_mcp_args_non_list_rejected():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h", "args": "--port"}
     with pytest.raises(P.ProviderValidationError):
         P.validate_pack(data, expected_name="notion")
 
@@ -164,6 +231,15 @@ def test_real_provider_summary(name, role, scope, auth, fields):
 
 def test_lookup_missing_returns_none():
     assert P.lookup("doesnotexist", providers_dir=_REAL_PROVIDERS) is None
+
+
+@pytest.mark.parametrize("name", ["linear", "slack", "notion", "google"])
+def test_real_providers_mcp_source_official(name):
+    # L2: 4종 모두 공식 MCP 존재 → source=official. action_map 은 더 이상 없음.
+    pack = P.lookup(name, providers_dir=_REAL_PROVIDERS)
+    assert pack.mcp.get("source") == "official"
+    assert pack.mcp.get("register_hint")
+    assert "action_map" not in (pack.raw or {})
 
 
 # ─────────── services 스키마 유효성 (B-2) ───────────
