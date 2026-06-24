@@ -166,6 +166,7 @@ provider 선택 (등록기 흐름):
 - **이미 `team.config.json`의 `services.<역할>.provider`가 있으면**(후속 멤버) 그 provider를 읽는다. 재선택하지 않는다. provider 팩과 등록 대상은 도입자가 이미 골라 config에 커밋·push 해 둔 것을 그대로 따른다.
 - **슬롯이 비어 있으면**(첫 등록자) 어떤 provider를 쓸지 사람에게 묻고, 필요하면 후보를 검색해 제시한다. 사람이 고른다 — **공식 제공처 식별이 보안 게이트**이므로 무인 추측으로 진행하지 않는다.
   - 그 provider의 **공식 벤더 MCP**를 마련한다: 공식 MCP 레포가 있으면 가져와 본 레포(`infra/mcp/<provider>/` 등)에 두고 커밋(팀 공유 보관소), 공식이 없으면 AI가 자작한다(사용자에게 미루지 않는다).
+    - 자작 시: provider 공식 API 스펙으로 Python MCP SDK 서버를 작성해 **그 슬롯에 필요한 도구만** 노출하고, `infra/mcp/<provider>/`에 코드+실행 메타로 커밋한다(다음 멤버는 재사용). 자작 MCP는 그 벤더 전용 MCP일 뿐 역할 통일 동사를 만들지 않는다(A안 유지). 등록은 공식과 동일하게 install-mcp가 처리한다. 7단계·원칙 상세는 `docs/archive/2026-06-25-L2-redesign.md` "MCP 마련"과 `internals.md` §2.8 참조.
   - 고른 provider·인스턴스 값을 `team.config.json`에 기록하고 **GitHub에 push**해 팀 공유 선언을 한다.
 - `providers/<provider>.json` 팩이 실제로 없으면 미지원이다. 추측해서 진행하지 않는다.
 

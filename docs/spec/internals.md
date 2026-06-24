@@ -333,6 +333,17 @@ adapter.py [global-options] install-skills      # infra/skills/base/* 설치
 
 현 구현의 `install-mcp`는 실제 MCP 서버 실행 command를 placeholder에만 담고 직접 제작하지는 않는다(0.2 한계). 계약은 **연결된 provider의 정규 서버명 alias가 에이전트 설정에 teammode 관리 항목으로 존재하도록 보장**하는 데 있다. 실행 가능한 MCP 서버 정의는 provider 팩의 `mcp.register_hint`가 안내하며, 그 보강(공식 MCP를 본 레포로 가져와 두거나 자작)은 L2 등록기/connect 계층(§5.4)이 채운다.
 
+**공식/자작 분기.** install-mcp는 등록만 책임지고 **마련**(공식 가져오기 / 자작)은 connect 계층(§skills 5.4)에서 일어난다 — 단 install-mcp는 두 경로의 산출물을 **동일하게** 다룬다. 공식 MCP든 자작 MCP든 본 레포 `infra/mcp/<provider>/`에 코드+실행 메타로 놓이고, 정규 서버명(`resolve_server_alias(provider)`)으로 같은 alias 등록을 받는다. install-mcp에 "자작이라 다르게" 처리하는 분기는 없다.
+
+**자작 경로 디테일**(공식 MCP 레포가 없을 때만, 공식 우선):
+
+1. provider 공식 API 스펙(REST/GraphQL 문서)을 출처로 삼아 Python MCP SDK로 서버를 작성한다 — **그 슬롯 역할에 필요한 도구만** 노출한다(calendar면 list_events / create_event 수준).
+2. `infra/mcp/<provider>/`에 서버 코드와 실행 command를 두고 본 레포에 커밋한다 = 팀 공유 보관소. 다음 멤버는 재사용하고 재자작하지 않는다.
+3. 토큰은 공식 MCP와 같은 경로(env / 로컬 금고 0600, §5.4·§7.5)다. 자작이라고 별도 토큰 경로를 만들지 않는다.
+4. 첫 자작 직후 적대검수(서브에이전트)로 노출 도구의 실동작을 검증한다.
+
+자작 MCP는 **그 벤더 전용 MCP**다 — provider API를 감싼 도구를 그대로 노출할 뿐, 역할 통일 동사(`issues_create` 같은)를 만들지 않는다. 그건 폐기한 `role_server`/역할 추상화(B안)의 부활이다. tm-mode는 자작 MCP에 대해서도 연결(등록)만 한다(A안). 상세 7단계는 `docs/archive/2026-06-25-L2-redesign.md` "MCP 마련"을 참조한다.
+
 공통 규칙:
 
 1. 입력 소스는 `team.config.json.services`다. `_load_services()`가 dict를 반환할 때만 연결 provider를 계산한다. 파일 부재·깨진 JSON·`services` 누락·`services` 비object는 연결 provider 0개와 같다.
