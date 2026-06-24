@@ -374,7 +374,10 @@ def _secret_hit_line(line: str) -> bool:
 _HANDLER_TOKEN_RE = re.compile(
     r'(?:["\'])'
     r'(?P<val>'
-    r'Bearer\s+\S+'                      # Authorization: Bearer <token>
+    # Authorization: Bearer <실토큰>. 토큰 문자류 15+ 만 매치 — 안전한 헤더 조립
+    # (f"Bearer {tok}" · "Bearer {}".format() · "Bearer %s")은 보간 문자({}/%/공백)가
+    # 토큰류 char-class 밖이라 자연히 제외된다. 진짜 리터럴 토큰만 잡는다.
+    r'Bearer\s+[A-Za-z0-9._/+\-]{15,}'
     r'|sk-[A-Za-z0-9_-]{10,}'           # OpenAI / Anthropic sk- 키 (하이픈 포함)
     r'|xoxb-[\w-]{10,}'                  # Slack bot token
     r'|xoxp-[\w-]{10,}'                  # Slack user token
@@ -401,7 +404,7 @@ _HANDLER_TOKEN_BYTES_RE = re.compile(
     r'|github_pat_[A-Za-z0-9_]{10,}'
     r'|AKIA[A-Z0-9]{16}'
     r'|ASIA[A-Z0-9]{16}'
-    r'|Bearer\s+\S+'
+    r'|Bearer\s+[A-Za-z0-9._/+\-]{15,}'
     r'|Basic\s+[A-Za-z0-9+/]{10,}={0,2}'
     r'|[0-9a-f]{40}'
     r')'
@@ -414,9 +417,11 @@ _BASE64_CANDIDATE_RE = re.compile(
     r'["\']([A-Za-z0-9+/]{20,}={0,2})["\']'
 )
 
-# 연결 합산 후 토큰이 되는 문자열 분할 우회 탐지
+# 연결 합산 후 토큰이 되는 문자열 분할 우회 탐지.
+# Bearer 는 뒤에 토큰류 char 가 따라올 때만(실토큰 조립/분할) 매치 — f"Bearer {tok}"·
+# "Bearer %s" 처럼 보간 placeholder 가 따라오는 안전 헤더는 제외.
 _CONCAT_TOKEN_RE = re.compile(
-    r'(?:xox[bpasr]|sk-proj|Bearer|github_pat_|AKIA|ASIA|gh[pousr]_)',
+    r'(?:xox[bpasr]|sk-proj|Bearer\s+[A-Za-z0-9._/+\-]|github_pat_|AKIA|ASIA|gh[pousr]_)',
     re.IGNORECASE,
 )
 
