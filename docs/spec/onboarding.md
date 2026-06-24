@@ -217,6 +217,8 @@ members/services 스키마 검증:
 
 `wire_agents(agents, home, settings_override, run_adapter, team_root)`가 감지된 에이전트별로 어댑터를 호출한다. `run_adapter`는 필수 주입 콜러블이며 없으면 `ValueError`다. 이 절은 wire 단계만 설명한다. bootstrap verify는 이 감지 목록과 무관하게 `context`만 호출한다(`on` 미사용).
 
+> **install-mcp는 등록기 동사다(A안, §internals 2.8).** 연결된 provider의 **벤더 MCP alias를 에이전트 설정에 등록**할 뿐, 동작을 래핑하거나 `role_server`로 중계하지 않는다 — 동작은 AI가 등록된 MCP 도구를 직접 호출한다. install은 빈 슬롯을 허용하며(§4.0 "판단은 위임"), 어떤 provider를 어느 슬롯에 꽂을지의 선택·공식 MCP 마련·config push는 connect 계층(`tm-connect`, §skills 5.4)이 채운다. install은 그 config에 선언된 alias를 배선만 한다.
+
 지원 에이전트와 경로:
 
 | agent | sync settings flag/path | team config flag | MCP path | skills path |
