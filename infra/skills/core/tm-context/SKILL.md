@@ -90,17 +90,19 @@ python infra/teammode.py context --root . --json
 
 ## 출력 형식
 
+이름 앞 이모지는 **`members_file`(members.md)에 멤버별 이모지가 정의돼 있으면** 붙이고, 없으면 이름만 쓴다(members.md 가 단일 소스).
+
 ```
-<이름> (<role?>)
+<이모지?> <이름> (<role?>)
   하고 있는 일: (세션로그 심층 추출, 2~3줄)
   다음 할 일: (세션로그의 다음 단계, 있으면)
   막힌 것: (블로커·미결, 있으면 표시 / 없으면 생략)
-  이슈: (In Progress 식별자+제목, L2 연결 시 / 없으면 줄 생략)
+  📌 이슈: (In Progress 식별자+제목, L2 연결 시 / 없으면 줄 생략)
 
-최근 결정
+📋 최근 결정
   ...
 
-다가오는 팀 일정 (L2 캘린더 연결 시)
+🗓 다가오는 팀 일정 (L2 캘린더 연결 시)
   ...
 ```
 
@@ -112,6 +114,7 @@ python infra/teammode.py context --root . --json
 |------|----------------|
 | 레포 경로 | `--root .` 명시 (env 폴백 없음) |
 | 세션로그 | summary 가 아니라 `file` 본문을 의미 기반으로 심층 추출 (자유 형식) |
+| 멤버 이모지 | members.md 에 정의돼 있으면 렌더, 없으면 이름만 |
 | issues 슬롯 | `tm-<provider>` MCP 도구로 직접 조회(In Progress 만), 미연결 skip |
 | calendar 슬롯 | `tm-<provider>` MCP 도구로 직접 조회, 색상필터 등은 인스턴스 소관, 미연결 skip |
 | git pull | 불포함 (tm on 절차가 처리) |
