@@ -1699,7 +1699,13 @@ def cmd_knowledge(team_root: Path, action: str | None,
                                            rel_for_index, "delete")
 
         # do_commit(paths 한정, push=True) — 위키=팀공유. push 실패는 비차단(아래 경고만).
-        changed_paths = [str(target_path), str(index_path)]
+        # index_path 는 **존재할 때만** 스테이징 — INDEX.md 없는 폴더(엔진 외부에서 채워진
+        # 폴더, 예: product/design/)에서 삭제 시 `git add <없는 INDEX.md>` 가 pathspec 매칭
+        # 실패로 커밋 전체를 abort 시키는 버그 차단. 파일은 이미 unlink 됐으므로 그땐 삭제가
+        # 커밋에 안 들어가는 부분 실패가 됐다. (write 분기는 _index_upsert 가 항상 생성하므로 무해.)
+        changed_paths = [str(target_path)]
+        if index_path.is_file():
+            changed_paths.append(str(index_path))
         if sess_ok:
             changed_paths.append(str(session_path))
         commit_result = _git_ops.do_commit(
