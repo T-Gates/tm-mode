@@ -1214,3 +1214,134 @@ class TestCrossOsShellExecution:
             "bash" in content.lower() and
             ("shell=False" in content or "bash -c" in content or "BACKLOG" in content or "bash" in content)
         ), "bash 명시 실행 또는 한계 주석이 있어야 한다"
+
+
+# ── K. statusLine 중첩 래핑(double-wrap) 누적 회귀 ──
+# 결함: 래핑이 멱등이 아니라 off→on 토글마다 한 겹씩 누적 → 배너 N개.
+# 근본: ① 개인 statusLine 분기가 이미 teammode wrapper인 command를 또 감쌈
+#        ② python(sys.executable) 경로 흔들림(pipx vs system)이 멱등비교를 깨고
+#           재빌드 시 _wrapped_entry 유실 → off 가 오염된 _wrapped_command 폴백 복원.
+# 수정: _build_status_line_entry choke-point에서 입력을 최내곽까지 unwrap 후 1겹만,
+#       _wrapped_entry 정규화, 재빌드 시 _wrapped_entry 보존.
+def _wrap_level(cmd: str) -> int:
+    return cmd.count("teammode_statusline.py")
+
+
+class TestStatusLineNestedWrapRegression:
+    """K: statusLine 래핑 멱등성 — 토글/인터프리터흔들림/기존오염 어떤 경우도 1겹 유지."""
+
+    def _adapter_with_python(self, claude_env, python):
+        return claude_adapter.Adapter(
+            agent_dir=str(claude_env.agent_dir),
+            manifest_path=str(claude_env.root / "infra" / "hooks" / "manifest.json"),
+            settings_path=str(claude_env.settings),
+            python=python,
+            team_root=str(claude_env.root),
+            config_path=str(claude_env.root / "team.config.json"),
+        )
+
+    def test_K1_repeated_toggle_keeps_single_wrap(self, claude_env):
+        """off→on 5회 반복해도 항상 정확히 1겹, off는 원본 복원."""
+        if os.name == "nt":
+            pytest.skip("non-Windows wrap 경로 검증")
+        personal = "bash /home/u/.claude/statusline.sh"
+        settings = {"statusLine": {"type": "command", "command": personal}}
+        adapter = claude_env.make_adapter()
+        for _ in range(5):
+            adapter._sync_status_line(settings, mode="on", warnings=[])
+            sl = settings["statusLine"]
+            assert _wrap_level(sl["command"]) == 1, f"누적됨: {sl['command']!r}"
+            assert sl["_wrapped_command"] == personal
+            adapter._sync_status_line(settings, mode="off", warnings=[])
+            assert settings["statusLine"]["command"] == personal
+
+    def test_K2_interpreter_flip_no_accumulation(self, claude_env):
+        """python 경로가 매 토글 바뀌어도(pipx↔system 모사) 누적되지 않는다."""
+        if os.name == "nt":
+            pytest.skip("non-Windows wrap 경로 검증")
+        personal = "bash /home/u/.claude/statusline.sh"
+        settings = {"statusLine": {"type": "command", "command": personal}}
+        pys = ["/usr/bin/python3", "/usr/bin/python", "/opt/py/python3"]
+        for i in range(6):
+            a = self._adapter_with_python(claude_env, pys[i % len(pys)])
+            a._sync_status_line(settings, mode="on", warnings=[])
+            assert _wrap_level(settings["statusLine"]["command"]) == 1
+            a._sync_status_line(settings, mode="off", warnings=[])
+        self._adapter_with_python(claude_env, pys[0])._sync_status_line(
+            settings, mode="on", warnings=[])
+        assert _wrap_level(settings["statusLine"]["command"]) == 1
+
+    def test_K3_pre_nested_pollution_heals_to_single(self, claude_env):
+        """이미 3겹 누적된 settings → on 한 번에 1겹으로 자가치유, off는 실원본 복원."""
+        import shlex
+        adapter = claude_env.make_adapter()
+        script = str(claude_env.agent_dir / "teammode_statusline.py")
+        inner = "bash /home/u/.claude/statusline.sh"
+        lvl1 = f"/usr/bin/python {script} --wrapped {shlex.quote(inner)}"
+        lvl2 = f"/usr/bin/python {script} --wrapped {shlex.quote(lvl1)}"
+        lvl3 = f"/usr/bin/python {script} --wrapped {shlex.quote(lvl2)}"
+        assert _wrap_level(lvl3) == 3  # 오염 픽스처 정합성
+        settings = {"statusLine": {
+            "type": "command", "command": lvl3,
+            "_teammode_managed": True, "_teammode_wrapped": True,
+            "_wrapped_command": lvl2,
+            "_wrapped_entry": {"type": "command", "command": lvl2},
+        }}
+        adapter._sync_status_line(settings, mode="on", warnings=[])
+        sl = settings["statusLine"]
+        assert _wrap_level(sl["command"]) == 1, f"치유 실패: {sl['command']!r}"
+        assert sl["_wrapped_command"] == inner
+        adapter._sync_status_line(settings, mode="off", warnings=[])
+        assert settings["statusLine"]["command"] == inner
+
+    def test_K4_unwrap_to_innermost(self, claude_env):
+        """_unwrap_to_innermost: 중첩 wrapper → 최내곽, 비-team 명령은 그대로."""
+        import shlex
+        adapter = claude_env.make_adapter()
+        script = str(claude_env.agent_dir / "teammode_statusline.py")
+        inner = "bash /x/s.sh"
+        l1 = f"/usr/bin/python {script} --wrapped {shlex.quote(inner)}"
+        l2 = f"/usr/bin/python {script} --wrapped {shlex.quote(l1)}"
+        assert adapter._unwrap_to_innermost(l2) == inner
+        assert adapter._unwrap_to_innermost(inner) == inner
+        assert adapter._unwrap_to_innermost("") == ""
+
+    def test_K5_off_restores_clean_even_from_polluted_wrapped_entry(self, claude_env):
+        """_wrapped_entry.command 가 감싼 명령이어도 off 복원은 최내곽 실명령."""
+        import shlex
+        adapter = claude_env.make_adapter()
+        script = str(claude_env.agent_dir / "teammode_statusline.py")
+        inner = "bash /home/u/.claude/statusline.sh"
+        wrapped_once = f"/usr/bin/python {script} --wrapped {shlex.quote(inner)}"
+        # _wrapped_entry 가 이미 감싼 명령 + managed 마커까지 달린 오염 케이스
+        polluted_entry = {"type": "command", "command": wrapped_once,
+                          "_teammode_managed": True, "_teammode_wrapped": True}
+        sanitized = adapter._sanitize_original_entry(polluted_entry)
+        assert sanitized["command"] == inner
+        assert "_teammode_managed" not in sanitized
+        assert "_teammode_wrapped" not in sanitized
+
+    def test_K6_standalone_teammode_cmd_not_rewrapped(self, claude_env):
+        """개인 statusLine 이 standalone teammode 명령(--wrapped 없음)이어도
+        choke-point 가 또 감싸지 않고 단독설치 형태로 내려간다(배너-위-배너 방지)."""
+        adapter = claude_env.make_adapter()
+        script = str(claude_env.agent_dir / "teammode_statusline.py")
+        standalone = f"/usr/bin/python3 {script}"  # --wrapped 없는 teammode 명령
+        entry = adapter._build_status_line_entry(wrapped_command=standalone)
+        assert _wrap_level(entry["command"]) == 1, f"배너-위-배너: {entry['command']!r}"
+        assert "--wrapped" not in entry["command"]
+        assert entry.get("_teammode_managed") is True
+
+    def test_K7_sanitize_strips_markers_on_standalone(self, claude_env):
+        """_sanitize_original_entry: command 가 standalone teammode 명령(unwrap 불변)
+        이어도 teammode 마커를 전부 제거한다 — off 복원→다음 on managed 오라우팅 차단."""
+        adapter = claude_env.make_adapter()
+        script = str(claude_env.agent_dir / "teammode_statusline.py")
+        standalone = f"/usr/bin/python3 {script}"
+        polluted = {"type": "command", "command": standalone,
+                    "_teammode_managed": True, "_teammode_wrapped": True,
+                    "_wrapped_command": "stale"}
+        out = adapter._sanitize_original_entry(polluted)
+        assert "_teammode_managed" not in out
+        assert "_teammode_wrapped" not in out
+        assert "_wrapped_command" not in out
