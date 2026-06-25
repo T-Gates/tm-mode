@@ -268,7 +268,8 @@ def auto_update_on_start(team_root: Path) -> None:
       - changed=True 일 때만 do_commit(paths=res.paths) — paths 한정(add -A/paths=None 금지).
       - do_commit 실패(ok=False) → on 계속 성공, staged 잔존 경고 1줄.
       - 멱등: changed=False 면 do_commit 호출 안 함.
-      - push 자동 절대 금지.
+      - push=True(6/23 자동push 철학: 푸시는 사람결정 폐기). **push 실패는 비차단** —
+        do_commit 이 push 실패해도 커밋을 보존(ok=True·pushed=False)하고 on 은 계속 성공.
       - 적용되면 "엔진 업데이트됨: <NOTICE 첫 불릿>" 한 줄 출력.
 
     모든 예외를 삼킨다 — on 의 핵심 경로를 자동 update 가 막아선 안 된다.
@@ -290,11 +291,11 @@ def auto_update_on_start(team_root: Path) -> None:
             # 멱등: 변경 없음 — do_commit 호출 안 함
             return
 
-        # 변경 있음: paths 한정 자동 커밋(push 절대 금지)
+        # 변경 있음: paths 한정 자동 커밋 + 자동 push(6/23 철학). push 실패는 비차단.
         commit_res = _git_ops.do_commit(
             str(team_root),
             message="chore: sync teammode engine from upstream [auto]",
-            push=False,
+            push=True,
             paths=list(res.paths),
         )
 
@@ -1193,6 +1194,114 @@ def _index_remove_row(index_path: Path, rel_path: str) -> bool:
     return True
 
 
+# ──────────────────────────────────────────────────────────────────
+# 양방향 백링크 (L2): memory 문서 ↔ 현재 세션로그
+# ──────────────────────────────────────────────────────────────────
+# memory write/delete 성공 직후 엔진이 기계적으로 두 방향 링크를 건다:
+#   세션로그 → 문서:  세션로그에 `📝 생성: [[<rel>]]` 한 줄 append.
+#   문서 → 세션로그:  문서 frontmatter 에 `session: ...` 필드 추가.
+# 비차단(advisory)·멱등. memory 핵심 쓰기(파일/INDEX/커밋)는 이미 끝난 뒤라
+# 백링크 실패가 본작업을 롤백시키지 않는다.
+
+def _session_log_path(team_root: Path, author: str, workday: str) -> Path:
+    """현재 author 의 오늘(작업일) 세션로그 경로."""
+    return team_root / "memory" / "team" / "sessions" / author / f"{workday}.md"
+
+
+def _backlink_session_to_doc(session_path: Path, author: str, workday: str,
+                              rel_path: str, verb: str) -> bool:
+    """세션로그 → 문서 백링크: 세션로그에 `<아이콘> <동작>: [[<rel>]]` 한 줄 append.
+
+    멱등: 같은 (verb, rel_path) 줄이 이미 있으면 skip.
+    세션로그 파일이 없으면 frontmatter + 첫 줄로 생성한다.
+    blocked 폴더(sessions/)라 memory.write API 를 우회해 직접 쓴다.
+    비차단: 어떤 예외도 밖으로 던지지 않는다(advisory).
+
+    반환: 세션로그 파일이 백링크 반영 상태로 존재하면 True(이미 멱등 줄 포함 포함),
+    실패(예외)하면 False. 호출부는 True 일 때만 커밋 paths 에 세션로그를 포함한다.
+    """
+    label = {"write-new": "📝 생성", "write-update": "✏️ 수정",
+             "delete": "🗑️ 삭제"}.get(verb, "📝 기록")
+    link_line = f"- {label}: [[{rel_path}]]"
+    try:
+        if session_path.is_file():
+            existing = session_path.read_text(encoding="utf-8")
+            # 멱등: 같은 동작+경로 줄이 이미 있으면 skip
+            if link_line in existing.splitlines():
+                return True
+            sep = "" if existing.endswith("\n") else "\n"
+            with open(session_path, "a", encoding="utf-8") as f:
+                f.write(f"{sep}{link_line}\n")
+        else:
+            # 세션로그 없으면 frontmatter + 메모리 변경 섹션으로 생성
+            session_path.parent.mkdir(parents=True, exist_ok=True)
+            summary = f"{label}: {rel_path}"
+            body = (f"\n## 메모리 변경\n\n{link_line}\n")
+            with open(session_path, "w", encoding="utf-8") as f:
+                f.write(_frontmatter(author, workday, summary))
+                f.write(body)
+        return True
+    except (OSError, PermissionError):
+        return False  # advisory — 백링크 실패는 비차단(커밋 paths 에서 제외)
+
+
+def _doc_add_session_field(doc_path: Path, session_rel: str) -> bool:
+    """문서 → 세션로그 백링크: 문서 frontmatter 에 `session: <rel>` 필드 추가.
+
+    _rebuild_frontmatter 의 extra-field 보존을 재사용한다(4필드 뒤에 session 추가).
+    멱등: 이미 같은 session 값이면 재작성하지 않는다.
+    비차단: 예외를 밖으로 던지지 않는다(advisory).
+
+    반환: 문서가 session 필드 반영 상태이면 True(이미 같은 값으로 멱등 포함),
+    frontmatter 없음/예외이면 False. 호출부는 True 일 때만 커밋 paths 에 문서를 (다시) 포함.
+    """
+    try:
+        if not doc_path.is_file():
+            return False
+        text = doc_path.read_text(encoding="utf-8")
+        fm = _parse_knowledge_frontmatter(text)
+        if not fm:
+            return False  # frontmatter 없는 문서는 건드리지 않음(write 경로가 항상 스탬프함)
+        if fm.get("session") == session_rel:
+            return True  # 멱등 — 이미 반영됨
+        body = _knowledge_body(text)
+        # 4 known 필드는 보존, session 만 갱신/추가
+        new_fm_dict = dict(fm)
+        new_fm_dict["session"] = session_rel
+        new_full = _rebuild_frontmatter(
+            new_fm_dict,
+            new_fm_dict.get("author", ""),
+            new_fm_dict.get("weight", ""),
+            new_fm_dict.get("created_at", ""),
+            new_fm_dict.get("updated_at", ""),
+        ) + body
+        if new_full == text:
+            return True
+        doc_path.write_text(new_full, encoding="utf-8")
+        return True
+    except (OSError, PermissionError):
+        return False  # advisory
+
+
+def _emit_chat_summary(verb: str, rel_path: str, weight: str | None,
+                        author: str | None, description: str | None) -> None:
+    """chat 통지용 한 줄 요약을 stdout 에 출력(A안: 엔진은 MCP 호출 안 함).
+
+    스킬/AI 가 이 요약을 받아 chat 슬롯 벤더 MCP 도구로 직접 통지한다.
+    엔진은 재료(요약 문자열)만 제공한다.
+    """
+    action_ko = {"write-new": "추가", "write-update": "수정",
+                 "delete": "삭제"}.get(verb, "변경")
+    parts = [f"[chat-notify] memory {action_ko}: {rel_path}"]
+    if weight:
+        parts.append(f"weight={weight}")
+    if author:
+        parts.append(f"author={author}")
+    if description:
+        parts.append(f"요약={description}")
+    print(" · ".join(parts))
+
+
 def cmd_knowledge(team_root: Path, action: str | None,
                   folder: str | None, filename: str | None,
                   content: str | None, author: str | None,
@@ -1200,12 +1309,17 @@ def cmd_knowledge(team_root: Path, action: str | None,
                   date_str: str | None) -> int:
     """memory 동사 — 메모리 파일 write/delete (기계 전담).
 
-    write:  frontmatter 스탬프 · 파일 write · folder INDEX 행 upsert · do_commit(paths).
-    delete: 파일 삭제 · INDEX 행 제거 · do_commit(paths).
+    write:  frontmatter 스탬프 · 파일 write · folder INDEX 행 upsert · 양방향 백링크
+            · do_commit(paths, push=True).
+    delete: 파일 삭제 · INDEX 행 제거 · 세션로그 백링크 · do_commit(paths, push=True).
 
     엔진 불변:
       - weight 는 인자로만 받는다(추측 금지). 스킬이 사용자에게 확인한 값을 전달.
-      - push 절대 금지(push=False 고정).
+      - push=True(위키=팀공유): 매 memory 변경 즉시 push. **push 실패는 비차단** —
+        로컬 커밋·memory 변경은 유지, 경고만(RC 영향 없음). do_commit 이 push 실패해도
+        ok=True·pushed=False 로 커밋을 보존한다.
+      - 양방향 백링크(세션로그 append + 문서 session: frontmatter)는 do_commit *전*에
+        수행해 **같은 커밋에 포함**(advisory·비차단: 실패해도 본작업·커밋은 진행).
       - traversal 차단(_validate_knowledge_path).
       - 멱등: 같은 내용 재호출 → 변경 없음(커밋 안 생김).
       - 대상 범위: product/·team/·team/decisions/·extras/ 등 _KNOWLEDGE_ALLOWED_FOLDERS.
@@ -1376,12 +1490,30 @@ def cmd_knowledge(team_root: Path, action: str | None,
                   file=sys.stderr)
             return 2
 
-        # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
+        # ── 양방향 백링크(advisory·비차단): do_commit *전*에 수행해 같은 커밋에 포함 ──
+        # 정합성 순서: 파일 write → INDEX upsert(롤백 가드) → **백링크** → do_commit.
+        # 백링크는 핵심 쓰기 끝난 뒤라 실패해도 본작업(파일/INDEX)을 롤백하지 않는다.
+        # 성공 시에만 해당 경로를 커밋 paths 에 넣어 한 커밋에 같이 스테이징·커밋시킨다
+        # (검수 BLOCK: 종전엔 do_commit 뒤라 세션로그·frontmatter 가 영영 미커밋됐다).
+        session_workday = date_str or _workday.workday_str(_workday.now_kst())
+        session_path = _session_log_path(team_root, author, session_workday)
+        session_rel = str(Path("team") / "sessions" / author / f"{session_workday}.md")
+        verb = "write-new" if is_new_file else "write-update"
+        sess_ok = _backlink_session_to_doc(session_path, author, session_workday,
+                                           rel_for_git, verb)
+        doc_ok = _doc_add_session_field(target_path, session_rel)
+
+        # do_commit(paths 한정, push=True) — 백링크 성공분을 같은 커밋에 포함.
+        # push=True: 위키=팀공유이므로 매 변경 즉시 push(아래 push 실패는 비차단).
         changed_paths = [str(target_path), str(index_path)]
+        if sess_ok:
+            changed_paths.append(str(session_path))
+        # doc_ok 면 target_path 는 백링크로 다시 변경됐으니 이미 목록에 있는 그대로 커밋된다
+        # (실패 시에도 INDEX upsert 로 이미 변경돼 있어 target_path 는 유지 — 무해).
         commit_result = _git_ops.do_commit(
             str(team_root),
             message=f"docs(memory): write {folder}/{filename}",
-            push=False,
+            push=True,
             paths=changed_paths,
         )
         # 정상 케이스(ok=False 여도 경고 불필요):
@@ -1389,13 +1521,25 @@ def cmd_knowledge(team_root: Path, action: str | None,
         #   "no paths to stage"  — 빈 경로 목록
         #   "not a git work tree"— git 없는 환경(파일 쓰기는 완료)
         # 그 외 ok=False → 실제 git 실패(add 실패·commit 실패·timeout 등) → 경고 + non-zero
+        # push 실패는 do_commit 이 ok=True·pushed=False 로 보존(비차단) — 아래 경고만.
         _COMMIT_SILENT_DETAILS = ("nothing to commit", "no paths to stage",
                                   "not a git work tree")
-        if not commit_result.ok and commit_result.detail not in _COMMIT_SILENT_DETAILS:
+        commit_failed = (not commit_result.ok
+                         and commit_result.detail not in _COMMIT_SILENT_DETAILS)
+
+        # ── chat 통지 재료(A안: 엔진은 요약만 stdout 출력, MCP 호출은 AI) ──────
+        _emit_chat_summary(verb, rel_for_git, weight, author, description)
+
+        if commit_failed:
             print(f"[warning] memory write: 커밋 실패 — {commit_result.detail}",
                   file=sys.stderr)
             print(f"teammode memory write — {folder}/{filename} 완료(커밋 안 됨)")
             return 1
+
+        # push 실패는 비차단: 로컬 커밋·memory 변경은 유지, 경고만 출력(RC=0).
+        if commit_result.committed and not commit_result.pushed:
+            print(f"[warning] memory write: push 실패(로컬 커밋은 유지) — "
+                  f"{commit_result.detail}", file=sys.stderr)
 
         print(f"teammode memory write — {folder}/{filename} 완료")
         return 0
@@ -1546,12 +1690,22 @@ def cmd_knowledge(team_root: Path, action: str | None,
                   file=sys.stderr)
             return 2
 
-        # do_commit(paths 한정, push=False) — P1-2: CommitResult 확인 + 실패 알림
+        # ── 세션로그 백링크(advisory·비차단): do_commit *전*에 수행해 같은 커밋에 포함 ──
+        # 삭제 대상 문서는 사라졌으므로 문서→세션로그 방향은 없다. 세션로그→문서만.
+        # 성공 시에만 세션로그를 커밋 paths 에 넣어 삭제 커밋에 같이 들어가게 한다.
+        session_workday = _workday.workday_str(_workday.now_kst())
+        session_path = _session_log_path(team_root, author, session_workday)
+        sess_ok = _backlink_session_to_doc(session_path, author, session_workday,
+                                           rel_for_index, "delete")
+
+        # do_commit(paths 한정, push=True) — 위키=팀공유. push 실패는 비차단(아래 경고만).
         changed_paths = [str(target_path), str(index_path)]
+        if sess_ok:
+            changed_paths.append(str(session_path))
         commit_result = _git_ops.do_commit(
             str(team_root),
             message=f"docs(memory): delete {rel_path}",
-            push=False,
+            push=True,
             paths=changed_paths,
         )
         # 정상 케이스(ok=False 여도 경고 불필요):
@@ -1559,13 +1713,25 @@ def cmd_knowledge(team_root: Path, action: str | None,
         #   "no paths to stage"   — 빈 경로 목록
         #   "not a git work tree" — git 없는 환경(파일 삭제는 완료)
         # 그 외 ok=False → 실제 git 실패(add 실패·commit 실패·timeout 등) → 경고 + non-zero
+        # push 실패는 do_commit 이 ok=True·pushed=False 로 보존(비차단) — 아래 경고만.
         _COMMIT_SILENT_DETAILS = ("nothing to commit", "no paths to stage",
                                   "not a git work tree")
-        if not commit_result.ok and commit_result.detail not in _COMMIT_SILENT_DETAILS:
+        commit_failed = (not commit_result.ok
+                         and commit_result.detail not in _COMMIT_SILENT_DETAILS)
+
+        # ── chat 통지 재료(A안) ────────────────────────────────────────────
+        _emit_chat_summary("delete", rel_for_index, None, author, None)
+
+        if commit_failed:
             print(f"[warning] memory delete: 커밋 실패 — {commit_result.detail}",
                   file=sys.stderr)
             print(f"teammode memory delete — {rel_path} 삭제됨(커밋 안 됨)")
             return 1
+
+        # push 실패는 비차단: 로컬 커밋·memory 변경은 유지, 경고만 출력(RC=0).
+        if commit_result.committed and not commit_result.pushed:
+            print(f"[warning] memory delete: push 실패(로컬 커밋은 유지) — "
+                  f"{commit_result.detail}", file=sys.stderr)
 
         print(f"teammode memory delete — {rel_path} 삭제됨")
         return 0

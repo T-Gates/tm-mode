@@ -9,6 +9,8 @@ normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다
   { "event": "PostToolUse", "action": "file_edit",
     "files": ["/abs/path", ...], "agent": "claude", "raw": {...} }
 
+  (위 요약의 "push 금지"는 6/23 자동push 철학 전환으로 폐기 — 아래 철칙 참조.)
+
 ────────────────────────────────────────────────────────────────────────────
 ⚠️ 빌드 안전 핵심 — `.teammode-active` 가드 (L2-G):
   팀 루트에 `.teammode-active` 마커가 없으면(teammode off) **즉시 no-op exit 0**.
@@ -17,10 +19,12 @@ normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다
   (session-start.py·session-log-remind.py 의 동일 패턴.)
 
 설계 철칙:
-  - **push 절대 금지**: do_commit(push=False) 만 호출(아래 단언). 원격 동기화는 사람 결정.
+  - **자동 push(6/23 철학)**: do_commit(push=True) — "원격 동기화는 사람 결정" 폐기.
+    팀 레포는 공유 자산이라 매 자동 커밋 즉시 push 한다. **push 실패는 비차단** —
+    do_commit 이 push 실패해도 로컬 커밋을 보존(ok=True·pushed=False)하고 hook 은 exit 0.
   - **add -A 금지(P1-4)**: do_commit 에 paths= 로 정규스키마가 지목한 `files` 만 넘긴다.
     무차별 스테이징(add -A)은 토큰패턴 파일·무관 변경까지 끌어와 오염·유출 위험.
-  - **실패 비차단**: 어떤 예외도 삼키고 항상 exit 0. 자동 커밋 실패가 작업을 막지 않는다.
+  - **실패 비차단**: 어떤 예외도 삼키고 항상 exit 0. 자동 커밋·push 실패가 작업을 막지 않는다.
 """
 from __future__ import annotations
 
@@ -83,11 +87,10 @@ def main() -> int:
         stamp = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         message = f"chore(teammode): auto-commit {stamp} KST"
 
-        # ── 4. push 절대 금지 단언 + paths 만 스테이징 ──
-        result = _git_ops.do_commit(root, message=message, push=False, paths=paths)
-        # 방어적 단언: 어떤 경로로도 push 가 일어나지 않았음을 보장(실패해도 무해).
-        assert getattr(result, "pushed", False) is False, "auto-commit must never push"
-    except Exception:  # noqa: BLE001 — 철칙: 자동 커밋 실패가 작업을 막지 않는다
+        # ── 4. paths 만 스테이징 + 자동 push(6/23 철학) ──
+        # push 실패는 비차단: do_commit 이 커밋을 보존(ok=True·pushed=False)하므로 무해.
+        _git_ops.do_commit(root, message=message, push=True, paths=paths)
+    except Exception:  # noqa: BLE001 — 철칙: 자동 커밋·push 실패가 작업을 막지 않는다
         return 0
 
     return 0

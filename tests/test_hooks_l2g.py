@@ -117,8 +117,13 @@ def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
     assert "secret.token" in status and "unrelated.txt" in status
 
 
-def test_auto_commit_never_pushes(fake_repo, monkeypatch, tmp_path):
-    """push 절대 금지: do_commit 이 push=True 로 호출되면 즉시 실패하도록 감시."""
+def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
+    """6/23 자동push 철학: auto-commit 은 do_commit(push=True) 로 호출하고,
+    push 실패해도 비차단(exit 0)·로컬 커밋 보존이다.
+
+    fake_repo 는 원격이 없어 push 가 실패하지만, do_commit 이 커밋을 보존하므로
+    훅은 exit 0 으로 끝나고 변경은 커밋된다.
+    """
     (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "p.md").write_text("x\n")
     sys.path.insert(0, str(REPO / "infra"))
@@ -129,9 +134,7 @@ def test_auto_commit_never_pushes(fake_repo, monkeypatch, tmp_path):
 
     def spy(team_root, message, push=False, timeout=go.DEFAULT_TIMEOUT, paths=None):
         calls["push"] = push
-        # push=True 면 이 테스트의 전제가 깨진 것 — 명시 실패.
-        assert push is False, "auto-commit must call do_commit(push=False)"
-        return real(team_root, message, push=False, timeout=timeout, paths=paths)
+        return real(team_root, message, push=push, timeout=timeout, paths=paths)
 
     # 서브프로세스가 아닌 in-proc 로 훅 main 을 직접 호출해 do_commit 인자를 검사한다.
     monkeypatch.setattr(go, "do_commit", spy)
@@ -145,8 +148,13 @@ def test_auto_commit_never_pushes(fake_repo, monkeypatch, tmp_path):
         "event": "PostToolUse", "action": "file_edit",
         "files": [str(fake_repo / "p.md")], "agent": "claude"})))
     rc = mod.main()
+    # push 실패(원격 없음)에도 비차단: exit 0
     assert rc == 0
-    assert calls.get("push") is False
+    # 자동 push 철학: do_commit 은 push=True 로 호출됨
+    assert calls.get("push") is True
+    # 비차단: push 가 실패해도 로컬 커밋은 보존(p.md 가 HEAD 에 들어감)
+    committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
+    assert "p.md" in committed
 
 
 def test_auto_commit_nonblocking_on_git_failure(tmp_path):

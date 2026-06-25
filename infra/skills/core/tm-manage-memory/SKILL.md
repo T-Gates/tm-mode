@@ -211,16 +211,38 @@ EOF
 
 > 비정상 종료(오류·인터럽트)로 플래그가 잔류해도 TTL(5분) 이후 자동 만료된다.
 
-### 5. 완료 보고
+### 5. 양방향 백링크 (엔진 자동 — 확인만)
+
+엔진이 memory 변경 직후 **기계적으로** 양방향 링크를 건다(스킬은 아무것도 안 함):
+
+- **세션로그 → 문서**: 현재 author 의 오늘 세션로그에 `📝 생성/✏️ 수정/🗑️ 삭제: [[<경로>]]` 한 줄 append.
+- **문서 → 세션로그**: 쓰는 문서 frontmatter 에 `session: team/sessions/<author>/<작업일>.md` 필드 추가.
+
+멱등(재수정 시 중복 줄·필드 없음)·비차단(백링크 실패해도 memory 변경은 유지). 스킬은 결과만 확인한다.
+
+### 6. chat 통지 (chat 슬롯 연결 시)
+
+memory 변경이 **정상 완료된 후**, `team.config.json` 의 `services.chat` 가 연결돼 있으면
+**AI 가 chat 슬롯의 벤더 MCP 도구를 직접 호출**해 팀에 통지한다(A안 — 엔진은 MCP 호출 안 함).
+
+- 엔진은 통지용 한 줄 요약을 stdout 에 `[chat-notify] memory 추가/수정/삭제: <경로> · weight=… · author=… · 요약=…` 형태로 출력한다.
+  AI 는 이 줄을 받아 통지 메시지(작업·파일경로·weight·작성자·첫줄 요약)를 구성한다.
+- 모든 변경(추가/수정/삭제)을 통지한다(필터 없음).
+- chat 슬롯이 연결돼 있지 않으면(`services.chat` 없음) 통지를 건너뛴다.
+- **비차단(advisory)**: 통지 호출이 실패해도 memory 변경은 그대로 유지한다 — 오류만 보고하고 멈추지 않는다.
+
+> chat 슬롯의 실제 벤더 MCP 도구명·채널 지정은 `tm-connect` 가 연결할 때 config 에 기록된 provider 를 따른다.
+
+### 7. 완료 보고
 
 ```
 ✅ team/decisions/api-auth-decision.md 추가 완료
    INDEX 갱신 · 커밋 완료 (push는 별도)
+   세션로그 백링크 · chat 통지 완료
 ```
 
 ## 안 하는 것 (L1)
 
-- 슬랙 알림 (chat provider L2 — 후속)
 - verification-sources 매니페스트 등록 (선택, 후속)
 - 세션 로그 관리 (→ 훅 자동)
 - 회의록 관리 (→ tm-context)

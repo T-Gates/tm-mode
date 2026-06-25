@@ -309,12 +309,14 @@ def test_on_auto_syncs_and_commits(team_with_upstream):
     assert (team / "memory" / "team-secret.md").read_text() == "DO NOT TOUCH\n"
 
 
-def test_on_auto_sync_no_push(team_with_upstream):
-    """작업 D: 자동 커밋은 생성되지만 push 는 절대 자동 하지 않는다.
+def test_on_auto_sync_autopush_nonblocking(team_with_upstream):
+    """작업 D + 6/23 자동push 철학: 자동 커밋은 생성되고 자동 push 를 *시도*하되,
+    원격(origin) 미설정이면 push 는 비차단으로 우아하게 실패하고 on 은 성공한다.
 
-    upstream bare repo 의 HEAD(커밋 수)가 on 전후 동일해야 한다.
-    auto_update_on_start 가 push=False 로 do_commit 을 호출하지만,
-    만약 실수로 push 가 호출되면 bare repo 쪽 커밋 수가 늘어난다 — 이를 비교해 검증.
+    핵심: auto_update 의 push 는 도입 레포의 기본 원격(origin)으로 향한다 —
+    템플릿 원본 upstream 으로 엔진 sync 를 되쏘지 않는다. 이 fixture 의 team 은
+    origin 이 없어 push 가 실패하지만(비차단), upstream bare repo 의 HEAD 는 절대
+    변하지 않아야 한다(엔진 sync 가 upstream 으로 push 되지 않음을 검증).
     """
     team = team_with_upstream.team
     upstream = team_with_upstream.upstream
@@ -323,13 +325,18 @@ def test_on_auto_sync_no_push(team_with_upstream):
     upstream_head_before = _git(upstream, "rev-parse", "HEAD").stdout.strip()
 
     r = _run_engine(team, "on")
+    # push 실패(origin 없음)는 비차단 — on 은 성공해야 한다
     assert r.returncode == 0, r.stderr
 
-    # on 실행 후 upstream HEAD — push 가 없었으면 동일해야 함
+    # 로컬 자동 커밋은 생성됨
+    msg = _git(team, "log", "--format=%s", "-1").stdout.strip()
+    assert "[auto]" in msg, f"자동 커밋이 생성되지 않음: {msg!r}"
+
+    # upstream(템플릿 원본) HEAD 는 불변 — 엔진 sync 가 upstream 으로 push 되지 않음
     upstream_head_after = _git(upstream, "rev-parse", "HEAD").stdout.strip()
     assert upstream_head_before == upstream_head_after, (
         f"upstream HEAD 가 변경됨: {upstream_head_before!r} → {upstream_head_after!r} "
-        "— auto_update 가 push 를 수행한 것으로 보임(절대 금지 위반)"
+        "— auto_update 가 upstream 으로 push 한 것으로 보임(금지)"
     )
 
 
