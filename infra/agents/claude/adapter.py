@@ -825,6 +825,15 @@ class Adapter:
         script = _to_slash(str(script_path))
         # 공백 포함 경로 따옴표 처리
         if wrapped_command is not None:
+            # 멱등 보장(choke-point): 입력이 이미 teammode wrapper(혹은 중첩 누적)면
+            # 최내곽 원본까지 벗긴 뒤 정확히 한 겹만 감싼다. 이것이 statusLine
+            # double-wrap(배너 N개) 누적의 근본 차단점이다.
+            wrapped_command = self._unwrap_to_innermost(wrapped_command)
+            if self._is_team_command(wrapped_command):
+                # unwrap 이 teammode 명령 자체에서 멈춤 = 감쌀 실원본이 없는
+                # standalone wrapper(`<python> <script>`, --wrapped 없음). 또 감싸면
+                # 배너-위-배너가 되므로 단독설치 형태로 내려간다(배너만).
+                return self._build_status_line_entry()
             command = f"{_quote_arg(python)} {_quote_arg(script)} --wrapped {_quote_arg(wrapped_command)}"
             entry = {
                 "type": "command",
@@ -834,7 +843,9 @@ class Adapter:
                 "_wrapped_command": wrapped_command,
             }
             if original_entry is not None:
-                entry["_wrapped_entry"] = original_entry
+                # 원본 보존 항목도 정규화 — _wrapped_entry.command 가 이미 감싼
+                # 명령이면 off 복원 시 재오염되므로 최내곽으로 되돌려 저장한다.
+                entry["_wrapped_entry"] = self._sanitize_original_entry(original_entry)
             return entry
         command = f"{_quote_arg(python)} {_quote_arg(script)}"
         return {
@@ -846,6 +857,56 @@ class Adapter:
     def _is_team_command(self, command: str) -> bool:
         """command 문자열이 teammode_statusline.py를 가리키는지 판정."""
         return "teammode_statusline.py" in _to_slash(command)
+
+    def _unwrap_to_innermost(self, command: str) -> str:
+        """이미 teammode wrapper로 감싼 명령을 최내곽 원본까지 벗긴다.
+
+        wrapper command 형식: `<python> <teammode_statusline.py> --wrapped <원본>`.
+        멱등성이 깨져 중첩 누적된 경우(`--wrapped` 안에 또 wrapper)도 한 번에
+        최내곽 실명령까지 환원한다. team command 가 아니면(=실원본) 그대로 반환.
+        """
+        if not command:
+            return command
+        import shlex as _shlex
+        cur = command
+        for _ in range(20):  # 병적 중첩 방어 상한
+            if not self._is_team_command(cur):
+                return cur
+            try:
+                parts = _shlex.split(cur)
+            except ValueError:
+                return cur
+            if "--wrapped" in parts:
+                idx = parts.index("--wrapped")
+                if idx + 1 < len(parts):
+                    cur = parts[idx + 1]
+                    continue
+            # team command 이나 --wrapped 페이로드 없음(standalone) → 더 못 벗김
+            return cur
+        return cur
+
+    def _sanitize_original_entry(self, entry):
+        """_wrapped_entry 로 보존할 원본 항목을 정규화한다.
+
+        entry.command 가 이미 teammode wrapper(또는 중첩)면 최내곽으로 환원하고,
+        wrapper 가 남긴 teammode 마커들을 제거한다 — off 복원 시 이 항목이 다시
+        '개인 statusLine' 으로 취급되어 재래핑되는 누적 경로를 끊는다.
+        """
+        if not isinstance(entry, dict):
+            return entry
+        cmd = entry.get("command", "")
+        if isinstance(cmd, str) and self._is_team_command(cmd):
+            # 원본이 teammode wrapper(중첩) 또는 standalone teammode 명령이면
+            # 최내곽으로 환원하고 teammode 마커를 전부 제거한다. marker 제거를
+            # inner != cmd 가드 밖에 둬야 standalone(unwrap 불변) 케이스도 마커가
+            # 벗겨져 off 복원→다음 on 에서 managed 분기로 잘못 라우팅되지 않는다.
+            inner = self._unwrap_to_innermost(cmd)
+            entry = dict(entry)
+            entry["command"] = inner
+            for k in ("_teammode_managed", "_teammode_wrapped",
+                      "_wrapped_command", "_wrapped_entry"):
+                entry.pop(k, None)
+        return entry
 
     def _sync_status_line(self, settings: dict, mode: Optional[str],
                           warnings: list) -> list:
@@ -874,8 +935,14 @@ class Adapter:
             elif isinstance(existing_sl, dict) and existing_sl.get("_teammode_managed") is True:
                 if existing_sl.get("_teammode_wrapped") is True:
                     # wrapper managed 항목 — 멱등 확인 (double-wrap 방지)
+                    # _wrapped_command 가 과거 누적으로 오염(중첩)됐어도 build 단계가
+                    # 최내곽으로 정규화한다. _wrapped_entry 는 원본 보존을 위해 그대로
+                    # 넘긴다 — 빠뜨리면 off 시 _wrapped_command 폴백으로 재오염된다.
                     original_cmd = existing_sl.get("_wrapped_command", "")
-                    wanted = self._build_status_line_entry(wrapped_command=original_cmd)
+                    wanted = self._build_status_line_entry(
+                        wrapped_command=original_cmd,
+                        original_entry=existing_sl.get("_wrapped_entry"),
+                    )
                     if existing_sl.get("command") != wanted["command"]:
                         settings["statusLine"] = wanted
                         changes.append("[statusline] teammode statusLine 갱신(stale 수정)")
