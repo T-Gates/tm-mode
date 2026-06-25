@@ -109,4 +109,6 @@ conformance/           # 호환 검사 + 골든 시나리오
 
 ## 라이선스
 
-[LICENSE](LICENSE) 참조.
+**GNU AGPL v3** — [LICENSE](LICENSE) 참조. Copyright (c) 2026 T-Gates.
+
+팀 내부 도구로 쓰는 건 자유. 다만 tm-mode를 **호스팅해 네트워크 서비스로 제공**하면 소스 공개 의무가 생긴다(AGPL §13). 상업 라이선스(closed 호스팅 등)는 T-Gates에 별도 문의.
