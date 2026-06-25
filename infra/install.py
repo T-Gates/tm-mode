@@ -65,11 +65,23 @@ def _parse_uninstall(argv):
 #
 # 읽기 전용 조회: 팀이 이미 쓰는 MCP alias 가 에이전트 설정 파일에 실재하는지 확인.
 # dotfile 직접 읽기 대신 CLI 로 위임해 호스트 무접촉 원칙을 지킨다.
-# 출력(stdout JSON): {"connected": true, "alias": "<provider>"} 또는 {"connected": false}
+# 출력(stdout JSON): {"connected": true, "alias": "tm-<provider>"} 또는 {"connected": false}
 #
 # 내부 경로 해석은 기존 agent_mcp_path / agent_settings_path 를 재활용(중복 구현 금지).
 
 _VALID_AGENTS = ("claude", "codex")
+
+# teammode 가 MCP 를 등록하는 별칭 네임스페이스 접두 — 어댑터 resolve_server_alias 와
+# 동일 규약(linear → tm-linear). install.py 는 어댑터를 인스턴스화하지 않는 조회 경로라
+# 같은 규약을 여기 명시한다(드리프트 방지: 한쪽만 바뀌면 connected 오판). 멱등 부착.
+_MCP_ALIAS_PREFIX = "tm-"
+
+
+def _server_alias(provider: str) -> str:
+    """정규 서버명 → 등록 별칭(`tm-<provider>`). 어댑터 resolve_server_alias 와 대칭."""
+    if provider.startswith(_MCP_ALIAS_PREFIX):
+        return provider
+    return _MCP_ALIAS_PREFIX + provider
 
 
 def _parse_check_mcp(argv):
@@ -179,6 +191,14 @@ def cmd_check_mcp(argv, *, home=None, out=None, err=None) -> int:
             agent, home=home, settings_override=settings_override)
         servers = _read_codex_mcp_servers(cfg_path)
 
+    # 등록 별칭은 tm-<provider> (resolve_server_alias). provider(정규 서버명)로 질의하되
+    # 실제 등록 키는 별칭이므로 별칭으로 조회한다. 하위 호환: 별칭 항목이 없으면 정규명
+    # 키도 본다(과거 항등 등록분 / 사용자 동명 항목은 _teammode_managed 가 걸러줌).
+    alias = _server_alias(provider)
+    entry = servers.get(alias)
+    if isinstance(entry, dict) and entry.get("_teammode_managed") is True:
+        out(json.dumps({"connected": True, "alias": alias}))
+        return 0
     entry = servers.get(provider)
     if isinstance(entry, dict) and entry.get("_teammode_managed") is True:
         out(json.dumps({"connected": True, "alias": provider}))

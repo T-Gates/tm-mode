@@ -113,14 +113,16 @@ def test_confirm_gate_fires_linear_create_issue_via_normalize(tmp_path):
     """#1 blocker 핵심 케이스 — 살아있는 벤더 매처(linear/create_issue)가 normalize 경유로 차단.
 
     [P2] teammode 단일 서버 매처 폐기 → 입력을 살아있는 벤더 MCP confirm 게이트로 교체.
+    런타임 실 도구명은 등록 별칭 `mcp__tm-linear__create_issue` 다(resolve_server_alias).
+    normalize 가 정규 서버명 linear 로 환원해 manifest 매처와 일치 → 차단되어야 한다.
     테스트 의도(normalize→confirm 게이트 차단)는 그대로 보존한다.
     """
     proc = _run_normalize_then_confirm(
-        tmp_path, "linear", "create_issue",
+        tmp_path, "tm-linear", "create_issue",
         "teammode-linear-create-allow",
     )
     assert proc.returncode != 0, (
-        f"#1 blocker: linear/create_issue normalize 경유 차단 실패\n"
+        f"#1 blocker: tm-linear/create_issue normalize 경유 차단 실패\n"
         f"exit={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
     )
 
@@ -135,7 +137,8 @@ def test_confirm_gate_passes_with_allow_signal_via_normalize(tmp_path):
     confirm_dir.mkdir()
     (confirm_dir / marker).write_text("")
 
-    payload = _make_teammode_payload("linear", "create_issue")
+    # 런타임 실 도구명은 등록 별칭 tm-linear (normalize 가 linear 로 환원).
+    payload = _make_teammode_payload("tm-linear", "create_issue")
     proc = subprocess.run(
         [PY, str(NORMALIZE), "confirm-action.py", marker],
         input=json.dumps(payload),

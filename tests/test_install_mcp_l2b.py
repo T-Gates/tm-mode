@@ -87,7 +87,8 @@ def _settings(ad):
 
 
 def _has_linear_matcher(settings):
-    return "mcp__linear__create_issue" in json.dumps(settings)
+    # 등록 별칭 = tm-linear (resolve_server_alias). 런타임 도구명·매처 둘 다 별칭.
+    return "mcp__tm-linear__create_issue" in json.dumps(settings)
 
 
 # ────────────────────────── install-mcp 등록 (claude) ──────────────────────────
@@ -97,8 +98,9 @@ def test_claude_install_mcp_registers_connected_provider(tmp_path):
     ad = _claude(root, tmp_path)
     ad.install_mcp()
     data = json.loads(Path(ad.mcp_config_path).read_text())
-    assert "linear" in data["mcpServers"]           # 정규 서버명으로 등록
-    assert data["mcpServers"]["linear"]["_teammode_managed"] is True
+    assert "tm-linear" in data["mcpServers"]         # tm-<provider> 별칭으로 등록
+    assert data["mcpServers"]["tm-linear"]["_teammode_managed"] is True
+    assert data["mcpServers"]["tm-linear"]["_canonical_server"] == "linear"
 
 
 def test_claude_install_mcp_empty_services_no_register(tmp_path):
@@ -130,27 +132,31 @@ def test_claude_install_mcp_removes_disconnected(tmp_path):
     out = _claude(root, tmp_path).install_mcp()
     assert any("remove-mcp" in c for c in out)
     data = json.loads(Path(tmp_path / "settings.claude.json").read_text())
-    assert "linear" not in data.get("mcpServers", {})
+    assert "tm-linear" not in data.get("mcpServers", {})
 
 
-def test_claude_install_mcp_untouches_user_server(tmp_path):
-    # 사용자가 직접 등록한 동명 서버는 무접촉(소유권).
+def test_claude_install_mcp_coexists_with_user_server(tmp_path):
+    # 사용자가 직접 등록한 `linear` 서버는 무접촉, teammode 는 `tm-linear` 로 공존 등록.
+    # tm-<provider> 네임스페이스 분리 핵심: 동명 충돌 없이 둘 다 살아남는다.
     root = _scaffold(tmp_path, LINEAR_CONNECTED)
     mcp_path = tmp_path / "settings.claude.json"
     mcp_path.write_text(json.dumps(
         {"mcpServers": {"linear": {"command": "user-own"}}, "projects": {"x": 1}}))
     out = _claude(root, tmp_path).install_mcp()
     data = json.loads(mcp_path.read_text())
-    assert data["mcpServers"]["linear"] == {"command": "user-own"}  # 무접촉
+    assert data["mcpServers"]["linear"] == {"command": "user-own"}  # 사용자 것 무접촉
+    assert data["mcpServers"]["tm-linear"]["_teammode_managed"] is True  # teammode 공존
     assert data["projects"] == {"x": 1}                              # 사용자 데이터 보존
-    assert any("무접촉" in c for c in out)
+    assert any("tm-linear" in c for c in out)
 
 
-def test_resolve_server_alias_identity(tmp_path):
+def test_resolve_server_alias_prefixes_tm(tmp_path):
     root = _scaffold(tmp_path, LINEAR_CONNECTED)
     ad = _claude(root, tmp_path)
     for name in ("linear", "slack", "notion", "google"):
-        assert ad.resolve_server_alias(name) == name  # 항등(§2.8-2)
+        assert ad.resolve_server_alias(name) == "tm-" + name  # tm-<provider>(§2.8-2)
+    # 멱등: 이미 접두 붙은 별칭은 중복 부착 안 함
+    assert ad.resolve_server_alias("tm-linear") == "tm-linear"
 
 
 # ────────────── 빈 슬롯 sync 교정 — [info] 생략 (L1 기존 미준수 교정) ──────────────
@@ -250,7 +256,8 @@ def test_codex_install_mcp_registers_toml_block(tmp_path):
     ad = _codex(root, tmp_path)
     ad.install_mcp()
     txt = Path(ad.settings_path).read_text()
-    assert "[mcp_servers.linear]" in txt
+    assert "[mcp_servers.tm-linear]" in txt          # tm-<provider> 별칭 섹션
+    assert "_canonical_server = 'linear'" in txt     # 정규명은 별칭이 아닌 provider
     assert "_teammode_managed = true" in txt
 
 
@@ -299,8 +306,8 @@ def test_cross_agent_same_config_both_register(tmp_path):
     _codex(root, tmp_path).install_mcp()
     claude_data = json.loads(Path(tmp_path / "settings.claude.json").read_text())
     codex_txt = Path(tmp_path / "codex.config.toml").read_text()
-    assert "linear" in claude_data["mcpServers"]   # claude: top-level mcpServers
-    assert "[mcp_servers.linear]" in codex_txt      # codex: config.toml 블록
+    assert "tm-linear" in claude_data["mcpServers"]  # claude: top-level mcpServers
+    assert "[mcp_servers.tm-linear]" in codex_txt    # codex: config.toml 블록
 
 
 # ─────────────── P4-A: mcp.source 반영 (공식 command/args · 자작 path) ───────────────
@@ -360,7 +367,7 @@ def test_claude_install_mcp_reflects_official_command(tmp_path):
     root = _scaffold(tmp_path, LINEAR_CONNECTED)
     out = _claude_pd(root, tmp_path, pd).install_mcp()
     data = json.loads(Path(tmp_path / "settings.claude.json").read_text())
-    entry = data["mcpServers"]["linear"]
+    entry = data["mcpServers"]["tm-linear"]
     assert entry["command"] == "npx"
     assert entry["args"] == ["-y", "@vendor/linear-mcp"]
     assert entry["_teammode_managed"] is True           # 소유 마커 유지
@@ -377,7 +384,7 @@ def test_claude_install_mcp_reflects_custom_path(tmp_path):
     ad = _claude_pd(root, tmp_path, pd)
     ad.install_mcp()
     data = json.loads(Path(tmp_path / "settings.claude.json").read_text())
-    entry = data["mcpServers"]["linear"]
+    entry = data["mcpServers"]["tm-linear"]
     assert entry["command"] == "python3"                # adapter python
     # path 는 team_root 기준 절대화돼 args 에 들어간다
     assert entry["args"][0].endswith("infra/mcp/linear/server.py")
@@ -391,7 +398,7 @@ def test_claude_install_mcp_no_launch_data_is_placeholder(tmp_path):
     root = _scaffold(tmp_path, LINEAR_CONNECTED)
     out = _claude_pd(root, tmp_path, pd).install_mcp()
     entry = json.loads(
-        Path(tmp_path / "settings.claude.json").read_text())["mcpServers"]["linear"]
+        Path(tmp_path / "settings.claude.json").read_text())["mcpServers"]["tm-linear"]
     assert "command" not in entry                        # 추측 커맨드 없음
     assert entry["_teammode_managed"] is True
     assert entry["_register_hint"] == "테스트 팩"
@@ -407,7 +414,7 @@ def test_codex_install_mcp_reflects_official_command(tmp_path):
     root = _scaffold(tmp_path, LINEAR_CONNECTED)
     out = _codex_pd(root, tmp_path, pd).install_mcp()
     txt = Path(tmp_path / "codex.config.toml").read_text()
-    assert "[mcp_servers.linear]" in txt
+    assert "[mcp_servers.tm-linear]" in txt
     assert "command = 'npx'" in txt
     assert "args = ['-y', '@vendor/linear-mcp']" in txt
     assert "_mcp_source = 'official'" in txt
@@ -420,7 +427,7 @@ def test_codex_install_mcp_no_launch_data_is_placeholder(tmp_path):
     root = _scaffold(tmp_path, LINEAR_CONNECTED)
     out = _codex_pd(root, tmp_path, pd).install_mcp()
     txt = Path(tmp_path / "codex.config.toml").read_text()
-    assert "[mcp_servers.linear]" in txt
+    assert "[mcp_servers.tm-linear]" in txt
     assert "command =" not in txt                        # 추측 커맨드 없음
     assert "_register_hint = '테스트 팩'" in txt
     assert any("자리만" in c for c in out)

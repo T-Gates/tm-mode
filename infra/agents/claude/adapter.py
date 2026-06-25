@@ -228,7 +228,7 @@ class Adapter:
         """install-mcp 선행 여부 — 정규 서버명이 MCP 등록 파일에 teammode 항목으로 있는지.
 
         §2.8 별칭 보장. 미선행이면 매처 문자열의 별칭이 보장 안 되므로 sync 가 해당
-        매처만 [warn] 생략(§2.7). resolve_server_alias 가 항등이므로 alias=정규명.
+        매처만 [warn] 생략(§2.7). alias=resolve_server_alias(정규명)=`tm-<provider>`.
         MCP 등록 파일 부재/깨짐 → 미선행으로 본다.
         """
         alias = self.resolve_server_alias(canonical_server)
@@ -267,15 +267,30 @@ class Adapter:
             if not fmt:
                 return (None, False)
             mcp = match["mcp"]
-            # 별칭 매핑: v0.1 기본 규칙 = 정규 서버명과 동일 별칭(§5.2-2).
+            # 별칭 매핑: 정규 서버명 → `tm-<provider>` 등록 별칭(§5.2-2). 런타임
+            # 매처 문자열도 이 별칭으로 잡혀야 normalize 가 보는 실 도구명과 일치한다.
             server = self.resolve_server_alias(mcp["server"])
             matcher = fmt.format(server=server, tool=mcp["tool"])
             return (matcher, True)
         return (None, False)
 
+    # teammode 가 등록하는 MCP alias 의 네임스페이스 접두. 사용자가 이미 자기 `linear`
+    # MCP 를 가진 경우 동명 충돌을 피하고(현 코드는 사용자 항목 무접촉이라 끼어들 수
+    # 없음) tm-mode 소유가 이름에 보이도록 `tm-<provider>` 로 분리한다. 소유 식별은
+    # 여전히 `_teammode_managed` 마커가 하지만, 이름 네임스페이스로 공존을 보장한다.
+    MCP_ALIAS_PREFIX = "tm-"
+
     def resolve_server_alias(self, canonical_server: str) -> str:
-        """정규 서버명 → 실제 등록 별칭. v0.1 기본 = 동일(§5.2-2)."""
-        return canonical_server
+        """정규 서버명 → 실제 등록 별칭. `tm-<provider>` 네임스페이스(사용자 것과 공존).
+
+        예: linear → tm-linear, notion → tm-notion. 이미 접두가 붙어 있으면 중복
+        부착하지 않는다(멱등 — 별칭이 실수로 다시 정규명으로 들어와도 안전).
+        역변환은 normalize 의 _canonical_server 가 담당한다(런타임 매처/confirm 게이트가
+        manifest 의 정규 서버명과 일치하도록).
+        """
+        if canonical_server.startswith(self.MCP_ALIAS_PREFIX):
+            return canonical_server
+        return self.MCP_ALIAS_PREFIX + canonical_server
 
     # ── 커맨드 배선 (§5.1-2: normalize 경유 필수) ──
 
@@ -381,7 +396,7 @@ class Adapter:
           - 데이터가 없으면(P2 미기재) → 추측 금지, 소유 마커 + register_hint placeholder
             만 등록(자리만 잡고 사람/LLM 안내). teammode 관리 마커는 어느 경우든 유지.
 
-        정규 서버명으로 키가 잡히는 것(별칭 항등, §2.8-2)·멱등·소유권이 핵심 계약이다.
+        `tm-<provider>` 별칭으로 키가 잡히는 것(§2.8-2)·멱등·소유권이 핵심 계약이다.
         """
         entry = {
             "_teammode_managed": True,
@@ -409,8 +424,8 @@ class Adapter:
         """config services 의 연결 provider 를 MCP 서버로 등록(자기 방식). 멱등.
 
         - services 부재(파일 없음/빈 {}) → 등록할 것 없음, [info] 후 종료(빈 슬롯 1급).
-        - 채운 슬롯의 provider 마다 정규 서버명으로 등록(별칭=정규명, resolve 항등).
-        - 같은 provider 가 여러 역할에 쓰여도 1회만 등록(정규명 dedup).
+        - 채운 슬롯의 provider 마다 `tm-<provider>` 별칭으로 등록(resolve_server_alias).
+        - 같은 provider 가 여러 역할에 쓰여도 1회만 등록(별칭 dedup).
         - teammode 소유 항목만 추가·갱신. 사용자 항목 무접촉.
         """
         if self.mcp_config_path is _SEALED:
@@ -451,7 +466,7 @@ class Adapter:
                 # provider 팩 없음 — 추측 금지, 등록 생략 + [info](빈 슬롯과 동일 정신).
                 changes.append(f"[info] {provider}: provider 팩 없음 → MCP 등록 생략")
                 continue
-            alias = self.resolve_server_alias(provider)  # 별칭=정규명(항등, §2.8-2)
+            alias = self.resolve_server_alias(provider)  # 별칭=`tm-<provider>`(§2.8-2)
             desired_aliases.add(alias)
             entry = self._build_mcp_entry(provider, pack)
             existing = servers.get(alias)

@@ -56,11 +56,12 @@ def _codex_settings_file(tmp_path: Path) -> Path:
 # ── claude 테스트 ──
 
 def test_claude_connected_true(tmp_path):
-    """claude MCP 파일에 linear _teammode_managed 항목 → connected=true."""
+    """claude MCP 파일에 tm-linear _teammode_managed 항목 → provider linear 조회 시 connected."""
     mcp = _claude_mcp_file(tmp_path)
     mcp.write_text(json.dumps({
         "mcpServers": {
-            "linear": {"_teammode_managed": True, "_canonical_server": "linear"}
+            # 실제 등록 키는 tm-<provider> 별칭, _canonical_server 에 정규명.
+            "tm-linear": {"_teammode_managed": True, "_canonical_server": "linear"}
         }
     }))
     code, out = _run(
@@ -71,7 +72,7 @@ def test_claude_connected_true(tmp_path):
     assert code == 0
     data = json.loads(out)
     assert data["connected"] is True
-    assert data["alias"] == "linear"
+    assert data["alias"] == "tm-linear"
 
 
 def test_claude_connected_false_no_file(tmp_path):
@@ -139,11 +140,11 @@ def test_claude_connected_false_parse_error(tmp_path):
 # ── codex 테스트 ──
 
 def test_codex_connected_true(tmp_path):
-    """codex config.toml에 teammode-mcp 블록 + linear 항목 → connected=true."""
+    """codex config.toml에 teammode-mcp 블록 + tm-linear 항목 → provider linear 조회 시 connected."""
     cfg = _codex_settings_file(tmp_path)
     cfg.write_text(
         "# teammode-mcp-start\n"
-        "[mcp_servers.linear]\n"
+        "[mcp_servers.tm-linear]\n"
         "_teammode_managed = true\n"
         "# teammode-mcp-end\n"
     )
@@ -155,7 +156,7 @@ def test_codex_connected_true(tmp_path):
     assert code == 0
     data = json.loads(out)
     assert data["connected"] is True
-    assert data["alias"] == "linear"
+    assert data["alias"] == "tm-linear"
 
 
 def test_codex_connected_false_no_file(tmp_path):

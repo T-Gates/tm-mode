@@ -273,12 +273,12 @@ def test_D3_connected_slot_registers_mcp_in_isolation(tmp_path):
     assert proc.returncode == 0, proc.stderr   # N6: codex 커맨드없는 placeholder 도 비실패
     # 실 MCP 등록 경로 무접촉(부재).
     assert not real_mcp.exists()
-    # 격리 MCP 파일에 linear 등록(teammode 소유 마커).
+    # 격리 MCP 파일에 tm-linear 등록(teammode 소유 마커, tm-<provider> 별칭).
     iso_mcp = iso / "claude" / ".claude.json"
     assert iso_mcp.is_file(), "연결 슬롯인데 격리 MCP 등록 파일 미생성"
     data = json.loads(iso_mcp.read_text())
-    assert "linear" in data.get("mcpServers", {})
-    assert data["mcpServers"]["linear"].get("_teammode_managed") is True
+    assert "tm-linear" in data.get("mcpServers", {})
+    assert data["mcpServers"]["tm-linear"].get("_teammode_managed") is True
     # N3: codex 는 ~/.claude.json 을 절대 안 건드림(여전히 부재). codex MCP 는 config.toml 블록.
     assert not real_mcp.exists()
     codex_cfg = iso / "codex" / "config.toml"

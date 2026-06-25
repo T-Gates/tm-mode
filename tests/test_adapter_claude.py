@@ -126,7 +126,8 @@ def test_mcp_translated_to_matcher(env):
     env.make_adapter().sync(mode="on")
     cmds = _all_commands(_load(env.settings))
     matchers = [m for e, m, c in cmds if e == "PreToolUse"]
-    assert "mcp__linear__create_issue" in matchers
+    # 매처 server = resolve_server_alias(정규명) = tm-linear (런타임 도구명과 일치)
+    assert "mcp__tm-linear__create_issue" in matchers
 
 
 # ── 4. 멱등 ──

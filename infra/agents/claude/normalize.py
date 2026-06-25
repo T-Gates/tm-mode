@@ -63,8 +63,30 @@ def _reverse_event(events: dict, raw_event: str):
     return raw_event  # 매핑 표에 없으면 원형 그대로 (Claude=정규 기준)
 
 
+# teammode 가 등록하는 MCP 별칭 네임스페이스 접두(어댑터 resolve_server_alias 와 대칭).
+# 런타임에 에이전트가 부르는 도구명은 등록 별칭(`mcp__tm-linear__create_issue`)이므로,
+# 정규 스키마로 환원할 때 이 접두를 떼어 manifest 의 **정규 서버명**(linear)과 맞춘다.
+# 그래야 self-filter(§6.2-2)·confirm 게이트가 manifest 매처와 일치한다.
+_MCP_ALIAS_PREFIX = "tm-"
+
+
+def _canonical_server(server: str) -> str:
+    """등록 별칭(`tm-<provider>`) → 정규 서버명(<provider>). 접두 없으면 그대로.
+
+    어댑터 resolve_server_alias 의 역(逆). 사용자가 직접 등록한 동명 서버(`linear`)는
+    접두가 없으니 무변경 — teammode 별칭만 환원된다.
+    """
+    if server.startswith(_MCP_ALIAS_PREFIX):
+        return server[len(_MCP_ALIAS_PREFIX):]
+    return server
+
+
 def _parse_mcp(events: dict, tool_name: str):
-    """Claude tool_name 이 mcp__server__tool 형식이면 (server, tool) 반환, 아니면 None."""
+    """Claude tool_name 이 mcp__server__tool 형식이면 (정규서버, tool) 반환, 아니면 None.
+
+    server 는 등록 별칭(`tm-<provider>`)일 수 있으므로 정규 서버명으로 환원해 반환한다
+    (manifest 매처·confirm 게이트가 정규 서버명 기준이라 — §2.5).
+    """
     fmt = events.get("mcp_tool_format", "mcp__{server}__{tool}")
     # 템플릿을 정규식으로 — {server}/{tool} 을 캡처 그룹으로
     pattern = "^" + re.escape(fmt).replace(
@@ -73,7 +95,7 @@ def _parse_mcp(events: dict, tool_name: str):
     m = re.match(pattern, tool_name or "")
     if not m:
         return None
-    return (m.group("server"), m.group("tool"))
+    return (_canonical_server(m.group("server")), m.group("tool"))
 
 
 def _reverse_action(events: dict, tool_name: str):

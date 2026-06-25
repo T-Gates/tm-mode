@@ -269,20 +269,24 @@ class Adapter(BaseAdapter):
         """문자열 리스트 → TOML 배열 리터럴(args 등). 각 항목은 _toml_str 로 안전 인용."""
         return "[" + ", ".join(self._toml_str(str(a)) for a in items) + "]"
 
-    def _render_mcp_server_lines(self, provider: str, pack) -> list:
-        """단일 provider 의 [mcp_servers.<provider>] TOML 섹션 라인들.
+    def _render_mcp_server_lines(self, alias: str, pack, canonical=None) -> list:
+        """단일 provider 의 [mcp_servers.<alias>] TOML 섹션 라인들.
 
         archive "MCP 마련" + §2.8 공식/자작 동일 처리:
           - 팩 mcp 에 실 기동 데이터(command/args 또는 path)가 있으면 → command·args 를
             실제로 적어 Codex 가 기동 가능한 등록을 한다.
           - 없으면(P2 미기재) → 소유 마커 + register_hint placeholder 만(자리만 + 안내).
             추측 패키지명/repo 금지.
-        정규명=별칭(항등, §2.8-2). 소유 마커는 어느 경우든 유지.
+        섹션 키는 별칭 `tm-<provider>`(resolve_server_alias, §2.8-2), `_canonical_server`
+        는 정규 서버명을 담는다(별칭이 아님 — 역추적·소유 식별용). canonical 미지정 시
+        하위 호환으로 alias 를 그대로 쓴다. 소유 마커는 어느 경우든 유지.
         """
+        if canonical is None:
+            canonical = alias
         hint = pack.mcp.get("register_hint", "") if pack else ""
-        lines = [f"[mcp_servers.{provider}]"]
+        lines = [f"[mcp_servers.{alias}]"]
         lines.append("_teammode_managed = true")
-        lines.append(f"_canonical_server = {self._toml_str(provider)}")
+        lines.append(f"_canonical_server = {self._toml_str(canonical)}")
         lines.append(f"_register_hint = {self._toml_str(hint)}")
         launch = self._mcp_launch_command(pack)  # 부모(claude) 상속 — 팩 mcp 해석 공유
         if launch is not None:
@@ -296,10 +300,19 @@ class Adapter(BaseAdapter):
         return lines
 
     def _render_mcp_block(self, providers_with_packs: list) -> str:
-        """연결 provider 목록 → teammode-mcp TOML 블록 문자열."""
+        """연결 provider 목록 → teammode-mcp TOML 블록 문자열.
+
+        providers_with_packs 항목은 (alias, pack) 또는 (alias, canonical, pack).
+        후자면 _canonical_server 에 정규 서버명을, 섹션 키엔 별칭을 쓴다.
+        """
         lines = [self.MCP_BLOCK_START, ""]
-        for provider, pack in providers_with_packs:
-            lines.extend(self._render_mcp_server_lines(provider, pack))
+        for item in providers_with_packs:
+            if len(item) == 3:
+                alias, canonical, pack = item
+            else:  # 하위 호환: (alias, pack) — canonical=alias
+                alias, pack = item
+                canonical = alias
+            lines.extend(self._render_mcp_server_lines(alias, pack, canonical=canonical))
             lines.append("")
         lines.append(self.MCP_BLOCK_END)
         return "\n".join(lines)
@@ -329,7 +342,7 @@ class Adapter(BaseAdapter):
     def install_mcp(self) -> list:
         """config services 의 연결 provider 를 Codex config.toml [mcp_servers.*] 로 등록. 멱등.
 
-        claude 와 동일 계약(services 읽기·정규명 등록·별칭 항등·멱등·빈 슬롯 [info])이되,
+        claude 와 동일 계약(services 읽기·`tm-<provider>` 별칭 등록·멱등·빈 슬롯 [info])이되,
         등록 포맷만 Codex TOML 블록으로 재정의.
         """
         import providers as _prov  # 부모와 동일 모듈(infra/ on sys.path)
@@ -354,7 +367,8 @@ class Adapter(BaseAdapter):
                 changes.append(f"[info] {provider}: provider 팩 없음 → MCP 등록 생략")
                 continue
             alias = self.resolve_server_alias(provider)
-            providers_with_packs.append((alias, pack))
+            # (alias, canonical, pack): 섹션 키=별칭(tm-<provider>), _canonical_server=정규명.
+            providers_with_packs.append((alias, provider, pack))
             aliases.append(alias)
 
         # [P1 삭제] handlers/role_server 폐기 — teammode 서버 공존 분기 제거.
@@ -366,7 +380,7 @@ class Adapter(BaseAdapter):
             # N2: claude 와 대칭 — 실제 파일 변경 시에만 [mcp] 등록, 멱등 무변경은
             # [ok]. (_write_mcp_block 의 changed 반환값을 반영, 거짓 등록 보고 금지.)
             if changed:
-                for alias, pack in providers_with_packs:
+                for alias, _canonical, pack in providers_with_packs:
                     if self._mcp_launch_command(pack) is not None:
                         changes.append(f"[mcp] {alias} 등록(기동 커맨드)")
                     else:

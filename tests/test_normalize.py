@@ -109,6 +109,28 @@ def test_translate_mcp_tool_to_canonical_server(env):
     assert out["tool"]["name"] == "create_issue"
 
 
+def test_tm_alias_reverse_maps_to_canonical_server(env):
+    """런타임 실 도구명은 등록 별칭 `mcp__tm-linear__...` — 정규 서버명 linear 로 환원.
+
+    어댑터 resolve_server_alias 가 linear→tm-linear 로 등록하므로, 에이전트가 부르는
+    실제 도구명은 `mcp__tm-linear__create_issue`다. normalize 는 이를 정규 서버명
+    `linear` 로 되돌려 manifest 매처(§2.5 정규 서버명)·self-filter·confirm 게이트가
+    일치하도록 한다. (tm- 접두 없는 사용자 동명 서버는 그대로 보존된다.)
+    """
+    raw = {"hook_event_name": "PreToolUse",
+           "tool_name": "mcp__tm-linear__create_issue",
+           "tool_input": {"title": "x"}}
+    proc = env.run("echo-stub.py", raw, manifest=[
+        {"event": "PreToolUse",
+         "match": {"mcp": {"server": "linear", "tool": "create_issue"}},
+         "script": "echo-stub.py", "fallback": "runtime"}])
+    out = json.loads(proc.stdout)
+    assert out["tool"]["server"] == "linear"   # tm- 접두 제거 → 정규 서버명
+    assert out["tool"]["name"] == "create_issue"
+    assert proc.returncode == 0
+    assert proc.stdout.strip()                 # self-filter 통과 = 매처 일치
+
+
 # ── 2. 런타임 자가 필터 (§6.2-2) ──
 
 def test_self_filter_passes_when_match(env):
