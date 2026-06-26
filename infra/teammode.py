@@ -869,7 +869,9 @@ _VALUE_FLAGS = ("--root", "--settings", "--author", "--text", "--now", "--messag
                 "--title", "--body", "--assignee", "--label", "--priority", "--paths",
                 "--member", "--skills-dir", "--skill",
                 # memory 동사 플래그
-                "--folder", "--filename", "--content", "--weight", "--path", "--date")
+                "--folder", "--filename", "--content", "--weight", "--path", "--date",
+                # memory route 동사 플래그 (루트 2열 라우팅 맵 설명 칸)
+                "--desc")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1185,6 +1187,125 @@ def _index_remove_row(index_path: Path, rel_path: str) -> bool:
     if not index_path.is_file():
         return False
     path_marker = f"`{rel_path}`"
+    lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    new_lines = [l for l in lines
+                 if not (path_marker in l and l.strip().startswith("|"))]
+    if new_lines == lines:
+        return False
+    index_path.write_text("".join(new_lines), encoding="utf-8")
+    return True
+
+
+# ──────────────────────────────────────────────────────────────────
+# 루트 라우팅 맵 (2열) 전용 헬퍼 — `_index_upsert` 미러, 4열 folder-INDEX 무회귀
+# ──────────────────────────────────────────────────────────────────
+# 루트 `memory/INDEX.md` 는 `| 경로 | 여기에 넣는 것 |` 2열 표 + 큐레이션 산문.
+# 4열 헬퍼(_index_upsert/_index_remove_row)는 가중치·편집일 칸을 전제하므로 재사용 불가.
+# 같은 패턴(헤더 토큰 탐색 · 백틱 경로 마커 · atomic write)을 2열용으로 따로 둔다.
+
+# 루트 2열 표 구분자 — 폴더 라우팅 맵(`memory/INDEX.md`) 정본 헤더와 동일 토큰.
+_ROOT_INDEX_TABLE_HEADER = "| 경로 | 여기에 넣는 것 |"
+_ROOT_INDEX_TABLE_SEP    = "|---|---|"
+
+
+def _root_index_upsert(index_path: Path, path: str, desc: str) -> bool:
+    """루트 `memory/INDEX.md` 2열 표에 행을 upsert(삽입 또는 갱신). 변경됐으면 True.
+
+    형식:
+      | 경로 | 여기에 넣는 것 |
+      |---|---|
+      | `product/brand/` | 설명 한 줄 |
+
+    - 표 위/주변 산문(주입 안내·"새 폴더 등재 필수"·팀 루트 안내)은 보존 — 헤더 토큰
+      `| 경로 | 여기에 넣는 것 |` 을 찾아 **그 표에만** 작용한다.
+    - 행 식별: 백틱 토큰 `` `<path>` `` 매칭. 백틱 경계가 폴더행 `product/brand/` 과
+      파일행 `product/brand/philosophy.md` 를 구분해 오매칭이 없다(테스트로 고정).
+    - 같은 path 행이 있으면 desc 만 갱신, 없으면 sep 다음에 삽입. 표 없으면 새로 생성.
+    - 멱등: 같은 내용 재호출 → 변경 없음(False).
+    - INDEX.md 자신에는 frontmatter 붙이지 않는다(원칙).
+    - atomic write: 임시파일 + os.replace(_index_upsert 미러) — 부분 변경 상태 방지.
+    """
+    existing = index_path.read_text(encoding="utf-8") if index_path.is_file() else ""
+
+    # P2: 설명 칸 이스케이핑 — |·줄바꿈·백틱에 표가 깨지지 않도록.
+    # path 는 백틱 마커 식별에 쓰이므로 raw 로 둔다(_index_upsert 와 동일 정책 — 호출부가 검증).
+    safe_desc = _escape_index_cell(desc)
+    new_row = f"| `{path}` | {safe_desc} |"
+
+    # 기존 행 검색 (백틱 경로 토큰으로 식별)
+    path_marker = f"`{path}`"
+    lines = existing.splitlines(keepends=True)
+    row_idx = None
+    for i, line in enumerate(lines):
+        if path_marker in line and line.strip().startswith("|"):
+            row_idx = i
+            break
+
+    if row_idx is not None:
+        old_row = lines[row_idx].rstrip("\n")
+        if old_row == new_row:
+            return False  # 변경 없음(멱등)
+        lines[row_idx] = new_row + "\n"
+        content = "".join(lines)
+    else:
+        # 헤더 위치 찾기
+        header_idx = None
+        sep_idx = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == _ROOT_INDEX_TABLE_HEADER:
+                header_idx = i
+            if header_idx is not None and stripped == _ROOT_INDEX_TABLE_SEP:
+                sep_idx = i
+                break
+
+        if header_idx is not None and sep_idx is not None:
+            # sep 다음에 삽입
+            lines.insert(sep_idx + 1, new_row + "\n")
+            content = "".join(lines)
+        else:
+            # 표 자체 없음 — 헤더+sep+행 새로 추가(산문은 그대로 위에 보존)
+            suffix = "\n" if existing and not existing.endswith("\n") else ""
+            block = (
+                f"\n{_ROOT_INDEX_TABLE_HEADER}\n"
+                f"{_ROOT_INDEX_TABLE_SEP}\n"
+                f"{new_row}\n"
+            )
+            content = existing + suffix + block
+
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    # atomic write: 임시파일에 쓴 뒤 os.replace — 부분 변경 상태로 INDEX 가 남지 않도록
+    import tempfile as _tempfile
+    _idx_tmp: "Path | None" = None
+    try:
+        with _tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8",
+            dir=index_path.parent,
+            delete=False,
+            suffix=".idx.tmp",
+        ) as _itf:
+            _idx_tmp = Path(_itf.name)  # name 을 write() 전에 저장
+            _itf.write(content)
+        os.replace(str(_idx_tmp), str(index_path))
+        _idx_tmp = None  # 이동 완료 → 정리 불필요
+    finally:
+        if _idx_tmp is not None:
+            try:
+                _idx_tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+    return True
+
+
+def _root_index_remove_row(index_path: Path, path: str) -> bool:
+    """루트 `memory/INDEX.md` 2열 표에서 해당 경로 행을 제거. 변경됐으면 True.
+
+    백틱 토큰 `` `<path>` `` 으로 식별 — 폴더행/파일행 오매칭 없음(_root_index_upsert 와 동일).
+    부재 시 무변경(False). _index_remove_row 미러.
+    """
+    if not index_path.is_file():
+        return False
+    path_marker = f"`{path}`"
     lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
     new_lines = [l for l in lines
                  if not (path_marker in l and l.strip().startswith("|"))]
@@ -1747,6 +1868,173 @@ def cmd_knowledge(team_root: Path, action: str | None,
     return 2
 
 
+def _validate_route_path(team_root: Path, path: str) -> str | None:
+    """루트 라우팅 맵 `--path` 경량 traversal 가드. 위반 시 에러 메시지 반환.
+
+    `_validate_knowledge_path` 는 folder/filename 분리 + allowed-folders 검증을 전제하므로
+    루트 맵(폴더행 `product/foo/` · 파일행 `product/brand/philosophy.md` 모두 허용)에는
+    부적합 — 정규화 후 memory/ 이탈만 차단하는 경량 동등 검증을 둔다(설계 §4.4).
+
+    - 빈 문자열·절대경로·'..' 세그먼트 거부.
+    - 정규화(resolve) 후 team_root/memory/ 하위여야 한다(심링크 탈출 포함 차단).
+    - 표 행을 깨뜨리는 제어문자·파이프·개행·백틱 거부(2열 표 정합성).
+    """
+    if not path:
+        return "경로가 비어 있습니다."
+    if path.startswith("/") or path.startswith("\\"):
+        return f"절대경로는 허용되지 않습니다: {path!r}"
+    if ".." in path:
+        return f"경로에 '..' 이 포함될 수 없습니다: {path!r}"
+    # 표 행(`| `<path>` | ... |`)을 깨거나 백틱 마커를 교란하는 문자 거부.
+    for ch in path:
+        if ord(ch) < 32 or ch in ("|", "`"):
+            return f"경로에 허용되지 않는 문자가 있습니다: {path!r}"
+
+    # ── 정규화 후 memory/ 하위 containment 검증 (심링크 탈출 포함) ──────
+    real_root = team_root.resolve()
+    memory_dir = (team_root / "memory").resolve()
+    try:
+        memory_dir.relative_to(real_root)
+    except ValueError:
+        return "memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단)."
+    try:
+        candidate = (team_root / "memory" / path).resolve()
+    except (ValueError, OSError) as exc:
+        return f"경로 정규화 실패 — {exc}"
+    try:
+        candidate.relative_to(memory_dir)
+    except ValueError:
+        return f"경로가 memory/ 를 벗어납니다: {path!r}"
+    return None
+
+
+def cmd_route(team_root: Path, sub_action: str | None,
+              path: str | None, desc: str | None, author: str | None) -> int:
+    """memory route 동사 — 루트 라우팅 맵(`memory/INDEX.md` 2열 표) CRUD (기계 전담).
+
+    upsert: 행 삽입/갱신(`_root_index_upsert`) → do_commit([memory/INDEX.md], push=True).
+    remove: 행 제거(`_root_index_remove_row`) → 변경 시 동일 커밋.
+
+    엔진 불변(memory write/delete 와 동일 규약):
+      - 대상 파일은 루트 `memory/INDEX.md` 고정(인자 없음). 4열 folder-INDEX 무회귀.
+      - push=True(위키=팀공유): **push 실패는 비차단**(로컬 커밋 보존, 경고만).
+      - traversal 차단(_validate_route_path — folder/filename 분리 없는 경량 가드).
+      - 멱등: 같은 내용 재호출 → 변경 없음(커밋 안 생김), exit 0.
+      - 엔진이 python 직접 write → kb-write-guard 우회(unlock 불필요).
+    """
+    index_path = team_root / "memory" / "INDEX.md"
+
+    if sub_action == "upsert":
+        # 필수 인자 검증 (2열 산문은 자동 추출 불가 → --desc 필수)
+        if not path:
+            print("[error] memory route upsert: --path 가 필요합니다.", file=sys.stderr)
+            return 2
+        if desc is None:
+            print("[error] memory route upsert: --desc 가 필요합니다(2열 설명은 추측 금지).",
+                  file=sys.stderr)
+            return 2
+        if not author:
+            print("[error] memory route upsert: --author 가 필요합니다.", file=sys.stderr)
+            return 2
+
+        # author traversal 가드
+        err = _validate_author(author)
+        if err is not None:
+            print(f"[error] memory route upsert: --author: {err}", file=sys.stderr)
+            return 2
+
+        # path traversal 가드 (경량 — memory/ 이탈 차단)
+        err = _validate_route_path(team_root, path)
+        if err is not None:
+            print(f"[error] memory route upsert: {err}", file=sys.stderr)
+            return 2
+
+        # 2열 표 행 upsert (atomic). I/O 예외 → exit 2 + 친화 메시지(트레이스백 아님).
+        try:
+            changed = _root_index_upsert(index_path, path, desc)
+        except (OSError, PermissionError) as exc:
+            print(f"[error] memory route upsert: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            return 2
+
+        if not changed:
+            print(f"teammode memory route upsert — 변경 없음(멱등): {path}")
+            return 0
+
+        return _route_commit(team_root, index_path,
+                             message=f"docs(memory): route upsert {path}",
+                             done_msg=f"teammode memory route upsert — {path} 등재")
+
+    if sub_action == "remove":
+        # 필수 인자 검증 (remove 는 --desc 불필요)
+        if not path:
+            print("[error] memory route remove: --path 가 필요합니다.", file=sys.stderr)
+            return 2
+        if not author:
+            print("[error] memory route remove: --author 가 필요합니다.", file=sys.stderr)
+            return 2
+
+        err = _validate_author(author)
+        if err is not None:
+            print(f"[error] memory route remove: --author: {err}", file=sys.stderr)
+            return 2
+
+        err = _validate_route_path(team_root, path)
+        if err is not None:
+            print(f"[error] memory route remove: {err}", file=sys.stderr)
+            return 2
+
+        try:
+            changed = _root_index_remove_row(index_path, path)
+        except (OSError, PermissionError) as exc:
+            print(f"[error] memory route remove: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            return 2
+
+        if not changed:
+            print(f"teammode memory route remove — 행 없음(멱등): {path}")
+            return 0
+
+        return _route_commit(team_root, index_path,
+                             message=f"docs(memory): route remove {path}",
+                             done_msg=f"teammode memory route remove — {path} 제거")
+
+    print(f"[error] memory route: 알 수 없는 서브액션: {sub_action!r}. "
+          f"upsert/remove 중 하나.", file=sys.stderr)
+    return 2
+
+
+def _route_commit(team_root: Path, index_path: Path,
+                  message: str, done_msg: str) -> int:
+    """루트 라우팅 맵 변경 후 do_commit([memory/INDEX.md], push=True) — memory write 미러.
+
+    push 실패는 비차단(로컬 커밋 보존, 경고만). 단일 파일 변경이라 부분 실패 없음.
+    """
+    commit_result = _git_ops.do_commit(
+        str(team_root),
+        message=message,
+        push=True,
+        paths=[str(index_path)],
+    )
+    # 정상 케이스(ok=False 여도 경고 불필요): 멱등·빈 경로·git 없는 환경.
+    _COMMIT_SILENT_DETAILS = ("nothing to commit", "no paths to stage",
+                              "not a git work tree")
+    commit_failed = (not commit_result.ok
+                     and commit_result.detail not in _COMMIT_SILENT_DETAILS)
+
+    if commit_failed:
+        print(f"[warning] memory route: 커밋 실패 — {commit_result.detail}",
+              file=sys.stderr)
+        print(f"{done_msg}(커밋 안 됨)")
+        return 1
+
+    # push 실패는 비차단: 로컬 커밋·맵 변경은 유지, 경고만 출력(RC=0).
+    if commit_result.committed and not commit_result.pushed:
+        print(f"[warning] memory route: push 실패(로컬 커밋은 유지) — "
+              f"{commit_result.detail}", file=sys.stderr)
+
+    print(done_msg)
+    return 0
+
+
 def cmd_pull(team_root: Path) -> int:
     """팀 레포를 `git pull --ff-only`로 최신화 — git_ops 공통 안전장치 재사용(V.3).
 
@@ -2143,6 +2431,16 @@ def main(argv=None) -> int:
     if verb == "memory":
         positionals = opts.get("positionals") or []
         action = positionals[0] if positionals else None
+        # route 서브액션: 루트 2열 라우팅 맵 CRUD — 4열 folder-INDEX 경로와 분리.
+        if action == "route":
+            sub_action = positionals[1] if len(positionals) > 1 else None
+            return cmd_route(
+                team_root,
+                sub_action=sub_action,
+                path=opts.get("path"),
+                desc=opts.get("desc"),
+                author=opts.get("author"),
+            )
         return cmd_knowledge(
             team_root,
             action=action,
