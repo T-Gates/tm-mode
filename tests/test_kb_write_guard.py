@@ -918,11 +918,12 @@ def test_toplevel_non_dict_json_is_denied(tmp_path):
         assert "Traceback" not in proc.stderr
 
 
-def test_files_multiple_elements_is_denied(tmp_path):
-    """files 다중 요소 → deny(exit2, fail-closed).
+def test_files_multiple_elements_with_memory_or_malformed_is_denied(tmp_path):
+    """files 다중 요소 — memory/ 포함 또는 비문자열 원소면 deny(exit2).
 
-    수정 전: files[0] 만 봐서 [밖, memory] 면 memory 경로를 놓치고 allow.
-    수정 후: len(files)>1 malformed deny.
+    각 파일 개별 판정(전수 검사): [밖, memory] 는 memory 경로를 정확히 잡아 차단,
+    [밖, 123] 은 비문자열 원소라 malformed fail-closed. (codex apply_patch 다중파일 지원
+    후에도 혼합 우회·malformed 는 막힌다.)
     """
     root = tmp_path / "team"
     root.mkdir()
@@ -943,6 +944,30 @@ def test_files_multiple_elements_is_denied(tmp_path):
         out = json.loads(proc.stdout)
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "Traceback" not in proc.stderr
+
+
+def test_files_multiple_nonmemory_elements_pass(tmp_path):
+    """files 다중 요소가 전부 memory/ 밖이면 통과(exit0).
+
+    codex apply_patch 다중파일 편집 정상 케이스 — guard 가 각 파일을 개별 판정해
+    memory/ 파일이 하나도 없으면 무영향(과거 blanket 다중 차단 → per-file 로 개선).
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    a = str(tmp_path / "a.py")
+    b = str(tmp_path / "b.py")
+    payload = {
+        "event": "PreToolUse",
+        "action": "file_edit",
+        "files": [a, b],
+        "tool": {"kind": "builtin", "name": "Write"},
+        "agent": "codex",
+        "raw": {},
+    }
+    proc = _run_hook(payload, root)
+    assert proc.returncode == 0, "memory/ 밖 다중파일은 통과해야 한다"
+    assert "Traceback" not in proc.stderr
 
 
 def test_deny_message_explains_kb_purpose(tmp_path):
