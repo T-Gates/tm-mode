@@ -3,17 +3,16 @@
 
 정규형 manifest + codex/events.json 을 읽어 Codex 의 config.toml hooks 블록에
 멱등 동기화한다. 번역 코어(events.json 기반, 에이전트 무관)는 Claude 어댑터와
-공유하고, 이 파일은 **Codex 고유의 config 포맷(TOML 블록) + 폴백·enforcement 축소**만
-담당한다.
+공유하고, 이 파일은 **Codex 고유의 config 포맷(TOML 블록) + 폴백 처리**만 담당한다.
 
 Codex 특성(events.json 으로 데이터 표현 — 코드 분기 하드코딩 금지, §4):
-  - PreToolUse = null (미지원) → §7 폴백(drop + [warn], 무음 스킵 금지)
+  - PreToolUse/PostToolUse/UserPromptSubmit/SessionStart 를 Codex hooks 에 직접 등록
   - actions.file_edit = "apply_patch"
-  - mcp_tool_format = "{server}.{tool}"
+  - mcp_tool_format = "mcp__{server}__{tool}"
 
-enforcement 축소(§11.11): block 훅이 이 에이전트에서 표현 불가하면, 폴백으로 비활성되며
-[warn] 으로 "차단 강제 상실"을 알린다 — 무음 누락 금지. (Codex 가 PreToolUse 차단을
-지원하지 못하는 현 상황의 정직한 표면화.)
+폴백(§11.11): events.json 에서 표현 불가로 선언된 훅은 비활성화하고 [warn] 으로 알린다.
+현재 Codex 는 PreToolUse 를 지원하므로 confirm-action/kb-write-guard 같은 차단 훅도
+등록 대상이다.
 
 CLI:
   adapter.py sync [--on|--off]   manifest → config.toml (멱등)
@@ -239,9 +238,9 @@ class Adapter(BaseAdapter):
     # register_hint) — teammode 는 MCP 서버 자체를 제작·유지하지 않는다(§7.4).
     #
     # ⚠️ Codex 한계 정직 표면화: Codex config.toml 의 [mcp_servers.*] 는 실행 커맨드를
-    # 요구하는 정적 선언이라, 실 커맨드 미고정인 v0.1 에서는 placeholder 만 둔다. 또한
-    # Codex 는 PreToolUse 차단을 표현하지 못하므로(§2.11) MCP 매처 confirm 훅의 강제력은
-    # sync 단계에서 이미 [warn] 으로 상실 표면화된다 — install-mcp 는 서버 등록만 책임.
+    # 요구하는 정적 선언이라, 실 커맨드 미고정인 v0.1 에서는 placeholder 만 둔다.
+    # Codex 도 PreToolUse 를 표현하므로 confirm 훅은 hooks 블록에 등록된다.
+    # install-mcp 는 서버 등록만 책임지고, 차단 강제력은 hooks/normalize 경로가 맡는다.
 
     MCP_BLOCK_START = "# teammode-mcp-start"
     MCP_BLOCK_END = "# teammode-mcp-end"
