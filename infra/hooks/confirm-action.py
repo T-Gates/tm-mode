@@ -33,10 +33,9 @@ manifest args 첫 인자 = marker (예 "teammode-issues-create-allow").
 ⚠️ `.teammode-active` 가드(빌드 안전): teammode 비활성 시 즉시 no-op exit 0.
    teammode 가 꺼진 채 일상 작업 중에는 차단을 걸지 않는다.
 
-⚠️ Codex 한계(N5/§2.11): Codex 는 events.json 에서 `PreToolUse: null` 이라 이 차단 훅이
-   **애초 등록되지 않는다**(어댑터 sync 가 enforcement:block 의 "차단 강제 상실"을 [warn]
-   으로 표면화 — 무음 누락 0). 즉 Codex 에서는 차단이 불가하며 경고만 가능하다. 이
-   스크립트의 exit-2 차단은 Claude 처럼 PreToolUse 차단을 표현하는 에이전트에서만 발효한다.
+⚠️ Codex: Codex hooks 는 `PreToolUse` 를 지원하므로 이 차단 훅도 config.toml 에 등록된다.
+   normalize 가 Codex 원어 입력을 정규형으로 바꾼 뒤 이 스크립트의 exit-2 차단을 그대로
+   전파한다. 에이전트별 차이는 어댑터/events.json/normalize 에만 둔다.
 
 ────────────────────────────────────────────────────────────────────────────
 allow 신호 = **모델 비제어 채널** (보안 핵심):
