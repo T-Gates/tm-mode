@@ -61,6 +61,11 @@ def git_env() -> dict:
     프롬프트·SSH 프롬프트)뿐이다. 목표: "인증 막혀도 즉시 실패 + 정상 인증은 동작".
     """
     env = dict(os.environ)
+    # 로케일 고정(C) — git 의 사람용 메시지(push 거부·hint 등)를 영어로 못박는다. 비영어
+    # 로케일에선 "Updates were rejected ..." 가 번역돼 _is_non_fast_forward 가 놓치고(자동
+    # 복구 미발동) detail 파싱도 흔들린다. teammode 의 모든 git 호출은 결과를 코드로만 쓰고
+    # (사람용 출력 의존 0) detail 은 디버그 요약이라, 전역 C 고정이 가장 견고하고 안전하다.
+    env["LC_ALL"] = "C"
     env["GIT_TERMINAL_PROMPT"] = "0"          # https 자격증명 프롬프트 차단
     env.setdefault("GIT_SSH_COMMAND",
                    "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new "
@@ -185,6 +190,36 @@ def do_pull(team_root: str, timeout: int = DEFAULT_TIMEOUT) -> PullResult:
     return PullResult(ok=False, detail=((err or out) or "").strip()[:200])
 
 
+def _is_non_fast_forward(text: str) -> bool:
+    """push 출력(stderr/stdout)이 **non-fast-forward 거부**인지 판정. 무raise.
+
+    behind(다른 기기가 먼저 push) 로 로컬이 뒤처지면 git 은 push 를 거부한다 — 이때만
+    fetch+rebase 자동 복구를 트리거한다. 인증·네트워크 실패 등 다른 거부와 구분하려고
+    git 의 거부 메시지 패턴으로 좁게 감지한다(오탐 시 멀쩡한 실패에 rebase 를 걸 위험).
+    감지 패턴: `[rejected]`, `non-fast-forward`, `fetch first`, `Updates were rejected`.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    return ("non-fast-forward" in low
+            or "fetch first" in low
+            or "updates were rejected" in low
+            or "[rejected]" in low)
+
+
+def _abort_rebase(team_root: str, timeout: int) -> None:
+    """진행중 rebase 를 취소해 원상복구(`git rebase --abort`). 무raise(best-effort).
+
+    rebase 가 충돌·타임아웃·예외로 실패하면 `.git/rebase-merge` 같은 진행중 상태가
+    남아 레포가 어정쩡해진다. 비차단 반환 전에 반드시 호출해 로컬 커밋/워킹트리를
+    원래대로 되돌린다. abort 자체의 실패도 삼킨다(더 할 수 있는 게 없으므로).
+    """
+    try:
+        run_git(["-C", team_root, "rebase", "--abort"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _has_staged_changes(team_root: str, timeout: int) -> bool:
     """스테이지에 커밋할 변경이 있는지(`git diff --cached --quiet` rc!=0 == 변경 있음)."""
     try:
@@ -271,6 +306,63 @@ def do_commit(team_root: str, message: str, push: bool = False,
     if prc == 0:
         return CommitResult(ok=True, committed=True, pushed=True,
                             detail="committed and pushed")
+
+    # 4-1) non-ff 거부면 자동 복구: fetch → rebase → 재push 1회.
+    #      다른 기기가 먼저 push 해 로컬이 behind 일 때 발생. non-ff 가 아닌 실패(인증·
+    #      네트워크 등)는 자동 복구 대상이 아니므로 기존대로 비차단 반환한다.
+    #      partial-commit(paths=) 시 워킹트리에 커밋 안 된 다른 추적파일 변경이 남을 수
+    #      있다(auto-commit 의 주 패턴). 평문 rebase 는 그 dirty 상태를 "unstaged changes"
+    #      로 거부하므로, --autostash 로 stash→rebase→pop 해 dirty 를 흡수·보존한다(충돌·
+    #      abort 시에도 autostash 가 자동 원복).
+    if _is_non_fast_forward((perr or "") + "\n" + (pout or "")):
+        # fetch (push 와 동일하게 http 타임아웃 옵션 적용). 실패해도 예외 전파 0.
+        try:
+            frc, _, ferr = run_git(
+                ["-C", team_root, *http_timeout_opts(timeout), "fetch"],
+                timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return CommitResult(ok=True, committed=True, pushed=False,
+                                detail="committed; rebase fetch timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return CommitResult(ok=True, committed=True, pushed=False,
+                                detail=f"committed; rebase fetch exec error: {exc}")
+        if frc == 0:
+            # rebase (추적 upstream 위로). 충돌 등 실패 시 반드시 --abort 로 원상복구.
+            try:
+                rrc, _, rerr = run_git(
+                    ["-C", team_root, "rebase", "--autostash"], timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _abort_rebase(team_root, timeout)
+                return CommitResult(ok=True, committed=True, pushed=False,
+                                    detail="committed; rebase timeout")
+            except (OSError, subprocess.SubprocessError) as exc:
+                _abort_rebase(team_root, timeout)
+                return CommitResult(ok=True, committed=True, pushed=False,
+                                    detail=f"committed; rebase exec error: {exc}")
+            if rrc == 0:
+                # rebase 성공 → 재push 1회.
+                try:
+                    p2rc, p2out, p2err = run_git(
+                        ["-C", team_root, *http_timeout_opts(timeout), "push"],
+                        timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    return CommitResult(ok=True, committed=True, pushed=False,
+                                        detail="committed; rebased but re-push timeout")
+                except (OSError, subprocess.SubprocessError) as exc:
+                    return CommitResult(ok=True, committed=True, pushed=False,
+                                        detail=f"committed; rebased but re-push exec error: {exc}")
+                if p2rc == 0:
+                    return CommitResult(ok=True, committed=True, pushed=True,
+                                        detail="committed; rebased and pushed")
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail=f"committed; rebased but re-push failed: {((p2err or p2out) or '').strip()[:200]}")
+            # rebase 실패(충돌 등) → abort 로 원상복구 후 비차단 반환.
+            _abort_rebase(team_root, timeout)
+            return CommitResult(
+                ok=True, committed=True, pushed=False,
+                detail=f"committed; rebase failed (aborted): {(rerr or '').strip()[:200]}")
+
     return CommitResult(ok=True, committed=True, pushed=False,
                         detail=f"committed; push failed: {((perr or pout) or '').strip()[:200]}")
 

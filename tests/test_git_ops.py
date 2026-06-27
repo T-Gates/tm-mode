@@ -60,6 +60,153 @@ def cloned_repo(tmp_path):
     return c
 
 
+# ── do_commit push 자동 복구(non-ff → fetch+rebase+재push) ──
+
+def test_is_non_fast_forward_detects_reject_patterns():
+    """non-ff 판정 헬퍼: git 의 거부 메시지를 패턴으로 감지."""
+    rejected = [
+        " ! [rejected]        main -> main (non-fast-forward)",
+        "hint: Updates were rejected because the tip of your current branch is behind",
+        "! [rejected] main -> main (fetch first)",
+        "Updates were rejected because the remote contains work that you do",
+    ]
+    for msg in rejected:
+        assert go._is_non_fast_forward(msg) is True, f"non-ff 미감지: {msg!r}"
+
+
+def test_is_non_fast_forward_ignores_unrelated_errors():
+    """non-ff 가 아닌 실패(인증·네트워크 등)는 False — 자동 복구 트리거 금지."""
+    others = [
+        "",
+        "fatal: Authentication failed for 'https://example/'",
+        "fatal: unable to access 'https://example/': Could not resolve host",
+        "everything up-to-date",
+    ]
+    for msg in others:
+        assert go._is_non_fast_forward(msg) is False, f"오탐(non-ff 로 잘못 판정): {msg!r}"
+
+
+def test_do_commit_push_rebases_when_behind(cloned_repo):
+    """behind 상태에서 push 가 non-ff 거부되면 fetch+rebase 후 재push 로 성공."""
+    clone = cloned_repo.clone
+    # clone 에서 로컬 변경 + commit + push 시도 — upstream 은 이미 c2 만큼 ahead.
+    (clone / "c.txt").write_text("from clone\n")
+    res = go.do_commit(str(clone), "clone commit", push=True)
+    assert res.ok is True
+    assert res.committed is True
+    assert res.pushed is True, f"rebase 후 재push 실패: {res.detail}"
+    # upstream(bare)에 clone 의 커밋이 반영됐는지 — work 를 fetch 해 확인.
+    _git(cloned_repo.work, "fetch", "origin")
+    log = _git(cloned_repo.work, "log", "--oneline", "origin/main").stdout
+    assert "clone commit" in log
+    # 워킹트리에 rebase 진행중 흔적 없음.
+    assert not (clone / ".git" / "rebase-merge").exists()
+    assert not (clone / ".git" / "rebase-apply").exists()
+
+
+def test_do_commit_push_rebase_conflict_aborts_nonblocking(cloned_repo):
+    """rebase 충돌 시 abort 로 원상복구하고 pushed=False 비차단 반환."""
+    clone = cloned_repo.clone
+    work = cloned_repo.work
+    # upstream 에 a.txt 를 바꾸는 새 커밋 push(work).
+    (work / "a.txt").write_text("work edits a\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "work edit a")
+    _git(work, "push")
+    # clone 도 같은 a.txt 를 다르게 바꿔 commit — rebase 시 충돌.
+    (clone / "a.txt").write_text("clone edits a\n")
+    res = go.do_commit(str(clone), "clone edit a", push=True)
+    assert res.ok is True       # 비차단
+    assert res.committed is True  # 로컬 커밋 보존
+    assert res.pushed is False    # 충돌로 push 못 함
+    # 실제로 복구(fetch+rebase)를 시도하고 충돌로 abort 한 경로를 탔는지 detail 로 단언.
+    # (사후상태만 보면 복구 블록을 통째로 꺼도 통과 — 돌연변이 미검출. 이 단언이 막는다.)
+    assert "rebase failed" in res.detail and "aborted" in res.detail, \
+        f"abort 경로 표식 없음(복구 시도 안 한 상태와 구별 불가): {res.detail!r}"
+    # rebase 진행중 상태가 남지 않음(abort 됨).
+    assert not (clone / ".git" / "rebase-merge").exists()
+    assert not (clone / ".git" / "rebase-apply").exists()
+    # 로컬 커밋과 워킹트리가 보존됨 — clone 의 a.txt 내용 유지.
+    assert (clone / "a.txt").read_text() == "clone edits a\n"
+    head_msg = _git(clone, "log", "-1", "--format=%s").stdout.strip()
+    assert head_msg == "clone edit a"
+
+
+def test_do_commit_partial_push_autostash_recovers_with_dirty_tracked(cloned_repo):
+    """주 패턴 회귀가드: partial-commit(paths=) 으로 한 파일만 커밋 + push 하는데
+    워킹트리에 **다른 추적파일의 미커밋 변경(dirty)** 이 남아있어도, non-ff 복구
+    rebase 가 --autostash 로 그 dirty 를 흡수하고 재push 까지 성공해야 한다.
+
+    이게 auto-commit 의 실제 패턴(세션로그만 partial-commit, 코드 등 다른 추적파일은
+    워킹트리에 dirty 로 남음). 평문 rebase 였다면 "unstaged changes" 로 거부돼 복구가
+    매번 불발한다 — 이 테스트가 그 회귀를 잡는다.
+    """
+    clone = cloned_repo.clone
+    work = cloned_repo.work
+    # clone 은 c2 만큼 behind. 추적파일 a.txt 를 unstaged-dirty 로 둔다(스테이지 안 함).
+    (clone / "a.txt").write_text("locally edited a — uncommitted\n")
+    # 다른(새) 파일만 paths= 로 partial-commit + push.
+    (clone / "log.txt").write_text("session log line\n")
+    res = go.do_commit(str(clone), "session log", push=True, paths=["log.txt"])
+    assert res.ok is True
+    assert res.committed is True
+    assert res.pushed is True, f"autostash 복구로 재push 성공해야 함: {res.detail}"
+    # upstream(bare)에 partial 커밋이 반영됐는지 확인.
+    _git(work, "fetch", "origin")
+    log = _git(work, "log", "--oneline", "origin/main").stdout
+    assert "session log" in log
+    # dirty 추적파일 변경이 보존됨(autostash pop 으로 복원 — 유실 0).
+    assert (clone / "a.txt").read_text() == "locally edited a — uncommitted\n"
+    # 커밋은 log.txt 만 — a.txt 의 dirty 변경은 커밋에 휩쓸리지 않음(여전히 unstaged).
+    porcelain = _git(clone, "status", "--porcelain", "--", "a.txt").stdout
+    assert porcelain.strip().startswith(("M", " M")), \
+        f"a.txt 가 여전히 미커밋 변경이어야 함: {porcelain!r}"
+    # autostash 잔여 stash 없음(pop 으로 정리됨).
+    assert _git(clone, "stash", "list").stdout.strip() == ""
+
+
+def test_do_commit_push_rebase_conflict_autostash_no_residue(cloned_repo):
+    """충돌로 rebase 가 실패해 abort 할 때, --autostash 로 stash 했던 dirty 가
+    깨끗이 원복되고 **stash 잔여가 0** 이어야 한다(어정쩡한 상태 금지).
+    """
+    clone = cloned_repo.clone
+    work = cloned_repo.work
+    # upstream 이 a.txt 를 바꾼다(충돌 소스).
+    (work / "a.txt").write_text("work version of a\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "work edit a")
+    _git(work, "push")
+    # clone 에 추적파일 e.txt 를 로컬 커밋(rebase 로 재생될 깨끗한 베이스).
+    (clone / "e.txt").write_text("e base\n")
+    _git(clone, "add", "e.txt")
+    _git(clone, "commit", "-m", "add e")
+    # e.txt 를 unstaged-dirty 로 둔다 → autostash 대상.
+    (clone / "e.txt").write_text("e DIRTY uncommitted\n")
+    # a.txt 를 다르게 바꿔 partial-commit → rebase 시 upstream 과 충돌.
+    (clone / "a.txt").write_text("clone version of a\n")
+    res = go.do_commit(str(clone), "clone edit a", push=True, paths=["a.txt"])
+    assert res.ok is True
+    assert res.committed is True
+    assert res.pushed is False
+    assert "aborted" in res.detail, f"abort 경로 표식 없음: {res.detail!r}"
+    # rebase 진행중 흔적 없음.
+    assert not (clone / ".git" / "rebase-merge").exists()
+    assert not (clone / ".git" / "rebase-apply").exists()
+    # autostash 가 abort 로 원복 — dirty e.txt 보존, stash 잔여 0.
+    assert (clone / "e.txt").read_text() == "e DIRTY uncommitted\n"
+    assert _git(clone, "stash", "list").stdout.strip() == "", "stash 잔여 누수"
+
+
+def test_is_non_fast_forward_ignores_server_hook_decline():
+    """음성 가드: 서버훅/보호브랜치 거부(`[remote rejected] ... declined`)는 non-ff 가
+    아니다 → False. 누가 패턴을 느슨하게 고쳐 훅거부에 rebase 를 걸면 이 테스트가 막는다
+    (rebase+재push 가 보호브랜치를 영원히 두드리는 회귀 방지).
+    """
+    msg = " ! [remote rejected] main -> main (pre-receive hook declined)"
+    assert go._is_non_fast_forward(msg) is False, \
+        f"서버훅 거부를 non-ff 로 오탐: {msg!r}"
+
+
 # ── git_ops.do_pull (이관된 안전장치) ──
 
 def test_git_ops_exposes_do_pull(cloned_repo):
