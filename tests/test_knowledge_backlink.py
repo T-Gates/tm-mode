@@ -48,7 +48,10 @@ def test_write_appends_session_backlink(tmp_path):
     sp = _session_path(tmp_path, "eunsu", DATE)
     assert sp.is_file(), "세션로그가 생성되지 않았다"
     text = sp.read_text(encoding="utf-8")
-    assert "[[memory/team/rule.md]]" in text
+    # 위키링크는 vault 루트(memory/) 기준 상대경로여야 클릭이 작동한다 (#21).
+    # memory/ 접두사가 박히면 Obsidian 이 memory/memory/... 로 해석해 링크가 깨진다.
+    assert "[[team/rule.md]]" in text
+    assert "[[memory/team/rule.md]]" not in text
     assert "📝 생성" in text
 
 
@@ -92,7 +95,7 @@ def test_session_backlink_idempotent(tmp_path):
     sp = _session_path(tmp_path, "eunsu", DATE)
     text = sp.read_text(encoding="utf-8")
     # 같은 (수정, 경로) 줄은 1개만 (신규 1줄, 이후 수정은 동일 줄이라 중복 방지)
-    n_links = text.count("[[memory/team/rule.md]]")
+    n_links = text.count("[[team/rule.md]]")
     assert n_links <= 2, f"백링크 줄이 과도하게 누적됨: {n_links}"
 
 
@@ -122,7 +125,9 @@ def test_delete_appends_session_backlink(tmp_path):
     sdir = tmp_path / "memory" / "team" / "sessions" / "eunsu"
     texts = "".join(p.read_text(encoding="utf-8") for p in sdir.glob("*.md"))
     assert "🗑️ 삭제" in texts
-    assert "[[memory/team/gone.md]]" in texts
+    # delete 백링크도 vault 루트 기준이어야 한다 (#21).
+    assert "[[team/gone.md]]" in texts
+    assert "[[memory/team/gone.md]]" not in texts
 
 
 # ── 비차단: 본작업 유지 ─────────────────────────────────────────────

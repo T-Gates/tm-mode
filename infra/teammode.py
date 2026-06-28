@@ -1343,7 +1343,12 @@ def _backlink_session_to_doc(session_path: Path, author: str, workday: str,
     """
     label = {"write-new": "📝 생성", "write-update": "✏️ 수정",
              "delete": "🗑️ 삭제"}.get(verb, "📝 기록")
-    link_line = f"- {label}: [[{rel_path}]]"
+    # 위키링크는 Obsidian vault 루트(memory/) 기준 상대경로여야 클릭이 작동한다 (#21).
+    # 호출부는 INDEX·git 용으로 memory/ 접두 경로(rel_for_git/rel_for_index)를 넘기는데,
+    # 그대로 박으면 [[memory/...]] 가 되어 vault 가 memory/memory/... 로 해석 → 깨진 링크.
+    # 호출자 무관하게 방어적으로 memory/ 접두사를 벗긴다.
+    wiki_path = rel_path[len("memory/"):] if rel_path.startswith("memory/") else rel_path
+    link_line = f"- {label}: [[{wiki_path}]]"
     try:
         if session_path.is_file():
             existing = session_path.read_text(encoding="utf-8")
