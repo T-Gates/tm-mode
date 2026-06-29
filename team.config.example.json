@@ -10,6 +10,12 @@
     "farewell": "수고하셨습니다"
   },
   "admin_contact": "alice",
+  "$comment_ux": "ux = 인스턴스 화면/표시 옵션(선택). session_log_remind.system_message: 세션로그 리마인더 훅이 사용자 화면용 systemMessage(짧은 한 줄)를 낼지. 기본 true(현행 동작). false 면 화면 noise 없이 모델 컨텍스트(additionalContext)만 주입. team.config.json 은 엔진 sync(SYNC_PATHS=infra/) 대상이 아니라 tm-mode update 에도 보존된다.",
+  "ux": {
+    "session_log_remind": {
+      "system_message": true
+    }
+  },
   "members_file": "memory/team/members.md",
   "banner_file": "memory/banner.txt",
   "$comment_members": "members = [{name, role?}] (SPEC §1.1·부록 B). 각 멤버가 install 시 자기것만 upsert(각자 upsert) — 타인 엔트리는 무접촉. role 은 권장 어휘(developer/pm/designer/...) 또는 자유문자열. 빈 배열·키 생략도 정상.",

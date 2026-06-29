@@ -8,6 +8,8 @@
   { "event": "UserPromptSubmit", "prompt": "...", "agent": "claude", "raw": {...} }
 
 출력: JSON stdout — additionalContext(상세 안내, 모델 컨텍스트용) + systemMessage(짧은 한 줄, 사용자 화면 표시용).
+systemMessage 방출은 옵트아웃 가능 — team.config.json 의 ux.session_log_remind.system_message
+(기본 true) 가 false 면 내지 않고 additionalContext(모델 컨텍스트)만 낸다(화면 noise 절감).
 30분 이상 미갱신 또는 5프롬프트마다 리마인드(스펙 01 §3.4 권장).
 
 멤버 식별(B-순위):
@@ -101,6 +103,23 @@ def _load_team_config(root: str) -> dict:
         return {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _system_message_enabled(root: str) -> bool:
+    """화면용 systemMessage 방출 여부 — team.config.json ux.session_log_remind.system_message (기본 True).
+
+    False 면 모델 컨텍스트(additionalContext)는 유지한 채 사용자 화면 한 줄(systemMessage)만
+    생략해 화면 noise 를 줄인다. team.config.json 은 엔진 sync(SYNC_PATHS=infra/) 대상이
+    아니므로 이 옵션은 `tm-mode update` 에도 보존된다. 누락·타입 불일치 시 True(현행 동작 보존).
+    """
+    ux = _load_team_config(root).get("ux")
+    if not isinstance(ux, dict):
+        return True
+    slr = ux.get("session_log_remind")
+    if not isinstance(slr, dict):
+        return True
+    val = slr.get("system_message", True)
+    return val if isinstance(val, bool) else True
 
 
 def _valid_member_name(name: str) -> bool:
@@ -407,13 +426,17 @@ def main() -> int:
         system_msg = f"📝 세션로그 미작성 — {count}번째 프롬프트째"
 
     if context:
-        print(json.dumps({
+        out = {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": context,
             },
-            "systemMessage": system_msg,
-        }, ensure_ascii=False))
+        }
+        # 화면용 systemMessage 는 옵트아웃 가능(기본 on). config 가 false 면 모델
+        # 컨텍스트(additionalContext)만 내고 화면 한 줄은 생략해 noise 를 줄인다.
+        if _system_message_enabled(root):
+            out["systemMessage"] = system_msg
+        print(json.dumps(out, ensure_ascii=False))
     return 0
 
 

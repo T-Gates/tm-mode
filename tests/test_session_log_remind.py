@@ -398,7 +398,10 @@ def test_age_trigger_shows_count(tmp_path):
 # ── 설계 7: 출력은 평문 stdout (JSON 아님) ──
 
 def test_output_is_json_with_additional_context(tmp_path):
-    """발화 시 출력이 JSON(hookSpecificOutput.additionalContext + systemMessage)이어야 한다."""
+    """발화 시 출력이 JSON(hookSpecificOutput.additionalContext + systemMessage)이어야 한다.
+
+    기본값(config 부재 또는 ux 옵션 미설정) → systemMessage 방출(현행 동작 보존).
+    """
     (tmp_path / ".teammode-active").write_text("")
     # team.config.json 없음 → 폴백 → 세션로그 없음 → 발화
     proc = _run_hook(tmp_path, tmp_path, "claude-plain")
@@ -408,10 +411,46 @@ def test_output_is_json_with_additional_context(tmp_path):
         hso = obj["hookSpecificOutput"]
         assert hso["hookEventName"] == "UserPromptSubmit"
         assert "[teammode]" in hso["additionalContext"]  # 안내 헤더 포함
-        assert obj.get("systemMessage")  # 사용자 표시용 한 줄
+        assert obj.get("systemMessage")  # 기본값 → 사용자 표시용 한 줄 방출
     else:
         # 발화 안 했으면 빈 출력 허용
         pass
+
+
+def test_system_message_opt_out_via_config(tmp_path):
+    """ux.session_log_remind.system_message=false → systemMessage 생략, additionalContext 만.
+
+    화면 noise 를 끄려는 팀이 모델 컨텍스트(additionalContext) 주입은 유지한 채
+    화면 한 줄(systemMessage)만 옵트아웃할 수 있어야 한다. team.config.json 은 엔진
+    sync 대상이 아니므로 이 옵션은 upstream update 에도 보존된다.
+    """
+    (tmp_path / ".teammode-active").write_text("")
+    (tmp_path / "team.config.json").write_text(json.dumps({
+        "ux": {"session_log_remind": {"system_message": False}}
+    }), encoding="utf-8")
+    proc = _run_hook(tmp_path, tmp_path, "claude-plain")
+    assert proc.returncode == 0
+    if proc.stdout.strip():  # 발화 시
+        obj = json.loads(proc.stdout)
+        hso = obj["hookSpecificOutput"]
+        assert hso["hookEventName"] == "UserPromptSubmit"
+        assert "[teammode]" in hso["additionalContext"]  # 모델 컨텍스트는 유지
+        assert "systemMessage" not in obj  # 화면 한 줄은 옵트아웃됨
+    else:
+        pass
+
+
+def test_system_message_enabled_by_default_when_config_present(tmp_path):
+    """ux 옵션 없이 team.config.json 만 있어도 기본값 True(현행 동작) 유지."""
+    (tmp_path / ".teammode-active").write_text("")
+    (tmp_path / "team.config.json").write_text(json.dumps({
+        "team": {"name": "t"}
+    }), encoding="utf-8")
+    proc = _run_hook(tmp_path, tmp_path, "claude-plain")
+    assert proc.returncode == 0
+    if proc.stdout.strip():
+        obj = json.loads(proc.stdout)
+        assert obj.get("systemMessage")  # 옵션 미설정 → 방출(하위호환)
 
 
 # ── 설계 3: 상태파일 형식 ──
