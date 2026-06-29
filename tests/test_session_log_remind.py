@@ -133,21 +133,40 @@ def test_member_env_when_multiple(tmp_path):
 
 
 def test_member_fallback_degraded_when_no_config(tmp_path):
-    """team.config.json 없으면 전역 sessions 폴백(degraded). age≥1800 → 발화."""
+    """team.config.json 없으면 전역 sessions 폴백(degraded). age≥1800 → 발화.
+
+    issue #26: 폴백도 멤버 경로와 대칭으로 check_reset(전역 sessions mtime/날짜 변화 시
+    count=0 + return) 한다. 첫 호출은 date="" → 오늘로 바뀌어 warm-up 리셋(미발화)되므로,
+    멤버 격리 테스트(test_member_isolation_via_actual_hook_execution)와 동일하게 상태파일을
+    date=오늘로 선시드해 warm-up 을 건너뛰고 발화를 검증한다.
+    """
     (tmp_path / ".teammode-active").write_text("")
     # team.config.json 없음 → _resolve_member → None → 폴백 경로
-    # sessions 폴더도 없음 → age=9999 → 발화
+    # sessions 폴더도 없음 → g_mtime=0.0, age=9999
+    state_f = tmp_path / "teammode-remind-state-claude-fallback.json"
+    state_f.write_text(json.dumps({
+        "count": 0, "last_mtime": 0.0, "date": _today_date_str(),
+        "last_strong_remind": 0.0,
+    }))
     proc = _run_hook(tmp_path, tmp_path, "claude-fallback")
     assert proc.returncode == 0
-    # 폴백에서도 발화한다
+    # 폴백에서도 발화한다(warm-up 선시드 후)
     assert "세션 로그" in proc.stdout
 
 
 def test_member_fallback_when_env_missing_for_multiple(tmp_path):
-    """멤버 여럿인데 TEAMMODE_MEMBER env 없으면 폴백(degraded)."""
+    """멤버 여럿인데 TEAMMODE_MEMBER env 없으면 폴백(degraded).
+
+    issue #26: 폴백 check_reset warm-up 을 건너뛰려고 상태파일을 date=오늘로 선시드.
+    """
     (tmp_path / ".teammode-active").write_text("")
     _write_config(tmp_path, [{"name": "alice"}, {"name": "bob"}])
     # TEAMMODE_MEMBER 미설정 → _resolve_member → None → 폴백
+    state_f = tmp_path / "teammode-remind-state-claude-fb.json"
+    state_f.write_text(json.dumps({
+        "count": 0, "last_mtime": 0.0, "date": _today_date_str(),
+        "last_strong_remind": 0.0,
+    }))
     env = {**os.environ, "TEAMMODE_HOME": str(tmp_path),
            "TMPDIR": str(tmp_path)}
     env.pop("TEAMMODE_MEMBER", None)
@@ -157,7 +176,7 @@ def test_member_fallback_when_env_missing_for_multiple(tmp_path):
         capture_output=True, text=True, encoding="utf-8",
         env=env, cwd=str(tmp_path))
     assert proc.returncode == 0
-    # 세션 전무 폴백 → 발화
+    # 세션 전무 폴백 → 발화(warm-up 선시드 후)
     assert "세션 로그" in proc.stdout
 
 
@@ -835,7 +854,13 @@ def test_fallback_no_spam_on_repeated_calls(tmp_path):
     # team.config.json 없음 → 폴백
     agent = "claude-fallback-throttle"
 
-    # 1차 호출: 상태파일 없음 → count=1, age=9999 → 강발화 (last=0, throttle 통과)
+    # issue #26: 폴백 check_reset warm-up 을 건너뛰려고 date=오늘로 선시드(없으면 첫 호출이
+    # warm-up 리셋되어 미발화). 선시드 후 1차 호출: count=1, age=9999 → 강발화(last=0 throttle 통과).
+    state_f = tmp_path / f"teammode-remind-state-{agent}.json"
+    state_f.write_text(json.dumps({
+        "count": 0, "last_mtime": 0.0, "date": _today_date_str(),
+        "last_strong_remind": 0.0,
+    }))
     proc1 = _run_hook(tmp_path, tmp_path, agent)
     assert proc1.returncode == 0
     assert "⛔" in proc1.stdout, f"1차 폴백 강발화 없음: {proc1.stdout!r}"

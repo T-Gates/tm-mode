@@ -61,13 +61,16 @@ def env(tmp_path):
     def write_manifest(entries):
         (hooks_dir / "manifest.json").write_text(json.dumps(entries))
 
-    def make_adapter():
+    def make_adapter(member=None):
+        # member: issue #26 — Codex hook command 에 TEAMMODE_MEMBER prefix 를 박을 멤버명.
+        # 기본 None(기존 테스트 하위호환). 지정 시 build_command 가 prefix 를 붙인다.
         return Adapter(
             agent_dir=str(agent_dir),
             manifest_path=str(hooks_dir / "manifest.json"),
             settings_path=str(config),
             python="python3",
             team_root=str(root),
+            member=member,
         )
 
     class E:
@@ -224,3 +227,74 @@ def test_same_manifest_preserves_pretooluse_on_codex(env, capsys):
     assert 'matcher = "mcp__tm-linear__create_issue"' in text
     out = capsys.readouterr().out
     assert "[warn]" not in out
+
+
+# ── 9. issue #26: build_command 가 TEAMMODE_MEMBER env prefix 를 박는다 ──
+#
+# Codex 의 command hook 에는 env 필드가 없고 command 를 셸로 실행하므로, 멀티멤버 식별을
+# 위해 build_command 가 `env TEAMMODE_MEMBER=<member> <base command>` 로 prefix 를 붙인다.
+# 값은 ascii 영숫자로 시작하는 '-_' 단일 토큰만 허용(셸 인젝션 차단), 위반 시 prefix 생략.
+
+def _remind_entry():
+    return {"script": "session-log-remind.py"}
+
+
+def test_build_command_member_prefix(env):
+    """member 지정 → 'env TEAMMODE_MEMBER=<member> ' prefix + 기존 base command 포함."""
+    base = env.make_adapter(member=None).build_command(_remind_entry())
+    cmd = env.make_adapter(member="leejhy").build_command(_remind_entry())
+    assert cmd.startswith("env TEAMMODE_MEMBER=leejhy "), cmd
+    assert cmd.endswith(base), f"base command 가 prefix 뒤에 그대로 와야 함: {cmd!r} / base={base!r}"
+    assert base in cmd
+    # base 경유 검증: normalize.py + 스크립트가 그대로 들어있다
+    assert "normalize.py" in cmd
+    assert "session-log-remind.py" in cmd
+
+
+def test_build_command_no_member_no_prefix(env):
+    """member=None → prefix 없이 base command 그대로(하위호환)."""
+    cmd = env.make_adapter(member=None).build_command(_remind_entry())
+    assert not cmd.startswith("env TEAMMODE_MEMBER"), cmd
+    assert "TEAMMODE_MEMBER" not in cmd
+    assert "normalize.py" in cmd
+    assert "session-log-remind.py" in cmd
+
+
+@pytest.mark.parametrize("bad", [
+    "a b",            # 공백
+    "x; rm -rf /",    # 셸 메타문자 + 공백
+    "../evil",        # path traversal (/ 와 .)
+    "",               # 빈 문자열
+    "   ",            # 공백만
+    "-leading",       # 선두 dash (식별자 시작 규칙 위반)
+    "_leading",       # 선두 underscore (영숫자 시작 규칙 위반)
+    "ko한글",          # 비-ascii
+    "a&b",            # 셸 메타문자
+    "$(whoami)",      # 명령치환 시도
+    "a\nb",           # 개행
+])
+def test_build_command_rejects_unsafe_member(env, bad):
+    """형식 위반 member → prefix 없이 base command 그대로(검증 정규식이 거부, fail-safe)."""
+    base = env.make_adapter(member=None).build_command(_remind_entry())
+    cmd = env.make_adapter(member=bad).build_command(_remind_entry())
+    assert cmd == base, f"unsafe member {bad!r} 에 prefix 가 붙음: {cmd!r}"
+    assert "TEAMMODE_MEMBER" not in cmd
+
+
+@pytest.mark.parametrize("ok", [
+    "leejhy", "eunsu", "a", "A1", "user-name", "user_name", "u1-2_3", "X",
+])
+def test_build_command_accepts_valid_member(env, ok):
+    """정상 토큰(영숫자 시작 + 영숫자/-/_)은 prefix 가 붙는다."""
+    cmd = env.make_adapter(member=ok).build_command(_remind_entry())
+    assert cmd.startswith(f"env TEAMMODE_MEMBER={ok} "), cmd
+
+
+def test_is_owned_holds_with_member_prefix(env):
+    """prefix 가 붙어도 is_owned True — normalize substring 매칭이 prefix 에 안 깨진다."""
+    a = env.make_adapter(member="leejhy")
+    cmd = a.build_command(_remind_entry())
+    assert cmd.startswith("env TEAMMODE_MEMBER=leejhy ")
+    assert a.is_owned(cmd) is True, f"prefix 붙은 command 가 소유 판정 실패: {cmd!r}"
+    # 음성 대조: teammode 소유가 아닌 임의 command 는 False
+    assert a.is_owned("env TEAMMODE_MEMBER=leejhy /usr/bin/echo hi") is False

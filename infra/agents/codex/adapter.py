@@ -60,6 +60,12 @@ class Adapter(BaseAdapter):
     DEFAULT_SKILLS_DIR = "~/.codex/skills"
 
     def __init__(self, *args, **kwargs):
+        # member: Codex hook command 에 TEAMMODE_MEMBER 를 prefix 로 박기 위한 멤버명.
+        # Claude 는 settings.json env(inject_member_env_settings)로 닿지만, Codex 의 command
+        # hook 에는 env 필드가 없다(공식 hooks 문서). 대신 Codex 는 command 를 셸로 실행하므로
+        # (문서가 command 에 `$(...)` 명령치환 예시를 보임 — 셸 경유 근거) build_command 가
+        # `env VAR=val <command>` prefix 로 안전 전달한다. None 이면 prefix 없음(하위호환).
+        self.member = kwargs.pop("member", None)
         # N3: Codex 는 MCP 를 ~/.codex/config.toml 의 [mcp_servers.*] 블록으로 등록하므로
         # 부모(claude)가 상속시키는 mcp_config_path(=~/.claude.json) 를 절대 쓰지 않는다.
         # 상속된 실경로가 latent footgun 으로 새지 않게 봉인 — 부모 _read_mcp_config/
@@ -67,6 +73,26 @@ class Adapter(BaseAdapter):
         # (codex 는 _read_mcp_servers·install_mcp 를 config.toml 기반으로 전부 재정의함.)
         kwargs["mcp_config_path"] = _SEALED
         super().__init__(*args, **kwargs)
+
+    def build_command(self, entry: dict) -> str:
+        """기본 command 에 TEAMMODE_MEMBER env prefix 를 붙인다(Codex hook 전용).
+
+        Codex 는 hook command 를 셸로 실행하고(공식 hooks 문서가 command 에 `$(...)` 명령
+        치환 예시를 보이는 것이 근거) command hook 에 env 필드가 없으므로, 멀티멤버 팀에서
+        '나'를 가르는 TEAMMODE_MEMBER(session-log-remind·kb-write-guard 의 단일 소스)를
+        `env VAR=val <command>` prefix 로 전달한다. member 미지정이거나 형식이 이상하면
+        prefix 없이 기본 command 를 반환한다(하위호환·fail-safe). 값은 ascii 영숫자로 시작하는
+        '-_' 단일 토큰만 허용 — command 가 셸로 실행되므로 공백/메타문자 토큰은 인젝션 위험이
+        있어 거부한다(session-log-remind `_valid_member_name` 과 동일 규칙). TEAMMODE_HOME 은
+        셸 프로파일/`__file__` 폴백으로 이미 닿으므로 prefix 에 넣지 않는다(경로 공백/따옴표
+        쿼팅 회피). ⚠️ `VAR=val cmd` 는 POSIX 셸 전제 — Windows 미작동(0002 migration 문서의
+        known-limitation 참조).
+        """
+        command = super().build_command(entry)
+        member = self.member
+        if member and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", member):
+            return f"env TEAMMODE_MEMBER={member} {command}"
+        return command
 
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []
@@ -449,6 +475,9 @@ def main(argv=None) -> int:
     p.add_argument("--providers-dir", default=None)
     # install-skills 스킬 디렉토리 — 기본 None(실호스트 ~/.codex/skills), 격리/테스트는 tmp.
     p.add_argument("--skills-dir", default=None)
+    # --member: Codex hook command 에 TEAMMODE_MEMBER prefix 로 박을 멤버명(install 이 전달).
+    # 미지정이면 prefix 없이 기존 command(하위호환). 값 검증·prefix 는 build_command 에서.
+    p.add_argument("--member", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("sync")
     sp.add_argument("--on", action="store_true")
@@ -473,6 +502,7 @@ def main(argv=None) -> int:
         config_path=args.team_config,
         providers_dir=args.providers_dir,
         skills_dir=args.skills_dir,
+        member=args.member,
     )
     if args.cmd == "sync":
         mode = "on" if args.on else ("off" if args.off else None)
