@@ -379,6 +379,40 @@ def upsert_member_role(team_root: Path, name: str, role=None) -> dict:
     return {"changed": True}
 
 
+_LOCALE_ENV_ORDER = ("LC_ALL", "LC_MESSAGES", "LANG")
+
+
+def detect_host_locale() -> str:
+    """호스트 UI 언어 감지(stdlib). LC_ALL→LC_MESSAGES→LANG, 'll_CC'만 취함.
+
+    실패/C/POSIX → 'en_US'(국제 공개 기본, 1b 결정 2026-07-01).
+    """
+    for var in _LOCALE_ENV_ORDER:
+        raw = os.environ.get(var)
+        if raw:
+            base = raw.split(".")[0].split("@")[0].strip()
+            if base and base.lower() not in ("c", "posix"):
+                return base
+    return "en_US"
+
+
+def detect_host_timezone() -> str:
+    """호스트 IANA 타임존 감지(stdlib, best-effort). TZ → /etc/localtime → 'UTC'.
+
+    Windows 등 감지 불가 시 'UTC' 폴백(v1 허용).
+    """
+    tz = os.environ.get("TZ")
+    if tz:
+        return tz
+    try:
+        link = os.readlink("/etc/localtime")
+        if "zoneinfo/" in link:
+            return link.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    return "UTC"
+
+
 def detect_role(team_root: Path, forced: str | None = None) -> str:
     """'member'/'introducer' 판정 (§4 ③).
 
