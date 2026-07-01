@@ -14,6 +14,8 @@
   "resource_fields": [],
   "mcp": {
     "source": "official",
-    "register_hint": "Linear 공식 MCP 서버를 정규 서버명 'linear' 로 등록(개인 API 키 사용). Linear 는 공식 원격(SSE) MCP 를 제공한다 — 정확한 엔드포인트·기동 커맨드는 install-mcp(P4) 가 확정한다."
+    "transport": "http",
+    "url": "https://mcp.linear.app/mcp",
+    "register_hint": "Linear 공식 호스티드 MCP(streamable HTTP)를 정규 서버명 'linear' 로 자동 등록한다(https://mcp.linear.app/mcp · 최초 사용 시 OAuth 동의)."
   }
 }

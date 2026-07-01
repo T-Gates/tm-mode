@@ -206,6 +206,54 @@ def test_mcp_args_non_list_rejected():
         P.validate_pack(data, expected_name="notion")
 
 
+# ─────────── mcp 호스티드 HTTP transport/url (issue #20) ───────────
+
+def test_mcp_transport_http_with_url_accepted():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"source": "official", "transport": "http",
+                   "url": "https://mcp.notion.com/mcp", "register_hint": "h"}
+    pack = P.validate_pack(data, expected_name="notion")
+    assert pack.mcp["transport"] == "http"
+    assert pack.mcp["url"] == "https://mcp.notion.com/mcp"
+
+
+def test_mcp_transport_stdio_accepted():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h", "transport": "stdio", "command": "node"}
+    pack = P.validate_pack(data, expected_name="notion")
+    assert pack.mcp["transport"] == "stdio"
+
+
+def test_mcp_transport_bad_value_rejected():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h", "transport": "websocket"}
+    with pytest.raises(P.ProviderValidationError):
+        P.validate_pack(data, expected_name="notion")
+
+
+def test_mcp_url_empty_rejected():
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h", "transport": "http", "url": "   "}
+    with pytest.raises(P.ProviderValidationError):
+        P.validate_pack(data, expected_name="notion")
+
+
+def test_mcp_transport_http_requires_url():
+    # codex review P2-b: transport=http 인데 url 없으면 reject(endpoint 없으면 무의미).
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"source": "official", "transport": "http", "register_hint": "h"}
+    with pytest.raises(P.ProviderValidationError, match="url"):
+        P.validate_pack(data, expected_name="notion")
+
+
+def test_mcp_url_optional():
+    # transport/url 없어도(register_hint 만) valid — 전부 선택.
+    data = dict(_GOOD_PACK)
+    data["mcp"] = {"register_hint": "h"}
+    pack = P.validate_pack(data, expected_name="notion")
+    assert "url" not in pack.mcp and "transport" not in pack.mcp
+
+
 # ─────────── 실 4종 provider 팩 로드 + 요약 단언 ───────────
 
 def test_real_four_providers_load():
@@ -240,6 +288,26 @@ def test_real_providers_mcp_source_official(name):
     assert pack.mcp.get("source") == "official"
     assert pack.mcp.get("register_hint")
     assert "action_map" not in (pack.raw or {})
+
+
+@pytest.mark.parametrize("name,url", [
+    ("notion", "https://mcp.notion.com/mcp"),
+    ("linear", "https://mcp.linear.app/mcp"),
+])
+def test_real_notion_linear_hosted_http(name, url):
+    # issue #20: notion·linear 는 공식 호스티드(streamable HTTP) MCP 자동 등록.
+    pack = P.lookup(name, providers_dir=_REAL_PROVIDERS)
+    assert pack.mcp.get("transport") == "http"
+    assert pack.mcp.get("url") == url
+
+
+@pytest.mark.parametrize("name", ["slack", "google"])
+def test_real_slack_google_no_hosted_url(name):
+    # issue #20: slack·google 은 공식 호스티드 URL 없음 → transport/url 미기재
+    # (install-mcp 가 수동 등록 안내). 추측 URL 을 박지 않는다.
+    pack = P.lookup(name, providers_dir=_REAL_PROVIDERS)
+    assert "url" not in pack.mcp
+    assert pack.mcp.get("transport") != "http"
 
 
 # ─────────── services 스키마 유효성 (B-2) ───────────

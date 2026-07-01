@@ -14,6 +14,8 @@
   "resource_fields": ["database_id"],
   "mcp": {
     "source": "official",
-    "register_hint": "Notion 공식 MCP 서버를 정규 서버명 'notion' 로 등록(integration 토큰 사용, 도입자 1회). 정확한 패키지/기동 커맨드는 install-mcp(P4) 가 확정한다(추측 패키지명 미기재)."
+    "transport": "http",
+    "url": "https://mcp.notion.com/mcp",
+    "register_hint": "Notion 공식 호스티드 MCP(streamable HTTP)를 정규 서버명 'notion' 로 자동 등록한다(https://mcp.notion.com/mcp · 최초 사용 시 OAuth 동의)."
   }
 }

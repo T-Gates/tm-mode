@@ -288,11 +288,13 @@ class Adapter(BaseAdapter):
     # Codex 는 MCP 서버를 ~/.codex/config.toml 의 [mcp_servers.<name>] 섹션으로 등록한다
     # (claude 의 ~/.claude.json top-level mcpServers 와 다른 포맷 — 이 차이를 어댑터가 흡수).
     # 훅 블록(# teammode-hooks-*)과 동일 파일이므로 별도 마커 블록(# teammode-mcp-*)으로
-    # 격리해 멱등 교체한다. 등록 항목은 claude 와 동일한 보수적 placeholder(소유 마커 +
-    # register_hint) — teammode 는 MCP 서버 자체를 제작·유지하지 않는다(§7.4).
+    # 격리해 멱등 교체한다. teammode 는 MCP 서버 자체를 제작·유지하지 않는다(§7.4).
     #
-    # ⚠️ Codex 한계 정직 표면화: Codex config.toml 의 [mcp_servers.*] 는 실행 커맨드를
-    # 요구하는 정적 선언이라, 실 커맨드 미고정인 v0.1 에서는 placeholder 만 둔다.
+    # 등록 항목(issue #20): Codex [mcp_servers.*] 는 stdio(command/args) 외에도
+    # streamable HTTP(`url = "..."`)를 지원한다 — 팩 mcp.transport=="http" 면 공식
+    # 호스티드 MCP(notion/linear 등)를 url 로 실제 등록한다. 호스티드도 기동 커맨드도
+    # 없는 provider(slack/google 등)는 추측 금지 — register_hint placeholder 만 두고
+    # install-mcp 메시지로 수동 등록 예시를 안내한다.
     # Codex 도 PreToolUse 를 표현하므로 confirm 훅은 hooks 블록에 등록된다.
     # install-mcp 는 서버 등록만 책임지고, 차단 강제력은 hooks/normalize 경로가 맡는다.
 
@@ -326,6 +328,8 @@ class Adapter(BaseAdapter):
         """단일 provider 의 [mcp_servers.<alias>] TOML 섹션 라인들.
 
         archive "MCP 마련" + §2.8 공식/자작 동일 처리:
+          - 팩 mcp.transport=="http" + url 이면(issue #20) → Codex streamable HTTP 등록
+            (`url = "..."`). notion/linear 등 공식 호스티드 MCP. 기동 커맨드/추측 불필요.
           - 팩 mcp 에 실 기동 데이터(command/args 또는 path)가 있으면 → command·args 를
             실제로 적어 Codex 가 기동 가능한 등록을 한다.
           - 없으면(P2 미기재) → 소유 마커 + register_hint placeholder 만(자리만 + 안내).
@@ -341,13 +345,20 @@ class Adapter(BaseAdapter):
         lines.append("_teammode_managed = true")
         lines.append(f"_canonical_server = {self._toml_str(canonical)}")
         lines.append(f"_register_hint = {self._toml_str(hint)}")
+        src = (pack.mcp.get("source") if pack else None)
+        url = self._mcp_http_url(pack)  # 부모(claude) 상속 — 호스티드 판정 공유
+        if url is not None:
+            # Codex streamable HTTP 서버: `url` + (OAuth 는 최초 사용 시 인터랙티브).
+            lines.append(f"url = {self._toml_str(url)}")
+            if isinstance(src, str) and src:
+                lines.append(f"_mcp_source = {self._toml_str(src)}")
+            return lines
         launch = self._mcp_launch_command(pack)  # 부모(claude) 상속 — 팩 mcp 해석 공유
         if launch is not None:
             command, args = launch
             lines.append(f"command = {self._toml_str(command)}")
             if args:
                 lines.append(f"args = {self._toml_str_list(args)}")
-            src = (pack.mcp.get("source") if pack else None)
             if isinstance(src, str) and src:
                 lines.append(f"_mcp_source = {self._toml_str(src)}")
         return lines
@@ -434,12 +445,23 @@ class Adapter(BaseAdapter):
             # [ok]. (_write_mcp_block 의 changed 반환값을 반영, 거짓 등록 보고 금지.)
             if changed:
                 for alias, _canonical, pack in providers_with_packs:
-                    if self._mcp_launch_command(pack) is not None:
+                    if self._mcp_http_url(pack) is not None:
+                        changes.append(
+                            f"[mcp] {alias} 등록(공식 호스티드 MCP: "
+                            f"{self._mcp_http_url(pack)})")
+                    elif self._mcp_launch_command(pack) is not None:
                         changes.append(f"[mcp] {alias} 등록(기동 커맨드)")
                     else:
+                        # 호스티드도 기동 커맨드도 없음(slack/google 등) — teammode 가 자동
+                        # 등록 못 함. placeholder 는 관리 별칭(alias=`tm-<provider>`)으로만
+                        # 잡히고 **연결되지 않는다**. 안내도 관리 별칭 기준으로 정직하게
+                        # (codex review P2-a): claude 와 일관되게 같은 별칭으로 직접 붙이도록.
                         changes.append(
-                            f"[mcp] {alias} 등록(자리만 — 기동 커맨드 미정, "
-                            f"register_hint 참고)")
+                            f"[mcp] {alias} placeholder 등록(공식 호스티드 MCP 부재 → "
+                            f"teammode 자동 등록 불가, 이 placeholder 는 연결되지 않음). "
+                            f"직접 쓰려면 같은 관리 별칭으로 수동 연결: "
+                            f"`codex mcp add {alias} -- <MCP 서버 기동 커맨드>` "
+                            f"(register_hint 참고)")
             else:
                 changes.append(f"[ok] 변경 없음 ({len(aliases)}개 provider 등록됨)")
         else:

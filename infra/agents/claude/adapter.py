@@ -386,10 +386,29 @@ class Adapter:
             return (self.python, [str(p)])
         return None
 
+    def _mcp_http_url(self, pack):
+        """팩 mcp 가 공식 호스티드(streamable HTTP) MCP 면 그 URL, 아니면 None (issue #20).
+
+        transport=="http" + url(비어있지 않음) 일 때만 URL 을 돌려준다. notion/linear 처럼
+        공식 원격 MCP 가 있는 provider 가 해당 — `claude mcp add --transport http <url>`
+        와 같은 등록을 install-mcp 가 자동으로 한다(stdio 기동 커맨드 추측 없이). codex 도
+        이 메서드를 상속해 동일 판정을 공유한다(_mcp_launch_command 와 같은 정신).
+        """
+        if pack is None:
+            return None
+        mcp = getattr(pack, "mcp", None) or {}
+        if mcp.get("transport") == "http":
+            url = mcp.get("url")
+            if isinstance(url, str) and url.strip():
+                return url
+        return None
+
     def _build_mcp_entry(self, provider: str, pack) -> dict:
         """provider 팩 → MCP 서버 등록 항목(자기 방식 = Claude ~/.claude.json shape).
 
         archive "MCP 마련" + §2.8: install-mcp 는 공식/자작을 **동일 처리**한다.
+          - 팩 mcp.transport=="http" + url 이면(issue #20) → 공식 호스티드 MCP 를 그대로
+            **실제 등록**(claude http shape: {"type":"http","url":...}). notion/linear 등.
           - 팩 mcp 에 실 기동 데이터(command/args 또는 path)가 있으면 → 그 커맨드로
             **실제 등록**(claude mcpServers shape: command + args). 소유 마커도 함께 담아
             멱등·소유권 관리 가능하게 한다.
@@ -403,6 +422,15 @@ class Adapter:
             "_canonical_server": provider,
             "_register_hint": pack.mcp.get("register_hint", "") if pack else "",
         }
+        src = (pack.mcp.get("source") if pack else None)
+        url = self._mcp_http_url(pack)
+        if url is not None:
+            # 공식 호스티드(streamable HTTP) — `claude mcp add --transport http` 형식.
+            entry["type"] = "http"
+            entry["url"] = url
+            if isinstance(src, str) and src:
+                entry["_mcp_source"] = src
+            return entry
         launch = self._mcp_launch_command(pack)
         if launch is not None:
             command, args = launch
@@ -410,7 +438,6 @@ class Adapter:
             if args:
                 entry["args"] = args
             # 마련 방법(공식/자작) 표기 — 등록 경로는 같으나 출처 추적용(있으면).
-            src = (pack.mcp.get("source") if pack else None)
             if isinstance(src, str) and src:
                 entry["_mcp_source"] = src
         return entry
@@ -478,12 +505,23 @@ class Adapter:
                 desired_aliases.discard(alias)
                 continue
             servers[alias] = entry
-            # 데이터 있으면 실 기동 커맨드로 등록, 없으면 placeholder(자리만 + 안내).
-            if "command" in entry:
+            # 데이터 있으면 실 등록(호스티드 URL/기동 커맨드), 없으면 placeholder.
+            if entry.get("type") == "http":
+                changes.append(
+                    f"[mcp] {alias} 등록(공식 호스티드 MCP: {entry['url']})")
+            elif "command" in entry:
                 changes.append(f"[mcp] {alias} 등록(기동 커맨드)")
             else:
+                # 호스티드도 기동 커맨드도 없음(slack/google 등) — teammode 가 자동
+                # 등록 못 함. placeholder 는 관리 별칭(alias=`tm-<provider>`)으로만 잡히고
+                # **연결되지 않는다**. 안내도 관리 별칭 기준으로 정직하게(codex review P2-a):
+                # 사용자가 `provider`(예: slack)로 따로 추가하면 별개 서버가 생겨 별칭
+                # 불일치/오해 → 같은 관리 별칭으로 직접 붙이도록 안내.
                 changes.append(
-                    f"[mcp] {alias} 등록(자리만 — 기동 커맨드 미정, register_hint 참고)")
+                    f"[mcp] {alias} placeholder 등록(공식 호스티드 MCP 부재 → teammode "
+                    f"자동 등록 불가, 이 placeholder 는 연결되지 않음). 직접 쓰려면 같은 "
+                    f"관리 별칭으로 수동 연결: `claude mcp add {alias} -- "
+                    f"<MCP 서버 기동 커맨드>` (register_hint 참고)")
 
         # [P1 삭제] handlers/role_server 폐기 — teammode 단일 MCP 서버 등록 블록 제거.
         # 이제 install_mcp 는 config services 의 벤더 provider alias 만 등록한다.

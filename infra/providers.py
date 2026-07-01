@@ -17,6 +17,9 @@ mcp(L2 재설계, 2026-06-25 — 등록 스펙):
   - `repo` (선택): 공식 MCP 의 git 레포 URL/식별자(official 일 때).
   - `command`·`args` (선택): MCP 서버 기동 커맨드(등록 시 사용). args 는 리스트.
   - `path` (선택): 자작/벤더드 official 의 배치 경로(infra/mcp/<provider>/).
+  - `transport` (선택, issue #20): "http"|"stdio". "http" 면 공식 호스티드
+    (streamable HTTP) MCP 를 `url` 로 등록(notion/linear 등). 미지정=stdio.
+  - `url` (선택, issue #20): transport="http" 일 때 호스티드 MCP 엔드포인트 URL.
 - 검증은 "있으면 타입 체크" 수준(register_hint 외 전부 선택). 정확한 패키지명을 모르면
   추측으로 박지 않고 register_hint 에 서술 + source 만 둔다(추측이 더 위험).
 
@@ -38,6 +41,10 @@ VALID_AUTH = {"api_key", "oauth", "bot_token"}
 VALID_SCOPE = {"team", "personal"}
 # 허용 mcp.source 값 (L2 등록 스펙). 공식 레포 가져옴 vs 자작.
 VALID_MCP_SOURCE = {"official", "custom"}
+# 허용 mcp.transport 값 (issue #20). "http" = 공식 호스티드(streamable HTTP) MCP 를
+# URL 로 등록(notion/linear 등). "stdio" = 로컬 기동 커맨드(command/path). 미지정이면
+# stdio 로 본다(하위호환).
+VALID_MCP_TRANSPORT = {"http", "stdio"}
 
 # 스키마 필수 키 (부록 B-1).
 _REQUIRED_KEYS = {
@@ -145,7 +152,7 @@ def validate_pack(data, *, expected_name: str | None = None) -> ProviderPack:
         _require(mcp["source"] in VALID_MCP_SOURCE,
                  f"mcp.source 는 {sorted(VALID_MCP_SOURCE)} 중 하나여야 합니다 "
                  f"(받음: {mcp['source']!r}).")
-    for _k in ("repo", "command", "path"):
+    for _k in ("repo", "command", "path", "url"):
         if _k in mcp:
             _require(isinstance(mcp[_k], str) and mcp[_k].strip(),
                      f"mcp.{_k} 은 비어있지 않은 문자열이어야 합니다.")
@@ -153,6 +160,16 @@ def validate_pack(data, *, expected_name: str | None = None) -> ProviderPack:
         _require(isinstance(mcp["args"], list)
                  and all(isinstance(a, str) for a in mcp["args"]),
                  "mcp.args 는 문자열 리스트여야 합니다.")
+    if "transport" in mcp:
+        _require(mcp["transport"] in VALID_MCP_TRANSPORT,
+                 f"mcp.transport 는 {sorted(VALID_MCP_TRANSPORT)} 중 하나여야 합니다 "
+                 f"(받음: {mcp['transport']!r}).")
+        # transport=="http" 는 호스티드 엔드포인트가 본질 — url 없으면 무의미(등록 시
+        # placeholder 로 빠져 조용히 비동작). 추측 대신 명시 거부(codex review P2-b).
+        if mcp["transport"] == "http":
+            _require(isinstance(mcp.get("url"), str) and mcp.get("url", "").strip(),
+                     "mcp.transport=='http' 이면 mcp.url(호스티드 MCP 엔드포인트)이 "
+                     "필수입니다.")
 
     return ProviderPack(
         provider=provider,
