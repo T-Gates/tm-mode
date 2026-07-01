@@ -913,6 +913,8 @@ def cmd_join(args, *, created: bool = False) -> int:
     # init → join 경유 시 팀명 전달(join 자체 파서엔 --team-name 없음; init 만 줌).
     if getattr(args, "team_name", None):
         extra += ["--team-name", args.team_name]
+    # 역할은 동사로 확정(1f): init(created=True)=도입자, join=멤버. 파일추론 대체.
+    extra += ["--role-intent", "introducer" if created else "member"]
     rc = _delegate_install(dest, member, extra)
     if rc != 0:
         return rc

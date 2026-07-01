@@ -70,10 +70,11 @@ class Options:
     register_obsidian: bool = False
     obsidian_config: str | None = None
     team_name: str | None = None  # init 위저드 팀명(team.name·배너·배지 소스). 미지정 시 레포명 폴백.
+    role_intent: str | None = None  # 동사 의도: 'introducer'(init)/'member'(join). 역할 파일추론 대체(1f).
 
 
 _VALUE_FLAGS = {"--root", "--agent", "--member-name", "--role", "--settings",
-                "--obsidian-config", "--team-name"}
+                "--obsidian-config", "--team-name", "--role-intent"}
 
 
 def parse_args(argv) -> Options:
@@ -113,6 +114,8 @@ def parse_args(argv) -> Options:
             opts.obsidian_config = next(it, None)
         elif a == "--team-name":
             opts.team_name = next(it, None)
+        elif a == "--role-intent":
+            opts.role_intent = next(it, None)
         # 그 외 토큰은 무시
     return opts
 
@@ -376,8 +379,49 @@ def upsert_member_role(team_root: Path, name: str, role=None) -> dict:
     return {"changed": True}
 
 
-def detect_role(team_root: Path) -> str:
-    """'member'(config 유효) 또는 'introducer'(부재·미초기화) (§4 ③)."""
+_LOCALE_ENV_ORDER = ("LC_ALL", "LC_MESSAGES", "LANG")
+
+
+def detect_host_locale() -> str:
+    """호스트 UI 언어 감지(stdlib). LC_ALL→LC_MESSAGES→LANG, 'll_CC'만 취함.
+
+    실패/C/POSIX → 'en_US'(국제 공개 기본, 1b 결정 2026-07-01).
+    """
+    for var in _LOCALE_ENV_ORDER:
+        raw = os.environ.get(var)
+        if raw:
+            base = raw.split(".")[0].split("@")[0].strip()
+            if base and base.lower() not in ("c", "posix"):
+                return base
+    return "en_US"
+
+
+def detect_host_timezone() -> str:
+    """호스트 IANA 타임존 감지(stdlib, best-effort). TZ → /etc/localtime → 'UTC'.
+
+    Windows 등 감지 불가 시 'UTC' 폴백(v1 허용).
+    """
+    tz = os.environ.get("TZ")
+    if tz:
+        return tz
+    try:
+        link = os.readlink("/etc/localtime")
+        if "zoneinfo/" in link:
+            return link.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    return "UTC"
+
+
+def detect_role(team_root: Path, forced: str | None = None) -> str:
+    """'member'/'introducer' 판정 (§4 ③).
+
+    forced 가 유효 역할('introducer'/'member')이면 파일 휴리스틱을 건너뛰고 그대로
+    반환한다 — 역할은 CLI 동사(init/join)가 결정한다(1f, footgun 제거). forced 가
+    없거나 무효면 기존 휴리스틱(유효 config → member).
+    """
+    if forced in ("introducer", "member"):
+        return forced
     cfg = load_config(team_root)
     return "member" if config_is_valid(cfg) else "introducer"
 

@@ -33,7 +33,9 @@ _CodexAdapter = _CodexAdapterMod["Adapter"]
 
 
 def _env(home: Path, extra=None):
-    e = {"PATH": "/usr/bin:/bin", "HOME": str(home)}
+    # i18n(1b): install 출력은 호스트 로캘 구동(detect_host_locale). 골든 단정은
+    # 한국어이므로 로캘을 핀 고정해 CI 호스트 로캘과 무관하게 결정적이게 한다.
+    e = {"PATH": "/usr/bin:/bin", "HOME": str(home), "LC_ALL": "ko_KR.UTF-8"}
     if "XDG_STATE_HOME" in os.environ:
         e["XDG_STATE_HOME"] = os.environ["XDG_STATE_HOME"]
     if extra:

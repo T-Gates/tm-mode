@@ -30,6 +30,7 @@ AGENTS = INFRA / "agents"
 sys.path.insert(0, str(INFRA))
 import install_lib as il  # noqa: E402
 import git_ops as _git_ops  # noqa: E402  — scaffold 자동 커밋+push(do_commit) 재사용
+import i18n as _i18n  # noqa: E402
 # stdout/stderr UTF-8 보장 — Windows native 인코딩(cp949 등)에서 한글 print 깨짐·크래시 방지.
 from io_encoding import ensure_utf8_io  # noqa: E402
 
@@ -520,7 +521,31 @@ def _detect(team_root: Path, home: Path) -> dict:
         "agents": il.detect_agents(home),
         "remote_authed": remote_authed,
         "role": il.detect_role(team_root),
+        "locale": il.detect_host_locale(),
+        "timezone": il.detect_host_timezone(),
     }
+
+
+def _done_message(det: dict) -> str:
+    """설치 완료 메시지(현지화). det['locale'] 언어로, 미지원 시 en_US."""
+    return _i18n.t("done_installed", _i18n.resolve_lang(det.get("locale")))
+
+
+def _autocommit_scaffold(team_root: Path, member_name: str, out) -> None:
+    """scaffold·members·config 자동 커밋+push. push 실패해도 커밋 보존 +
+    sync-warning 마커로 가시화(런타임 auto-commit 와 동일 패턴, 이슈 #5).
+    """
+    _cr = _git_ops.do_commit(
+        str(team_root),
+        message=f"팀 셋업: {member_name} 등록 + memory scaffold [auto]",
+        push=True, paths=["memory", "team.config.json"])
+    if getattr(_cr, "pushed", False):
+        _git_ops.clear_sync_warning()
+        out("[push] memory·members 를 팀 레포에 올렸습니다.")
+    elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
+        _detail = getattr(_cr, "detail", "") or "push 실패"
+        _git_ops.write_sync_warning(str(team_root), _detail)
+        out(f"[push] 커밋 완료 — push 실패({_detail}). 확인 후 `git push` 하세요.")
 
 
 def _email_is_push_safe(email) -> bool:
@@ -692,7 +717,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
 
     # 멤버 이름 결정 (§3·m1): --member-name 우선 → git user.name 제안.
     # 추측 금지: 이름을 못 정하면 exit 3(신원 추측 금지, §12-3).
-    role = det["role"]
+    role = il.detect_role(team_root, forced=opts.role_intent)
     member_name = opts.member_name or det["member_name_suggestion"]
     # 팀명 우선순위: init 위저드 --team-name(opts.team_name) → 레포명 감지 → 폴더명.
     team_name_default = opts.team_name or det["team_name_default"] or team_root.name
@@ -846,22 +871,16 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     except (ValueError, json.JSONDecodeError):
         err("[error] verify: context --json 출력이 JSON 이 아닙니다.")
         return 3
-    out(f"[verify] 설치 검증 OK — members={len(ctx.get('members', []))} (팀모드는 꺼둠).")
+    out(_i18n.t("verify_ok", _i18n.resolve_lang(det.get("locale")),
+                n=len(ctx.get("members", []))))
 
     # scaffold·members·config 자동 커밋+push — onboarding 은 "자기 등재가 바로 팀 레포에"가 맞다
     # (Jane 결정 2026-06-23, "푸시는 사람" 철학 폐기). 실설치(--yes, 격리 아님)에서만 수행.
     # do_commit 은 push 실패(원격/오프라인/권한)해도 커밋을 보존한다(비치명, 예외 전파 안 함).
     if opts.yes and not opts.settings:
-        _cr = _git_ops.do_commit(
-            str(team_root),
-            message=f"팀 셋업: {member_name} 등록 + memory scaffold [auto]",
-            push=True, paths=["memory", "team.config.json"])
-        if getattr(_cr, "pushed", False):
-            out("[push] memory·members 를 팀 레포에 올렸습니다.")
-        elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
-            out("[push] 커밋 완료 — push 실패(원격/권한 확인 후 `git push` 하세요).")
+        _autocommit_scaffold(team_root, member_name, out)
 
-    out("[done] 설치 완료. 팀모드를 켜려면 `tm on`(또는 /tm) 하세요.")
+    out(_done_message(det))
     return 0
 
 
@@ -879,6 +898,8 @@ teammode 결정적 부트스트랩 + 어댑터 디스패처.
 주요 플래그:
   --root PATH          팀 루트 경로 (필수; env 무신뢰)
   --member-name NAME   세션로그 author 영문 이름
+  --team-name NAME     init 위저드 팀명 (team.name·배너·배지 소스)
+  --role-intent ROLE   도입자/멤버 확정 (introducer|member; init/join 이 자동 지정)
   --role TEXT          직책/직군 (예: 팀장/개발)
   --yes                실 ~/.claude/settings.json 배선 허용 (실설치)
   --settings PATH      격리 settings 경로 (테스트·CI)
