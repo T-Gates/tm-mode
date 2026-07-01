@@ -320,6 +320,90 @@ def test_wire_agents_team_root_value_is_str(tmp_path):
 
 
 # ─────────────────────────────────────────────────────
+# 4b. issue #26: wire_agents(member_name=...) → codex 에만 --member 전달
+#     (Claude 는 install 이 settings.json env 로 따로 주입하므로 --member 미전달)
+# ─────────────────────────────────────────────────────
+
+def test_wire_agents_codex_passes_member(tmp_path):
+    """member_name 지정 → codex 모든 동사 extra_args 에 --member <name> 포함."""
+    seen = {}
+
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        seen[(agent, verb)] = list(extra_args or [])
+        return 0
+
+    il.wire_agents(["codex"], home=tmp_path,
+                   settings_override=tmp_path / "iso",
+                   team_root=tmp_path / "myteam",
+                   member_name="alice",
+                   run_adapter=run_adapter)
+
+    for verb in ("install-mcp", "sync", "install-skills"):
+        extra = seen[("codex", verb)]
+        assert "--member" in extra, f"codex {verb} extra_args 에 --member 없음: {extra}"
+        idx = extra.index("--member")
+        assert extra[idx + 1] == "alice"
+
+
+def test_wire_agents_claude_does_not_get_member(tmp_path):
+    """claude 에는 --member 가 전달되지 않는다(claude=settings.json env 경로, 중복 방지)."""
+    seen = {}
+
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        seen[(agent, verb)] = list(extra_args or [])
+        return 0
+
+    il.wire_agents(["claude", "codex"], home=tmp_path,
+                   settings_override=tmp_path / "iso",
+                   team_root=tmp_path / "myteam",
+                   member_name="alice",
+                   run_adapter=run_adapter)
+
+    for verb in ("install-mcp", "sync", "install-skills"):
+        extra = seen.get(("claude", verb), [])
+        assert "--member" not in extra, f"claude {verb} 에 --member 가 샘: {extra}"
+    # 대조: codex 에는 있어야 한다(같은 호출에서 분기 확인)
+    assert "--member" in seen[("codex", "sync")]
+
+
+def test_wire_agents_no_member_name_no_flag(tmp_path):
+    """member_name=None(기본)이면 codex 에도 --member 없음(하위호환)."""
+    seen = {}
+
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        seen[(agent, verb)] = list(extra_args or [])
+        return 0
+
+    il.wire_agents(["codex"], home=tmp_path,
+                   settings_override=tmp_path / "iso",
+                   team_root=tmp_path / "myteam",
+                   run_adapter=run_adapter)
+
+    for verb in ("install-mcp", "sync", "install-skills"):
+        extra = seen.get(("codex", verb), [])
+        assert "--member" not in extra, f"member_name 없는데 --member 가 {verb} 에 있음: {extra}"
+
+
+def test_wire_agents_member_value_is_str(tmp_path):
+    """--member 값이 str 형태로 전달된다(어댑터 argparse 가 받는 형태)."""
+    seen = {}
+
+    def run_adapter(agent, verb, flag, path, extra_args=None):
+        seen[(agent, verb)] = list(extra_args or [])
+        return 0
+
+    il.wire_agents(["codex"], home=tmp_path,
+                   settings_override=tmp_path / "iso",
+                   team_root=tmp_path / "myteam",
+                   member_name="alice",
+                   run_adapter=run_adapter)
+
+    extra = seen[("codex", "sync")]
+    idx = extra.index("--member")
+    assert isinstance(extra[idx + 1], str)
+
+
+# ─────────────────────────────────────────────────────
 # 5. 입력 검증: 빈 문자열 --team-root 거부
 # ─────────────────────────────────────────────────────
 

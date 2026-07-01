@@ -293,6 +293,16 @@ def test_remind_still_reminds_when_team_active(tmp_path):
     (team / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
+    # team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
+    # check_reset 한다 — 첫 호출은 date=""→오늘로 바뀌어 warm-up 리셋(미발화)되므로,
+    # 상태파일을 date=오늘로 선시드해 warm-up 을 건너뛰고 age≥1800 발화를 검증한다.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _kst = _dt.now(_tz(_td(hours=9)))
+    _today = (_kst - _td(days=1)).strftime("%Y-%m-%d") if _kst.hour < 6 \
+        else _kst.strftime("%Y-%m-%d")
+    (state_dir / "teammode-remind-state-claude.json").write_text(json.dumps({
+        "count": 0, "last_mtime": 0.0, "date": _today, "last_strong_remind": 0.0,
+    }))
     proc = _run_remind(team, state_dir)
     assert proc.returncode == 0  # 작업 절대 차단 금지
     # 세션로그 전무 → age ≥ 1800 → 발화(평문 출력)

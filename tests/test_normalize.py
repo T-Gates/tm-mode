@@ -217,14 +217,25 @@ def test_common_hook_consumes_canonical_only(env, tmp_path):
     hook = REPO / "infra" / "hooks" / "session-log-remind.py"
     root = env.root
     (root / ".teammode-active").write_text("")
-    # 세션로그 전무 → age 9999 ≥ 1800 → 리마인드 발화(첫 호출이지만 check_reset 후 return)
-    # team.config.json 없어 폴백 경로 → 전역 sessions age ≥ 1800 → 발화
+    # team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
+    # check_reset(전역 sessions mtime/날짜 변화 시 count=0+return) 한다. 첫 호출은 date=""→
+    # 오늘로 바뀌어 warm-up 리셋(미발화)되므로, 상태파일을 date=오늘로 선시드해 warm-up 을
+    # 건너뛰고 age≥1800 발화를 검증한다.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _kst = _dt.now(_tz(_td(hours=9)))
+    _today = (_kst - _td(days=1)).strftime("%Y-%m-%d") if _kst.hour < 6 \
+        else _kst.strftime("%Y-%m-%d")
+    (tmp_path / "teammode-remind-state-claude.json").write_text(json.dumps({
+        "count": 0, "last_mtime": 0.0, "date": _today, "last_strong_remind": 0.0,
+    }))
     canonical = {"event": "UserPromptSubmit", "prompt": "hi", "agent": "claude"}
+    env_no_member = {**os.environ, "TEAMMODE_HOME": str(root),
+                     "TMPDIR": str(tmp_path)}
+    env_no_member.pop("TEAMMODE_MEMBER", None)  # 폴백 경로 검증이라 멤버 env 누수 차단
     proc = subprocess.run(
         [PY, str(hook)], input=json.dumps(canonical), capture_output=True, text=True,
         cwd=str(root),
-        env={**os.environ, "TEAMMODE_HOME": str(root),
-             "TMPDIR": str(tmp_path)})
+        env=env_no_member)
     assert proc.returncode == 0
     # 세션로그 전무 → age 9999 ≥ 1800 → 리마인드 발화(평문 출력)
     assert proc.stdout.strip() != "", "age≥1800 인데 리마인드가 발화하지 않음"

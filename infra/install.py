@@ -733,7 +733,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         return 0
     wire = il.wire_agents(
         _wire_agents, home=home, settings_override=settings_override,
-        run_adapter=_make_run_adapter(), team_root=team_root)
+        run_adapter=_make_run_adapter(), team_root=team_root,
+        member_name=member_name)
     for m in wire.messages:
         out(m)
     if not wire.ok:

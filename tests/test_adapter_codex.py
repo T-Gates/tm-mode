@@ -61,13 +61,16 @@ def env(tmp_path):
     def write_manifest(entries):
         (hooks_dir / "manifest.json").write_text(json.dumps(entries))
 
-    def make_adapter():
+    def make_adapter(member=None):
+        # member: issue #26 — Codex hook command 에 TEAMMODE_MEMBER prefix 를 박을 멤버명.
+        # 기본 None(기존 테스트 하위호환). 지정 시 build_command 가 prefix 를 붙인다.
         return Adapter(
             agent_dir=str(agent_dir),
             manifest_path=str(hooks_dir / "manifest.json"),
             settings_path=str(config),
             python="python3",
             team_root=str(root),
+            member=member,
         )
 
     class E:
@@ -224,3 +227,144 @@ def test_same_manifest_preserves_pretooluse_on_codex(env, capsys):
     assert 'matcher = "mcp__tm-linear__create_issue"' in text
     out = capsys.readouterr().out
     assert "[warn]" not in out
+
+
+# ── 9. issue #26: build_command 가 TEAMMODE_MEMBER env prefix 를 박는다 ──
+#
+# Codex 의 command hook 에는 env 필드가 없고 command 를 셸로 실행하므로, 멀티멤버 식별을
+# 위해 build_command 가 `env TEAMMODE_MEMBER=<member> <base command>` 로 prefix 를 붙인다.
+# 값은 ascii 영숫자로 시작하는 '-_' 단일 토큰만 허용(셸 인젝션 차단), 위반 시 prefix 생략.
+
+def _remind_entry():
+    return {"script": "session-log-remind.py"}
+
+
+def test_build_command_member_prefix(env):
+    """member 지정 → 'env TEAMMODE_MEMBER=<member> ' prefix + 기존 base command 포함."""
+    base = env.make_adapter(member=None).build_command(_remind_entry())
+    cmd = env.make_adapter(member="alice").build_command(_remind_entry())
+    assert cmd.startswith("env TEAMMODE_MEMBER=alice "), cmd
+    assert cmd.endswith(base), f"base command 가 prefix 뒤에 그대로 와야 함: {cmd!r} / base={base!r}"
+    assert base in cmd
+    # base 경유 검증: normalize.py + 스크립트가 그대로 들어있다
+    assert "normalize.py" in cmd
+    assert "session-log-remind.py" in cmd
+
+
+def test_build_command_no_member_no_prefix(env):
+    """member=None → prefix 없이 base command 그대로(하위호환)."""
+    cmd = env.make_adapter(member=None).build_command(_remind_entry())
+    assert not cmd.startswith("env TEAMMODE_MEMBER"), cmd
+    assert "TEAMMODE_MEMBER" not in cmd
+    assert "normalize.py" in cmd
+    assert "session-log-remind.py" in cmd
+
+
+@pytest.mark.parametrize("bad", [
+    "a b",            # 공백
+    "x; rm -rf /",    # 셸 메타문자 + 공백
+    "../evil",        # path traversal (/ 와 .)
+    "",               # 빈 문자열
+    "   ",            # 공백만
+    "-leading",       # 선두 dash (식별자 시작 규칙 위반)
+    "_leading",       # 선두 underscore (영숫자 시작 규칙 위반)
+    "ko한글",          # 비-ascii
+    "a&b",            # 셸 메타문자
+    "$(whoami)",      # 명령치환 시도
+    "a\nb",           # 개행
+])
+def test_build_command_rejects_unsafe_member(env, bad):
+    """형식 위반 member → prefix 없이 base command 그대로(검증 정규식이 거부, fail-safe)."""
+    base = env.make_adapter(member=None).build_command(_remind_entry())
+    cmd = env.make_adapter(member=bad).build_command(_remind_entry())
+    assert cmd == base, f"unsafe member {bad!r} 에 prefix 가 붙음: {cmd!r}"
+    assert "TEAMMODE_MEMBER" not in cmd
+
+
+@pytest.mark.parametrize("ok", [
+    "alice", "jane-doe", "a", "A1", "user-name", "user_name", "u1-2_3", "X",
+])
+def test_build_command_accepts_valid_member(env, ok):
+    """정상 토큰(영숫자 시작 + 영숫자/-/_)은 prefix 가 붙는다."""
+    cmd = env.make_adapter(member=ok).build_command(_remind_entry())
+    assert cmd.startswith(f"env TEAMMODE_MEMBER={ok} "), cmd
+
+
+def test_is_owned_holds_with_member_prefix(env):
+    """prefix 가 붙어도 is_owned True — normalize substring 매칭이 prefix 에 안 깨진다."""
+    a = env.make_adapter(member="alice")
+    cmd = a.build_command(_remind_entry())
+    assert cmd.startswith("env TEAMMODE_MEMBER=alice ")
+    assert a.is_owned(cmd) is True, f"prefix 붙은 command 가 소유 판정 실패: {cmd!r}"
+    # 음성 대조: teammode 소유가 아닌 임의 command 는 False
+    assert a.is_owned("env TEAMMODE_MEMBER=alice /usr/bin/echo hi") is False
+
+
+# ── 10. issue #26 (codex review): tm on/off resync 가 prefix 를 떨구지 않는다 ──
+#
+# build_command 의 TEAMMODE_MEMBER prefix 는 install(--member) 경로에서만 self.member 로
+# 들어온다. 그런데 teammode.cmd_on/off(`tm on/off`)는 codex 어댑터를 member 없이 만들어
+# sync 한다 → managed hook 블록이 prefix 없는 command 로 재기록되어 회귀. self-healing:
+# self.member 가 None 이면 현재 config.toml 의 기존 prefix 를 파싱해 재사용한다.
+
+def test_resync_without_member_preserves_existing_prefix(env):
+    """install(member) 후 member 없이 resync(=tm on/off)해도 기존 prefix 가 보존된다."""
+    env.write_manifest([
+        # base 엔트리(no mode) — on·off 양쪽에 남는다(auto-commit).
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+        # on 전용 엔트리 — on 에만 등록(session-log-remind).
+        {"event": "UserPromptSubmit", "script": "session-log-remind.py", "mode": "on"},
+    ])
+    # 1) install 경로: member 박아 최초 sync → 두 hook 다 prefix
+    env.make_adapter(member="alice").sync(mode="on")
+    t1 = env.config.read_text()
+    assert t1.count("env TEAMMODE_MEMBER=alice") >= 2, t1
+
+    # 2) tm on resync(member 없음) → self-healing 으로 prefix 보존
+    env.make_adapter(member=None).sync(mode="on")
+    t2 = env.config.read_text()
+    assert "env TEAMMODE_MEMBER=alice" in t2, f"on resync 후 prefix 유실: {t2!r}"
+    assert "session-log-remind.py" in t2
+
+    # 3) tm off resync(member 없음) → base hook(auto-commit) prefix 보존
+    env.make_adapter(member=None).sync(mode="off")
+    t3 = env.config.read_text()
+    assert "env TEAMMODE_MEMBER=alice" in t3, f"off resync 후 prefix 유실: {t3!r}"
+
+
+def test_resync_without_member_no_existing_prefix_stays_clean(env):
+    """member 없고 기존 prefix 도 없으면 prefix 를 만들지 않는다(자가치유가 없는 값 생성 금지)."""
+    env.write_manifest([
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+    ])
+    env.make_adapter(member=None).sync(mode="on")
+    text = env.config.read_text()
+    assert "TEAMMODE_MEMBER" not in text, text
+
+
+def test_resync_member_arg_overrides_and_updates_prefix(env):
+    """member 인자가 있으면(install/`tm on --member`) 기존 prefix 보다 우선해 갱신한다."""
+    env.write_manifest([
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+    ])
+    env.make_adapter(member="alice").sync(mode="on")
+    assert "env TEAMMODE_MEMBER=alice" in env.config.read_text()
+    # 다른 member 로 재sync → 새 member 로 갱신(기존 prefix 파싱보다 self.member 우선)
+    env.make_adapter(member="jane-doe").sync(mode="on")
+    t = env.config.read_text()
+    assert "env TEAMMODE_MEMBER=jane-doe" in t, t
+    assert "TEAMMODE_MEMBER=alice" not in t, f"옛 member 가 남음: {t!r}"
+
+
+def test_existing_member_prefix_ignores_outside_managed_block(env):
+    """managed 블록 밖의 TEAMMODE_MEMBER 텍스트는 self-healing 이 줍지 않는다(오염 차단)."""
+    # 사용자가 자기 hook 에 TEAMMODE_MEMBER 를 쓴 것처럼 블록 밖에 둔다.
+    env.config.write_text(
+        'model = "o1"\n'
+        '[[hooks.SessionStart.hooks]]\n'
+        "command = 'env TEAMMODE_MEMBER=evil /bin/echo hi'\n")
+    a = env.make_adapter(member=None)
+    assert a._existing_member_prefix() is None

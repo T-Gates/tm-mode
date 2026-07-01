@@ -859,7 +859,7 @@ class WireResult:
 
 
 def wire_agents(agents, *, home: Path, settings_override=None,
-                run_adapter=None, team_root=None) -> WireResult:
+                run_adapter=None, team_root=None, member_name=None) -> WireResult:
     """감지된 에이전트마다 어댑터 동사 호출(MCP 등록 → 훅 sync) — §4⑤·§8·§2.7·§2.8.
 
     **다동사(D.1)**: 에이전트마다 **install-mcp → sync(--on) → install-skills 순**으로
@@ -882,6 +882,11 @@ def wire_agents(agents, *, home: Path, settings_override=None,
     run_adapter(agent, verb, settings_flag, settings_path, extra_args) -> int 를 주입받아
     실제 어댑터 호출을 추상화(테스트가 호스트·subprocess 를 건드리지 않게). extra_args 는
     동사별 추가 글로벌 플래그(예: install-mcp 의 --mcp-config <격리경로>) 리스트.
+
+    member_name: Codex 어댑터에 `--member` 로 전달해 hook command 에 TEAMMODE_MEMBER 를
+    prefix 로 박게 한다(멀티멤버 식별 — issue #26). Claude 는 install 이 settings.json env
+    (inject_member_env_settings)로 따로 주입하므로 여기서 넘기지 않는다(중복 방지). None 이면
+    어느 어댑터에도 넘기지 않는다(하위호환).
     """
     if run_adapter is None:
         raise ValueError("run_adapter 콜러블이 필요합니다(부작용 추상화).")
@@ -907,6 +912,11 @@ def wire_agents(agents, *, home: Path, settings_override=None,
                 "--team-root", str(Path(team_root)),
                 spec["cfg_flag"], str(Path(team_root) / "team.config.json"),
             ]
+        # codex 만 멤버 env 를 hook command prefix 로 받는다(issue #26). claude 는 install 이
+        # settings.json env 로 따로 주입하므로 여기 미전달(중복 방지). 글로벌 플래그라 동사
+        # (install-mcp/sync/install-skills) 무관하게 안전(어댑터가 저장만, build_command 만 사용).
+        if agent == "codex" and member_name:
+            cfg_extra = cfg_extra + ["--member", str(member_name)]
         # install-mcp 동사의 전용 게이트 경로(claude→--mcp-config 격리, codex→없음).
         mcp = agent_mcp_path(agent, home=home, settings_override=settings_override)
         mcp_extra = cfg_extra + ([mcp[0], str(mcp[1])] if mcp is not None else [])
