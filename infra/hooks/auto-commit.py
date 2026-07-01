@@ -22,6 +22,10 @@ normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다
   - **자동 push(6/23 철학)**: do_commit(push=True) — "원격 동기화는 사람 결정" 폐기.
     팀 레포는 공유 자산이라 매 자동 커밋 즉시 push 한다. **push 실패는 비차단** —
     do_commit 이 push 실패해도 로컬 커밋을 보존(ok=True·pushed=False)하고 hook 은 exit 0.
+  - **push 실패 가시화(이슈 #23)**: 비차단은 유지하되 **조용히 묻지 않는다**. push 못 한
+    채 커밋만 쌓이면(committed & not pushed) sync-warning 마커 기록 + stderr 경고를 남겨
+    다음 세션 시작(session-start)이 크게 표면화한다. push 성공 시 마커를 지운다.
+    **커밋 거동 자체는 불변** — 가시화만 추가.
   - **add -A 금지(P1-4)**: do_commit 에 paths= 로 정규스키마가 지목한 `files` 만 넘긴다.
     무차별 스테이징(add -A)은 토큰패턴 파일·무관 변경까지 끌어와 오염·유출 위험.
   - **실패 비차단**: 어떤 예외도 삼키고 항상 exit 0. 자동 커밋·push 실패가 작업을 막지 않는다.
@@ -89,7 +93,18 @@ def main() -> int:
 
         # ── 4. paths 만 스테이징 + 자동 push(6/23 철학) ──
         # push 실패는 비차단: do_commit 이 커밋을 보존(ok=True·pushed=False)하므로 무해.
-        _git_ops.do_commit(root, message=message, push=True, paths=paths)
+        result = _git_ops.do_commit(root, message=message, push=True, paths=paths)
+
+        # ── 5. push 실패 가시화(이슈 #23) — 비차단 유지, 조용히 묻지 않는다 ──
+        # 커밋은 됐는데 push 못 했으면(다른 클론이 먼저 push 해 non-ff, 인증/네트워크,
+        # GH007 private email 등) 로컬 커밋만 쌓인다 → 마커 + stderr 로 표면화.
+        # push 성공이면 회복으로 보고 묵은 마커를 지운다. (커밋 거동은 불변.)
+        if getattr(result, "committed", False) and not getattr(result, "pushed", False):
+            _git_ops.write_sync_warning(root, result.detail or "push 실패")
+            print(f"[teammode] auto-commit push 실패(로컬 커밋은 보존) — "
+                  f"{result.detail}", file=sys.stderr)
+        elif getattr(result, "pushed", False):
+            _git_ops.clear_sync_warning(root)
     except Exception:  # noqa: BLE001 — 철칙: 자동 커밋·push 실패가 작업을 막지 않는다
         return 0
 

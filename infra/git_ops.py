@@ -12,6 +12,7 @@ killpg·`--ff-only`·subprocess+git 양쪽 타임아웃·자격증명/SSH 프롬
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import signal
 import subprocess
@@ -41,6 +42,17 @@ class CommitResult:
 class FetchResult:
     ok: bool                       # fetch 성공
     detail: str = ""               # 디버그용 메시지
+
+
+@dataclass
+class ReconcileResult:
+    ok: bool                       # 정합 성공(이미 최신 포함) 또는 정합 불필요
+    action: str = "noop"           # up-to-date|fast-forward|rebased|ahead-only|
+    #                                no-upstream|fetch-failed|conflict|not-worktree|error
+    ahead: int = 0                 # 정합 후 로컬이 upstream 보다 앞선(미push) 커밋 수
+    behind: int = 0                # 정합 전 behind(진단·표면화용)
+    diverged: bool = False         # 정합 전 ahead>0 & behind>0(rebase 가 필요했음)
+    detail: str = ""               # 사람이 읽는 사유/요약
 
 
 @dataclass
@@ -188,6 +200,194 @@ def do_pull(team_root: str, timeout: int = DEFAULT_TIMEOUT) -> PullResult:
     if rc == 0:
         return PullResult(ok=True, detail=(out or "").strip()[:200])
     return PullResult(ok=False, detail=((err or out) or "").strip()[:200])
+
+
+def _ahead_behind_raw(team_root: str, timeout: int):
+    """(ahead, behind, has_upstream) 를 반환. 무raise.
+
+    `git rev-list --count --left-right @{u}...HEAD` — left=@{u}만 가진 커밋(=behind),
+    right=HEAD만 가진 커밋(=ahead). 추적 upstream 미설정·git 오류 → (0, 0, False).
+    """
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "rev-list", "--count", "--left-right",
+             "@{u}...HEAD"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return (0, 0, False)
+    if rc != 0:
+        return (0, 0, False)   # 보통 추적 upstream 없음(@{u} 해석 실패)
+    parts = (out or "").split()
+    if len(parts) != 2:
+        return (0, 0, False)
+    try:
+        behind, ahead = int(parts[0]), int(parts[1])
+    except ValueError:
+        return (0, 0, False)
+    return (ahead, behind, True)
+
+
+def ahead_behind(team_root: str, timeout: int = DEFAULT_TIMEOUT):
+    """추적 upstream(origin) 대비 (ahead, behind) 커밋 수. 무raise(모르면 (0,0)).
+
+    read-only 진단용 — 배너/세션 맥락에 'origin 동기화: ahead N/behind M' 한 줄로
+    upstream(템플릿) 업데이트 상태와 **분리** 표시하기 위함(이슈 #23).
+    """
+    ahead, behind, _ = _ahead_behind_raw(team_root, timeout)
+    return (ahead, behind)
+
+
+def do_reconcile(team_root: str, timeout: int = DEFAULT_TIMEOUT) -> ReconcileResult:
+    """fetch 후 추적 upstream 과 **실제 정합**(ff 또는 rebase --autostash). 무raise(철칙).
+
+    do_pull 의 `pull --ff-only` 는 로컬이 diverge(ahead>0 & behind>0)면 조용히 실패해
+    멀티유저 환경에서 로컬 커밋만 쌓이게 만든다(이슈 #23). do_reconcile 은 diverge 도
+    rebase 로 정합하고, 충돌이면 **abort 후 conflict 로 표면화**(조용히 넘기지 않음).
+    세션 시작 1회용 — 호출 빈도는 상위(session-start 스로틀)가 통제한다.
+
+    분기:
+      - 추적 upstream 없음 → no-upstream(정합 불필요, ok=True).
+      - behind==0 → up-to-date(ahead 0) 또는 ahead-only(미push 로컬만 있음). ok=True.
+      - ahead==0 & behind>0 → fast-forward(`merge --ff-only @{u}`). ok=True.
+      - ahead>0 & behind>0(diverge) → `rebase --autostash @{u}`.
+          성공 → rebased(남은 ahead 재계산). 충돌/실패 → abort 후 conflict(ok=False).
+    """
+    if not is_git_worktree(team_root):
+        return ReconcileResult(ok=False, action="not-worktree",
+                               detail="not a git work tree")
+
+    # 1) fetch — push/pull 과 동일 안전장치(http 타임아웃·killpg·자격증명 차단) 재사용.
+    try:
+        frc, _, ferr = run_git(
+            ["-C", team_root, *http_timeout_opts(timeout), "fetch"],
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return ReconcileResult(ok=False, action="fetch-failed", detail="fetch timeout")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ReconcileResult(ok=False, action="fetch-failed",
+                               detail=f"fetch exec error: {exc}")
+    if frc != 0:
+        return ReconcileResult(ok=False, action="fetch-failed",
+                               detail=(ferr or "").strip()[:200])
+
+    # 2) ahead/behind 측정 — 추적 upstream 유무 판정 포함.
+    ahead, behind, has_up = _ahead_behind_raw(team_root, timeout)
+    if not has_up:
+        return ReconcileResult(ok=True, action="no-upstream",
+                               detail="추적 upstream 없음(정합 불필요)")
+
+    # 3) 이미 정합(behind==0)
+    if behind == 0:
+        action = "ahead-only" if ahead > 0 else "up-to-date"
+        return ReconcileResult(ok=True, action=action, ahead=ahead, behind=0)
+
+    # 4) 순수 behind → fast-forward
+    if ahead == 0:
+        try:
+            rc, _, err = run_git(
+                ["-C", team_root, "merge", "--ff-only", "@{u}"], timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return ReconcileResult(ok=False, action="error", behind=behind,
+                                   detail="ff merge timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return ReconcileResult(ok=False, action="error", behind=behind,
+                                   detail=f"ff merge exec error: {exc}")
+        if rc == 0:
+            return ReconcileResult(ok=True, action="fast-forward", behind=behind)
+        return ReconcileResult(ok=False, action="error", behind=behind,
+                               detail=(err or "").strip()[:200])
+
+    # 5) diverge(ahead>0 & behind>0) → rebase --autostash. 실패 시 반드시 abort.
+    try:
+        rc, _, rerr = run_git(
+            ["-C", team_root, "rebase", "--autostash", "@{u}"], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _abort_rebase(team_root, timeout)
+        return ReconcileResult(ok=False, action="conflict", ahead=ahead,
+                               behind=behind, diverged=True,
+                               detail="rebase timeout(aborted)")
+    except (OSError, subprocess.SubprocessError) as exc:
+        _abort_rebase(team_root, timeout)
+        return ReconcileResult(ok=False, action="conflict", ahead=ahead,
+                               behind=behind, diverged=True,
+                               detail=f"rebase exec error(aborted): {exc}")
+    if rc == 0:
+        # 정합 후 남은 ahead(미push 로컬 커밋) 재계산.
+        a2, _, _ = _ahead_behind_raw(team_root, timeout)
+        return ReconcileResult(ok=True, action="rebased", ahead=a2,
+                               behind=behind, diverged=True,
+                               detail="rebased onto upstream")
+    _abort_rebase(team_root, timeout)
+    return ReconcileResult(ok=False, action="conflict", ahead=ahead,
+                           behind=behind, diverged=True,
+                           detail=(rerr or "").strip()[:200])
+
+
+# ──────────────────────────────────────────────────────────────────
+# sync-warning 마커 — push 실패/정합 충돌의 **머신 로컬** 가시화 상태(이슈 #23)
+# ──────────────────────────────────────────────────────────────────
+#
+# 왜 팀 루트(memory/) 가 아니라 XDG_STATE_HOME 인가:
+#   push 실패는 "이 클론이 origin 에 못 올렸다"는 **머신 로컬** 사실이다. memory/ 는
+#   팀 공유라 마커를 거기 두면 git add 로 다른 클론까지 새어 들어가(.gitignore 철학에
+#   어긋남 — auto_pull throttle state 와 동일 사유). 그래서 팀 루트 밖 XDG 에 둔다.
+#
+# 왜 team_root 별 파일인가(codex 리뷰 P2):
+#   마커를 단일 파일로 두면 한 머신에 팀 레포가 둘일 때 repo B 의 성공적 push/reconcile
+#   이 부르는 clear 가 repo A 의 **미해결** push-실패 마커까지 지워, repo A 의 다음 세션이
+#   "로컬 커밋 미push"를 못 띄운다(교차팀 격리 붕괴 + write 경합 "마지막이 이김"). 그래서
+#   파일명에 team_root 안정 해시를 넣어 팀마다 독립 파일을 쓰고, write/read/clear 모두
+#   team_root 를 받아 **자기 파일만** 다룬다. 파일 자체가 팀별이라 내부 root 대조는 불필요.
+
+def _state_dir() -> str:
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "teammode")
+
+
+def _team_key(team_root: str) -> str:
+    """team_root 의 안정 해시(파일명용). normpath 로 정규화해 raw env('/x/')·str(Path)
+    ('/x') 표기차를 흡수한 뒤 sha1 앞 16 hex — 팀별 마커 파일을 결정적으로 가른다."""
+    norm = os.path.normpath(str(team_root))
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def sync_warning_path(team_root: str) -> str:
+    """team_root 별 push/정합 실패 가시화 마커 경로(팀 루트 밖 머신 로컬 상태).
+
+    파일명에 team_root 해시를 넣어 한 머신의 여러 팀 레포가 서로의 마커를 덮어쓰거나
+    (write 경합) 교차 삭제(clear)하지 못하게 한다(codex 리뷰 P2).
+    """
+    return os.path.join(_state_dir(), f"sync-warning-{_team_key(team_root)}")
+
+
+def write_sync_warning(team_root: str, detail: str) -> None:
+    """push/정합 실패를 team_root 전용 마커로 남긴다(session-start 가 읽어 표면화). 무raise."""
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        with open(sync_warning_path(team_root), "w", encoding="utf-8") as f:
+            f.write(detail)
+    except OSError:
+        pass  # 마커 기록 실패는 작업을 막지 않는다(가시화는 best-effort)
+
+
+def read_sync_warning(team_root: str) -> str:
+    """team_root 전용 sync-warning 마커 내용(없으면 ''). 무raise."""
+    try:
+        with open(sync_warning_path(team_root), encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def clear_sync_warning(team_root: str) -> None:
+    """team_root 전용 sync-warning 마커만 제거(push/정합이 회복되면 호출). 무raise.
+
+    자기 팀 파일만 지우므로 같은 머신의 다른 팀 레포 마커를 건드리지 않는다(P2 수정 핵심).
+    """
+    try:
+        os.remove(sync_warning_path(team_root))
+    except OSError:
+        pass
 
 
 def _is_non_fast_forward(text: str) -> bool:
