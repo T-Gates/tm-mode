@@ -92,7 +92,7 @@ def default_banner_content(team_root: Path, team_name: str) -> str:
     return f"=== {team_name} ===\n"
 
 
-def _adapter_for(agent_name, settings_path=None, skills_dir=None):
+def _adapter_for(agent_name, settings_path=None, skills_dir=None, member=None):
     """에이전트별 어댑터 팩토리.
 
     agent_name: 'claude' 또는 'codex' (agents/ 하위 디렉토리명).
@@ -100,6 +100,10 @@ def _adapter_for(agent_name, settings_path=None, skills_dir=None):
       - claude → ~/.claude/settings.json
       - codex  → install_lib.agent_settings_path("codex", home) 활용(~/.codex/config.toml)
     skills_dir: None이면 settings_path 부모/skills 파생(P0-1).
+    member: codex hook command 에 TEAMMODE_MEMBER prefix 로 박을 멤버명(issue #26).
+      **codex 어댑터만** 받는다 — claude Adapter 는 member kwarg 가 없고(settings.json env
+      경로로 따로 주입), 넘기면 TypeError. None 이면 미전달. codex 어댑터는 member 가 None
+      이어도 sync 시 기존 config.toml prefix 를 self-healing 으로 보존한다.
     ⚠️ codex에 claude settings 경로를 넘기면 사고 — 각 에이전트는 자기 기본 경로 파생.
     """
     import runpy
@@ -130,7 +134,7 @@ def _adapter_for(agent_name, settings_path=None, skills_dir=None):
     if skills_dir is None:
         skills_dir = str(Path(resolved_settings).parent / "skills")
 
-    return Adapter(
+    adapter_kwargs = dict(
         agent_dir=str(INFRA / "agents" / agent_name),
         manifest_path=str(INFRA / "hooks" / "manifest.json"),
         settings_path=resolved_settings,
@@ -139,6 +143,12 @@ def _adapter_for(agent_name, settings_path=None, skills_dir=None):
         team_root=str(INFRA.parent),
         skills_dir=skills_dir,
     )
+    # member 는 codex 어댑터만 받는다(claude Adapter 는 member kwarg 미지원 — TypeError 방지).
+    # codex 에 전달하면 sync(mode=on/off) 가 hook command 에 TEAMMODE_MEMBER prefix 를
+    # 재렌더해 `tm on/off` resync 회귀를 막는다(issue #26).
+    if agent_name == "codex" and member is not None:
+        adapter_kwargs["member"] = member
+    return Adapter(**adapter_kwargs)
 
 
 def _adapter(settings_path=None, skills_dir=None):
@@ -376,7 +386,8 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
             if _ag == "claude":
                 _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
             else:
-                _ag_adapter = _adapter_for(_ag)  # 자기 기본 경로 파생
+                # 자기 기본 경로 파생 + member 전파(codex hook prefix 유지 — issue #26).
+                _ag_adapter = _adapter_for(_ag, member=member)
             _ag_adapter.sync(mode="on")
             _ag_adapter.install_skills(layer="core")
             _all_adapters.append(_ag_adapter)
@@ -579,7 +590,8 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
             if _ag == "claude":
                 _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
             else:
-                _ag_adapter = _adapter_for(_ag)
+                # member 전파 — off resync 도 codex hook prefix 를 떨구지 않게(issue #26).
+                _ag_adapter = _adapter_for(_ag, member=member)
             _ag_adapter.sync(mode="off")
             _uninstall_layer(_ag_adapter, "core")
             _uninstall_layer(_ag_adapter, "util")

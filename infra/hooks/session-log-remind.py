@@ -299,6 +299,20 @@ def _global_sessions_age(root: str) -> int:
     return int(time.time() - max(os.path.getmtime(f) for f in sessions))
 
 
+def _global_sessions_mtime(root: str) -> float:
+    """전역 sessions 폴더 내 최신 파일 mtime. 없으면 0.0. 폴백 check_reset 용.
+
+    멤버 경로의 `_current_mtime`(내 파일 mtime)과 대칭 — 멤버 식별 실패(degraded)
+    상황에서 '누군가' 세션로그를 갱신하면 이 값이 바뀌어 폴백 count 를 리셋한다.
+    """
+    sessions = glob.glob(
+        os.path.join(root, "memory", "team", "sessions", "**", "*.md"),
+        recursive=True)
+    if not sessions:
+        return 0.0
+    return max(os.path.getmtime(f) for f in sessions)
+
+
 def main() -> int:
     _ensure_utf8_io()  # 한글 출력이 Windows cp949 stdout 에서 크래시 방지
     try:
@@ -374,14 +388,30 @@ def main() -> int:
         log_kit = ""
         state_file = _state_path(agent)
         age = _global_sessions_age(root)
+        g_mtime = _global_sessions_mtime(root)
+        date_str = _log_date(now)
 
         # 폴백도 상태파일 기반으로 count·last_strong_remind 를 관리 (B 해결: 0.0 고정 제거)
         state = _read_state(state_file)
+
+        # check_reset(멤버 경로와 대칭): 전역 sessions mtime 변화 OR 날짜(06시 컷) 바뀜 →
+        # count=0 + return(안 보챔). 멤버 식별 실패 degraded 경로라 '내 파일'을 특정 못 해
+        # '누구든' 세션로그를 갱신하면 리셋되는 약한 신호지만, 멤버 env 누락 시 리마인더가
+        # 5프롬프트마다 무한 반복(issue #26)되는 것을 막는다.
+        if g_mtime != state["last_mtime"] or date_str != state["date"]:
+            _write_state(state_file, {
+                "count": 0,
+                "last_mtime": g_mtime,
+                "date": date_str,
+                "last_strong_remind": state["last_strong_remind"],
+            })
+            return 0
+
         count = state["count"] + 1
         _write_state(state_file, {
             "count": count,
-            "last_mtime": state["last_mtime"],
-            "date": state["date"],
+            "last_mtime": g_mtime,
+            "date": date_str,
             "last_strong_remind": state["last_strong_remind"],
         })
 
@@ -412,10 +442,12 @@ def main() -> int:
                 "last_strong_remind": now_ts,
             })
         else:
+            # 폴백 강발화도 갱신된 g_mtime/date_str 를 유지 — 다음 런 check_reset 이 stale
+            # 값으로 오인 리셋하지 않게(멤버 경로 mtime/date_str 보존과 대칭).
             _write_state(state_file, {
                 "count": count,
-                "last_mtime": state["last_mtime"],
-                "date": state["date"],
+                "last_mtime": g_mtime,
+                "date": date_str,
                 "last_strong_remind": now_ts,
             })
     elif weak_ok:

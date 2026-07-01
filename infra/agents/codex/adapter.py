@@ -60,6 +60,12 @@ class Adapter(BaseAdapter):
     DEFAULT_SKILLS_DIR = "~/.codex/skills"
 
     def __init__(self, *args, **kwargs):
+        # member: Codex hook command 에 TEAMMODE_MEMBER 를 prefix 로 박기 위한 멤버명.
+        # Claude 는 settings.json env(inject_member_env_settings)로 닿지만, Codex 의 command
+        # hook 에는 env 필드가 없다(공식 hooks 문서). 대신 Codex 는 command 를 셸로 실행하므로
+        # (문서가 command 에 `$(...)` 명령치환 예시를 보임 — 셸 경유 근거) build_command 가
+        # `env VAR=val <command>` prefix 로 안전 전달한다. None 이면 prefix 없음(하위호환).
+        self.member = kwargs.pop("member", None)
         # N3: Codex 는 MCP 를 ~/.codex/config.toml 의 [mcp_servers.*] 블록으로 등록하므로
         # 부모(claude)가 상속시키는 mcp_config_path(=~/.claude.json) 를 절대 쓰지 않는다.
         # 상속된 실경로가 latent footgun 으로 새지 않게 봉인 — 부모 _read_mcp_config/
@@ -67,6 +73,54 @@ class Adapter(BaseAdapter):
         # (codex 는 _read_mcp_servers·install_mcp 를 config.toml 기반으로 전부 재정의함.)
         kwargs["mcp_config_path"] = _SEALED
         super().__init__(*args, **kwargs)
+
+    def build_command(self, entry: dict) -> str:
+        """기본 command 에 TEAMMODE_MEMBER env prefix 를 붙인다(Codex hook 전용).
+
+        Codex 는 hook command 를 셸로 실행하고(공식 hooks 문서가 command 에 `$(...)` 명령
+        치환 예시를 보이는 것이 근거) command hook 에 env 필드가 없으므로, 멀티멤버 팀에서
+        '나'를 가르는 TEAMMODE_MEMBER(session-log-remind·kb-write-guard 의 단일 소스)를
+        `env VAR=val <command>` prefix 로 전달한다. member 가 self.member·기존 prefix 둘 다
+        없거나 형식이 이상하면 prefix 없이 기본 command 를 반환한다(하위호환·fail-safe).
+        self.member 가 None 이면 현재 config.toml 에 박힌 기존 prefix 를 재사용한다(self-healing,
+        `_existing_member_prefix`) — member 없이 도는 `tm on/off` resync 가 prefix 를 떨구지 않게. 값은 ascii 영숫자로 시작하는
+        '-_' 단일 토큰만 허용 — command 가 셸로 실행되므로 공백/메타문자 토큰은 인젝션 위험이
+        있어 거부한다(session-log-remind `_valid_member_name` 과 동일 규칙). TEAMMODE_HOME 은
+        셸 프로파일/`__file__` 폴백으로 이미 닿으므로 prefix 에 넣지 않는다(경로 공백/따옴표
+        쿼팅 회피). ⚠️ `VAR=val cmd` 는 POSIX 셸 전제 — Windows 미작동(0002 migration 문서의
+        known-limitation 참조).
+        """
+        command = super().build_command(entry)
+        # self.member(install/`tm on --member` 경로) 우선, 없으면 self-healing 으로 현재
+        # config.toml 에 이미 박힌 prefix 를 재사용 — member 없이 도는 `tm on/off` resync 가
+        # prefix 를 떨구는 회귀를 막는다(issue #26, codex review).
+        member = self.member or self._existing_member_prefix()
+        if member and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", member):
+            return f"env TEAMMODE_MEMBER={member} {command}"
+        return command
+
+    def _existing_member_prefix(self) -> Optional[str]:
+        """현재 config.toml 의 managed hook 블록에서 기존 `env TEAMMODE_MEMBER=<x>` 를 파싱.
+
+        self.member 가 None 일 때 build_command 가 호출(self-healing) — caller(예: member
+        없이 `tm on` 하는 cmd_on)가 누구든 한 번 박힌 prefix 를 유지하게 한다. 안전을 위해
+        **teammode-hooks 마커 블록 범위 안**에서만 찾고(사용자 다른 hook 오염 방지), 값은
+        검증 정규식과 동일한 안전 토큰만 매칭한다. sync 가 _write_block 으로 블록을 덮어쓰기
+        **전**에 _read_config() 가 옛 블록을 돌려주므로 이 파싱이 성립한다. 부재/깨짐 → None.
+        """
+        try:
+            existing = self._read_config()
+        except Exception:  # noqa: BLE001 — 설정 읽기 실패는 prefix 미보존(무해)로 강등
+            return None
+        if not existing:
+            return None
+        m = re.search(
+            re.escape(BLOCK_START) + r"(.*?)" + re.escape(BLOCK_END), existing, re.S)
+        scope = m.group(1) if m else ""
+        if not scope:
+            return None
+        pm = re.search(r"env TEAMMODE_MEMBER=([A-Za-z0-9][A-Za-z0-9_-]*)", scope)
+        return pm.group(1) if pm else None
 
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []
@@ -449,6 +503,9 @@ def main(argv=None) -> int:
     p.add_argument("--providers-dir", default=None)
     # install-skills 스킬 디렉토리 — 기본 None(실호스트 ~/.codex/skills), 격리/테스트는 tmp.
     p.add_argument("--skills-dir", default=None)
+    # --member: Codex hook command 에 TEAMMODE_MEMBER prefix 로 박을 멤버명(install 이 전달).
+    # 미지정이면 prefix 없이 기존 command(하위호환). 값 검증·prefix 는 build_command 에서.
+    p.add_argument("--member", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("sync")
     sp.add_argument("--on", action="store_true")
@@ -473,6 +530,7 @@ def main(argv=None) -> int:
         config_path=args.team_config,
         providers_dir=args.providers_dir,
         skills_dir=args.skills_dir,
+        member=args.member,
     )
     if args.cmd == "sync":
         mode = "on" if args.on else ("off" if args.off else None)

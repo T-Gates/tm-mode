@@ -363,6 +363,43 @@ class TestCmdOnAgentsFromConfig:
         assert rc == 0
         assert set(wired) == {"claude", "codex"}
 
+    def test_cmd_on_propagates_member_to_codex_only(self, tmp_path):
+        """cmd_on(member=...) → codex _adapter_for 에 member 전파, claude 에는 미전파(issue #26).
+
+        회귀 벡터: member 가 codex 어댑터에 안 닿으면 sync 가 hook command prefix 를 떨군다.
+        claude 는 settings.json env 로 따로 주입하므로 member kwarg 를 받으면 안 된다(TypeError).
+        """
+        self._make_team_root(tmp_path, agents_in_config=["claude", "codex"])
+        settings = tmp_path / "settings.json"
+        seen = {}  # agent_name → _adapter_for 에 넘어온 member kwarg
+
+        sys.path.insert(0, str(REPO / "infra"))
+        tm = _load_engine()  # sys.modules['teammode'] 스텁 오염 회피(파일 직접 로드)
+
+        def fake_adapter_for(agent_name, *args, **kwargs):
+            seen[agent_name] = kwargs.get("member")
+            adp = MagicMock()
+            adp.skills_dir = tmp_path / f".{agent_name}" / "skills"
+            adp.skills_dir.mkdir(parents=True, exist_ok=True)
+            adp.sync = MagicMock()
+            adp.install_skills = MagicMock()
+            return adp
+
+        with patch.object(tm, "_adapter_for", side_effect=fake_adapter_for), \
+             patch.object(tm, "_read_team_field", return_value=None), \
+             patch.object(tm, "_migrate_legacy_credentials"), \
+             patch.object(tm, "auto_update_on_start"), \
+             patch.object(tm, "_read_util_skills", return_value=[]), \
+             patch.object(tm, "_active_marker") as mock_marker:
+            mock_marker.return_value = MagicMock()
+            mock_marker.return_value.write_text = MagicMock()
+            rc = tm.cmd_on(tmp_path, str(settings), member="leejhy", install=True)
+
+        assert rc == 0
+        assert seen.get("codex") == "leejhy", f"codex 에 member 미전파: {seen}"
+        # claude 는 member 미전파(positional 만, member kwarg 없음 → None)
+        assert seen.get("claude") is None, f"claude 에 member 가 샘: {seen}"
+
     def test_cmd_on_no_config_agents_fallback_detect(self, tmp_path):
         """config.agents 없는 기존 레포 → detect_agents fallback (회귀 0)."""
         self._make_team_root(tmp_path, agents_in_config=None)
@@ -448,6 +485,38 @@ class TestCmdOffAgentsFromConfig:
         assert rc == 0
         # config 가 detect 를 이겨야 한다(둘 다). detect 가 이겼다면 claude 만 unwire 됐을 것.
         assert set(unwired) == {"claude", "codex"}
+
+    def test_cmd_off_propagates_member_to_codex_only(self, tmp_path):
+        """cmd_off(member=...) → codex _adapter_for 에 member 전파, claude 미전파(issue #26).
+
+        off resync(mode=off)도 codex hook command 를 다시 쓰므로 member 가 닿아야 prefix 보존.
+        """
+        self._make_team_root(tmp_path, agents_in_config=["claude", "codex"])
+        settings = tmp_path / "settings.json"
+        seen = {}
+
+        sys.path.insert(0, str(REPO / "infra"))
+        tm = _load_engine()
+
+        def fake_adapter_for(agent_name, *args, **kwargs):
+            seen[agent_name] = kwargs.get("member")
+            adp = MagicMock()
+            adp.skills_dir = tmp_path / f".{agent_name}" / "skills"
+            adp.skills_dir.mkdir(parents=True, exist_ok=True)
+            adp.sync = MagicMock()
+            return adp
+
+        with patch.object(tm, "_adapter_for", side_effect=fake_adapter_for), \
+             patch.object(tm, "_uninstall_layer"), \
+             patch.object(tm, "_read_team_field", return_value=None), \
+             patch.object(tm, "_active_marker") as mock_marker:
+            mock_marker.return_value = MagicMock()
+            mock_marker.return_value.exists.return_value = True
+            rc = tm.cmd_off(tmp_path, str(settings), member="leejhy", install=True)
+
+        assert rc == 0
+        assert seen.get("codex") == "leejhy", f"codex 에 member 미전파: {seen}"
+        assert seen.get("claude") is None, f"claude 에 member 가 샘: {seen}"
 
     def test_cmd_off_no_config_fallback_detect(self, tmp_path):
         """config.agents 없는 기존 레포 → detect fallback (회귀 0)."""
