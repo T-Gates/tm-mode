@@ -523,6 +523,41 @@ def _detect(team_root: Path, home: Path) -> dict:
     }
 
 
+def _email_is_push_safe(email) -> bool:
+    """GitHub push-safe 이메일인지 — noreply 도메인이면 private-email 보호(GH007)와 무관."""
+    return bool(email) and str(email).strip().lower().endswith(
+        "@users.noreply.github.com")
+
+
+def _warn_if_email_not_push_safe(det: dict, team_root: Path, err) -> None:
+    """git user.email 이 GitHub noreply 가 아니면 GH007(private email push 거부) 위험을
+    경고 + 정확한 수정 명령 안내(이슈 #23). **자동 변경은 하지 않는다.**
+
+    왜 자동 설정이 아니라 안내인가: push-safe noreply 주소는
+    `<숫자ID>+<username>@users.noreply.github.com` 형식인데, 숫자 ID 는 GitHub API 인증
+    조회 없이는 알 수 없고, origin remote 의 소유자(조직/레포)는 커밋 작성자와 다를 수
+    있어 오프라인으로 정확한 주소를 유도할 수 없다. 잘못 추정해 repo-local user.email 을
+    박으면 더 나쁘다(틀린 주소 → 여전히 거부되거나 신원 오염). global 무단 변경은 절대
+    금지. 따라서 안전한 선택은 "위험 경고 + 사용자가 본인 noreply 로 직접 설정하도록
+    정확한 명령 안내". (감지는 repo-local→global 을 git 이 알아서 합성한 effective 값.)
+    """
+    email = det.get("git_user_email")
+    remote = (det.get("remote_url") or "").lower()
+    # GH007 은 GitHub 한정 — github 원격일 때만 경고(불필요한 노이즈 방지).
+    if "github.com" not in remote:
+        return
+    if _email_is_push_safe(email):
+        return
+    shown = email or "(설정 안 됨)"
+    err(f"[warn] git user.email='{shown}' 이 GitHub noreply 형식이 아닙니다. "
+        f"GitHub 에서 '이메일 비공개(Keep my email addresses private)' 가 켜져 있으면 "
+        f"push 가 GH007(private email)로 거부돼 자동 커밋이 로컬에만 쌓일 수 있습니다.")
+    err(f"       해결: GitHub → Settings → Emails 에서 본인 noreply 주소"
+        f"(<ID>+<username>@users.noreply.github.com)를 확인한 뒤 이 레포에 설정하세요:")
+    err(f"         git -C {team_root} config user.email "
+        f"'<ID>+<username>@users.noreply.github.com'")
+
+
 def _make_run_adapter():
     """wire 용 run_adapter(agent, verb, flag, path, extra_args) → 어댑터 main 호출 rc.
 
@@ -652,6 +687,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         err(f"[warn] {w}")
     if not det["remote_authed"]:
         err("[warn] git 원격 인증 미확인 — 로컬 L1 은 진행(협업 시 push/pull 막힘).")
+    # push-safe 이메일 점검(이슈 #23) — GH007 사전 경고(자동 변경 없음, 안내만).
+    _warn_if_email_not_push_safe(det, team_root, err)
 
     # 멤버 이름 결정 (§3·m1): --member-name 우선 → git user.name 제안.
     # 추측 금지: 이름을 못 정하면 exit 3(신원 추측 금지, §12-3).
