@@ -531,6 +531,23 @@ def _done_message(det: dict) -> str:
     return _i18n.t("done_installed", _i18n.resolve_lang(det.get("locale")))
 
 
+def _autocommit_scaffold(team_root: Path, member_name: str, out) -> None:
+    """scaffold·members·config 자동 커밋+push. push 실패해도 커밋 보존 +
+    sync-warning 마커로 가시화(런타임 auto-commit 와 동일 패턴, 이슈 #5).
+    """
+    _cr = _git_ops.do_commit(
+        str(team_root),
+        message=f"팀 셋업: {member_name} 등록 + memory scaffold [auto]",
+        push=True, paths=["memory", "team.config.json"])
+    if getattr(_cr, "pushed", False):
+        _git_ops.clear_sync_warning()
+        out("[push] memory·members 를 팀 레포에 올렸습니다.")
+    elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
+        _detail = getattr(_cr, "detail", "") or "push 실패"
+        _git_ops.write_sync_warning(str(team_root), _detail)
+        out(f"[push] 커밋 완료 — push 실패({_detail}). 확인 후 `git push` 하세요.")
+
+
 def _email_is_push_safe(email) -> bool:
     """GitHub push-safe 이메일인지 — noreply 도메인이면 private-email 보호(GH007)와 무관."""
     return bool(email) and str(email).strip().lower().endswith(
@@ -861,14 +878,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     # (은수 결정 2026-06-23, "푸시는 사람" 철학 폐기). 실설치(--yes, 격리 아님)에서만 수행.
     # do_commit 은 push 실패(원격/오프라인/권한)해도 커밋을 보존한다(비치명, 예외 전파 안 함).
     if opts.yes and not opts.settings:
-        _cr = _git_ops.do_commit(
-            str(team_root),
-            message=f"팀 셋업: {member_name} 등록 + memory scaffold [auto]",
-            push=True, paths=["memory", "team.config.json"])
-        if getattr(_cr, "pushed", False):
-            out("[push] memory·members 를 팀 레포에 올렸습니다.")
-        elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
-            out("[push] 커밋 완료 — push 실패(원격/권한 확인 후 `git push` 하세요).")
+        _autocommit_scaffold(team_root, member_name, out)
 
     out(_done_message(det))
     return 0
