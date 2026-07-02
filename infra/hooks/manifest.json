@@ -2,10 +2,11 @@
   {
     "event": "SessionStart",
     "script": "session-start.py",
-    "timeout": 3,
+    "timeout": 30,
     "mode": "on",
     "enforcement": "advisory",
-    "_timeout_unit": "seconds"
+    "_timeout_unit": "seconds",
+    "_timeout_note": "네트워크 훅(do_reconcile: fetch+ff/rebase) — NET_TIMEOUT(10s) 순차 호출 최악치 + 여유. 3s 면 훅 러너가 git_ops 반환 전에 죽여 sync-warning 기록까지 날린다(codex P1)."
   },
   {
     "event": "UserPromptSubmit",
@@ -19,10 +20,11 @@
     "event": "PostToolUse",
     "match": { "action": "file_edit" },
     "script": "auto-commit.py",
-    "timeout": 3,
+    "timeout": 30,
     "fallback": "runtime",
     "enforcement": "block",
-    "_timeout_unit": "seconds"
+    "_timeout_unit": "seconds",
+    "_timeout_note": "네트워크 훅(do_commit push=True: push+복구 fetch/rebase/재push) — NET_TIMEOUT(10s) 순차 호출 최악치 + 여유. 3s 컷은 마커 없는 커밋을 남겼다(codex P1)."
   },
   {
     "event": "PreToolUse",
