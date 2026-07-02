@@ -1,3 +1,5 @@
+<!-- NOTICE (Apache-2.0): tm-mode, Copyright 2026 T-Gates -->
+
 # tm-mode 업데이트 공지
 
 팀모드 관리자가 팀들에게 전달하는 최신 업데이트·공지 파일입니다.
