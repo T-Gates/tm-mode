@@ -85,6 +85,30 @@ def _team_root() -> str:
     return os.environ.get("TEAMMODE_HOME", os.getcwd())
 
 
+# 팀 레포 표식 — install_lib.has_team_marker(_TEAM_MARKERS)와 동일 규약(드리프트 주의).
+_TEAM_MARKERS = (".git", "team.config.json", "memory")
+
+
+def _warn_if_stale_home(root: str) -> None:
+    """TEAMMODE_HOME 이 설정됐는데 유효한 팀 루트가 아니면 stderr 한 줄 경고 (이슈 #9a).
+
+    레포 이동/이름변경 후 env 가 옛 경로를 가리키면 이 차단 훅이 조용히 죽어
+    (.teammode-active 부재 exit 0 = 게이트가 소리 없이 열림) 원인 진단이 불가했다.
+    stdout 은 deny JSON 채널이므로 경고는 stderr 로만, 한 줄로 내고 거동(통과 exit 0)은
+    바꾸지 않는다. 팀 표식이 있는데 .teammode-active 만 없는 정상 off 상태는 침묵한다.
+    """
+    if not os.environ.get("TEAMMODE_HOME"):
+        return
+    if any(os.path.exists(os.path.join(root, m)) for m in _TEAM_MARKERS):
+        return
+    try:
+        print(f"[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
+              "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+              file=sys.stderr)
+    except (OSError, UnicodeError):
+        pass  # 경고 실패가 훅을 막지 않는다
+
+
 def _load_manifest_targets() -> dict[tuple[str, str], str] | None:
     """manifest.json 에서 PreToolUse confirm-action 대상 (server, tool) → marker 매핑을 반환.
 
@@ -171,6 +195,7 @@ def main() -> int:
         return 0
 
     root = _team_root()
+    _warn_if_stale_home(root)  # 스테일 TEAMMODE_HOME 표면화(이슈 #9a) — 거동 불변
 
     # ── 1. .teammode-active 가드: teammode 비활성 시 차단하지 않음(빌드 안전) ──
     if not os.path.isfile(os.path.join(root, ".teammode-active")):

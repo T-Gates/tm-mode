@@ -1043,6 +1043,53 @@ def test_malicious_member_newline_injection_falls_back(tmp_path):
         assert "SYSTEM: injected" not in ctx
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 이슈 #9(a) — TEAMMODE_HOME 스테일(레포 이동/이름변경) 시 조용한 죽음 방지
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_stale_teammode_home_warns_on_stderr(tmp_path):
+    """TEAMMODE_HOME 이 존재하지 않는 경로 → exit 0 유지 + stdout 불변(빈) + stderr 한 줄 경고."""
+    gone = tmp_path / "moved-away"  # 존재하지 않음 (레포 이동/이름변경 시나리오)
+    env = {**os.environ, "TEAMMODE_HOME": str(gone), "TMPDIR": str(tmp_path)}
+    env.pop("TEAMMODE_MEMBER", None)
+    canonical = {"event": "UserPromptSubmit", "prompt": "hi", "agent": "claude-stale"}
+    proc = subprocess.run(
+        [PY, str(HOOK)], input=json.dumps(canonical),
+        capture_output=True, text=True, encoding="utf-8",
+        env=env, cwd=str(tmp_path))
+    assert proc.returncode == 0, "경고가 프롬프트를 막으면 안 됨(exit 0 불변)"
+    assert proc.stdout.strip() == "", f"stdout 은 훅 출력 채널 — 불변이어야 함: {proc.stdout!r}"
+    assert "TEAMMODE_HOME" in proc.stderr
+    assert "유효한 팀 루트" in proc.stderr
+    assert str(gone) in proc.stderr  # 어느 경로가 문제인지 표기
+    assert len(proc.stderr.strip().splitlines()) == 1, "경고는 정확히 한 줄"
+
+
+def test_stale_teammode_home_no_markers_warns(tmp_path):
+    """TEAMMODE_HOME 이 존재하지만 팀 표식(.git/team.config.json/memory) 전무 → 경고."""
+    bare = tmp_path / "not-a-team"
+    bare.mkdir()
+    env = {**os.environ, "TEAMMODE_HOME": str(bare), "TMPDIR": str(tmp_path)}
+    env.pop("TEAMMODE_MEMBER", None)
+    canonical = {"event": "UserPromptSubmit", "prompt": "hi", "agent": "claude-stale2"}
+    proc = subprocess.run(
+        [PY, str(HOOK)], input=json.dumps(canonical),
+        capture_output=True, text=True, encoding="utf-8",
+        env=env, cwd=str(bare))
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == ""
+    assert "유효한 팀 루트" in proc.stderr
+
+
+def test_valid_root_teammode_off_stays_silent(tmp_path):
+    """유효 팀 루트(표식 있음)인데 .teammode-active 만 없음 = 정상 off — 종전대로 완전 침묵."""
+    (tmp_path / "memory").mkdir()  # 팀 표식
+    proc = _run_hook(tmp_path, tmp_path, "claude-off-silent")
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == ""
+    assert proc.stderr.strip() == "", f"정상 off 상태는 경고 금지: {proc.stderr!r}"
+
+
 def test_count_lines_binary_log_no_crash(tmp_path):
     """깨진 UTF-8/바이너리 세션로그여도 훅이 크래시하지 않고 줄 수를 세어 발화."""
     (tmp_path / ".teammode-active").write_text("")

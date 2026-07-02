@@ -324,3 +324,38 @@ def test_side_effect_tool_noop_when_inactive(tmp_path, server, tool, marker):
     assert proc.returncode == 0, (
         f"{server}/{tool}: teammode off 시 통과 기대, 실제={proc.returncode}"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 이슈 #9(a): TEAMMODE_HOME 스테일 시 stderr 경고 (게이트가 조용히 열리는 것 표면화)
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_stale_teammode_home_warns_on_stderr(tmp_path):
+    """TEAMMODE_HOME 이 존재하지 않는 경로 → 통과 거동(exit 0·stdout 빈)은 불변 + stderr 경고."""
+    gone = tmp_path / "moved-away"  # 존재하지 않음
+    payload = {
+        "event": "PreToolUse",
+        "tool": {"kind": "mcp", "server": "linear", "name": "create_issue"},
+        "agent": "claude",
+    }
+    proc = _run_confirm(payload, gone, marker="teammode-linear-create-allow")
+    assert proc.returncode == 0, "거동 불변 — 스테일 루트가 도구를 막으면 안 됨"
+    assert proc.stdout.strip() == "", f"stdout 은 deny JSON 채널 — 불변: {proc.stdout!r}"
+    assert "TEAMMODE_HOME" in proc.stderr
+    assert "유효한 팀 루트" in proc.stderr
+    assert len(proc.stderr.strip().splitlines()) == 1, "경고는 정확히 한 줄"
+
+
+def test_valid_root_teammode_off_stays_silent(tmp_path):
+    """유효 팀 루트(memory 표식)인데 .teammode-active 없음 = 정상 off — 침묵 유지."""
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "memory").mkdir()
+    payload = {
+        "event": "PreToolUse",
+        "tool": {"kind": "mcp", "server": "linear", "name": "create_issue"},
+        "agent": "claude",
+    }
+    proc = _run_confirm(payload, root, marker="teammode-linear-create-allow")
+    assert proc.returncode == 0
+    assert proc.stderr.strip() == "", f"정상 off 상태는 경고 금지: {proc.stderr!r}"
