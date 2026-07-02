@@ -1,0 +1,75 @@
+name: 버그 신고
+description: tm-mode 자체(infra/)의 버그를 신고합니다. memory/ 팀 데이터 문제는 대상이 아닙니다.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        신고 전에 문제가 **본레포 탓인지 인스턴스 탓인지** 먼저 가려주세요.
+        인스턴스에서 쓰고 있다면 에이전트에서 `tm-contribute` 스킬을 쓰면 진단부터 제출까지 도와줍니다.
+
+  - type: input
+    id: environment
+    attributes:
+      label: 환경
+      description: 에이전트(Claude Code/Codex), OS, Python 버전, tm-mode 버전/커밋
+      placeholder: "예: Claude Code / macOS 15 / Python 3.12 / main @ abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 현상
+      description: 무슨 일이 일어났는지 구체적으로. 에러 메시지·로그가 있으면 그대로 붙여주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 재현 절차
+      description: 어떤 작업 중이었고, 어떤 순서로 하면 재현되는지.
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 기대 동작
+      description: 원래 어떻게 동작해야 하는지.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 실제 동작
+      description: 실제로는 어떻게 동작했는지 (현상과 구분되는 결과 중심으로).
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnosis
+    attributes:
+      label: 원인 / 진단 근거
+      description: |
+        분석했으면 코드 라인 근거와 함께. 미파악이면 "미파악"이라고 정직하게 적어주세요 — 추측 금지.
+        인스턴스라면 `git diff upstream/main -- infra/` 로 로컬 수정 여부를 확인한 결과를 적어주세요.
+      placeholder: "미파악 / 또는: infra/... L42 에서 ... 때문. upstream/main 원본에서도 재현됨."
+    validations:
+      required: true
+
+  - type: textarea
+    id: applied-fix
+    attributes:
+      label: 적용한 수정 (선택)
+      description: 로컬에서 이미 고쳤다면 diff 를 다듬어 첨부해주세요. 안 고쳤으면 비워둡니다.
+      render: diff
+    validations:
+      required: false

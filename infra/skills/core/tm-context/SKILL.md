@@ -73,10 +73,10 @@ python infra/teammode.py context --root . --json
 
 `team.config.json` 의 `services.issues.provider` 가 채워져 있는지 **파일을 직접 읽어** 확인한다.
 
-연결돼 있으면, 그 트래커는 **`tm-<provider>` 규약으로 MCP 서버에 등록돼 있다** (예: `linear` → `tm-linear`). 따라서 provider 를 하드코딩하지 말고:
+연결돼 있으면, 그 트래커는 **`tm-<provider>` 규약으로 MCP 서버에 등록돼 있다** (provider 값 앞에 `tm-` 접두). 따라서 provider 를 하드코딩하지 말고:
 
-1. `services.issues.provider` 값을 읽는다 (예: `linear`).
-2. 사용 가능한 `mcp__tm-<provider>__*` 도구 중 **이슈 목록/검색** 도구를 골라 호출한다(도구명은 런타임에 발견 — provider 마다 다르므로 스킬에 박지 않는다).
+1. `services.issues.provider` 값을 읽는다.
+2. 그 `tm-<provider>` MCP 서버가 노출하는 도구 중 **이슈 목록/검색** 도구를 골라 호출한다(도구명은 런타임에 발견 — provider 마다 다르므로 스킬에 박지 않는다).
 3. 멤버별 **In Progress** 이슈만 assignee 로 매칭해 식별자+제목만 보조 표시한다.
 
 > ⚠️ Backlog/Todo 는 표시하지 않는다(현황이 아니라 계획 — 별도 스킬 소관). `teammode.py issue` 동사는 MCP 조회를 하지 않고 provider/스키마 echo 만 하므로, 실제 조회는 위처럼 MCP 도구로 **직접** 한다.
@@ -135,4 +135,4 @@ python infra/teammode.py context --root . --json
 ---
 
 > 동작이 예상과 다르면 `infra/teammode.py`의 `cmd_context` 함수를 확인하세요.
-> `tm-<provider>` MCP 등록 규약은 `infra/install.py`(linear → tm-linear) 참조.
+> `tm-<provider>` MCP 등록 규약은 `infra/install.py`(provider 값 → `tm-<provider>` alias) 참조.

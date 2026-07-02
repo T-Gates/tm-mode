@@ -1,0 +1,28 @@
+# Changelog
+
+이 파일은 tm-mode의 주요 변경 사항을 기록합니다.
+형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
+
+## [Unreleased]
+
+### Added
+
+- **v1 Phase 1** (#31): install 동사(role-by-verb) 재편, 호스트 메시지 i18n, push 결과 가시화
+- `memory route {upsert|remove}` 동사 — 루트 INDEX 라우팅 맵 관리 (#16)
+- Codex PreToolUse 훅 지원 + kb-write-guard 파일별 판정 (#17)
+- session-log-remind systemMessage를 ux config로 옵트아웃 가능하게 (#25)
+- tm-context: 세션로그 심층읽기 + L2 이슈/캘린더 `tm-<provider>` 직접조회 (#13), 멤버 이모지 렌더 복구 (#14)
+
+### Changed
+
+- 라이선스를 Apache-2.0으로 전환 (#27)
+
+### Fixed
+
+- sync: 세션 시작 시 reconcile, push 실패 표면화, non-noreply 이메일 경고 (#30)
+- mcp: 공식 hosted MCP(notion/linear)를 http로 등록, 수동 attach 안내 (#29)
+- codex: 훅에 `TEAMMODE_MEMBER` 전달, fallback 리마인더 무한반복 중단 (#28)
+- memory: 세션로그 백링크 위키링크에서 `memory/` 접두 제거 (#22)
+- git_ops: auto-commit push가 non-ff 거부 시 fetch+rebase 자동복구 (#19)
+- memory delete 동사: INDEX.md 없는 폴더에서 커밋 abort 버그 (#15)
+- statusline: 래핑 멱등화 — off→on 토글 시 배너 누적(double-wrap) 차단 (#10)

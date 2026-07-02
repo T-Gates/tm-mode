@@ -1,0 +1,31 @@
+# tm-mode CI — pytest (stdlib-only 패키지, 의존성은 pytest 뿐)
+#
+# ⚠️ git user.name 을 전역(runner)으로 설정하지 말 것:
+# tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable 은
+# "git user.name 이 어디서도 해석되지 않는" 깨끗한 환경을 전제한다.
+# 커밋이 필요한 테스트는 각자 tmp repo 안에서 identity 를 직접 주입한다.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: python -m pytest -q

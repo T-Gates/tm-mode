@@ -45,6 +45,9 @@ cli = importlib.util.module_from_spec(_spec)
 cli.__package__ = "teammode"
 sys.modules["teammode.cli"] = cli
 _spec.loader.exec_module(cli)  # type: ignore[union-attr]
+# py3.9 호환: mock.patch("teammode.cli.*")가 3.9에선 부모 패키지 속성으로 해석한다
+# (getattr(teammode, "cli")). 수동 등록은 부모 attr 를 안 만드므로 명시 설정.
+sys.modules["teammode"].cli = cli  # type: ignore[attr-defined]
 
 
 # ─── sys.modules 오염 복구 픽스처 ─────────────────────────────────────────────

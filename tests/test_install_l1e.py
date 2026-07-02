@@ -5,6 +5,7 @@ manifest 에 등록됐으나 부재했던 파일 — L1 진짜 payoff. normalize
 호스트 무접촉: TEAMMODE_HOME 을 tmp 로 주입, 전부 tmp_path.
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,13 +18,25 @@ HOOK = REPO / "infra" / "hooks" / "session-start.py"
 NORMALIZE = REPO / "infra" / "agents" / "claude" / "normalize.py"
 
 
-def _run_hook(payload: dict, team_root: Path, extra_env=None):
+def _hook_env(team_root: Path, extra_env=None):
+    """훅 subprocess 격리 env — conftest(_isolate_pull_state)가 os.environ 에 박은
+    격리 XDG_STATE_HOME 을 명시 전달한다(최소 env 라 자동상속이 안 됨).
+
+    누락 시 session-start 의 auto-pull 이 expanduser("~") 폴백으로 **실**
+    ~/.local/state/teammode/last-pull 에 쓴다(CI 가드 발화). test_install_golden._env 동형.
+    """
     env = {"TEAMMODE_HOME": str(team_root), "PATH": "/usr/bin:/bin"}
+    if "XDG_STATE_HOME" in os.environ:
+        env["XDG_STATE_HOME"] = os.environ["XDG_STATE_HOME"]
     if extra_env:
         env.update(extra_env)
+    return env
+
+
+def _run_hook(payload: dict, team_root: Path, extra_env=None):
     return subprocess.run(
         [PY, str(HOOK)], input=json.dumps(payload),
-        capture_output=True, text=True, env=env)
+        capture_output=True, text=True, env=_hook_env(team_root, extra_env))
 
 
 def _seed_team(team_root: Path, *, active=True, member="alice",
@@ -82,7 +95,7 @@ def test_malformed_stdin_does_not_block(tmp_path):
     _seed_team(tmp_path)
     proc = subprocess.run(
         [PY, str(HOOK)], input="NOT JSON{{", capture_output=True, text=True,
-        env={"TEAMMODE_HOME": str(tmp_path), "PATH": "/usr/bin:/bin"})
+        env=_hook_env(tmp_path))
     assert proc.returncode == 0
     assert proc.stdout.strip() == ""
 
@@ -108,7 +121,7 @@ def test_through_normalize_does_not_break(tmp_path):
     proc = subprocess.run(
         [PY, str(NORMALIZE), "session-start.py"],
         input=json.dumps(raw), capture_output=True, text=True,
-        env={"TEAMMODE_HOME": str(tmp_path), "PATH": "/usr/bin:/bin"})
+        env=_hook_env(tmp_path))
     assert proc.returncode == 0
     out = json.loads(proc.stdout)
     assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
