@@ -41,12 +41,19 @@ def cloned_repo(tmp_path):
     clone = tmp_path / "clone"
     _git(tmp_path, "init", "--bare", str(upstream))
     _git(tmp_path, "clone", str(upstream), str(work))
+    # do_commit(제품 코드)이 만드는 커밋은 _git 헬퍼의 env 주입을 못 받는다 —
+    # CI 러너(글로벌 git 설정 없음)에선 identity 자동감지가 fatal 이므로
+    # 레포 로컬 config 로 identity 를 고정한다(test_commit.py 와 동일 패턴).
+    _git(work, "config", "user.name", "t")
+    _git(work, "config", "user.email", "t@t")
     (work / "a.txt").write_text("v1\n")
     _git(work, "add", ".")
     _git(work, "commit", "-m", "c1")
     _git(work, "branch", "-M", "main")
     _git(work, "push", "-u", "origin", "main")
     _git(tmp_path, "clone", str(upstream), str(clone))
+    _git(clone, "config", "user.name", "t")
+    _git(clone, "config", "user.email", "t@t")
     _git(clone, "checkout", "main")
     (work / "b.txt").write_text("v2\n")
     _git(work, "add", ".")
