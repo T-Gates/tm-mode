@@ -544,8 +544,10 @@ def do_commit(team_root: str, message: str, push: bool = False,
         """남은 예산으로 클램프한 네트워크 타임아웃(하한 1s — 0/음수 방지)."""
         return min(timeout, max(1, int(_deadline - time.monotonic())))
 
-    def _budget_ok() -> bool:
-        return (_deadline - time.monotonic()) >= 1
+    def _budget_ok(reserve: int = 1) -> bool:
+        """남은 예산 검사. rebase 같은 다단계 진입 전엔 reserve 를 크게 줘
+        '1초 남기고 rebase 시작 → abort 까지 캡 초과' 경로를 차단한다(#codex-P1)."""
+        return (_deadline - time.monotonic()) >= reserve
 
     def _budget_stop(step: str) -> CommitResult:
         return CommitResult(ok=True, committed=True, pushed=False,
@@ -627,23 +629,23 @@ def do_commit(team_root: str, message: str, push: bool = False,
                     ok=True, committed=True, pushed=False,
                     detail="committed; push -u rejected (non-ff) and current "
                            "branch unresolvable — manual sync needed")
-            if not _budget_ok():
+            if not _budget_ok(reserve=4):
                 return _budget_stop("before push -u rebase")
             try:
                 rrc, _, rerr = run_git(
                     ["-C", team_root, "rebase", "--autostash",
                      f"origin/{branch}"], timeout=_net_t())
             except subprocess.TimeoutExpired:
-                _abort_rebase(team_root, timeout)
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
                 return CommitResult(ok=True, committed=True, pushed=False,
                                     detail="committed; push -u rebase timeout")
             except (OSError, subprocess.SubprocessError) as exc:
-                _abort_rebase(team_root, timeout)
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
                 return CommitResult(
                     ok=True, committed=True, pushed=False,
                     detail=f"committed; push -u rebase exec error: {exc}")
             if rrc != 0:
-                _abort_rebase(team_root, timeout)
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
                 return CommitResult(
                     ok=True, committed=True, pushed=False,
                     detail=f"committed; push -u rebase failed (aborted): "
@@ -698,17 +700,17 @@ def do_commit(team_root: str, message: str, push: bool = False,
                                 detail=f"committed; rebase fetch exec error: {exc}")
         if frc == 0:
             # rebase (추적 upstream 위로). 충돌 등 실패 시 반드시 --abort 로 원상복구.
-            if not _budget_ok():
+            if not _budget_ok(reserve=4):
                 return _budget_stop("before rebase")
             try:
                 rrc, _, rerr = run_git(
                     ["-C", team_root, "rebase", "--autostash"], timeout=_net_t())
             except subprocess.TimeoutExpired:
-                _abort_rebase(team_root, timeout)
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
                 return CommitResult(ok=True, committed=True, pushed=False,
                                     detail="committed; rebase timeout")
             except (OSError, subprocess.SubprocessError) as exc:
-                _abort_rebase(team_root, timeout)
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
                 return CommitResult(ok=True, committed=True, pushed=False,
                                     detail=f"committed; rebase exec error: {exc}")
             if rrc == 0:
@@ -732,7 +734,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
                     ok=True, committed=True, pushed=False,
                     detail=f"committed; rebased but re-push failed: {((p2err or p2out) or '').strip()[:200]}")
             # rebase 실패(충돌 등) → abort 로 원상복구 후 비차단 반환.
-            _abort_rebase(team_root, timeout)
+            _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
             return CommitResult(
                 ok=True, committed=True, pushed=False,
                 detail=f"committed; rebase failed (aborted): {(rerr or '').strip()[:200]}")
