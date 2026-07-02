@@ -881,8 +881,16 @@ def cmd_join(args, *, created: bool = False) -> int:
         return 2
 
     is_tty = sys.stdin.isatty()
+    # 명시 플래그(--dir/--member-name/--agent/--role/--obsidian)가 하나라도 있으면
+    # TTY 여도 wizard 를 건너뛴다(플래그 = 비대화 의도, CLI 관례). /dev/tty 재연결(#6)로
+    # 터미널의 curl 사용자가 플래그를 줬는데 wizard 가 무시하는 회귀 방지(codex P2).
+    # wizard 는 이 플래그들을 소비하지 않으므로, 플래그 존중 = 인자 경로가 유일하다.
+    explicit_flags = bool(
+        getattr(args, "dir", None) or getattr(args, "member_name", None)
+        or getattr(args, "agent", None) or getattr(args, "role", None)
+        or getattr(args, "obsidian", False))
 
-    if is_tty:
+    if is_tty and not explicit_flags:
         # ── 대화형: wizard 8단계 ──────────────────────────────────────────
         # clone_fn: 단계2 후·단계3(members.md 읽기) 전에 실행해 기존멤버 목록을 정확히 읽음.
         def _clone_fn(clone_url: str, clone_dest: Path) -> bool:

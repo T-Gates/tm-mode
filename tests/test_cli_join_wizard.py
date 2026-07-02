@@ -983,3 +983,41 @@ def test_init_repo_default_derives_from_entered_team_name():
 
     repo_defaults = [d for label, d in prompts if "레포 이름" in label]
     assert repo_defaults == ["tgates-team"]
+
+
+class TestExplicitFlagsSkipWizard:
+    """명시 플래그가 있으면 TTY여도 인자 경로(codex P2 — /dev/tty 재연결 회귀 방지)."""
+
+    def test_tty_with_dir_flag_skips_wizard(self, fake_repo, monkeypatch, capsys):
+        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+        called = {}
+        monkeypatch.setattr(cli, "_delegate_install",
+                            lambda dest, member, extra: called.update(
+                                dest=dest, member=member, extra=extra) or 0)
+        monkeypatch.setattr(cli.subprocess, "run",
+                            lambda *a, **k: types.SimpleNamespace(returncode=0))
+        monkeypatch.setattr(cli, "_wizard_join",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("wizard must not run")))
+        args = types.SimpleNamespace(url="https://x/team.git", dir=str(fake_repo),
+                                     member_name="bot", agent=["codex"], role=None,
+                                     obsidian=False, team_name=None)
+        rc = cli.cmd_join(args)
+        assert rc == 0
+        assert called["dest"] == fake_repo
+        assert called["member"] == "bot"
+        assert "--agent" in called["extra"]
+
+    def test_tty_without_flags_still_runs_wizard(self, fake_repo, monkeypatch):
+        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+        ran = {}
+        monkeypatch.setattr(cli, "_wizard_join",
+                            lambda url, args, clone_fn=None: ran.update(hit=True) or (
+                                fake_repo, "alice", [], True))
+        monkeypatch.setattr(cli, "_delegate_install", lambda *a: 0)
+        args = types.SimpleNamespace(url="https://x/team.git", dir=None,
+                                     member_name=None, agent=None, role=None,
+                                     obsidian=False, team_name=None)
+        rc = cli.cmd_join(args)
+        assert rc == 0
+        assert ran.get("hit") is True
