@@ -473,11 +473,16 @@ def _delegate_install(repo_dir: Path, member: str | None, extra: list[str]) -> i
     return subprocess.run(argv).returncode
 
 
-def _clone_dir_from_url(url: str) -> Path:
+def _default_dest_from_url(url: str) -> Path:
+    """--dir 미지정 시 기본 설치 위치 — TTY wizard 1단계 기본값과 동일(#6).
+
+    과거엔 cwd/<repo> 였다(git clone 기본) — 비-TTY(curl 파이프·CI)에서 현재 폴더에
+    레포가 조용히 떨어지는 사고를 막기 위해 ~/teammode/<repo> 로 통일한다.
+    """
     name = url.rstrip("/").split("/")[-1]
     if name.endswith(".git"):
         name = name[:-4]
-    return Path(name).resolve()
+    return Path.home() / "teammode" / name
 
 
 def _wait_template_ready(full: str, *, attempts: int = 30, interval: float = 1.0) -> bool:
@@ -497,7 +502,11 @@ def _wait_template_ready(full: str, *, attempts: int = 30, interval: float = 1.0
 
 
 def _invite_lines(url: str) -> list[str]:
-    """팀원 초대 명령(pip·curl — 둘 다 동일) 두 줄. url = 팀 레포 clone URL."""
+    """팀원 초대 명령(pip·curl) 두 줄. url = 팀 레포 clone URL.
+
+    터미널에선 둘 다 wizard(#6: curl 은 /dev/tty 재연결), 파이프/CI 는
+    기본값 설치 후 tm-onboard 로 마무리.
+    """
     return [
         f'  pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && tm-mode join {url}',
         f'  curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
@@ -534,7 +543,8 @@ def _done(repo_dir: Path, *, created: bool = False, url: str | None = None) -> N
     if url:
         print()
         print(bar)
-        print("  ② 팀원 초대 — 아래 명령 중 하나를 공유하세요 (pip·curl 동일):")
+        print("  ② 팀원 초대 — 아래 명령 중 하나를 공유하세요")
+        print("     (둘 다 터미널에선 설치 위저드, 파이프/CI 는 기본값 설치 + tm-onboard 마무리):")
         print()
         for line in _invite_lines(url):
             print("  " + line)
@@ -871,8 +881,16 @@ def cmd_join(args, *, created: bool = False) -> int:
         return 2
 
     is_tty = sys.stdin.isatty()
+    # 명시 플래그(--dir/--member-name/--agent/--role/--obsidian)가 하나라도 있으면
+    # TTY 여도 wizard 를 건너뛴다(플래그 = 비대화 의도, CLI 관례). /dev/tty 재연결(#6)로
+    # 터미널의 curl 사용자가 플래그를 줬는데 wizard 가 무시하는 회귀 방지(codex P2).
+    # wizard 는 이 플래그들을 소비하지 않으므로, 플래그 존중 = 인자 경로가 유일하다.
+    explicit_flags = bool(
+        getattr(args, "dir", None) or getattr(args, "member_name", None)
+        or getattr(args, "agent", None) or getattr(args, "role", None)
+        or getattr(args, "obsidian", False))
 
-    if is_tty:
+    if is_tty and not explicit_flags:
         # ── 대화형: wizard 8단계 ──────────────────────────────────────────
         # clone_fn: 단계2 후·단계3(members.md 읽기) 전에 실행해 기존멤버 목록을 정확히 읽음.
         def _clone_fn(clone_url: str, clone_dest: Path) -> bool:
@@ -887,14 +905,15 @@ def cmd_join(args, *, created: bool = False) -> int:
             print(f"기존 폴더를 재사용합니다: {dest}")
     else:
         # ── 비-TTY: 인자 경로 (input 절대 호출 안 함) ────────────────────
-        dest = Path(args.dir).resolve() if args.dir else None
-        cmd = ["git", "clone", args.url] + ([str(dest)] if dest else [])
+        # --dir 없으면 cwd 가 아니라 wizard 와 같은 ~/teammode/<repo> 가 기본(#6).
+        dest = Path(args.dir).resolve() if args.dir else _default_dest_from_url(args.url)
+        print(_warn(f"비대화 모드 — 기본값으로 설치합니다 (위치: {dest}). "
+                    "세부 설정(역할·Obsidian)은 에이전트에서 tm-onboard 로 마무리하세요."))
+        cmd = ["git", "clone", args.url, str(dest)]
         print(f"clone 중...  {args.url}")
         if subprocess.run(cmd).returncode != 0:
             _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
             return 1
-        if dest is None:
-            dest = _clone_dir_from_url(args.url)
 
         member = _resolve_member(args.member_name)
         extra = []

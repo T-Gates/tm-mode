@@ -34,4 +34,14 @@ esac
 
 # ⚠️ exec 금지 — exec 는 셸을 교체해 EXIT trap(임시파일 정리)이 안 돈다(누수).
 # 마지막 명령이라 cli.py 의 exit code 가 그대로 install.sh 의 종료코드로 전파된다.
-python3 "$TMP" "$@"
+#
+# 파이프 실행(curl … | sh)은 stdin 이 파이프라 cli.py 의 join wizard 가 조용히
+# 스킵된다(#6). 제어 터미널이 실제로 **읽기 가능**하면 stdin 을 /dev/tty 로 재연결해
+# pip 진입과 동일하게 wizard 를 띄운다. `-e /dev/tty` 검사만으론 부족 — CI 는
+# 노드만 있고 제어 tty 가 없어 open 이 실패한다 → 읽기 probe 로 판별한다.
+if ( : < /dev/tty ) 2>/dev/null; then
+  python3 "$TMP" "$@" < /dev/tty
+else
+  # 제어 tty 없음(CI·데몬 등) — 기존 파이프 동작 유지(cli.py 비-TTY 기본값 경로).
+  python3 "$TMP" "$@"
+fi

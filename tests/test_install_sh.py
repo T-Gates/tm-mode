@@ -70,6 +70,20 @@ def test_install_sh_no_temp_leak():
     assert after <= before, f"임시파일 누수: {after - before}"
 
 
+def test_install_sh_reconnects_dev_tty_for_wizard():
+    """파이프 실행(curl … | sh)에서도 제어 tty 가 있으면 stdin 을 /dev/tty 로
+    재연결해 cli.py join wizard 가 뜬다 — pip 와 등가(#6).
+
+    실제 제어 tty 동작은 CI 에서 재현 불가 → 스크립트 내용 단언으로 잠근다.
+    -e /dev/tty 는 불충분(CI 는 노드만 있고 제어 tty 없음) — 읽기 probe 여야 한다.
+    """
+    src = INSTALL_SH.read_text(encoding="utf-8")
+    assert "( : < /dev/tty ) 2>/dev/null" in src, \
+        "/dev/tty 읽기 가능 probe 필요 (-e /dev/tty 로는 CI 오탐)"
+    assert '"$TMP" "$@" < /dev/tty' in src, \
+        "wizard 용 stdin 재연결 실행줄(< /dev/tty) 필요"
+
+
 def test_install_sh_empty_download_rejected(tmp_path):
     """0바이트 cli.py 를 받으면 조용히 성공하지 않고 비정상 종료(#1 — 빈 응답 방어)."""
     empty = tmp_path / "empty-cli.py"
