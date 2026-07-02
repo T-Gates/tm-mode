@@ -16,11 +16,26 @@ import hashlib
 import os
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 
-# git 네트워크 작업의 기본 타임아웃(초) — hang 으로 작업을 막지 않게 한다.
-# 2초: pull/fetch 가 2초 초과면 비치명 실패(로컬 commit/checkout 도 2초 충분).
+# git 로컬 작업의 기본 타임아웃(초) — hang 으로 작업을 막지 않게 한다.
+# 2초: 로컬 commit/checkout/rev-list 류는 2초면 충분(세션 시작 스냅함 유지).
 DEFAULT_TIMEOUT = 2
+
+# git 네트워크 작업(push/pull/fetch/ls-remote)의 기본 타임아웃(초).
+# 실 GitHub SSH 왕복은 평시에도 2~3초+ 걸려 2초 컷이 멀쩡한 push/pull 을 죽였다
+# (이슈 #33). 로컬 동사는 DEFAULT_TIMEOUT(2s) 유지 — 세션 시작을 굼뜨게 하지 않는다.
+# ⚠️ http_timeout_opts(http.lowSpeedTime)는 HTTPS 전용이라 SSH 원격에선 무력 —
+# subprocess killpg(run_git)가 SSH 의 **유일한** hang 가드다.
+NET_TIMEOUT = 10
+
+# push 흐름(재시도·복구 포함)의 네트워크 **총예산**(초) — do_commit(push=True)의 복구
+# 체인은 push→push -u→fetch→rebase→push -u 로 NET_TIMEOUT(10s) 네트워크 호출을 최대
+# 5회 순차 수행할 수 있다(최악 ~50s). 훅 manifest 캡(30s)보다 작아야 엔진이 스스로
+# 먼저 반환해 호출부(auto-commit 훅)가 sync-warning 마커를 쓸 수 있다 — 초과 시
+# hook runner 가 프로세스를 죽여 로컬 커밋/rebase 뒤의 마커가 유실된다(codex 재리뷰 P1).
+PUSH_TOTAL_BUDGET = 25
 
 
 @dataclass
@@ -181,7 +196,7 @@ def is_git_worktree(team_root: str) -> bool:
 _is_git_worktree = is_git_worktree
 
 
-def do_pull(team_root: str, timeout: int = DEFAULT_TIMEOUT) -> PullResult:
+def do_pull(team_root: str, timeout: int = NET_TIMEOUT) -> PullResult:
     """`git pull --ff-only` 실행. 절대 예외를 전파하지 않는다(철칙).
 
     실패(네트워크 없음·ff 불가·충돌·타임아웃·git 아님) → PullResult(ok=False).
@@ -236,7 +251,7 @@ def ahead_behind(team_root: str, timeout: int = DEFAULT_TIMEOUT):
     return (ahead, behind)
 
 
-def do_reconcile(team_root: str, timeout: int = DEFAULT_TIMEOUT) -> ReconcileResult:
+def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT) -> ReconcileResult:
     """fetch 후 추적 upstream 과 **실제 정합**(ff 또는 rebase --autostash). 무raise(철칙).
 
     do_pull 의 `pull --ff-only` 는 로컬이 diverge(ahead>0 & behind>0)면 조용히 실패해
@@ -407,6 +422,21 @@ def _is_non_fast_forward(text: str) -> bool:
             or "[rejected]" in low)
 
 
+def _is_no_upstream(text: str) -> bool:
+    """push 출력(stderr/stdout)이 **upstream 미설정 거부**인지 판정. 무raise.
+
+    새 브랜치(`checkout -b`)에서 평문 `git push` 는 push.default=simple 아래
+    "fatal: The current branch X has no upstream branch. ... use
+    git push --set-upstream origin X" 로 영원히 실패한다(이슈 #34). 이때만
+    `push -u origin HEAD` 1회 재시도를 트리거한다. non-ff·인증 실패와 겹치지
+    않도록 git 의 거부 메시지 패턴으로 좁게 감지한다(LC_ALL=C 로 영어 고정됨).
+    """
+    if not text:
+        return False
+    low = text.lower()
+    return "no upstream branch" in low or "--set-upstream" in low
+
+
 def _abort_rebase(team_root: str, timeout: int) -> None:
     """진행중 rebase 를 취소해 원상복구(`git rebase --abort`). 무raise(best-effort).
 
@@ -431,10 +461,18 @@ def _has_staged_changes(team_root: str, timeout: int) -> bool:
 
 
 def do_commit(team_root: str, message: str, push: bool = False,
-              timeout: int = DEFAULT_TIMEOUT, paths: list | None = None) -> CommitResult:
+              timeout: int = NET_TIMEOUT, paths: list | None = None) -> CommitResult:
     """`git add` + `git commit -m` (+ 선택 push). 절대 예외를 전파하지 않는다(철칙).
 
     auto_pull/do_pull 과 같은 안전장치 재사용(git_env 자격증명 차단·killpg 타임아웃).
+
+    timeout 파라미터(기본 NET_TIMEOUT)는 **네트워크 호출(push·복구 fetch/rebase/재push)
+    전용**이다. 내부 로컬 하위호출(add·staged-diff·commit)은 DEFAULT_TIMEOUT 고정 —
+    함수 timeout 을 그대로 쓰면 push=False(네트워크 0) 경로까지 10s 로 승격돼
+    "로컬 동사는 2s(세션 스냅함)" 선언이 깨진다(codex 리뷰 P2-2).
+    또한 push 흐름 전체는 공유 데드라인 PUSH_TOTAL_BUDGET(25s)로 캡된다 — 복구
+    체인(최악 네트워크 5회 순차)이 훅 manifest 캡(30s)을 넘기 전에 **항상** 스스로
+    반환해, 호출부가 sync-warning 마커를 쓸 수 있게 한다(codex 재리뷰 P1).
     - 변경 없음 → committed=False, ok=False (비치명: 레포 무손상).
     - push=True 이고 원격 없음/오프라인 → **커밋은 보존**, push 만 실패(ok 은 commit 성공
       기준으로 True, pushed=False). push 실패가 로컬 커밋을 되돌리지 않는다.
@@ -461,7 +499,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
         # `--` 로 경로 인자를 옵션과 분리(선두 대시 파일명이 옵션으로 오인되지 않게).
         add_args = ["-C", team_root, "add", "--", *[str(p) for p in paths]]
     try:
-        rc, _, err = run_git(add_args, timeout=timeout)
+        rc, _, err = run_git(add_args, timeout=DEFAULT_TIMEOUT)
     except subprocess.TimeoutExpired:
         return CommitResult(ok=False, detail="add timeout")
     except (OSError, subprocess.SubprocessError) as exc:
@@ -470,7 +508,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
         return CommitResult(ok=False, detail=f"add failed: {(err or '').strip()[:200]}")
 
     # 2) 변경 없으면 비치명 종료(빈 커밋 만들지 않음)
-    if not _has_staged_changes(team_root, timeout):
+    if not _has_staged_changes(team_root, DEFAULT_TIMEOUT):
         return CommitResult(ok=False, committed=False,
                             detail="nothing to commit")
 
@@ -479,7 +517,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
     if paths:
         commit_args += ["--", *[str(p) for p in paths]]
     try:
-        rc, out, err = run_git(commit_args, timeout=timeout)
+        rc, out, err = run_git(commit_args, timeout=DEFAULT_TIMEOUT)
     except subprocess.TimeoutExpired:
         return CommitResult(ok=False, detail="commit timeout")
     except (OSError, subprocess.SubprocessError) as exc:
@@ -493,10 +531,32 @@ def do_commit(team_root: str, message: str, push: bool = False,
                             detail=(out or "").strip()[:200])
 
     # 4) push (선택). 실패해도 **커밋은 보존** — ok 은 commit 성공 기준으로 유지.
+    #
+    # 공유 데드라인(codex 재리뷰 P1): 이 지점 이후의 **모든** 네트워크 호출(push·
+    # push -u·fetch·rebase·재push)은 PUSH_TOTAL_BUDGET(25s) 하나를 나눠 쓴다.
+    # 개별 호출마다 NET_TIMEOUT 을 새로 주면 복구 체인이 최악 ~50s 까지 늘어져 훅
+    # manifest 캡(30s)이 프로세스를 먼저 죽이고, 그러면 호출부가 CommitResult 를
+    # 받지 못해 sync-warning 마커를 못 쓴다. 예산이 바닥나면 즉시 비차단 반환한다
+    # (커밋은 이미 보존됨 — push 미완만 detail 로 표면화).
+    _deadline = time.monotonic() + PUSH_TOTAL_BUDGET
+
+    def _net_t() -> int:
+        """남은 예산으로 클램프한 네트워크 타임아웃(하한 1s — 0/음수 방지)."""
+        return min(timeout, max(1, int(_deadline - time.monotonic())))
+
+    def _budget_ok(reserve: int = 1) -> bool:
+        """남은 예산 검사. rebase 같은 다단계 진입 전엔 reserve 를 크게 줘
+        '1초 남기고 rebase 시작 → abort 까지 캡 초과' 경로를 차단한다(#codex-P1)."""
+        return (_deadline - time.monotonic()) >= reserve
+
+    def _budget_stop(step: str) -> CommitResult:
+        return CommitResult(ok=True, committed=True, pushed=False,
+                            detail=f"committed; push budget exhausted ({step})")
+
     try:
         prc, pout, perr = run_git(
             ["-C", team_root, *http_timeout_opts(timeout), "push"],
-            timeout=timeout)
+            timeout=_net_t())
     except subprocess.TimeoutExpired:
         return CommitResult(ok=True, committed=True, pushed=False,
                             detail="committed; push timeout")
@@ -507,6 +567,116 @@ def do_commit(team_root: str, message: str, push: bool = False,
         return CommitResult(ok=True, committed=True, pushed=True,
                             detail="committed and pushed")
 
+    # 4-0) upstream 미설정 거부면 자동 복구: `push -u origin HEAD` 1회 재시도(이슈 #34).
+    #      새 브랜치에서 평문 push 는 영원히 실패하므로 upstream 을 심으며 push 한다.
+    #      성공 시 이후 커밋부턴 평문 push 가 그냥 동작한다.
+    #      ⚠️ 첫 push 의 no-upstream 과 -u 재시도의 non-ff 는 상호 배타가 **아니다** —
+    #      원격에 **같은 이름 브랜치가 이미 앞서** 존재하는데 로컬만 upstream 연결이
+    #      없으면 -u 재시도가 non-ff 로 거부된다(codex 리뷰 P2-1). 이 경로엔 @{u} 가
+    #      아직 없어 4-1 복구(@{u} 기준 rebase)를 못 타므로 여기서 인라인 복구한다.
+    if _is_no_upstream((perr or "") + "\n" + (pout or "")):
+        if not _budget_ok():
+            return _budget_stop("before push -u")
+        try:
+            urc, uout, uerr = run_git(
+                ["-C", team_root, *http_timeout_opts(timeout),
+                 "push", "-u", "origin", "HEAD"],
+                timeout=_net_t())
+        except subprocess.TimeoutExpired:
+            return CommitResult(ok=True, committed=True, pushed=False,
+                                detail="committed; push -u timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return CommitResult(ok=True, committed=True, pushed=False,
+                                detail=f"committed; push -u exec error: {exc}")
+        if urc == 0:
+            return CommitResult(ok=True, committed=True, pushed=True,
+                                detail="committed and pushed (set upstream)")
+        # 4-0-1) -u 재시도가 non-ff 거부 → fetch → origin/<현재 브랜치> 위로 rebase →
+        #        `push -u origin HEAD` 1회 더. rebase 는 --autostash(partial-commit 의
+        #        dirty 워킹트리 흡수·충돌 시 자동 원복 — 4-1 과 동일 사유).
+        if _is_non_fast_forward((uerr or "") + "\n" + (uout or "")):
+            if not _budget_ok():
+                return _budget_stop("before push -u rebase fetch")
+            try:
+                frc, _, ferr = run_git(
+                    ["-C", team_root, *http_timeout_opts(timeout), "fetch"],
+                    timeout=_net_t())
+            except subprocess.TimeoutExpired:
+                return CommitResult(ok=True, committed=True, pushed=False,
+                                    detail="committed; push -u rebase fetch timeout")
+            except (OSError, subprocess.SubprocessError) as exc:
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail=f"committed; push -u rebase fetch exec error: {exc}")
+            if frc != 0:
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail=f"committed; push -u rebase fetch failed: "
+                           f"{(ferr or '').strip()[:200]}")
+            # rebase 기준은 @{u}(없음)가 아니라 origin/<현재 브랜치> — 브랜치명은
+            # 로컬 동사(rev-parse)로 해석. detached HEAD 면 복구 불가(비차단 반환).
+            branch = ""
+            try:
+                brc, bout, _ = run_git(
+                    ["-C", team_root, "rev-parse", "--abbrev-ref", "HEAD"],
+                    timeout=DEFAULT_TIMEOUT)
+                if brc == 0:
+                    branch = (bout or "").strip()
+            except (OSError, subprocess.SubprocessError):
+                branch = ""
+            if not branch or branch == "HEAD":
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail="committed; push -u rejected (non-ff) and current "
+                           "branch unresolvable — manual sync needed")
+            if not _budget_ok(reserve=4):
+                return _budget_stop("before push -u rebase")
+            try:
+                rrc, _, rerr = run_git(
+                    ["-C", team_root, "rebase", "--autostash",
+                     f"origin/{branch}"], timeout=_net_t())
+            except subprocess.TimeoutExpired:
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
+                return CommitResult(ok=True, committed=True, pushed=False,
+                                    detail="committed; push -u rebase timeout")
+            except (OSError, subprocess.SubprocessError) as exc:
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail=f"committed; push -u rebase exec error: {exc}")
+            if rrc != 0:
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail=f"committed; push -u rebase failed (aborted): "
+                           f"{(rerr or '').strip()[:200]}")
+            if not _budget_ok():
+                return _budget_stop("before push -u after rebase")
+            try:
+                u2rc, u2out, u2err = run_git(
+                    ["-C", team_root, *http_timeout_opts(timeout),
+                     "push", "-u", "origin", "HEAD"],
+                    timeout=_net_t())
+            except subprocess.TimeoutExpired:
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail="committed; rebased but push -u timeout")
+            except (OSError, subprocess.SubprocessError) as exc:
+                return CommitResult(
+                    ok=True, committed=True, pushed=False,
+                    detail=f"committed; rebased but push -u exec error: {exc}")
+            if u2rc == 0:
+                return CommitResult(
+                    ok=True, committed=True, pushed=True,
+                    detail="committed and pushed (set upstream after rebase)")
+            return CommitResult(
+                ok=True, committed=True, pushed=False,
+                detail=f"committed; rebased but push -u failed: "
+                       f"{((u2err or u2out) or '').strip()[:200]}")
+        return CommitResult(
+            ok=True, committed=True, pushed=False,
+            detail=f"committed; push failed: {((uerr or uout) or '').strip()[:200]}")
+
     # 4-1) non-ff 거부면 자동 복구: fetch → rebase → 재push 1회.
     #      다른 기기가 먼저 push 해 로컬이 behind 일 때 발생. non-ff 가 아닌 실패(인증·
     #      네트워크 등)는 자동 복구 대상이 아니므로 기존대로 비차단 반환한다.
@@ -516,10 +686,12 @@ def do_commit(team_root: str, message: str, push: bool = False,
     #      abort 시에도 autostash 가 자동 원복).
     if _is_non_fast_forward((perr or "") + "\n" + (pout or "")):
         # fetch (push 와 동일하게 http 타임아웃 옵션 적용). 실패해도 예외 전파 0.
+        if not _budget_ok():
+            return _budget_stop("before rebase fetch")
         try:
             frc, _, ferr = run_git(
                 ["-C", team_root, *http_timeout_opts(timeout), "fetch"],
-                timeout=timeout)
+                timeout=_net_t())
         except subprocess.TimeoutExpired:
             return CommitResult(ok=True, committed=True, pushed=False,
                                 detail="committed; rebase fetch timeout")
@@ -528,23 +700,27 @@ def do_commit(team_root: str, message: str, push: bool = False,
                                 detail=f"committed; rebase fetch exec error: {exc}")
         if frc == 0:
             # rebase (추적 upstream 위로). 충돌 등 실패 시 반드시 --abort 로 원상복구.
+            if not _budget_ok(reserve=4):
+                return _budget_stop("before rebase")
             try:
                 rrc, _, rerr = run_git(
-                    ["-C", team_root, "rebase", "--autostash"], timeout=timeout)
+                    ["-C", team_root, "rebase", "--autostash"], timeout=_net_t())
             except subprocess.TimeoutExpired:
-                _abort_rebase(team_root, timeout)
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
                 return CommitResult(ok=True, committed=True, pushed=False,
                                     detail="committed; rebase timeout")
             except (OSError, subprocess.SubprocessError) as exc:
-                _abort_rebase(team_root, timeout)
+                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
                 return CommitResult(ok=True, committed=True, pushed=False,
                                     detail=f"committed; rebase exec error: {exc}")
             if rrc == 0:
                 # rebase 성공 → 재push 1회.
+                if not _budget_ok():
+                    return _budget_stop("before re-push")
                 try:
                     p2rc, p2out, p2err = run_git(
                         ["-C", team_root, *http_timeout_opts(timeout), "push"],
-                        timeout=timeout)
+                        timeout=_net_t())
                 except subprocess.TimeoutExpired:
                     return CommitResult(ok=True, committed=True, pushed=False,
                                         detail="committed; rebased but re-push timeout")
@@ -558,7 +734,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
                     ok=True, committed=True, pushed=False,
                     detail=f"committed; rebased but re-push failed: {((p2err or p2out) or '').strip()[:200]}")
             # rebase 실패(충돌 등) → abort 로 원상복구 후 비차단 반환.
-            _abort_rebase(team_root, timeout)
+            _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
             return CommitResult(
                 ok=True, committed=True, pushed=False,
                 detail=f"committed; rebase failed (aborted): {(rerr or '').strip()[:200]}")
@@ -583,7 +759,7 @@ def _has_remote(team_root: str, remote: str, timeout: int) -> bool:
 
 
 def fetch_upstream(team_root: str, remote: str = "upstream",
-                   timeout: int = DEFAULT_TIMEOUT) -> FetchResult:
+                   timeout: int = NET_TIMEOUT) -> FetchResult:
     """upstream(템플릿 원본)을 **fetch 만** 한다. 절대 예외 전파 없음(철칙).
 
     **merge 하지 않는다** — 적용은 명시적 update 동사 몫(Jane 합의: fetch 만 자동).
@@ -778,7 +954,7 @@ def sync_from_upstream(team_root: str, remote: str = "upstream",
                        branch: str | None = None,
                        paths: list | None = None,
                        dry_run: bool = False,
-                       timeout: int = DEFAULT_TIMEOUT) -> SyncResult:
+                       timeout: int = NET_TIMEOUT) -> SyncResult:
     """upstream 의 엔진 경로(SYNC_PATHS)를 working tree 로 덮어써 동기화. 무raise(철칙).
 
     merge 를 쓰지 않으므로 unrelated histories 와 무관하게 동작한다. 흐름:
