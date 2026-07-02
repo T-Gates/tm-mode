@@ -12,6 +12,8 @@
 
 안전 철칙: 실 호스트 무접촉. 모든 경로는 tmp_path 격리.
 """
+from __future__ import annotations
+
 import hashlib
 import json
 import os

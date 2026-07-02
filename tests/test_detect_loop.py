@@ -14,6 +14,8 @@
 다른 객체다. 따라서 patch.dict(mod) 는 함수 내부에서 보이지 않는다.
 함수의 __globals__ 를 직접 패치해야 한다 (_patch_globals 헬퍼 참조).
 """
+from __future__ import annotations
+
 import contextlib
 import json
 import os
