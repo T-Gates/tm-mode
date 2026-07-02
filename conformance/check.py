@@ -737,12 +737,24 @@ def _provider_product_names(root: Path) -> set:
 def lint_skill_canonical(root, *, files=None) -> tuple:
     """스킬 본문에 `mcp__*`·제품명 직표기가 없는지 (K7, SPEC §2.12·§7.3).
 
-    files 주입 시 그 파일들만 검사(테스트 격리). 미지정 시 infra/skills/**/SKILL.md.
+    files 주입 시 그 파일들만 검사(테스트 격리). 미지정 시 infra/skills/**/SKILL.md
+    (단 infra/skills/util/** 은 면제 — 아래 참조).
     반환: (검사명, 통과여부, 상세) — 다른 lint 함수와 동일 tuple 형.
     """
     root = Path(root)
     if files is None:
-        candidates = sorted((root / "infra" / "skills").rglob("SKILL.md"))
+        skills_dir = root / "infra" / "skills"
+        # util/ 는 면제 — 인스턴스 소유 커스터마이즈 계층이다. 팀이 자기 팀의 실제
+        # 연결 서비스를 문서화하는 util 스킬(예: 일정 스킬이 그 팀의 캘린더 제품과
+        # mcp__ 툴을 그대로 적는 것)에는 제품명·mcp__ 직표기가 정당하다.
+        # K7(§2.12·§7.3)의 역할어휘 규칙은 제품 스킬(base/core)의 provider-불가지
+        # 원칙을 지키는 것이 목적이므로 util 에는 적용하지 않는다.
+        # files 명시 주입 시(아래 else)는 필터링하지 않는다 — 검사 대상은 호출자 몫.
+        util_dir = skills_dir / "util"
+        candidates = sorted(
+            p for p in skills_dir.rglob("SKILL.md")
+            if util_dir not in p.parents
+        )
     else:
         candidates = [Path(f) for f in files]
 
