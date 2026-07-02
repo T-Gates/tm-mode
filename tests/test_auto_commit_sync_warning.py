@@ -92,3 +92,31 @@ def test_nothing_to_commit_no_marker(tmp_path, monkeypatch):
     assert rc == 0
     assert fake.warnings == []
     assert fake.cleared == 0
+
+
+# ─── 이슈 #9(a): TEAMMODE_HOME 스테일 시 stderr 경고 ───
+
+def test_stale_teammode_home_warns_on_stderr(tmp_path, monkeypatch, capsys):
+    """TEAMMODE_HOME 이 존재하지 않는 경로 → exit 0 불변 + stderr 한 줄 경고 (커밋 시도 없음)."""
+    gone = tmp_path / "moved-away"  # 존재하지 않음
+    fake = _FakeGitOps(None)  # 도달하면 안 되는 경로 — do_commit 호출 자체가 없어야 함
+    rc = _run(_load_hook(), fake, gone, monkeypatch)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.strip() == ""
+    assert "TEAMMODE_HOME" in captured.err
+    assert "유효한 팀 루트" in captured.err
+    assert len(captured.err.strip().splitlines()) == 1, "경고는 정확히 한 줄"
+    assert fake.warnings == []            # git 동작 전에 멈춘다(거동 불변)
+
+
+def test_valid_root_teammode_off_stays_silent(tmp_path, monkeypatch, capsys):
+    """유효 팀 루트(memory 표식)인데 .teammode-active 없음 = 정상 off — 침묵 유지."""
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "memory").mkdir()
+    fake = _FakeGitOps(None)
+    rc = _run(_load_hook(), fake, root, monkeypatch)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err.strip() == "", f"정상 off 상태는 경고 금지: {captured.err!r}"
