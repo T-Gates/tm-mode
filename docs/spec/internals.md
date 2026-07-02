@@ -38,7 +38,7 @@ memory/
 | `team/ground-rules.md` | 권장 | 팀 운영 그라운드 룰(엔진/다이제스트가 참조할 표준 위치) |
 | `banner.txt` | 권장 | 팀 배너 캐시 표준 위치. `team.config.json`의 `banner_file`이 가리킴(reference: `memory/banner.txt`) |
 
-**팀 확장 (자유)**: `memory/` 아래 자유 폴더 추가 가능(예: `product/`, `soma/`). 규칙 두 가지 — ① 기존 폴더로 충분하면 새 폴더 금지(증식 방지, 권장), ② 새 폴더는 INDEX.md에 등재(필수).
+**팀 확장 (자유)**: `memory/` 아래 자유 폴더 추가 가능(예: `product/`, `soma/`). 규칙 두 가지 — ① 기존 폴더로 충분하면 새 폴더 금지(증식 방지, 권장), ② 새 폴더는 INDEX.md에 등재(필수). 등재/해제는 reference 동사 `teammode.py memory route {upsert|remove}`(`--root --path --desc --author`)가 담당하며, `memory write`는 미등재 최상위 폴더 감지 시 이 동사를 안내하는 `[hint]` 한 줄을 stdout에 출력한다(자동 등재 아님 — 설명 한 줄은 사람이 확정).
 
 ### 1.2 쓰기 위치·팀 루트·env 규칙 (필수)
 

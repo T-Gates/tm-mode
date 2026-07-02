@@ -1220,6 +1220,38 @@ _ROOT_INDEX_TABLE_HEADER = "| 경로 | 여기에 넣는 것 |"
 _ROOT_INDEX_TABLE_SEP    = "|---|---|"
 
 
+def _root_index_find_row(lines: list, path: str, prefix: bool = False) -> "int | None":
+    """루트 INDEX 표에서 백틱 경로 토큰으로 행을 찾는다. 없으면 None.
+
+    - prefix=False(기본): 정확 토큰 `` `<path>` `` 매칭 — 백틱 경계가 폴더행
+      `product/brand/` 과 파일행 `product/brand/philosophy.md` 를 구분(오매칭 없음).
+    - prefix=True: 열림 백틱 + 접두 `` `<path>... `` 매칭 — 최상위 폴더 커버 여부
+      판정용. stock 템플릿은 파일행(`team/members.md` 등)만 등재하므로 정확 토큰만
+      보면 기본 설치의 매 write 가 "미등재" 오탐이 된다(#7 힌트).
+    """
+    marker = f"`{path}" + ("" if prefix else "`")
+    for i, line in enumerate(lines):
+        if marker in line and line.strip().startswith("|"):
+            return i
+    return None
+
+
+def _root_index_covers_top(index_path: Path, top_folder: str) -> bool:
+    """루트 라우팅 맵이 최상위 폴더(`team/` 등)를 커버하는지 — 접두 백틱 토큰 매칭.
+
+    폴더행 `` `team/` `` 자체뿐 아니라 하위 행(`team/members.md`,
+    `team/sessions/<이름>/`)도 커버 증거로 본다. 판정 불가(파일 없음 제외한
+    읽기 실패)면 True — 힌트는 advisory 라 오탐 억제가 우선.
+    """
+    if not index_path.is_file():
+        return False
+    try:
+        lines = index_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, PermissionError):
+        return True  # advisory: 읽기 실패 시 힌트 억제
+    return _root_index_find_row(lines, top_folder, prefix=True) is not None
+
+
 def _root_index_upsert(index_path: Path, path: str, desc: str) -> bool:
     """루트 `memory/INDEX.md` 2열 표에 행을 upsert(삽입 또는 갱신). 변경됐으면 True.
 
@@ -1244,14 +1276,9 @@ def _root_index_upsert(index_path: Path, path: str, desc: str) -> bool:
     safe_desc = _escape_index_cell(desc)
     new_row = f"| `{path}` | {safe_desc} |"
 
-    # 기존 행 검색 (백틱 경로 토큰으로 식별)
-    path_marker = f"`{path}`"
+    # 기존 행 검색 (백틱 경로 토큰으로 식별 — _root_index_find_row 공용 헬퍼)
     lines = existing.splitlines(keepends=True)
-    row_idx = None
-    for i, line in enumerate(lines):
-        if path_marker in line and line.strip().startswith("|"):
-            row_idx = i
-            break
+    row_idx = _root_index_find_row(lines, path)
 
     if row_idx is not None:
         old_row = lines[row_idx].rstrip("\n")
@@ -1667,6 +1694,23 @@ def cmd_knowledge(team_root: Path, action: str | None,
 
         # ── chat 통지 재료(A안: 엔진은 요약만 stdout 출력, MCP 호출은 AI) ──────
         _emit_chat_summary(verb, rel_for_git, weight, author, description)
+
+        # ── 루트 라우팅 맵 미등재 힌트(#7, advisory) ──────────────────────
+        # 루트 INDEX.md 는 "새 폴더 등재 필수" 인데 write 흐름이 등재 동사
+        # (`memory route upsert` — #12/#16)를 안내하지 않아 발견 불가였다.
+        # 자동 등재는 하지 않는다 — 설명 한 줄(라우팅 맵 품질)은 사람/AI 몫.
+        # 최상위 폴더가 루트 2열 표에 커버(폴더행 또는 하위 행)돼 있지 않으면
+        # 한 줄 힌트만 출력한다. 비차단: 판정 실패해도 write 결과는 그대로.
+        try:
+            top_folder = folder.split("/")[0] + "/"
+            root_index_path = team_root / "memory" / "INDEX.md"
+            if not _root_index_covers_top(root_index_path, top_folder):
+                print(f"[hint] '{top_folder}'가 루트 INDEX에 미등재 — 등록: "
+                      f"python infra/teammode.py memory route upsert "
+                      f"--root <루트> --path {top_folder} "
+                      f"--desc \"<한 줄 설명>\" --author {author}")
+        except Exception:
+            pass  # advisory — 힌트 실패가 write 를 막지 않는다
 
         if commit_failed:
             print(f"[warning] memory write: 커밋 실패 — {commit_result.detail}",

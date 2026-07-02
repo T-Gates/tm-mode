@@ -241,6 +241,21 @@ memory 변경이 **정상 완료된 후**, `team.config.json` 의 `services.chat
    세션로그 백링크 · chat 통지 완료
 ```
 
+## 새 최상위 폴더 등재 — 루트 라우팅 맵 (route)
+
+루트 `memory/INDEX.md`(2열 라우팅 맵)는 세션마다 주입되는 단일 진입점 —
+**새 최상위 폴더를 만들면 여기 등재가 필수**다. 등재/해제도 엔진 동사를 경유한다:
+
+```bash
+python infra/teammode.py memory route upsert \
+  --root . --path soma/ --desc "소마 과정 관련 정보" --author <현재사용자>
+# 해제: memory route remove --root . --path soma/ --author <현재사용자>
+```
+
+- `memory write` 가 미등재 폴더를 감지하면 `[hint] '...'가 루트 INDEX에 미등재 — 등록: ...`
+  한 줄을 출력한다 — 그 명령을 그대로 따라 하면 된다(`--desc` 한 줄만 사용자와 확정).
+- `--desc` 는 추측 금지 — 라우팅 맵 품질이 매 세션 주입 품질이므로 사용자에게 확인한다.
+
 ## 안 하는 것 (L1)
 
 - verification-sources 매니페스트 등록 (선택, 후속)
