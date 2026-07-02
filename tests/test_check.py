@@ -388,6 +388,52 @@ def test_skill_lint_clean_on_real_repo():
     assert connect.is_file()
 
 
+def _write_skill_tier(root, tier, name, body):
+    d = root / "infra" / "skills" / tier / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(body, encoding="utf-8")
+    return d / "SKILL.md"
+
+
+def test_skill_lint_exempts_instance_owned_util_tier(tmp_path):
+    # util/ 은 인스턴스 소유 커스터마이즈 계층 — 팀이 자기 연결 서비스를 문서화하며
+    # 제품명·mcp__ 를 쓰는 것이 정당하다. 기본 스캔(files=None)에서 제외돼야 한다.
+    pdir = tmp_path / "providers"
+    pdir.mkdir()
+    (pdir / "google.json").write_text('{"provider": "google"}', encoding="utf-8")
+    _write_skill_tier(tmp_path, "util", "myteam-sched",
+                      "# sched\nGoogle 캘린더를 mcp__google_calendar__list 로 조회한다.\n")
+    _write_skill_tier(tmp_path, "core", "x",
+                      "# x\n이슈 트래커 MCP 에서 조회한다.\n")
+    name, ok, detail = check.lint_skill_canonical(tmp_path)
+    assert ok is True, detail
+
+
+def test_skill_lint_core_tier_still_guarded(tmp_path):
+    # util 면제가 core(제품 스킬)까지 새지 않는다 — core 의 제품명은 여전히 위반.
+    pdir = tmp_path / "providers"
+    pdir.mkdir()
+    (pdir / "google.json").write_text('{"provider": "google"}', encoding="utf-8")
+    _write_skill_tier(tmp_path, "util", "myteam-sched",
+                      "# sched\nGoogle 캘린더를 mcp__google_calendar__list 로 조회한다.\n")
+    _write_skill_tier(tmp_path, "core", "x",
+                      "# x\nGoogle 캘린더를 조회한다.\n")
+    name, ok, detail = check.lint_skill_canonical(tmp_path)
+    assert ok is False
+    assert "google" in detail.lower()
+    # util 파일은 위반 목록에 나타나지 않는다.
+    assert "myteam-sched" not in detail
+
+
+def test_skill_lint_explicit_files_bypass_util_exemption(tmp_path):
+    # files 명시 주입 시(테스트 격리) 필터링하지 않는다 — 검사 대상은 호출자가 정한다.
+    f = _write_skill_tier(tmp_path, "util", "myteam-sched",
+                          "# sched\nmcp__google_calendar__list 로 조회한다.\n")
+    name, ok, detail = check.lint_skill_canonical(tmp_path, files=[f])
+    assert ok is False
+    assert "mcp__" in detail
+
+
 def test_lint_report_includes_skill_check():
     report = check.run_lint(REPO)
     names = [c[0] for c in report.checks]
