@@ -781,3 +781,70 @@ def test_orphan_start_env_prefixed_known_script_removed(env):
     assert text.count("session-log-remind.py") == 1
     assert "command = '/usr/bin/echo user-hook'" in text
     _assert_valid_toml(text)
+
+
+# ── 16. issue #46 A3: kept prefix ≠ 환경 폴백 mismatch [warn] — 경고만, 동작 무변경 ──
+#
+# resync 가 자가치유로 기존 TEAMMODE_MEMBER prefix 를 유지했는데 폴백 체인(env/settings)
+# 이 **다른** 검증 통과 후보를 내놓으면, 조용한 불일치가 생긴다(사용자는 환경값이 반영
+# 됐다고 믿기 쉽다). [warn] 1줄로 교정 커맨드(tm on --member <fb>)를 안내한다.
+# 경고 억제 조건: 값 일치 / 폴백 미해석(또는 무효) / 명시 --member 지정.
+
+def _autocommit_manifest(env):
+    env.write_manifest([
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+    ])
+
+
+def test_kept_prefix_env_mismatch_warns_once(env, capsys):
+    """기존 prefix(alice) 유지 + 폴백(bob) 상이 → [warn] 1줄(교정 안내) + 동작 무변경."""
+    _autocommit_manifest(env)
+    env.make_adapter(member="alice").sync(mode="on")
+    capsys.readouterr()  # install 출력 비움
+    env.make_adapter(member=None, member_fallback="bob").sync(mode="on")
+    out = capsys.readouterr().out
+    assert out.count("[warn]") == 1, out
+    assert "prefix(alice)" in out, out
+    assert "환경(bob)" in out, out
+    assert "tm on --member bob" in out, out
+    # 동작 무변경: prefix 는 여전히 자가치유 값(alice) — bob 이 기록되면 안 된다.
+    text = env.config.read_text()
+    assert "env TEAMMODE_MEMBER=alice" in text
+    assert "TEAMMODE_MEMBER=bob" not in text
+
+
+def test_kept_prefix_env_match_is_silent(env, capsys):
+    """기존 prefix 와 폴백이 같으면 경고 없음(불일치 아님)."""
+    _autocommit_manifest(env)
+    env.make_adapter(member="alice").sync(mode="on")
+    capsys.readouterr()
+    env.make_adapter(member=None, member_fallback="alice").sync(mode="on")
+    assert "[warn]" not in capsys.readouterr().out
+
+
+def test_explicit_member_suppresses_mismatch_warning(env, capsys):
+    """명시 --member 는 절대 오버라이드 — 사용자가 이미 결정, mismatch 경고 불필요."""
+    _autocommit_manifest(env)
+    env.make_adapter(member="alice").sync(mode="on")
+    capsys.readouterr()
+    env.make_adapter(member="cli", member_fallback="bob").sync(mode="on")
+    assert "[warn]" not in capsys.readouterr().out
+
+
+def test_no_fallback_resolved_no_mismatch_warning(env, capsys):
+    """폴백 미해석(None) → 비교 대상 없음, 경고 없음(기존 자가치유 조용히 유지)."""
+    _autocommit_manifest(env)
+    env.make_adapter(member="alice").sync(mode="on")
+    capsys.readouterr()
+    env.make_adapter(member=None).sync(mode="on")
+    assert "[warn]" not in capsys.readouterr().out
+
+
+def test_invalid_fallback_no_mismatch_warning(env, capsys):
+    """형식 위반 폴백은 '검증된 후보'가 아니다 → 경고 없음(검증 정규식 공유)."""
+    _autocommit_manifest(env)
+    env.make_adapter(member="alice").sync(mode="on")
+    capsys.readouterr()
+    env.make_adapter(member=None, member_fallback="b b; rm").sync(mode="on")
+    assert "[warn]" not in capsys.readouterr().out

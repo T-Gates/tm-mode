@@ -151,6 +151,29 @@ class Adapter(BaseAdapter):
             return None
         return home
 
+    def _member_mismatch_warning(self) -> Optional[str]:
+        """kept prefix ≠ 환경 폴백일 때의 [warn] 문구 — 경고만, 동작 무변경(issue #46 A3).
+
+        build_command 의 우선순위(명시 self.member > 기존 prefix 자가치유 > member_fallback)
+        가 기존 prefix 를 유지하는데, 폴백 체인(env TEAMMODE_MEMBER/claude settings)이
+        **다른** 검증 통과 후보를 내놓으면 조용한 불일치가 생긴다 — 사용자는 환경값이
+        반영됐다고 믿기 쉽다. 그 경우에만 교정 커맨드를 담은 [warn] 문구를 돌려준다.
+        억제(None): 명시 --member(사용자가 이미 결정) / 폴백 부재·형식 무효(비교 대상
+        없음 — 검증 정규식은 build_command 와 동일 규칙 공유) / 값 일치. sync 가
+        _write_block 으로 옛 블록을 덮어쓰기 **전**에 호출해야 기존 prefix 가 보인다.
+        """
+        if self.member:
+            return None
+        fallback = self.member_fallback
+        if not (isinstance(fallback, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", fallback)):
+            return None
+        kept = self._existing_member_prefix()
+        if kept is None or kept == fallback:
+            return None
+        return (f"[warn] codex hook member prefix({kept}) ≠ 환경({fallback}) — "
+                f"교정: tm on --member {fallback}")
+
     def _existing_member_prefix(self) -> Optional[str]:
         """현재 config.toml 의 managed hook 블록에서 기존 `env TEAMMODE_MEMBER=<x>` 를 파싱.
 
@@ -246,6 +269,14 @@ class Adapter(BaseAdapter):
             # 변환 없이 그대로 쓴다. 미지정이면 None → TOML 에 timeout 행 생략.
             timeout_s = entry.get("timeout") or None
             toml_entries.append((event, matcher, command, timeout_s))
+
+        # issue #46 A3: 자가치유로 유지되는 기존 prefix ≠ 환경 폴백이면 [warn] 1줄.
+        # 반드시 _write_block **전**에 판정(옛 블록의 기존 prefix 가 아직 보이는 시점).
+        # 렌더할 엔트리가 없으면 prefix 가 '유지'되는 게 아니므로 경고 대상 아님.
+        if toml_entries:
+            mismatch = self._member_mismatch_warning()
+            if mismatch:
+                warnings.append(mismatch)
 
         block = self._render_block(toml_entries, mode=mode)
         changed = self._write_block(block)
