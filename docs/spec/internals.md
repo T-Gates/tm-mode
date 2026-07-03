@@ -517,7 +517,7 @@ python infra/teammode.py <verb> --root <팀루트> [동사별 플래그]
 verbs: on | off | log | context | pull | commit | update | issue | memory | util
 ```
 
-이 섹션의 ground truth는 현재 워킹트리의 `infra/teammode.py`, `infra/workday.py`, `infra/git_ops.py`이다. 2026-06-16 현재 이 레포에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으나, `teammode.py` 엔진 동사 자체는 위 8개가 전부다.
+이 섹션의 ground truth는 현재 워킹트리의 `infra/teammode.py`, `infra/workday.py`, `infra/git_ops.py`이다. 2026-06-16 현재 이 레포에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으나, `teammode.py` 엔진 동사 자체는 위 10개가 전부다(0.3 — `memory`·`util` 편입).
 
 공통 불변식:
 
@@ -536,7 +536,7 @@ argv 파서(`_parse_args`)는 `argparse`가 아니라 손파서다.
 - 부울 플래그: `--install`, `--json`, `--push`, `--dry-run`. 기본값은 모두 `False`다.
 - 화이트리스트 밖 `--flag`는 무시한다. 이때 다음 토큰을 값으로 소비하지 않는다. 그래서 미지 부울 플래그 뒤의 non-flag 토큰은 verb 또는 positional이 될 수 있다.
 - 첫 non-flag 토큰이 `verb`가 되고, 그 뒤 non-flag 토큰들은 `positionals`에 순서대로 쌓인다. `issue --root <root> create`처럼 verb와 서브액션 사이에 값 플래그가 있어도 `create`는 positional로 남는다.
-- extra positional은 `issue`의 첫 positional 외에는 현재 어떤 known verb에서도 사용하지 않는다.
+- extra positional 사용 동사: `issue`(첫 positional=액션), `memory`(첫 positional=액션 write/delete/route/unlock, `route`·`unlock`은 두 번째 positional=서브액션), `util`(첫 positional=액션 add/remove/list). 그 외 known verb는 positional을 사용하지 않는다.
 
 ### 3.1 on / off (settings 경유 — `--root` + (`--settings` 또는 `--install`) 필수)
 
@@ -895,7 +895,7 @@ reference는 단일 도구 `conformance/check.py`로 세 모드를 제공한다(
 | K7 | 스킬 본문 정규형(`mcp__`·제품명 직표기 부재) | §2.12·§7.3 | `lint_skill_canonical`로 lint 구현됨 |
 | K8 | 코어 디렉토리 구조 + 신규 폴더 INDEX 등재 | §1.1 | lint 로드맵 |
 
-추가로 **골든 시나리오 5종**(켜기 → 컨텍스트 조회 → 이슈 생성 → 세션로그 작성 → 끄기)을 실행한다. reference 시나리오 = `01-on-banner`·`02-context-injection`·`03-issue-create`·`04-log-accumulate`·`05-off-persist`. `03-issue-create`는 `issue` 동사(§3.5)로 GREEN — 시나리오가 연결 issues fixture를 자체 세팅(fs_write)·정리(fs_delete)해 공유 root에서 04/05를 오염시키지 않는다. 현재 `03-issue-create.json`의 fixture content에는 `"spec_version":"0.1"`이 남아 있지만, 구현의 `config_is_valid()`는 truthy 여부만 보며 reference 구현 버전은 `install_lib.SPEC_VERSION == "0.2"`다.
+추가로 **골든 시나리오 5종**(켜기 → 컨텍스트 조회 → 이슈 생성 → 세션로그 작성 → 끄기)을 실행한다. reference 시나리오 = `01-on-banner`·`02-context-injection`·`03-issue-create`·`04-log-accumulate`·`05-off-persist`. `03-issue-create`는 `issue` 동사(§3.5)로 GREEN — 시나리오가 연결 issues fixture를 자체 세팅(fs_write)·정리(fs_delete)해 공유 root에서 04/05를 오염시키지 않는다. 현재 `03-issue-create.json`의 fixture content에는 `"spec_version":"0.1"`이 남아 있지만, 구현의 `config_is_valid()`는 truthy 여부만 보며 reference 구현 버전은 `install_lib.SPEC_VERSION == "0.3"`다.
 
 ### 6.5 등재 절차 · 배지
 
@@ -1158,7 +1158,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 - **`enforcement` manifest 필드(§2.2)**: 02 draft 미언급, reference 어댑터가 실사용(block 폴백 경고 강화) → 본문 확정.
 - **on의 upstream fetch 자동 알림(§3.1)**: merge 금지·fetch만. 02/04 부분 언급을 §3.1로 통합.
 - **install 디스패치 모드(§4.1·§2.1)**: `install.py --<agent> sync/uninstall` 보존 인터페이스.
-- **conformance 03 fixture의 `spec_version` 문자열**: `03-issue-create.json`의 fixture content에는 `"spec_version":"0.1"`이 남아 있다. 이는 지원 버전 선언이 아니라 scenario용 유효 config fixture이며, reference 지원 버전 단일 소스는 `install_lib.SPEC_VERSION == "0.2"`다.
+- **conformance 03 fixture의 `spec_version` 문자열**: `03-issue-create.json`의 fixture content에는 `"spec_version":"0.1"`이 남아 있다. 이는 지원 버전 선언이 아니라 scenario용 유효 config fixture이며, reference 지원 버전 단일 소스는 `install_lib.SPEC_VERSION == "0.3"`다.
 
 ### A.3 잔여 갭 (코드가 스펙 목표에 아직 미달 — 비규범)
 

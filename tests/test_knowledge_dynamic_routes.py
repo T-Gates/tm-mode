@@ -178,3 +178,35 @@ def test_index_md_filename_write_rejected(tmp_path):
              "--author", "test", "--weight", "📎")
     assert r.returncode == 2
     assert "INDEX.md" in r.stderr
+
+
+def test_dynamic_top_nonascii_delete_rejected(tmp_path):
+    """동적 등재가 비ASCII/공백 세그먼트여도 delete 는 세그먼트 검증으로 거부.
+
+    (write 는 _validate_knowledge_path 의 세그먼트 검증이 이미 막음 — delete 대칭, codex P2)
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _init_git(root)
+    _root_index_with(root, "| `한글/` | 비ASCII 폴더 |", "| `bad top/` | 공백 폴더 |")
+    for folder in ("한글", "bad top"):
+        target = root / "memory" / folder / "x.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+        r = _run(root, "memory", "delete", "--path", f"{folder}/x.md",
+                 "--author", "test")
+        assert r.returncode == 2, f"{folder!r} delete 가 통과함: {r.stdout}"
+        assert (root / "memory" / folder / "x.md").exists()
+
+
+def test_static_subfolder_segment_delete_rejected(tmp_path):
+    """정적 루트 하위라도 비정상 세그먼트(product/한글)는 delete 거부 (선재 갭 동시 봉쇄)."""
+    root = tmp_path / "team"
+    root.mkdir()
+    _init_git(root)
+    target = root / "memory" / "product" / "한글" / "x.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("x", encoding="utf-8")
+    r = _run(root, "memory", "delete", "--path", "product/한글/x.md",
+             "--author", "test")
+    assert r.returncode == 2

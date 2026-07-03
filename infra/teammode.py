@@ -1921,6 +1921,16 @@ def cmd_knowledge(team_root: Path, action: str | None,
                   file=sys.stderr)
             return 2
 
+        # folder 세그먼트 검증 — write(_validate_knowledge_path) 와 대칭 (codex P2).
+        # 동적 허용이 열리며 route 행의 비ASCII/공백 최상위가 delete 로 통과하는
+        # 비대칭이 생길 수 있어, write 와 동일한 세그먼트 규칙을 강제한다.
+        for seg in norm_folder.split("/"):
+            if seg in ("", ".", "..") or not seg.isascii() \
+                    or not all(c.isalnum() or c in "-_" for c in seg):
+                print(f"[error] memory delete: folder 세그먼트가 허용되지 않습니다: "
+                      f"{seg!r} in {folder_part!r}", file=sys.stderr)
+                return 2
+
         # containment 가드
         try:
             candidate.relative_to(memory_dir)
