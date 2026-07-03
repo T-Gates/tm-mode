@@ -1,40 +1,42 @@
 ---
 name: tm-import-memory
-description: Use when the user wants to bulk-import external docs (docs 슬롯에 연결된 노션 등) into team memory — "메모리 업로드", "노션 메모리 가져와", "노션에서 메모리 시드", "문서 메모리로 옮겨", "이 노션 페이지(들) 메모리에 추가해". 대화 유래 단건 CRUD는 tm-manage-memory 소관.
+description: Use when the user wants to bulk-import external docs (docs 슬롯에 연결된 문서 서비스) into team memory — "메모리 업로드", "문서 메모리로 옮겨", "메모리로 가져와/시드", "이 페이지(들) 메모리에 추가해" (연결된 문서 서비스명으로 부르는 경우 포함, 예: "노션 메모리 가져와"). 대화 유래 단건 CRUD는 tm-manage-memory 소관.
 ---
 
 # tm-import-memory — 외부 문서 → 팀 memory 업로드 (import)
 
-연결된 **docs 슬롯**(예: 노션 MCP)의 페이지를 긁어 주제별로 정리해 팀 `memory/`로 저장한다.
+연결된 **docs 슬롯**의 문서 서비스에서 페이지를 긁어 주제별로 정리해 팀 `memory/`로 저장한다.
 콜드스타트 시드 + 이후 재실행 추가, 둘 다 이 스킬. **판단은 이 스킬이, 저장은 엔진 `memory write` 가** 한다.
+
+> **역할 어휘 원칙**: 이 스킬은 "docs 슬롯"이라는 역할로만 말한다. 실제 어느 서비스인지는 `team.config.json` 의 `services.docs.provider` 가 답한다 — 사용자 안내·출처 표기에는 **그 provider 이름을 읽어서** 쓴다(특정 제품명 하드코딩 금지).
 
 ## 경계 (tm-manage-memory 와)
 
 | 유래 | 스킬 |
 |---|---|
-| 외부 문서(노션 등)·대량·트리 | **tm-import-memory** (이 스킬) |
+| 외부 문서(docs 슬롯)·대량·트리 | **tm-import-memory** (이 스킬) |
 | 대화에서 나온 단건 지식/결정 | tm-manage-memory |
 
-재실행("이 노션 페이지 추가해")도 이 스킬이다 — 같은 소스는 같은 파일로 갱신(replace)되어 멱등.
+재실행("이 페이지 추가해")도 이 스킬이다 — 파일명은 **승인된 저장 위치(주제) 기준**으로 결정되므로 같은 주제는 같은 파일로 수렴해 멱등이다(부분 재실행 규칙은 §4).
 
 ## 절차
 
 ### 0. docs 슬롯 확인
 `team.config.json` 의 `services.docs` 와 에이전트에 연결된 해당 MCP 를 확인한다.
-**미연결이면**: "문서 서비스가 아직 연결 안 됐어요 — `tm-connect` 로 노션(등)을 연결하면 가져올 수 있어요" 안내 후 **멈춘다** (연결 실행은 tm-connect 몫).
+**미연결이면**: "문서 서비스가 아직 연결 안 됐어요 — `tm-connect` 로 연결하면 가져올 수 있어요" 안내 후 **멈춘다** (연결 실행은 tm-connect 몫).
 
 ### 1. 범위 파악 — 본문 읽지 않기
 사용자가 준 링크(또는 워크스페이스 검색)에서 **페이지 목록/트리만** 파악한다 — 허브 페이지 fetch 는 하위 페이지 링크 목록을 반환하므로 본문 없이 열거할 수 있다.
 기본 상한: **20페이지 · 깊이 2**. 초과분은 목록만 보여주고 사용자가 고른 것만 진행한다. "쭉 다"는 폭주다 — 목록 확인 없이 진행 금지.
 
-### 2. preview 확인 게이트 (필수 — 이 확인이 weight 일괄 승인을 겸한다)
+### 2. preview 확인 게이트 (필수 — 이 확인이 weight·route 설명 일괄 승인을 겸한다)
 fan-out 전에 계획 표를 보여주고 **한 번** 확인받는다:
 
 | 원본 페이지 | → 저장 위치(folder/filename) | weight 제안 | 근거 |
 |---|---|---|---|
 
 - weight 기본 **📎(참고)**. 명백한 결정/규칙/운영원칙만 📌 제안. **🔥 는 자동 제안 금지**(핵심 승격은 팀이 나중에 직접). weight 규약의 본질은 "몰래 확정 금지"다 — 이 표를 사용자가 승인하면 확인을 받은 것이며, 파일마다 따로 문답하지 않는다.
-- 저장 위치는 기존 구조(`product/<제품>/…`·`team/decisions`·`soma/` 등) 우선. **새 최상위 폴더**가 필요하면(예: `fundraise/`) 표에 명시하고, 승인 후 `memory route upsert` 로 먼저 등재한다 — 엔진은 루트 INDEX 에 등재된 최상위 폴더만 허용한다.
+- 저장 위치는 기존 구조(`product/<제품>/…`·`team/decisions`·`soma/` 등) 우선. **새 최상위 폴더**가 필요하면(예: `fundraise/`) 표에 **경로 + 라우팅 맵 한 줄 설명(desc)** 까지 적어 함께 승인받는다 — 엔진 `route upsert` 는 `--desc` 추측 금지(필수 인자)라 여기서 확정해야 한다.
 - 함께 명시: "최대 N개 파일 생성/갱신, 파일당 commit/push 1회 수행".
 - **주제별 병합** — 페이지:파일 1:1 금지, 생성 파일 ~10개 이내 권장.
 
@@ -45,6 +47,13 @@ fan-out 전에 계획 표를 보여주고 **한 번** 확인받는다:
 - **파일을 직접 쓰지 않는다.**
 
 ### 4. 취합·저장 (메인)
+새 최상위 폴더가 승인됐으면 **먼저 등재**한다 (전 인자 필수 — bare 호출은 exit 2):
+
+```
+python infra/teammode.py memory route upsert --root <팀루트> \
+  --path <폴더>/ --desc "<preview 에서 승인된 한 줄 설명>" --author <멤버명>
+```
+
 서브 결과를 주제별로 병합·중복 제거 후, 파일마다 엔진 동사로 저장한다:
 
 ```
@@ -53,12 +62,12 @@ python infra/teammode.py memory write --root <팀루트> \
   --content "<본문>
 
 ## 출처
-- [페이지제목](URL) (노션, YYYY-MM-DD 수집)" \
+- [페이지제목](URL) (<docs provider 이름>, YYYY-MM-DD 수집)" \
   --author <멤버명> --weight <승인된 weight>
 ```
 
-- 본문 하단에 `## 출처` 절 필수 — 외부유래 표시.
-- 파일명은 소스에서 결정적으로(같은 페이지 재실행 = 같은 파일 갱신, replace 멱등).
+- 본문 하단에 `## 출처` 절 필수 — 외부유래 표시. provider 이름은 `services.docs.provider` 값을 쓴다.
+- **부분 재실행 병합 규칙**: 대상 주제 파일이 이미 있으면 **기존 파일을 먼저 읽어, 재실행된 출처(페이지) 부분만 갱신**하고 나머지 출처의 내용·`## 출처` 목록은 보존한 전체 본문을 만들어 저장한다. 엔진 write 는 전체 교체(replace)이므로, 병합 결과 전체를 넘기지 않으면 다른 출처 내용이 유실된다. 재실행된 페이지만으로 파일을 새로 만들지도 않는다(1:1 금지 위반).
 - ⛔ `memory/` 를 **직접 Edit/Write 하지 않는다** — INDEX 등재·frontmatter·백링크·커밋은 전부 엔진이 한다.
 
 ### 5. 완료 보고
@@ -77,4 +86,6 @@ python infra/teammode.py memory write --root <팀루트> \
 | 파일마다 weight 문답 | preview 표 단일 확인이 일괄 승인 |
 | 페이지:파일 1:1 덤프 | 주제별 병합, ~10파일 이내 |
 | memory/ 직접 Edit | 반드시 `memory write` 경유 |
-| 새 최상위 폴더에 바로 write | `memory route upsert` 등재 먼저 |
+| 새 최상위 폴더에 바로 write | `route upsert`(--path·--desc·--author 전부) 등재 먼저 |
+| 병합 파일 부분 재실행 때 파일 통째 교체 | 기존 파일 읽어 해당 출처만 갱신한 전체 본문으로 저장 |
+| 특정 제품명("노션" 등) 하드코딩 안내 | `services.docs.provider` 를 읽어 그 이름으로 말한다 |
