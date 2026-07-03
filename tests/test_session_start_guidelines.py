@@ -114,6 +114,50 @@ def test_team_custom_guidelines_absent_is_ok(tmp_path):
     assert "범용만존재" in ctx
 
 
+# ─── 세션로그 규칙 1회 주입 (compact hook context) ───
+# 리마인더(session-log-remind, compact 기본)가 "(규칙: 세션 시작 주입 참조)"로
+# 위임하는 상세 규칙 블록. 단일 소스 = infra/hooks/_slog_rules.py — 드리프트 방지.
+
+def _load_slog_rules():
+    """공유 상수 모듈(_slog_rules)을 파일 경로로 직접 로드."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_slog_rules", REPO / "infra" / "hooks" / "_slog_rules.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_session_log_rules_block_injected_exactly_once(tmp_path):
+    """세션로그 규칙 블록이 SessionStart 컨텍스트에 정확히 1회 포함된다."""
+    _seed_active(tmp_path)
+    proc = _run_hook(_payload(), tmp_path)
+    assert proc.returncode == 0
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert ctx.count("--- 세션로그 규칙") == 1, \
+        f"규칙 블록이 정확히 1회여야 함: count={ctx.count('--- 세션로그 규칙')}"
+    # 리마인더 장문에서 이동해 온 핵심 룰 표지들
+    for needle in ("하루 1파일", "06시 컷", "frontmatter(author/date/summary)",
+                   "log 동사 금지", "개인 내용 제외"):
+        assert needle in ctx, f"규칙 블록에 {needle!r} 누락: {ctx[:400]}"
+
+
+def test_session_log_rules_match_shared_constant(tmp_path):
+    """주입 블록 == _slog_rules.SESSION_LOG_RULES (단일 소스) — 5~6줄 압축 블록."""
+    mod = _load_slog_rules()
+    assert len(mod.SESSION_LOG_RULES.splitlines()) <= 6, "규칙 블록은 최대 6줄"
+    _seed_active(tmp_path)
+    proc = _run_hook(_payload(), tmp_path)
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert mod.SESSION_LOG_RULES in ctx, "주입 블록이 공유 상수와 다르다(드리프트)"
+
+
+def test_slog_rules_exports_reference_phrase():
+    """리마인더 compact 가 쓰는 참조 문구도 같은 모듈이 단일 소스로 제공한다."""
+    mod = _load_slog_rules()
+    assert mod.RULES_REF == "(규칙: 세션 시작 주입 참조)"
+
+
 # ─── 이슈 #9(a): TEAMMODE_HOME 스테일 시 stderr 경고 ───
 
 def test_stale_teammode_home_warns_on_stderr(tmp_path):
