@@ -38,7 +38,7 @@ memory/
 | `team/ground-rules.md` | 권장 | 팀 운영 그라운드 룰(엔진/다이제스트가 참조할 표준 위치) |
 | `banner.txt` | 권장 | 팀 배너 캐시 표준 위치. `team.config.json`의 `banner_file`이 가리킴(reference: `memory/banner.txt`) |
 
-**팀 확장 (자유)**: `memory/` 아래 자유 폴더 추가 가능(예: `product/`, `soma/`). 규칙 두 가지 — ① 기존 폴더로 충분하면 새 폴더 금지(증식 방지, 권장), ② 새 폴더는 INDEX.md에 등재(필수). 등재/해제는 reference 동사 `teammode.py memory route {upsert|remove}`(`--root --path --desc --author`)가 담당하며, `memory write`는 미등재 최상위 폴더 감지 시 이 동사를 안내하는 `[hint]` 한 줄을 stdout에 출력한다(자동 등재 아님 — 설명 한 줄은 사람이 확정).
+**팀 확장 (자유)**: `memory/` 아래 자유 폴더 추가 가능(예: `product/`, `fundraise/`). 규칙 두 가지 — ① 기존 폴더로 충분하면 새 폴더 금지(증식 방지, 권장), ② 새 폴더는 INDEX.md에 등재(필수). 등재/해제는 reference 동사 `teammode.py memory route {upsert|remove}`(`--root --path --desc --author`)가 담당하며, `memory write`는 미등재 최상위 폴더 감지 시 이 동사를 안내하는 `[hint]` 한 줄을 stdout에 출력한다(자동 등재 아님 — 설명 한 줄은 사람이 확정).
 
 ### 1.2 쓰기 위치·팀 루트·env 규칙 (필수)
 
@@ -836,7 +836,7 @@ python infra/teammode.py issue --root <팀루트> [<action>] [--title <t>] [--bo
 - 폴더 4열 INDEX(`memory/<folder>/INDEX.md`) 행 자동 upsert + 양방향 백링크(세션로그 append + 문서 frontmatter `session:` — advisory·비차단, do_commit *전*에 수행해 같은 커밋에 포함).
 - `do_commit(paths, push=True)` — **push 실패는 비차단**(로컬 커밋 보존, [warning]만, RC 0).
 - 검증: author/filename/folder traversal·심링크 탈출·제어문자 차단. **`INDEX.md` 파일명은 write 거부**(엔진 관리 파일 — delete와 대칭).
-- **허용 폴더** = 정적 목록(`product`·`team`·`team/decisions`·`soma` 및 하위) ∪ **루트 `memory/INDEX.md` 라우팅 맵의 정확한 최상위 폴더행**(`` `X/` `` — 백틱 감쌈·단일 세그먼트·슬래시 종결) 및 그 하위. 파일행(`X/foo.md`)·중첩 폴더행(`X/Y/`)·산문 언급은 불인정(prefix 판정 금지). **차단 목록(`team/sessions`·`team/meeting`)은 동적 허용보다 우선 거부.** 루트 INDEX 부재/읽기 실패 시 정적 목록만(보수 폴백). `memory route upsert`가 이미 "의도적 등록 행위"이므로 동적 허용은 가드 의미를 유지한다(#51).
+- **허용 폴더** = 정적 목록(`product`·`team`·`team/decisions` 및 하위 — 범용 스캐폴드 폴더) ∪ **루트 `memory/INDEX.md` 라우팅 맵의 정확한 최상위 폴더행**(`` `X/` `` — 백틱 감쌈·단일 세그먼트·슬래시 종결) 및 그 하위. 파일행(`X/foo.md`)·중첩 폴더행(`X/Y/`)·산문 언급은 불인정(prefix 판정 금지). **차단 목록(`team/sessions`·`team/meeting`)은 동적 허용보다 우선 거부.** 루트 INDEX 부재/읽기 실패 시 정적 목록만(보수 폴백). `memory route upsert`가 이미 "의도적 등록 행위"이므로 동적 허용은 가드 의미를 유지한다(#51).
 
 **delete** — `--path --author` 필수: 파일 삭제 + 폴더 INDEX 행 제거 + 세션로그 백링크 + 커밋(push 비차단). 없는 파일은 멱등 exit 0(단 stat의 EACCES 등 OS 예외는 exit 2 — 거짓 성공 금지). `INDEX.md` 삭제 거부. 허용/차단 폴더 규칙은 write와 동일.
 
@@ -1195,7 +1195,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 ## 부록 C. 버전 이력 · 01~05 대비 변경점
 
 - **2026-06-16** — 구현 재정합 — 코드 ground truth를 §2~§5,§7에 상세 반영(codex dev-cycle)
-- **0.3** — **engine 동사 계약 변경(minor bump, §0.4)**: known verb에 `memory`(write/delete/route/unlock)·`util`(add/remove/list) 편입 명문화(§3.6·§3.7 신설 — 코드에 먼저 들어갔던 동사의 스펙 진실화). memory 허용 폴더에 **루트 INDEX 라우팅 맵 등재 최상위 폴더 동적 허용** 규칙 추가(정확 폴더행만·blocked 우선·보수 폴백, #51). `INDEX.md` 파일명 write 거부(delete와 대칭). 값 플래그 화이트리스트·부울 플래그(`--dry-run`)를 실코드 기준으로 갱신(§3).
+- **0.3** — **engine 동사 계약 변경(minor bump, §0.4)**: known verb에 `memory`(write/delete/route/unlock)·`util`(add/remove/list) 편입 명문화(§3.6·§3.7 신설 — 코드에 먼저 들어갔던 동사의 스펙 진실화). memory 허용 폴더에 **루트 INDEX 라우팅 맵 등재 최상위 폴더 동적 허용** 규칙 추가(정확 폴더행만·blocked 우선·보수 폴백, #51). `INDEX.md` 파일명 write 거부(delete와 대칭). 값 플래그 화이트리스트·부울 플래그(`--dry-run`)를 실코드 기준으로 갱신(§3). **정적 허용에서 `soma` 제거(breaking)** — 특정 팀 도메인의 제품 하드코딩이었음. 팀 전용 폴더는 route 등재 선행으로 일원화, 미등재 write/delete 는 거부(+등록 명령 힌트).
 - **0.2** — **engine 동사 계약 변경(minor bump, §0.4)**: 8번째 엔진 동사 `issue` 추가(§3.5). `issues` 슬롯 provider 확인 후 정규 입력 스키마를 stdout JSON으로 echo까지만(action_map 해석·페이로드 변환 금지 — 어댑터/스킬 몫). 값 화이트리스트에 `--title --body --assignee --label --priority` 추가, positional 서브액션 파싱 명문화(§3). conformance 03 닫힘(RED→GREEN). 하니스 `fs_delete` 액션(시나리오 자체 teardown) 추가.
   - **L2(서비스 연결) 빌드**: provider 팩(`providers/{linear,slack,notion,google}.json` — token_guide·auth·default_scope·resource_fields, §7) + config `services` 확장 object 스키마(§7.1) + 어댑터 `install-mcp`(§2.8, 빈슬롯 sync 교정 §2.9) + 어댑터 `install-skills`(§2.12) + `install.py` wire 다동사 통합(§4) + credentials 금고(`infra/credentials.py`, 각자입력 0600, §5.4·§7.5) + 안전 훅 2개(auto-commit·confirm-action) + `tm-connect` 스킬(§5.4) + K7 스킬 lint(§2.12).
   - **config.members 멤버 역할(§1.1, L2-A2)**: `members:[{name, role?}]`, 각자 upsert(타인 무접촉). `context` 동사 출력에 `role` 필드 추가(§3.3 — additive, 미등재/생략 시 null·하위호환). members 블록은 role 판정(`config_is_valid`)과 분리. role 개행/제어문자 거부(어휘는 자유).

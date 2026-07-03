@@ -15,8 +15,13 @@
 - session-log-remind systemMessage를 ux config로 옵트아웃 가능하게 (#25)
 - tm-context: 세션로그 심층읽기 + L2 이슈/캘린더 `tm-<provider>` 직접조회 (#13), 멤버 이모지 렌더 복구 (#14)
 
+### Removed
+
+- `soma/` 내장 정적 허용 제거 — 특정 팀 도메인의 제품 하드코딩(오염). 팀 전용 최상위 memory 폴더는 이제 `memory route upsert` 로 루트 INDEX 에 등재해야 `memory write/delete` 가 허용된다(#51). 거부 시 등록 명령 힌트를 stderr 로 안내.
+
 ### Changed
 
+- memory 정적 허용 폴더 = 범용 스캐폴드 3개(`product`·`team`·`team/decisions`)만 — 팀 전용 도메인은 route 등재 기반 동적 허용으로 일원화 (#51)
 - spec_version 0.2 → 0.3 — `memory`·`util` 동사 스펙 명문화(§3.6·§3.7) (#51)
 
 - 라이선스를 Apache-2.0으로 전환 (#27)
