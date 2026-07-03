@@ -120,7 +120,8 @@ def test_cmd_on_loops_all_detected_agents(tmp_path):
     codex_adapter  = _mock_adapter(tmp_path / "codex-skills")
     call_log = []
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         call_log.append(agent_name)
         if agent_name == "claude":
             return claude_adapter
@@ -164,7 +165,8 @@ def test_cmd_off_loops_all_detected_agents(tmp_path):
     codex_adapter  = _mock_adapter(tmp_path / "codex-skills")
     call_log = []
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         call_log.append(agent_name)
         if agent_name == "claude":
             return claude_adapter
@@ -204,7 +206,8 @@ def test_cmd_on_with_only_claude_regression(tmp_path):
     claude_adapter = _mock_adapter(tmp_path / "claude-skills")
     call_log = []
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         call_log.append(agent_name)
         if agent_name == "claude":
             return claude_adapter
@@ -237,7 +240,8 @@ def test_cmd_off_with_only_claude_regression(tmp_path):
     claude_adapter = _mock_adapter(tmp_path / "claude-skills")
     call_log = []
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         call_log.append(agent_name)
         if agent_name == "claude":
             return claude_adapter
@@ -353,7 +357,8 @@ def test_isolated_mode_only_wires_claude(tmp_path):
 
     wired_agents = []
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         wired_agents.append(agent_name)
         m = MagicMock()
         m.skills_dir = tmp_path / f"{agent_name}-skills"
@@ -389,7 +394,8 @@ def test_install_false_does_not_wire_codex(tmp_path):
 
     wired_agents = []
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         wired_agents.append(agent_name)
         m = MagicMock()
         m.skills_dir = tmp_path / f"{agent_name}-skills"
@@ -421,7 +427,8 @@ def test_install_true_wires_all_agents(tmp_path):
 
     wired_agents = []
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         wired_agents.append(agent_name)
         m = MagicMock()
         m.skills_dir = tmp_path / f"{agent_name}-skills"
@@ -486,7 +493,8 @@ def test_cmd_on_member_util_applied_to_all_adapters(tmp_path):
     claude_adapter = make_mock_adapter("claude", claude_skills_dir)
     codex_adapter  = make_mock_adapter("codex",  codex_skills_dir)
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         if agent_name == "claude":
             return claude_adapter
         elif agent_name == "codex":
@@ -524,7 +532,8 @@ def test_partial_failure_claude_succeeds_codex_fails(tmp_path, capsys):
 
     claude_adapter = _mock_adapter(tmp_path / "claude-skills")
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         if agent_name == "claude":
             return claude_adapter
         elif agent_name == "codex":
@@ -561,7 +570,8 @@ def test_all_agents_fail_no_marker(tmp_path):
     real_claude_settings = os.path.expanduser("~/.claude/settings.json")
     (root / "memory").mkdir(exist_ok=True)
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         m = MagicMock()
         m.skills_dir = tmp_path / f"{agent_name}-skills"
         m.sync.side_effect = RuntimeError(f"{agent_name} boom")
@@ -592,7 +602,8 @@ def test_cmd_off_partial_failure_warn(tmp_path, capsys):
 
     claude_adapter = _mock_adapter(tmp_path / "claude-skills")
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         if agent_name == "claude":
             return claude_adapter
         elif agent_name == "codex":
@@ -633,7 +644,8 @@ def test_cmd_off_all_agents_fail_marker_kept(tmp_path, capsys):
     marker = root / ".teammode-active"
     marker.write_text("", encoding="utf-8")
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         m = MagicMock()
         m.skills_dir = tmp_path / f"{agent_name}-skills"
         m.sync.side_effect = RuntimeError(f"{agent_name} off boom")
@@ -670,7 +682,8 @@ def test_cmd_off_partial_failure_marker_removed(tmp_path, capsys):
 
     claude_adapter = _mock_adapter(tmp_path / "claude-skills")
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         if agent_name == "claude":
             return claude_adapter
         m = MagicMock()
@@ -738,7 +751,8 @@ def test_cmd_on_util_link_partial_failure_no_crash(tmp_path, capsys):
     # codex _link_one_skill 이 예외를 던짐
     codex_adapter  = make_mock_adapter("codex",  codex_skills_dir, fail_link=True)
 
-    def fake_adapter_for(agent_name, s=None, sd=None, member=None):
+    def fake_adapter_for(agent_name, s=None, sd=None, member=None,
+                         member_fallback=None):
         if agent_name == "claude":
             return claude_adapter
         elif agent_name == "codex":
