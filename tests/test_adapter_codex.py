@@ -240,19 +240,25 @@ def _remind_entry():
 
 
 def test_build_command_member_prefix(env):
-    """member 지정 → 'env TEAMMODE_MEMBER=<member> ' prefix + 기존 base command 포함."""
+    """member 지정 → 'env TEAMMODE_MEMBER=<member> ' prefix + 기존 base command 포함.
+
+    issue #9b 이후 member 유무와 무관하게 TEAMMODE_HOME 핀이 항상 붙으므로,
+    'TEAMMODE_HOME= 이후 꼬리(실행 커맨드)'가 동일한지로 base 보존을 검증한다.
+    """
     base = env.make_adapter(member=None).build_command(_remind_entry())
     cmd = env.make_adapter(member="leejhy").build_command(_remind_entry())
     assert cmd.startswith("env TEAMMODE_MEMBER=leejhy "), cmd
-    assert cmd.endswith(base), f"base command 가 prefix 뒤에 그대로 와야 함: {cmd!r} / base={base!r}"
-    assert base in cmd
+    assert "TEAMMODE_HOME=" in base and "TEAMMODE_HOME=" in cmd
+    assert (cmd.split("TEAMMODE_HOME=", 1)[1]
+            == base.split("TEAMMODE_HOME=", 1)[1]), (
+        f"base command 꼬리가 그대로 와야 함: {cmd!r} / base={base!r}")
     # base 경유 검증: normalize.py + 스크립트가 그대로 들어있다
     assert "normalize.py" in cmd
     assert "session-log-remind.py" in cmd
 
 
 def test_build_command_no_member_no_prefix(env):
-    """member=None → prefix 없이 base command 그대로(하위호환)."""
+    """member=None → TEAMMODE_MEMBER 없이(하위호환). TEAMMODE_HOME 핀은 유지(#9b)."""
     cmd = env.make_adapter(member=None).build_command(_remind_entry())
     assert not cmd.startswith("env TEAMMODE_MEMBER"), cmd
     assert "TEAMMODE_MEMBER" not in cmd
