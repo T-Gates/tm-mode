@@ -157,3 +157,97 @@ def test_push_plain_no_upstream_sets_u_once(xdg, tmp_path):
     _commit_file(work, "b.md")
     pushed, detail = git_ops.push_plain(str(work))
     assert pushed is True, detail
+
+
+# ── push-worker (drain loop · plain-push-only) ──────────────────────
+
+WORKER = REPO / "infra" / "hooks" / "push-worker.py"
+
+
+def _run_worker(root: Path, env_extra: dict | None = None):
+    env = os.environ.copy()
+    env_extra = env_extra or {}
+    env.update(env_extra)
+    return subprocess.run([sys.executable, str(WORKER), "--root", str(root)],
+                          capture_output=True, text=True, env=env, timeout=60)
+
+
+def test_worker_pushes_and_clears_pending(xdg, tmp_path, monkeypatch):
+    """pending 존재 + ahead 1 → push 성공 → pending·sync-warning clear."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(xdg))
+    _, work = _clone_pair(tmp_path)
+    _commit_file(work, "a.md")
+    git_ops.write_push_pending(str(work))
+    git_ops.write_sync_warning(str(work), "이전 실패 잔재")
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg)})
+    assert r.returncode == 0, r.stderr
+    assert git_ops.read_push_pending(str(work)) == ""
+    assert git_ops.read_sync_warning(str(work)) == ""
+    ahead, _ = git_ops.ahead_behind(str(work))
+    assert ahead == 0
+
+
+def test_worker_no_pending_is_noop(xdg, tmp_path):
+    """pending 없으면 아무것도 안 하고 조용히 종료(push 시도 없음)."""
+    _, work = _clone_pair(tmp_path)
+    _commit_file(work, "a.md")  # ahead 1 이지만 pending 없음
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg)})
+    assert r.returncode == 0
+    ahead, _ = git_ops.ahead_behind(str(work))
+    assert ahead == 1  # push 하지 않았다 — pending 이 유일한 트리거
+
+
+def test_worker_non_ff_keeps_pending_writes_marker(xdg, tmp_path):
+    """non-ff: 복구 없이 sync-warning 기록, pending 유지(정합은 세션 시작에 위임)."""
+    origin, work = _clone_pair(tmp_path)
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.email", "o@o.com"],
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.name", "O"],
+                   capture_output=True)
+    _commit_file(other, "theirs.md")
+    subprocess.run(["git", "-C", str(other), "push", "-q"], capture_output=True)
+
+    _commit_file(work, "mine.md")
+    git_ops.write_push_pending(str(work))
+    head_before = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
+                                 capture_output=True, text=True).stdout.strip()
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg)})
+    assert r.returncode == 0  # 실패도 비치명 종료
+    assert git_ops.read_push_pending(str(work)) != "", "non-ff 인데 pending 을 지웠다"
+    assert "non-fast-forward" in git_ops.read_sync_warning(str(work))
+    head_after = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
+                                capture_output=True, text=True).stdout.strip()
+    assert head_after == head_before, "worker 가 로컬 히스토리를 건드렸다(계약 위반)"
+
+
+def test_worker_drains_new_pending_written_during_push(xdg, tmp_path):
+    """drain: push 성공 후 ahead 가 남아 있으면(새 커밋) 이어서 push — 잔여 0 까지."""
+    _, work = _clone_pair(tmp_path)
+    _commit_file(work, "a.md")
+    _commit_file(work, "b.md")  # ahead 2 — plain push 한 번에 다 나가긴 하지만
+    git_ops.write_push_pending(str(work))
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg)})
+    assert r.returncode == 0
+    ahead, _ = git_ops.ahead_behind(str(work))
+    assert ahead == 0
+    assert git_ops.read_push_pending(str(work)) == ""
+
+
+def test_worker_lock_single_instance(xdg, tmp_path):
+    """lock 파일이 살아 있으면 두 번째 worker 는 즉시 조용히 종료(중복 push 방지)."""
+    _, work = _clone_pair(tmp_path)
+    _commit_file(work, "a.md")
+    git_ops.write_push_pending(str(work))
+    # lock 선점 재현 — worker 와 같은 경로 규약으로 직접 생성
+    lock = Path(git_ops.push_pending_path(str(work)) + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("live", encoding="utf-8")
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg)})
+    assert r.returncode == 0
+    # lock 이 살아 있어 push 하지 않았고 pending 유지
+    assert git_ops.read_push_pending(str(work)) != ""
+    ahead, _ = git_ops.ahead_behind(str(work))
+    assert ahead == 1
