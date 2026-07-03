@@ -121,7 +121,7 @@ triggers:
 - `install.py` 직접 호출 — CLI가 끝냈다. 재설치가 필요하면 `tm-mode join <url>` 재실행(멱등) 안내.
 - 멤버명·org·팀명·역할 대화 — CLI wizard가 이미 받았다.
 - 도입자/팀원 판정 설명 — CLI wizard가 처리했다.
-- 설치 안 된 사람에게 설치를 시작 → `tm-mode init` / `tm-mode join <url>` CLI 안내 후 멈춤.
+- 설치 안 된 사람에게 설치를 시작 → 스킬은 설치하지 않는다. 레포 안이면 AGENTS.md 첫 접촉 bootstrap 으로 라우팅(0.3 clone-and-go — 설치는 그 절차 몫), 레포 밖이면 `tm-mode init` / `tm-mode join <url>` CLI 안내 후 멈춤.
 
 ### 5.3 흐름 (설치 후 첫 진입 — 병렬)
 
@@ -276,7 +276,7 @@ Common mistakes:
 |---|---|
 | **tm-onboard가 install.py를 직접 호출** | 설치는 CLI가 끝냈다. 스킬은 검증·가치 전달만. |
 | **tm-onboard가 멤버명·org·팀명·역할을 다시 묻는다** | CLI wizard가 이미 받았다. 묻지 않는다. |
-| **"셋업해줘"에 스킬이 설치를 시작** | `tm-mode init`(새 팀) / `tm-mode join <url>`(합류) 터미널 안내 후 멈춘다. |
+| **"셋업해줘"에 스킬이 설치를 시작** | 스킬은 설치하지 않는다 — 레포 안이면 AGENTS.md "첫 접촉" bootstrap(dry-run→대화 승인→--yes)으로 라우팅, 아니면 `tm-mode init`/`join` 터미널 안내 후 멈춘다. |
 | 검증을 메인이 동기로 붙잡고 함 | 검증 서브에이전트 디스패치 + 그 동안 메인이 가치 전달(병렬). |
 | 검증 건너뛰고 "설치됐겠지" 가정 | 서브에게 실제 파일/명령으로 확인시킨다 — 특히 훅·스킬 심링크. |
 | `install.py` 단계를 손으로 재현 | 안 됐으면 `tm-mode join <url>` 재실행 안내(멱등). |

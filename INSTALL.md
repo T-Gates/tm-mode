@@ -1,6 +1,15 @@
 # 설치 — tm-mode
 
-tm-mode 설치의 **단일 소스**다. 진입은 `tm-mode` CLI 한 줄 — 레포 생성/clone·scaffold·훅 배선·스킬 배포·env 주입까지 wizard가 전부 처리한다.
+tm-mode 설치의 **단일 소스**다. 진입은 둘: **clone-and-go**(팀 레포 클론 → 에이전트에서 "셋업해줘") 또는 **`tm-mode` CLI**(레포 생성/clone·scaffold·훅 배선·스킬 배포·env 주입까지 wizard가 전부 처리).
+
+## 0. clone-and-go — 팀 레포가 이미 있으면 (CLI 설치 불필요)
+
+```bash
+git clone <팀레포 clone-url> && cd <팀레포>
+# Claude Code / Codex 를 열고: "셋업해줘"
+```
+
+에이전트가 AGENTS.md "첫 접촉" 절차로 진행한다: `install.py --root . --dry-run` 계획(내 컴퓨터에 쓸 파일·훅·env 전부)을 보여주고 → **채팅 승인** 후 → `--yes` 실설치 → Codex 는 TUI Trust 1회 안내 → `tm-onboard` 검증·브리핑. 승인 전에는 아무것도 쓰지 않는다.
 
 ## 요구사항
 - **Python 3.9+**, **git**
