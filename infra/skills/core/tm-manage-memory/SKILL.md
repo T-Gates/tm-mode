@@ -9,6 +9,7 @@ description: Use when adding, updating, or deleting memory in the team memory ba
 
 `memory/` 하위 메모리 파일의 추가/수정/삭제를 처리한다.
 **판단은 이 스킬이, 기계는 엔진 `memory` 동사가** 담당한다(구현 깊이 B).
+대량·외부 문서(docs 슬롯) import 는 `tm-import-memory` 소관 — 이 스킬은 대화 유래 단건 CRUD.
 스킬은 직접 파일을 쓰거나 INDEX를 편집하지 않는다 — 반드시 엔진 동사를 경유한다.
 
 ## When to Use
