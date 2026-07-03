@@ -510,11 +510,11 @@ manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이
 
 ## §3. 엔진 동사 (teammode.py) — 신규 명문화
 
-엔진 `infra/teammode.py`는 현재 8개 동사만 known verb로 인정한다.
+엔진 `infra/teammode.py`는 현재 10개 동사만 known verb로 인정한다.
 
 ```
 python infra/teammode.py <verb> --root <팀루트> [동사별 플래그]
-verbs: on | off | log | context | pull | commit | update | issue
+verbs: on | off | log | context | pull | commit | update | issue | memory | util
 ```
 
 이 섹션의 ground truth는 현재 워킹트리의 `infra/teammode.py`, `infra/workday.py`, `infra/git_ops.py`이다. 2026-06-16 현재 이 레포에는 `install-skills` 관련 미커밋 변경(`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py` 등)이 있으나, `teammode.py` 엔진 동사 자체는 위 8개가 전부다.
@@ -531,9 +531,9 @@ verbs: on | off | log | context | pull | commit | update | issue
 
 argv 파서(`_parse_args`)는 `argparse`가 아니라 손파서다.
 
-- 값 받는 플래그 화이트리스트: `--root`, `--settings`, `--author`, `--text`, `--now`, `--message`, `--title`, `--body`, `--assignee`, `--label`, `--priority`.
+- 값 받는 플래그 화이트리스트: `--root`, `--settings`, `--author`, `--text`, `--now`, `--message`, `--title`, `--body`, `--assignee`, `--label`, `--priority`, `--paths`, `--member`, `--skills-dir`, `--skill`, `--folder`, `--filename`, `--content`, `--weight`, `--path`, `--date`, `--desc`.
 - 위 플래그를 만나면 다음 토큰을 값으로 소비한다. 다음 토큰이 `--다른플래그`처럼 생겼어도 값으로 소비한다. 다음 토큰이 없으면 값은 `None`이다. 같은 플래그가 반복되면 마지막 값이 남는다.
-- 부울 플래그: `--install`, `--json`, `--push`. 기본값은 모두 `False`다.
+- 부울 플래그: `--install`, `--json`, `--push`, `--dry-run`. 기본값은 모두 `False`다.
 - 화이트리스트 밖 `--flag`는 무시한다. 이때 다음 토큰을 값으로 소비하지 않는다. 그래서 미지 부울 플래그 뒤의 non-flag 토큰은 verb 또는 positional이 될 수 있다.
 - 첫 non-flag 토큰이 `verb`가 되고, 그 뒤 non-flag 토큰들은 `positionals`에 순서대로 쌓인다. `issue --root <root> create`처럼 verb와 서브액션 사이에 값 플래그가 있어도 `create`는 positional로 남는다.
 - extra positional은 `issue`의 첫 positional 외에는 현재 어떤 known verb에서도 사용하지 않는다.
@@ -824,6 +824,29 @@ python infra/teammode.py issue --root <팀루트> [<action>] [--title <t>] [--bo
   - shape는 정확히 `{"verb":"issue","action":<action|null>,"service":"issues","provider":<provider>,"input":{...}}`.
   - `input`에는 값이 주어진 정규 필드만 들어간다.
   - `provider`는 config의 provider 문자열이며, providers lookup을 통과한 이름이다.
+
+### 3.6 memory (메모리 파일 CRUD — `--root` 필수, 첫 positional = 액션)
+
+`memory/` 하위 메모리 파일의 기계 전담 동사. **판단(내용·분류·weight 확정)은 스킬이, 기계(검증·파일·INDEX·커밋)는 이 동사가** 담당한다. 액션은 `write` | `delete` | `route` | `unlock`.
+
+**write** — `--folder --filename --content --author --weight` 전부 필수:
+
+- frontmatter 4필드(`created_at`/`updated_at`/`author`/`weight`) 자동 스탬프. 기존 파일의 extra field(`session` 등)는 보존. 신규 write 시 본문은 **전체 교체(replace)** — append 모드는 없다. 같은 내용 재호출은 멱등(변경 없음, 커밋 안 생김).
+- `--weight`는 `🔥`/`📌`/`📎` 3-enum. 엔진은 추측하지 않는다 — 스킬이 사용자에게 확인한 값을 전달.
+- 폴더 4열 INDEX(`memory/<folder>/INDEX.md`) 행 자동 upsert + 양방향 백링크(세션로그 append + 문서 frontmatter `session:` — advisory·비차단, do_commit *전*에 수행해 같은 커밋에 포함).
+- `do_commit(paths, push=True)` — **push 실패는 비차단**(로컬 커밋 보존, [warning]만, RC 0).
+- 검증: author/filename/folder traversal·심링크 탈출·제어문자 차단. **`INDEX.md` 파일명은 write 거부**(엔진 관리 파일 — delete와 대칭).
+- **허용 폴더** = 정적 목록(`product`·`team`·`team/decisions`·`soma` 및 하위) ∪ **루트 `memory/INDEX.md` 라우팅 맵의 정확한 최상위 폴더행**(`` `X/` `` — 백틱 감쌈·단일 세그먼트·슬래시 종결) 및 그 하위. 파일행(`X/foo.md`)·중첩 폴더행(`X/Y/`)·산문 언급은 불인정(prefix 판정 금지). **차단 목록(`team/sessions`·`team/meeting`)은 동적 허용보다 우선 거부.** 루트 INDEX 부재/읽기 실패 시 정적 목록만(보수 폴백). `memory route upsert`가 이미 "의도적 등록 행위"이므로 동적 허용은 가드 의미를 유지한다(#51).
+
+**delete** — `--path --author` 필수: 파일 삭제 + 폴더 INDEX 행 제거 + 세션로그 백링크 + 커밋(push 비차단). 없는 파일은 멱등 exit 0(단 stat의 EACCES 등 OS 예외는 exit 2 — 거짓 성공 금지). `INDEX.md` 삭제 거부. 허용/차단 폴더 규칙은 write와 동일.
+
+**route** — 서브액션 `upsert`(`--path --desc --author` 필수) | `remove`(`--path --author`): 루트 `memory/INDEX.md` **2열 라우팅 맵**(`| 경로 | 여기에 넣는 것 |`) 행 CRUD. 표 주변 산문 보존, 백틱 토큰 정확 매칭(폴더행/파일행 구분), atomic write, 멱등, 커밋(push 비차단). `--desc`는 추측 금지(필수 인자). 경량 traversal 가드(`memory/` 이탈·표 파괴 문자 차단).
+
+**unlock** — 서브액션 `begin` | `end`: kb-write-guard의 KB 직접 편집 unlock 플래그 생성/제거(mode 0600). 세션 id는 env(`CLAUDE_SESSION_ID`) 우선, 부재 시 훅 릴레이 fallback. TTL(300s)은 guard가 강제 — begin 잔류도 만료된다. 플래그 경로 규약의 단일 소스는 `infra/hooks/kb-write-guard.py`.
+
+### 3.7 util (인스턴스 유틸 스킬 관리 — `--root` 필수, 첫 positional = 액션)
+
+`infra/skills/util/`(인스턴스 소유 계층)의 유틸 스킬 등록 관리. 액션 `add` | `remove` | `list`. `util-skills.json` 갱신 + 에이전트 스킬 심링크 반영, 멱등. `--member`/`--skill` traversal 방어. 없는 스킬 add는 거부.
 
 ---
 
@@ -1172,6 +1195,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 ## 부록 C. 버전 이력 · 01~05 대비 변경점
 
 - **2026-06-16** — 구현 재정합 — 코드 ground truth를 §2~§5,§7에 상세 반영(codex dev-cycle)
+- **0.3** — **engine 동사 계약 변경(minor bump, §0.4)**: known verb에 `memory`(write/delete/route/unlock)·`util`(add/remove/list) 편입 명문화(§3.6·§3.7 신설 — 코드에 먼저 들어갔던 동사의 스펙 진실화). memory 허용 폴더에 **루트 INDEX 라우팅 맵 등재 최상위 폴더 동적 허용** 규칙 추가(정확 폴더행만·blocked 우선·보수 폴백, #51). `INDEX.md` 파일명 write 거부(delete와 대칭). 값 플래그 화이트리스트·부울 플래그(`--dry-run`)를 실코드 기준으로 갱신(§3).
 - **0.2** — **engine 동사 계약 변경(minor bump, §0.4)**: 8번째 엔진 동사 `issue` 추가(§3.5). `issues` 슬롯 provider 확인 후 정규 입력 스키마를 stdout JSON으로 echo까지만(action_map 해석·페이로드 변환 금지 — 어댑터/스킬 몫). 값 화이트리스트에 `--title --body --assignee --label --priority` 추가, positional 서브액션 파싱 명문화(§3). conformance 03 닫힘(RED→GREEN). 하니스 `fs_delete` 액션(시나리오 자체 teardown) 추가.
   - **L2(서비스 연결) 빌드**: provider 팩(`providers/{linear,slack,notion,google}.json` — token_guide·auth·default_scope·resource_fields, §7) + config `services` 확장 object 스키마(§7.1) + 어댑터 `install-mcp`(§2.8, 빈슬롯 sync 교정 §2.9) + 어댑터 `install-skills`(§2.12) + `install.py` wire 다동사 통합(§4) + credentials 금고(`infra/credentials.py`, 각자입력 0600, §5.4·§7.5) + 안전 훅 2개(auto-commit·confirm-action) + `tm-connect` 스킬(§5.4) + K7 스킬 lint(§2.12).
   - **config.members 멤버 역할(§1.1, L2-A2)**: `members:[{name, role?}]`, 각자 upsert(타인 무접촉). `context` 동사 출력에 `role` 필드 추가(§3.3 — additive, 미등재/생략 시 null·하위호환). members 블록은 role 판정(`config_is_valid`)과 분리. role 개행/제어문자 거부(어휘는 자유).
