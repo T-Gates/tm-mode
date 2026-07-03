@@ -155,6 +155,17 @@ def normalize(raw: dict, events: dict) -> dict:
     event = _reverse_event(events, raw_event)
     out = {"event": event, "agent": events.get("agent", "claude"), "raw": raw}
 
+    # 정규 세션 식별자(A2) — top-level 세션 id 를 **모든 이벤트**에서 승격한다.
+    # probe 순서: raw["session_id"](Claude 원어) → raw["sessionId"](camelCase 변형).
+    # 여기서 끝 — thread_id/rollout_id/conversation_id 등 다른 키는 조사하지 않는다
+    # (unlock 범위 확장 방지). 비어있지 않은 문자열만 유효, 아니면 필드 생략.
+    # codex normalize 는 이 코어를 그대로 상속하므로 양 에이전트에 동일 적용된다.
+    for _sid_key in ("session_id", "sessionId"):
+        _sid = raw.get(_sid_key)
+        if isinstance(_sid, str) and _sid.strip():
+            out["session_id"] = _sid.strip()
+            break
+
     if event == "UserPromptSubmit":
         out["prompt"] = raw.get("prompt", "")
 

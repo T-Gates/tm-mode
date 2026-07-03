@@ -2418,6 +2418,139 @@ def cmd_issue(team_root: Path, action: str | None, fields: dict) -> int:
     return 0
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# memory unlock 동사 (A2) — kb-write-guard unlock 플래그의 writer 측 엔진 verb.
+# 종전에는 tm-manage-memory SKILL 4-0/4-2 의 수기 스니펫이 플래그 경로를 재계산했다
+# — 이제 엔진이 guard 모듈(경로 규약 단일 소스)을 재사용해 begin/end 로 처리한다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_kb_guard():
+    """infra/hooks/kb-write-guard.py 모듈 로드(파일명 하이픈 → importlib).
+
+    플래그 경로(unlock_flag_path)·relay 디렉토리(session_relay_dir)·세션 id 검증
+    (_valid_session_id)의 단일 소스가 guard 모듈이다 — 여기서 재계산하면 드리프트로
+    guard 가 못 알아보는 플래그가 생긴다. 실패 시 None(호출부가 에러 처리).
+    """
+    import importlib.util
+    guard_path = INFRA / "hooks" / "kb-write-guard.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_kb_write_guard_engine",
+                                                      str(guard_path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — 부재/로드 실패는 호출부가 명시 에러로
+        return None
+
+
+def _resolve_unlock_session_id(guard, team_root: Path):
+    """unlock 대상 세션 id 해석 — (session_id, source) 또는 (None, None).
+
+    우선순위(설계 합의):
+      1. env CLAUDE_SESSION_ID / CLAUDE_CODE_SESSION_ID (Claude 경로) — malformed 는
+         드롭하고 다음 단계로(비치명).
+      2. relay 디렉토리의 **최신(mtime)** 파일명 (Codex 경로 — session-start 가 기록).
+         동시 세션에서 오선택이 나도 guard 가 fail-closed(스퓨리어스 deny)일 뿐
+         잠금 우회는 아니다 — "ambiguous" 하드 스톱보다 가용성이 낫다는 합의.
+      3. 둘 다 없으면 (None, None) — 호출부가 명시 에러.
+
+    ⚠️ 엔진의 "env 무신뢰" 정책은 팀 루트(어느 폴더를 건드릴지) 얘기다 — 세션 id 는
+    하니스가 주입하는 세션 식별자로 --root 통로가 없어 env/relay 참조가 정당하다.
+    """
+    env_sid = guard._valid_session_id(
+        os.environ.get("CLAUDE_SESSION_ID")
+        or os.environ.get("CLAUDE_CODE_SESSION_ID") or "")
+    if env_sid:
+        return env_sid, "env"
+
+    relay_dir = guard.session_relay_dir(str(team_root))
+    best_sid, best_mtime = None, None
+    try:
+        names = os.listdir(relay_dir)
+    except OSError:
+        return None, None  # relay 디렉토리 없음
+    for name in names:
+        sid = guard._valid_session_id(name)
+        if not sid:
+            continue  # malformed 파일명은 무시(플래그 파일명에 박히면 안 됨)
+        try:
+            mtime = os.stat(os.path.join(relay_dir, name)).st_mtime
+        except OSError:
+            continue
+        if best_mtime is None or mtime > best_mtime:
+            best_sid, best_mtime = sid, mtime
+    if best_sid:
+        return best_sid, "relay"
+    return None, None
+
+
+def cmd_memory_unlock(team_root: Path, sub_action) -> int:
+    """memory unlock begin|end — KB 직접 편집 unlock 플래그 생성/제거.
+
+    begin: 플래그 파일 생성(내용은 진단용 JSON — 보안 계약은 경로+mtime, guard 는
+           내용을 검사하지 않으므로 구 빈 플래그와 동등). mode 0600.
+    end  : 플래그 제거(없으면 멱등 무시).
+
+    TTL(guard.KB_UNLOCK_TTL_SECONDS=300s)은 guard 가 강제 — begin 잔류도 5분 후 만료.
+    """
+    if sub_action not in ("begin", "end"):
+        print("[error] memory unlock: begin 또는 end 서브액션이 필요합니다 — "
+              "usage: teammode.py memory unlock {begin|end} --root <팀루트>",
+              file=sys.stderr)
+        return 2
+
+    guard = _load_kb_guard()
+    if guard is None:
+        print("[error] memory unlock: infra/hooks/kb-write-guard.py 를 로드할 수 "
+              "없습니다(플래그 경로 규약의 단일 소스).", file=sys.stderr)
+        return 1
+
+    session_id, source = _resolve_unlock_session_id(guard, team_root)
+    if not session_id:
+        print("[error] memory unlock: 세션 id 를 결정할 수 없습니다 — "
+              "CLAUDE_SESSION_ID/CLAUDE_CODE_SESSION_ID env 도 없고 SessionStart "
+              "relay 파일도 없습니다. 에이전트 세션 안에서 실행하세요.",
+              file=sys.stderr)
+        return 2
+
+    flag = Path(guard.unlock_flag_path(str(team_root), session_id=session_id))
+
+    if sub_action == "begin":
+        try:
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            # 내용은 진단 전용(어느 세션/출처가 열었는지) — guard 계약은 경로+mtime.
+            flag.write_text(json.dumps({
+                "schema": "kb-unlock/1",
+                "source": source,
+                "session_id": session_id,
+                "root_hash": guard._root_hash(str(team_root)),
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "created_by_pid": os.getpid(),
+            }, ensure_ascii=False), encoding="utf-8")
+            try:
+                os.chmod(flag, 0o600)  # 개인 상태 — 비공개(POSIX; Windows 는 no-op 수준)
+            except OSError:
+                pass
+        except OSError as exc:
+            print(f"[error] memory unlock begin: 플래그 생성 실패 — {exc}",
+                  file=sys.stderr)
+            return 1
+        print(f"teammode memory unlock begin — 편집 창 열림(session={session_id}, "
+              f"source={source}, TTL {guard.KB_UNLOCK_TTL_SECONDS}s): {flag}")
+        return 0
+
+    # end — 멱등 제거
+    try:
+        flag.unlink()
+    except FileNotFoundError:
+        pass  # 이미 없음(TTL 만료 후 등) — 멱등
+    except OSError as exc:
+        print(f"[error] memory unlock end: 플래그 제거 실패 — {exc}", file=sys.stderr)
+        return 1
+    print(f"teammode memory unlock end — 편집 창 닫힘(session={session_id}): {flag}")
+    return 0
+
+
 def _parse_args(argv):
     """argv → (verb, opts dict). 알 수 없는 플래그는 무시(후속 슬라이스 확장 여지).
 
@@ -2559,6 +2692,10 @@ def main(argv=None) -> int:
         positionals = opts.get("positionals") or []
         action = positionals[0] if positionals else None
         # route 서브액션: 루트 2열 라우팅 맵 CRUD — 4열 folder-INDEX 경로와 분리.
+        # unlock 서브액션(A2): KB 직접 편집 창 begin/end — guard 플래그 writer 측.
+        if action == "unlock":
+            sub_action = positionals[1] if len(positionals) > 1 else None
+            return cmd_memory_unlock(team_root, sub_action)
         if action == "route":
             sub_action = positionals[1] if len(positionals) > 1 else None
             return cmd_route(
