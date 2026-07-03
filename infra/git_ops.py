@@ -30,12 +30,16 @@ DEFAULT_TIMEOUT = 2
 # subprocess killpg(run_git)가 SSH 의 **유일한** hang 가드다.
 NET_TIMEOUT = 10
 
-# push 흐름(재시도·복구 포함)의 네트워크 **총예산**(초) — do_commit(push=True)의 복구
-# 체인은 push→push -u→fetch→rebase→push -u 로 NET_TIMEOUT(10s) 네트워크 호출을 최대
-# 5회 순차 수행할 수 있다(최악 ~50s). 훅 manifest 캡(30s)보다 작아야 엔진이 스스로
-# 먼저 반환해 호출부(auto-commit 훅)가 sync-warning 마커를 쓸 수 있다 — 초과 시
-# hook runner 가 프로세스를 죽여 로컬 커밋/rebase 뒤의 마커가 유실된다(codex 재리뷰 P1).
-PUSH_TOTAL_BUDGET = 25
+# do_commit(push=True)의 **진입 앵커 벽시계 총예산**(초) — 데드라인은 함수 **진입**
+# 시점에 시작돼 로컬 단계(rev-parse·add·staged-diff·commit, 최악 ~8s)도 벽시계 예산을
+# 소모하고, 네트워크 단계(push·복구 체인 push→push -u→fetch→rebase→push -u, 최악
+# NET_TIMEOUT 10s ×5 순차 ~50s)는 **남은 예산만** 쓴다. 로컬 하위호출 자체는 예산으로
+# 개별 클램프/중단하지 않는다(로컬 커밋은 항상 완주·보존 — 건너뛸 수 있는 건 네트워크뿐).
+# 22 인 이유: NET_TIMEOUT(10s) 두 다리 + rebase 의 복구 체인은 살리면서(20 이면 fetch+
+# rebase+재push 복구가 굶는다), 22 + 드문 kill-drain/abort 꼬리(~6s) + 훅 기동이 훅
+# manifest 캡(30s) 아래 머문다 — 초과 시 hook runner 가 프로세스를 죽여 로컬 커밋/rebase
+# 뒤의 sync-warning 마커가 유실된다(codex 재리뷰 P1·A1).
+PUSH_TOTAL_BUDGET = 22
 
 
 @dataclass
@@ -470,9 +474,13 @@ def do_commit(team_root: str, message: str, push: bool = False,
     전용**이다. 내부 로컬 하위호출(add·staged-diff·commit)은 DEFAULT_TIMEOUT 고정 —
     함수 timeout 을 그대로 쓰면 push=False(네트워크 0) 경로까지 10s 로 승격돼
     "로컬 동사는 2s(세션 스냅함)" 선언이 깨진다(codex 리뷰 P2-2).
-    또한 push 흐름 전체는 공유 데드라인 PUSH_TOTAL_BUDGET(25s)로 캡된다 — 복구
-    체인(최악 네트워크 5회 순차)이 훅 manifest 캡(30s)을 넘기 전에 **항상** 스스로
-    반환해, 호출부가 sync-warning 마커를 쓸 수 있게 한다(codex 재리뷰 P1).
+    또한 push=True 흐름 전체는 **진입 앵커** 벽시계 예산 PUSH_TOTAL_BUDGET(22s)로
+    캡된다 — 데드라인이 함수 진입에서 시작돼 로컬 단계(최악 ~8s)도 예산을 소모하고
+    네트워크 단계는 남은 만큼만 쓴다(로컬 하위호출은 개별 클램프 없음 — 로컬 커밋은
+    항상 완주·보존). 복구 체인(최악 네트워크 5회 순차)이 훅 manifest 캡(30s)을 넘기
+    전에 **항상** 스스로 반환해, 호출부가 sync-warning 마커를 쓸 수 있게 한다
+    (codex 재리뷰 P1 — 종전엔 데드라인이 push 직전 시작이라 로컬 최악 8s + 25s 가
+    캡을 넘을 수 있었다: A1).
     - 변경 없음 → committed=False, ok=False (비치명: 레포 무손상).
     - push=True 이고 원격 없음/오프라인 → **커밋은 보존**, push 만 실패(ok 은 commit 성공
       기준으로 True, pushed=False). push 실패가 로컬 커밋을 되돌리지 않는다.
@@ -486,6 +494,12 @@ def do_commit(team_root: str, message: str, push: bool = False,
       auto-commit.py 가 정규스키마의 `files` 만 넘겨 토큰패턴 등 무관 파일 오염을 막는다.
       빈 리스트(`[]`)는 스테이징할 파일이 없는 것 → 변경 없음으로 우아하게 종료.
     """
+    # 진입 앵커 데드라인(A1): 벽시계 예산을 함수 진입에서 시작해 로컬 단계
+    # (rev-parse·add·staged-diff·commit)도 소모하게 한다. 로컬 하위호출은 이 예산으로
+    # 클램프/중단하지 않는다(DEFAULT_TIMEOUT 고정 — 로컬 커밋은 항상 완주·보존).
+    # 예산은 네트워크 단계가 "남은 만큼만" 쓰게 하는 상한일 뿐이다.
+    _deadline = time.monotonic() + PUSH_TOTAL_BUDGET
+
     if not is_git_worktree(team_root):
         return CommitResult(ok=False, detail="not a git work tree")
 
@@ -532,13 +546,13 @@ def do_commit(team_root: str, message: str, push: bool = False,
 
     # 4) push (선택). 실패해도 **커밋은 보존** — ok 은 commit 성공 기준으로 유지.
     #
-    # 공유 데드라인(codex 재리뷰 P1): 이 지점 이후의 **모든** 네트워크 호출(push·
-    # push -u·fetch·rebase·재push)은 PUSH_TOTAL_BUDGET(25s) 하나를 나눠 쓴다.
-    # 개별 호출마다 NET_TIMEOUT 을 새로 주면 복구 체인이 최악 ~50s 까지 늘어져 훅
-    # manifest 캡(30s)이 프로세스를 먼저 죽이고, 그러면 호출부가 CommitResult 를
-    # 받지 못해 sync-warning 마커를 못 쓴다. 예산이 바닥나면 즉시 비차단 반환한다
-    # (커밋은 이미 보존됨 — push 미완만 detail 로 표면화).
-    _deadline = time.monotonic() + PUSH_TOTAL_BUDGET
+    # 공유 데드라인(codex 재리뷰 P1 → A1 진입 앵커): 함수 **진입**에서 시작한
+    # _deadline 하나를 이 지점 이후의 **모든** 네트워크 호출(push·push -u·fetch·
+    # rebase·재push)이 나눠 쓴다 — 로컬 단계가 이미 소모한 벽시계만큼 네트워크
+    # 몫이 준다. 개별 호출마다 NET_TIMEOUT 을 새로 주면 복구 체인이 최악 ~50s 까지
+    # 늘어져 훅 manifest 캡(30s)이 프로세스를 먼저 죽이고, 그러면 호출부가
+    # CommitResult 를 받지 못해 sync-warning 마커를 못 쓴다. 예산이 바닥나면 즉시
+    # 비차단 반환한다(커밋은 이미 보존됨 — push 미완만 detail 로 표면화).
 
     def _net_t() -> int:
         """남은 예산으로 클램프한 네트워크 타임아웃(하한 1s — 0/음수 방지)."""
@@ -552,6 +566,13 @@ def do_commit(team_root: str, message: str, push: bool = False,
     def _budget_stop(step: str) -> CommitResult:
         return CommitResult(ok=True, committed=True, pushed=False,
                             detail=f"committed; push budget exhausted ({step})")
+
+    # preflight(A1): 로컬 단계가 예산을 이미 소진했으면 push 를 아예 시작하지 않는다 —
+    # _net_t 의 하한(1s) 때문에 소진 상태에서도 1s 짜리 헛 push 가 나가는 걸 차단.
+    # 이 결과 모양(committed=True/pushed=False)이 auto-commit 훅의 sync-warning
+    # 마커 기록 조건이다.
+    if not _budget_ok(reserve=2):
+        return _budget_stop("before push")
 
     try:
         prc, pout, perr = run_git(

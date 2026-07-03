@@ -320,6 +320,89 @@ def test_do_commit_push_fast_path_unaffected_by_budget(tmp_path, monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────
+# A1 — 데드라인 진입 앵커: 로컬 단계도 벽시계 예산을 소모한다
+# ──────────────────────────────────────────────────────────────────
+#
+# 종전엔 _deadline 이 로컬 commit **이후**(push 직전)에 시작돼, 로컬 단계
+# (rev-parse·add·staged-diff·commit, 최악 ~8s)가 예산 밖이었다 — 최악 로컬 8s +
+# 네트워크 25s = 33s 로 훅 manifest 캡(30s)을 넘길 수 있었다. A1: 데드라인을
+# do_commit 진입에 앵커해 로컬 단계가 예산을 소모하고 네트워크는 남은 만큼만 쓴다.
+# 로컬 하위호출 자체는 예산으로 클램프/중단하지 않는다(로컬 커밋은 항상 완주·보존).
+
+def _fake_wall_clock(monkeypatch, per_call: float):
+    """가짜 벽시계: run_git 호출마다 per_call 초씩 전진(호출 자체가 그만큼 걸린 셈).
+
+    time.monotonic 은 전진 없이 현재 가짜 시각만 읽는다(기존 예산 테스트의
+    'monotonic 호출마다 전진'과 달리, 소모 주체를 run_git 호출로 고정해
+    로컬/네트워크 단계별 소모를 정확히 모사한다). (calls, now) 를 돌려준다.
+    """
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(git_ops, "time",
+                        types.SimpleNamespace(monotonic=lambda: fake_now["t"]))
+    calls = []
+
+    def fake_run_git(args, timeout):
+        calls.append((list(args), timeout, fake_now["t"]))
+        fake_now["t"] += per_call
+        if "rev-parse" in args:            # is_git_worktree
+            return (0, "true", "")
+        if "diff" in args:                 # staged-diff: rc!=0 == 변경 있음
+            return (1, "", "")
+        return (0, "", "")                 # add/commit/push 성공
+    monkeypatch.setattr(git_ops, "run_git", fake_run_git)
+    return calls, fake_now
+
+
+def test_do_commit_slow_local_phases_shrink_first_push_timeout(
+        tmp_path, monkeypatch):
+    """로컬 단계가 벽시계를 많이 먹으면 첫 push 의 timeout 이 남은 예산으로 준다.
+
+    로컬 4회(rev-parse·add·diff·commit) × 5s = 20s 소모 → 남은 예산 2s → 첫 push
+    timeout 은 NET_TIMEOUT(10s)이 아니라 그 이하로 클램프돼야 한다. 데드라인이
+    push 직전에 시작되면(종전) push 가 10s 를 그대로 받아 총 30s 를 넘긴다.
+    """
+    calls, fake_now = _fake_wall_clock(monkeypatch, per_call=5.0)
+    entry = fake_now["t"]
+    res = git_ops.do_commit(str(tmp_path), "m", push=True)
+    assert res.ok is True and res.committed is True
+    assert res.pushed is True, res.detail
+    push_calls = [(t, at) for args, t, at in calls if "push" in args]
+    assert push_calls, f"push 호출 없음: {calls}"
+    push_t, push_at = push_calls[0]
+    # 핵심(A1): 첫 push timeout 이 남은 예산으로 클램프됐다(종전엔 NET_TIMEOUT 그대로).
+    assert push_t < git_ops.NET_TIMEOUT, (
+        f"push timeout={push_t} — 로컬 단계 20s 소모 후에도 클램프 안 됨(예산이 "
+        f"진입 앵커가 아님)")
+    # 예산 수식 불변식: (진입~push 경과) + push timeout ≤ PUSH_TOTAL_BUDGET —
+    # 총 벽시계가 훅 manifest 캡(30s)에서 kill-drain/abort 꼬리 슬랙을 뺀 값 아래.
+    assert (push_at - entry) + push_t <= git_ops.PUSH_TOTAL_BUDGET
+    # 로컬 하위호출은 예산으로 클램프하지 않는다(로컬 커밋 완주 보장).
+    for verb in ("add", "commit"):
+        for args, t, _at in calls:
+            if verb in args:
+                assert t == git_ops.DEFAULT_TIMEOUT, (
+                    f"{verb} 가 예산으로 클램프됨: timeout={t}")
+
+
+def test_do_commit_budget_gone_after_local_commit_skips_push(
+        tmp_path, monkeypatch):
+    """로컬 커밋 성공 후 예산이 이미 바닥이면 push 를 아예 시도하지 않는다.
+
+    로컬 4회 × 6s = 24s > 예산 → preflight 가 1s 짜리(하한 floor) 헛 push 를
+    쏘는 대신 즉시 반환한다. 결과 모양(committed=True/pushed=False + 'budget')은
+    auto-commit 훅이 sync-warning 마커를 쓰는 그 모양이어야 한다.
+    """
+    calls, _fake_now = _fake_wall_clock(monkeypatch, per_call=6.0)
+    res = git_ops.do_commit(str(tmp_path), "m", push=True)
+    assert res.ok is True
+    assert res.committed is True           # 커밋은 보존(철칙)
+    assert res.pushed is False
+    assert "budget" in res.detail, res.detail
+    assert not [args for args, _t, _at in calls if "push" in args], (
+        f"예산 소진 후에도 push 시도: {calls}")
+
+
+# ──────────────────────────────────────────────────────────────────
 # codex P1 — 네트워크 훅의 manifest timeout 이 NET_TIMEOUT 설계를 덮는지
 # ──────────────────────────────────────────────────────────────────
 
