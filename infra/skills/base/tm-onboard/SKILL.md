@@ -10,7 +10,7 @@ description: Use right after a tm-mode install (`tm-mode init` / `tm-mode join`)
 1. **설치가 제대로 됐나 확인** — **검증 서브에이전트에 위임**한다(메인은 기다리지 않는다).
 2. **팀모드가 뭘 해주는지(가치)** — 검증이 도는 **그 동안** 메인이 사람에게 전한다.
 
-> ⛔ **설치·질문을 하지 않는다.** 멤버명·org·팀명·역할·에이전트·obsidian 묻기, `install.py` 직접 호출, 레포 생성/clone — **전부 CLI wizard 몫이고 이미 끝났다.** 재현 금지. (아직 설치 안 된 상태로 "셋업해줘" 하면 → "`tm-mode init`(새 팀) / `tm-mode join <url>`(합류)을 터미널에서 실행하세요"로 CLI 진입 안내 후 멈춘다.)
+> ⛔ **설치·질문을 하지 않는다.** 멤버명·org·팀명·역할·에이전트·obsidian 묻기, `install.py` 직접 호출, 레포 생성/clone — **전부 CLI wizard 몫이고 이미 끝났다.** 재현 금지. (아직 설치 안 된 상태로 "셋업해줘" 하면 → **레포 안에 `infra/install.py`와 AGENTS.md가 있으면 AGENTS.md "첫 접촉"의 bootstrap 절차로 라우팅**(clone-and-go — dry-run→대화 승인→설치는 그 절차가 담당), 아니면 "`tm-mode init`(새 팀) / `tm-mode join <url>`(합류)을 터미널에서 실행하세요"로 CLI 진입 안내 후 멈춘다. 이 스킬 자신은 어느 경우에도 설치를 실행하지 않는다.)
 
 ## 진입 흐름 (병렬 — 이 순서대로)
 1. 진입 즉시 **검증 서브에이전트를 띄운다**(§①). 읽기 전용·결과만 보고. **메인은 그 완료를 기다리지 않는다.**
