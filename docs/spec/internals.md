@@ -1,6 +1,6 @@
 # 내부 규범
 
-tm-mode SPEC v0.2 — 엔진·표준 규범
+tm-mode SPEC v0.3 — 엔진·표준 규범
 
 ## §1. 팀 메모리 표준 (Team Memory)
 

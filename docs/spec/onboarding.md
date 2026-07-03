@@ -1,6 +1,6 @@
 # 설치 · 부트스트랩
 
-tm-mode SPEC v0.2 — 설치·부트스트랩
+tm-mode SPEC v0.3 — 설치·부트스트랩
 
 ## §4. 설치 · 부트스트랩 (install.py)
 
