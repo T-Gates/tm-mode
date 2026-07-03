@@ -150,8 +150,25 @@ class Adapter(BaseAdapter):
         scope = m.group(1) if m else ""
         if not scope:
             return None
-        pm = re.search(r"env TEAMMODE_MEMBER=([A-Za-z0-9][A-Za-z0-9_-]*)", scope)
-        return pm.group(1) if pm else None
+        # command 라인의 셸 토큰만 신뢰 — 블록 통짜 텍스트 매칭은 quoted
+        # TEAMMODE_HOME 값 안의 member-모양 부분문자열(예: 경로에 'env
+        # TEAMMODE_MEMBER=x' 포함)을 오인할 수 있다(codex P2). 선두 `env` 뒤의
+        # 실제 할당 토큰에서만 값을 취하고, 검증 정규식으로 재확인한다.
+        for cm in re.finditer(r"command\s*=\s*(['\"])(.*?)\1", scope):
+            try:
+                tokens = shlex.split(cm.group(2))
+            except ValueError:
+                continue
+            if not tokens or tokens[0] != "env":
+                continue
+            for tok in tokens[1:]:
+                if "=" not in tok:
+                    break  # env 할당 구간 종료(커맨드 본문 시작)
+                key, _, val = tok.partition("=")
+                if key == "TEAMMODE_MEMBER" and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_-]*", val):
+                    return val
+        return None
 
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []

@@ -397,3 +397,28 @@ def test_is_owned_holds_with_home_prefix(tmp_path):
     a = e.make_adapter(member="leejhy")
     cmd = a.build_command(_remind_entry())
     assert a.is_owned(cmd) is True, cmd
+
+
+def test_member_parser_ignores_member_like_substring_in_quoted_home(tmp_path):
+    """quoted HOME 값 안의 member-모양 부분문자열을 member로 오인하지 않는다(codex P2).
+
+    home-only prefix + 병리 경로에서 memberless resync가 'evil'을 발명하면 안 됨.
+    """
+    e = _make_env(tmp_path)
+    evil_home = "/tmp/env TEAMMODE_MEMBER=evil/team"
+    e.config.write_text(
+        "# teammode-hooks-start\n"
+        f"command = 'env TEAMMODE_HOME={shlex.quote(evil_home)} python3 hook.py'\n"
+        "# teammode-hooks-end\n", encoding="utf-8")
+    ad = e.make_adapter(member=None)
+    assert ad._existing_member_prefix() is None
+
+
+def test_member_parser_reads_real_assignment_next_to_quoted_home(tmp_path):
+    e = _make_env(tmp_path, root_name="team root")  # 공백 경로 — quoted HOME 유발
+    e.config.write_text(
+        "# teammode-hooks-start\n"
+        f"command = 'env TEAMMODE_MEMBER=bob TEAMMODE_HOME={shlex.quote(str(e.root))} python3 hook.py'\n"
+        "# teammode-hooks-end\n", encoding="utf-8")
+    ad = e.make_adapter(member=None)
+    assert ad._existing_member_prefix() == "bob"
