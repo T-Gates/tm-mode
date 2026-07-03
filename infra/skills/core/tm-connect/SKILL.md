@@ -12,7 +12,7 @@ tm-onboard (제안+트리거)  →  tm-connect (등록기 실행)
    "연결할래요?"              슬롯 → provider → MCP 마련 → 토큰 안내 → 금고 저장 → config 기록 → MCP alias 등록
 ```
 
-> **A안 (2026-06-25 확정).** tm-mode 는 **연결(등록)만** 한다. 이슈 생성·일정 추가 같은 **동작은 AI가 등록된 벤더 MCP 도구를 직접 호출**한다 — 이 스킬이 동작을 래핑하지 않는다. 핸들러 생성·`role_server` 프록시·역할 추상화 동사·"재사용>흡수>수제" 우선순위 판정은 모두 폐기됐다(`docs/archive/2026-06-25-L2-redesign.md`). 권위 스펙은 `docs/spec/skills.md §5.4.1`·`internals.md §2.8`.
+> **A안 (2026-06-25 확정).** tm-mode 는 **연결(등록)만** 한다. 이슈 생성·일정 추가 같은 **동작은 AI가 등록된 벤더 MCP 도구를 직접 호출**한다 — 이 스킬이 동작을 래핑하지 않는다. 핸들러 생성·`role_server` 프록시·역할 추상화 동사·"재사용>흡수>수제" 우선순위 판정은 모두 폐기됐다. 권위 스펙은 `docs/spec/skills.md §5.4.1`·`internals.md §2.8`.
 
 ## 원칙
 
@@ -111,7 +111,7 @@ provider 가 정해지면 그 팩에서 **다음 필드를 데이터로 읽어**
 
 > ⚠️ **자작 MCP는 역할 추상화가 아니다.** provider API 를 감싼 도구를 *그대로* 노출할 뿐, 슬롯 통일 동사(역할별 추상 동사)를 만드는 게 **아니다**. 그건 폐기한 `role_server`/역할 추상화(B안)의 부활이다. tm-mode 는 자작 MCP 에 대해서도 **연결(등록)만** 하고, 동작은 AI가 직접 호출한다(A안).
 
-상세 7단계·원칙은 `docs/archive/2026-06-25-L2-redesign.md` "MCP 마련" 과 `internals.md §2.8` 참조.
+상세 7단계·원칙은 `docs/spec/internals.md §2.8` 참조.
 
 ---
 
@@ -218,6 +218,6 @@ python infra/install.py --root . --yes        # 재배선(adapter 에 벤더 MCP
 | 도구명·서비스명 직표기 | 역할 어휘(issues/chat/docs/calendar)로만 말한다 |
 
 ---
-> 발견: 이 스킬은 AGENTS.md / CLAUDE.md 의 포인터로 찾는다(tm-onboard 와 동일 방식). 동작·데이터 근거는 `providers/<name>.json`(연결 데이터)·`infra/credentials.py`(금고)·`docs/spec/skills.md §5.4.1`(등록기 흐름)·`internals.md §2.8`(install-mcp 의무)·`docs/archive/2026-06-25-L2-redesign.md`(A안 기준) 확인.
+> 발견: 이 스킬은 AGENTS.md / CLAUDE.md 의 포인터로 찾는다(tm-onboard 와 동일 방식). 동작·데이터 근거는 `providers/<name>.json`(연결 데이터)·`infra/credentials.py`(금고)·`docs/spec/skills.md §5.4.1`(등록기 흐름·A안 기준)·`internals.md §2.8`(install-mcp 의무) 확인.
 </content>
 </invoke>
