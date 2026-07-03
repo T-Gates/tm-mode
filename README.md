@@ -99,7 +99,7 @@ tm-mode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 
 ## 설치
 
-**`tm-mode init`(새 팀) / `tm-mode join <url>`(합류) 한 줄이면 끝**(위 [도입은 이 한 줄](#도입은-이-한-줄)). 요구사항·**활성화**(`tm on`)·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
+**팀 레포가 있으면 clone-and-go(클론 → "셋업해줘"), 새 팀 생성부터면 `tm-mode init` 한 줄**(위 [도입 — 두 가지 길](#도입--두-가지-길)). 요구사항·**활성화**(`tm on`)·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
 
 ## 구조
 

@@ -8,7 +8,7 @@
 
 ### 설치 상태 판정 (라우팅용 — 보수적으로)
 
-설치 완료로 볼 수 있는 최소 신호 셋: ① `team.config.json` 존재 ② `memory/team/members.md` 존재 ③ `team.config.json`의 `agents`가 비어 있지 않음. 셋 다 있으면 → **`tm-onboard` 스킬**(`infra/skills/base/tm-onboard/SKILL.md`)로 — 검증·가치 전달만 한다.
+설치 완료로 볼 수 있는 최소 신호 셋: ① `team.config.json` 존재 ② `memory/team/members.md` 존재 ③ `team.config.json`을 **JSON으로 파싱**해 top-level `agents`가 **비어 있지 않은 문자열 list**임(파싱 실패·타입 불일치 = 애매함으로 취급). 셋 다 있으면 → **`tm-onboard` 스킬**(`infra/skills/base/tm-onboard/SKILL.md`)로 — 검증·가치 전달만 한다.
 
 - `.teammode-active`는 **활성화** 마커일 뿐 설치 판정에 쓰지 않는다(install은 on을 켜지 않음).
 - 판정은 라우팅용이다 — 완전성 검증은 tm-onboard의 검증 서브에이전트 몫. 오판해도 안전: 설치됨 오판 → tm-onboard 검증이 누락을 드러내 bootstrap 재안내, 미설치 오판 → `install.py`는 멱등이라 재실행 무해.
@@ -18,11 +18,12 @@
 
 레포 안에 엔진(`infra/`)이 이미 있으므로 CLI 없이도 여기서 셋업이 끝난다. **호스트 설정 쓰기의 동의는 대화 승인으로 받는다** — `--yes`의 본질은 "사람의 명시 의사"다(제품 결정 2026-07-04).
 
-1. **계획만 출력**: `python infra/install.py --root . --dry-run`
-2. dry-run에 `member_name=(미정)` blocker가 있으면 **멤버명을 딱 한 번** 묻고, `--member-name <이름>`을 붙여 dry-run을 다시 실행한다. (재질문 금지는 "wizard가 이미 받은" 경우의 규칙 — bootstrap엔 wizard가 없다.)
+1. **계획만 출력**: `python infra/install.py --root . --dry-run --yes`
+   — `--yes`를 **함께** 준다: dry-run이 우선이라 아무것도 쓰지 않으면서, 계획은 **실설치 기준**(env 주입·autopush 포함)으로 렌더된다. `--yes` 없이 뽑은 계획은 "비실설치(미주입)" 계획이라 승인 대상과 다르다.
+2. 출력에 `member_name=(미정)` blocker가 있으면 **멤버명을 딱 한 번** 묻고, `--member-name <이름>`을 붙여 1을 다시 실행한다. (재질문 금지는 "wizard가 이미 받은" 경우의 규칙 — bootstrap엔 wizard가 없다.)
 3. **dry-run 출력 전체를 사용자에게 보여주고 명시 승인을 받는다.** 계획에는 레포 쓰기·실호스트 파일 경로·배선될 훅·env·scaffold 자동 커밋/push 시도·Codex Trust가 담겨 있다. 승인 전에는 실호스트 설정·스킬 디렉토리·셸 env·Obsidian을 **절대 쓰지 않는다.**
-4. 사용자가 승인하면 같은 인자로 실설치: `python infra/install.py --root . --yes [--member-name <이름>]`
-   — 이 실행은 레포 scaffold 생성/갱신 + 감지된 Claude/Codex 배선 + scaffold 자동 커밋·push 시도를 포함한다.
+4. 사용자가 승인하면 **1의 인자에서 `--dry-run`만 뗀** 실설치: `python infra/install.py --root . --yes [--member-name <이름>]`
+   — 승인한 계획과 실행이 같은 인자·같은 계약이다. 레포 scaffold 생성/갱신 + 감지된 Claude/Codex 배선 + scaffold 자동 커밋·push 시도를 포함한다.
 5. Codex가 배선됐으면 **TUI를 한 번 열어 Trust**가 필요할 수 있음을 안내한다(trusted hash 직접 주입 금지 — 사람 결정).
 6. 성공하면 이어서 **`tm-onboard`**(검증+가치)로. 실패(exit≠0)하면 exit code와 메시지를 사람에게 옮기고 멈춘다 — 추측 수리 금지.
 

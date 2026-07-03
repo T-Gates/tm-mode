@@ -72,7 +72,7 @@ description: Use right after a tm-mode install (`tm-mode init` / `tm-mode join`)
 | 검증을 건너뛰고 "설치됐겠지" 가정 | 서브에게 실제 파일/명령으로 확인시킨다 — 특히 훅·스킬 심링크 |
 | L2·Obsidian·personality 를 메뉴로 늘어놓는다 | 다루지 않는다. 각 스킬이 그때 드러난다 |
 | 빈 팀(세션로그 0)을 실패로 말한다 | 정상 — "지금부터 쌓인다"로 내레이션 |
-| 설치 안 된 사람에게 스킬이 설치를 시작 | "`tm-mode init`/`join` 을 터미널에서" 로 CLI 진입 안내 후 멈춤 |
+| 설치 안 된 사람에게 스킬이 설치를 시작 | 스킬은 설치하지 않는다 — 레포 안이면 AGENTS.md 첫 접촉 bootstrap 으로 라우팅, 레포 밖이면 "`tm-mode init`/`join` 터미널" 안내 후 멈춤 |
 
 ---
 > 동작 명세는 `docs/spec/`(install.py·onboard 스킬), 진입 계약은 `src/teammode/cli.py` 의 `_done()`(이 스킬을 가리킨다)을 확인.

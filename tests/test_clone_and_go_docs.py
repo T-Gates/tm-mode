@@ -46,3 +46,29 @@ def test_spec_entry_contract_updated():
     text = _read("docs/spec/onboarding.md")
     assert "clone-and-go" in text
     assert "대화 승인" in text
+
+
+def test_approval_dry_run_includes_yes_flag():
+    """[codex P1] 승인 게이트의 dry-run 은 --yes 동반 — 승인한 계획=실행 계약."""
+    text = _read("AGENTS.md")
+    assert "--dry-run --yes" in text, (
+        "승인용 dry-run 에 --yes 부재 — 비실설치 계획을 승인시키는 결함")
+    assert "실설치 기준" in text
+
+
+def test_readme_no_stale_anchor():
+    """[codex P3] 옛 앵커(#도입은-이-한-줄) 잔존 금지 + 새 앵커 참조."""
+    text = _read("README.md")
+    assert "#도입은-이-한-줄" not in text
+    assert "#도입--두-가지-길" in text
+
+
+def test_no_stale_cli_only_stop_contract():
+    """[codex P2] tm-onboard·spec 에 '레포 안=bootstrap 라우팅' 없는 옛 멈춤 계약 잔존 금지."""
+    for rel in ("infra/skills/base/tm-onboard/SKILL.md", "docs/spec/skills.md"):
+        text = _read(rel)
+        for line in text.splitlines():
+            if ("멈춘다" in line or "멈춤" in line) and (
+                    "init" in line and "join" in line):
+                assert "AGENTS" in line or "bootstrap" in line, (
+                    f"{rel} 옛 CLI-only 멈춤 계약 잔존: {line!r}")

@@ -121,7 +121,7 @@ triggers:
 - `install.py` 직접 호출 — CLI가 끝냈다. 재설치가 필요하면 `tm-mode join <url>` 재실행(멱등) 안내.
 - 멤버명·org·팀명·역할 대화 — CLI wizard가 이미 받았다.
 - 도입자/팀원 판정 설명 — CLI wizard가 처리했다.
-- 설치 안 된 사람에게 설치를 시작 → `tm-mode init` / `tm-mode join <url>` CLI 안내 후 멈춤.
+- 설치 안 된 사람에게 설치를 시작 → 스킬은 설치하지 않는다. 레포 안이면 AGENTS.md 첫 접촉 bootstrap 으로 라우팅(0.3 clone-and-go — 설치는 그 절차 몫), 레포 밖이면 `tm-mode init` / `tm-mode join <url>` CLI 안내 후 멈춤.
 
 ### 5.3 흐름 (설치 후 첫 진입 — 병렬)
 
