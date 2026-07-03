@@ -329,3 +329,123 @@ def test_auto_commit_kicks_worker_end_to_end(xdg, tmp_path):
     ahead, _ = git_ops.ahead_behind(str(work))
     assert ahead == 0, "worker 가 push 를 완료하지 못했다"
     assert git_ops.read_push_pending(str(work)) == ""
+
+
+# ── session-start pending recovery (#45 가시화 3중의 ①) ─────────────
+
+SESSION_START = REPO / "infra" / "hooks" / "session-start.py"
+
+
+class _FakeGo:
+    """recovery 판정 경로만 검증하는 fake git_ops."""
+
+    def __init__(self, pending: str, ahead: int, has_upstream: bool):
+        self._pending = pending
+        self._ahead = ahead
+        self._has = has_upstream
+        self.kicked = 0
+        self.cleared = 0
+        self.DEFAULT_TIMEOUT = 2
+
+    def read_push_pending(self, root):
+        return self._pending
+
+    def _ahead_behind_raw(self, root, timeout):
+        return (self._ahead, 0, self._has)
+
+    def kick_push_worker(self, root, worker):
+        self.kicked += 1
+        return True
+
+    def clear_push_pending(self, root):
+        self.cleared += 1
+
+
+def _load_session_start():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("session_start_mod", SESSION_START)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_recover_ahead_rekicks_worker_no_direct_push(tmp_path, capsys, monkeypatch):
+    """pending + ahead>0 → 경고 + worker 재kick 만(직접 push 금지·clear 금지)."""
+    mod = _load_session_start()
+    fake = _FakeGo("pending", ahead=2, has_upstream=True)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    mod._recover_push_pending(str(tmp_path))
+    err = capsys.readouterr().err
+    assert "push 미완" in err and "ahead=2" in err
+    assert fake.kicked == 1
+    assert fake.cleared == 0
+
+
+def test_recover_stale_pending_auto_cleared(tmp_path, capsys, monkeypatch):
+    """pending + ahead==0 → stale 자동 clear(이미 push 됨), 경고·kick 없음."""
+    mod = _load_session_start()
+    fake = _FakeGo("pending", ahead=0, has_upstream=True)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    mod._recover_push_pending(str(tmp_path))
+    assert fake.cleared == 1
+    assert fake.kicked == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_recover_unknown_upstream_conservative_warn(tmp_path, capsys, monkeypatch):
+    """판정불가(no upstream/git 오류) → 보수 경고, clear·kick 안 함."""
+    mod = _load_session_start()
+    fake = _FakeGo("pending", ahead=0, has_upstream=False)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    mod._recover_push_pending(str(tmp_path))
+    err = capsys.readouterr().err
+    assert "판정 불가" in err
+    assert fake.cleared == 0 and fake.kicked == 0
+
+
+def test_recover_no_pending_silent(tmp_path, capsys, monkeypatch):
+    """pending 없으면 완전 침묵(판정·kick 비용 없음)."""
+    mod = _load_session_start()
+    fake = _FakeGo("", ahead=5, has_upstream=True)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    mod._recover_push_pending(str(tmp_path))
+    assert capsys.readouterr().err == ""
+    assert fake.cleared == 0 and fake.kicked == 0
+
+
+# ── UserPromptSubmit 초경량 pending-age 검사 (#45 가시화 3중의 ②) ───
+
+REMIND = REPO / "infra" / "hooks" / "session-log-remind.py"
+
+
+def _load_remind():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("remind_mod", REMIND)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_remind_warns_on_old_pending(xdg, tmp_path, capsys):
+    """age > 임계 → stderr 1줄 + warned 마커(30분 스로틀) — 2회째는 침묵."""
+    mod = _load_remind()
+    root = str(tmp_path / "team")
+    git_ops.write_push_pending(root)
+    # mtime 을 과거로 조작해 age > 600s 재현
+    old = Path(git_ops.push_pending_path(root))
+    os.utime(old, (old.stat().st_atime, old.stat().st_mtime - 700))
+    mod._warn_push_pending_age(root)
+    err1 = capsys.readouterr().err
+    assert "push 미완" in err1
+    mod._warn_push_pending_age(root)  # 스로틀 — 재경고 없음
+    assert capsys.readouterr().err == ""
+
+
+def test_remind_silent_on_fresh_or_no_pending(xdg, tmp_path, capsys):
+    """pending 없음/신선(age<임계) → 완전 침묵."""
+    mod = _load_remind()
+    root = str(tmp_path / "team")
+    mod._warn_push_pending_age(root)          # 없음
+    git_ops.write_push_pending(root)
+    mod._warn_push_pending_age(root)          # 신선
+    assert capsys.readouterr().err == ""

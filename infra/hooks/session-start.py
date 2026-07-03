@@ -196,6 +196,42 @@ def _maybe_auto_pull(team_root: str) -> None:
     except Exception:  # noqa: BLE001 — 철칙: 무슨 일이 있어도 세션·주입을 막지 않는다
         pass
 
+    _recover_push_pending(team_root)
+
+
+def _recover_push_pending(team_root: str) -> None:
+    """#45 pending recovery — worker 유실(머신 슬립·Windows detach 실패·크래시) 복원.
+
+    ledger 가 correctness 의 단일 소스: pending 존재 시 age 무관 ahead 조합 판정 —
+      - 판정불가(no upstream/git 오류) → 보수 경고(clear 하지 않음).
+      - ahead > 0 → 경고 + worker **재kick 만**(세션 시작을 push 로 무겁히지 않는다 —
+        직접 push 금지가 계약).
+      - ahead == 0 → stale pending 자동 clear(이미 push 됨 — worker 가 clear 전에 죽음).
+    무raise — 세션·주입을 막지 않는다.
+    """
+    if _git_ops is None:
+        return
+    try:
+        if not _git_ops.read_push_pending(team_root):
+            return
+        ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
+            team_root, _git_ops.DEFAULT_TIMEOUT)
+        if not has_upstream:
+            print("[teammode] push 미완(pending)이 있는데 원격 판정 불가 — "
+                  "네트워크/upstream 확인 필요(보수 경고).", file=sys.stderr)
+            return
+        if ahead > 0:
+            print(f"[teammode] 이전 세션의 push 미완(pending, ahead={ahead}) — "
+                  f"worker 를 재시작합니다.", file=sys.stderr)
+            worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "push-worker.py")
+            _git_ops.kick_push_worker(team_root, worker)
+            return
+        # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.
+        _git_ops.clear_push_pending(team_root)
+    except Exception:  # noqa: BLE001 — 철칙
+        pass
+
 
 def _persist_session_relay(data: dict) -> None:
     """정규 stdin 세션 id 를 세션별 relay 파일로 영속(A2 writer relay).

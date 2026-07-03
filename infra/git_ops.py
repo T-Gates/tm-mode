@@ -472,6 +472,39 @@ def push_pending_age_seconds(team_root: str):
         return None
 
 
+def kick_push_worker(team_root: str, worker_path: str) -> bool:
+    """push-worker detach spawn (#45). 무raise — 반환: spawn 시도 성공 여부.
+
+    auto-commit(커밋 직후)과 session-start(pending recovery 재kick)가 **같은 함수**를
+    쓴다 — 훅별 spawn 코드 중복이 만들 플랫폼 분기 드리프트를 차단.
+    - POSIX: start_new_session=True(훅 종료와 무관하게 생존).
+    - Windows: DETACHED_PROCESS 시도하되 detach 생존을 correctness 로 믿지 않는다 —
+      실패해도 pending ledger 가 남아 recovery 가 다시 부른다.
+    - TEAMMODE_DISABLE_PUSH_WORKER=1 이면 생략(테스트 관찰용 kill-switch).
+    """
+    if os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") == "1":
+        return False
+    try:
+        import sys as _sys
+        kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "cwd": team_root,
+        }
+        if os.name == "nt":  # pragma: no cover — Windows 는 ledger 폴백이 계약
+            kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen([_sys.executable, worker_path, "--root", team_root],
+                         **kwargs)
+        return True
+    except Exception:  # noqa: BLE001 — spawn 실패는 비차단(ledger 가 안전장치)
+        return False
+
+
 def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
     """**plain push only** — push-worker 전용 (#45 정정: plain-push-only).
 

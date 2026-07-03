@@ -89,35 +89,20 @@ def _warn_if_stale_home(root: str) -> None:
         pass  # 경고 실패가 훅을 막지 않는다(철칙: 비차단)
 
 
-def _kick_push_worker(root: str) -> None:
-    """push-worker 를 detach 로 kick(#45). 무raise — kick 실패는 커밋을 막지 않는다.
+_WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "push-worker.py")
 
-    - POSIX: start_new_session=True 로 세션 분리(훅 프로세스 종료와 무관하게 생존).
-    - Windows: DETACHED_PROCESS 시도하되 **detach 생존을 correctness 로 믿지 않는다**
-      — spawn 실패/조기사망해도 pending ledger 가 남아 session-start recovery 가
-      재kick 한다(ledger 가 안전장치, 코드 계약).
-    - stdout/stderr DEVNULL: worker 는 조용한 백그라운드 — 가시화는 ledger/마커 몫.
-    - 테스트 훅: TEAMMODE_DISABLE_PUSH_WORKER=1 이면 kick 생략(커밋·ledger 만 관찰).
+
+def _kick_push_worker(root: str) -> None:
+    """push-worker detach kick(#45) — 공용 git_ops.kick_push_worker 위임(드리프트 방지).
+
+    spawn 실패/조기사망해도 pending ledger 가 남아 session-start recovery 가
+    재kick 한다(ledger 가 안전장치). kill-switch 로 생략된 경우는 경고 없이 침묵.
     """
-    if os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") == "1":
+    if _git_ops is None:
         return
-    try:
-        worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "push-worker.py")
-        kwargs = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "cwd": root,
-        }
-        if os.name == "nt":  # pragma: no cover — Windows 는 CI 밖(계약: ledger 폴백)
-            kwargs["creationflags"] = (
-                getattr(subprocess, "DETACHED_PROCESS", 0)
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        else:
-            kwargs["start_new_session"] = True
-        subprocess.Popen([sys.executable, worker, "--root", root], **kwargs)
-    except Exception:  # noqa: BLE001 — spawn 실패 시 경고 1줄 + 빠른 반환(ledger 폴백)
+    ok = _git_ops.kick_push_worker(root, _WORKER_PATH)
+    if not ok and os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") != "1":
         try:
             print("[teammode] push-worker 시작 실패 — pending 은 세션 시작 시 "
                   "재시도됩니다.", file=sys.stderr)
