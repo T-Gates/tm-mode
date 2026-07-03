@@ -955,7 +955,6 @@ _KNOWLEDGE_ALLOWED_FOLDERS = (
     "product",
     "team",
     "team/decisions",
-    "soma",
 )
 
 # 명시 차단 폴더 — 허용 목록에서 제외되는 경로 (훅 자동·tm-context 관리)
@@ -1002,6 +1001,15 @@ def _knowledge_folder_allowed(team_root: Path, norm_folder: str) -> bool:
         if norm_folder == af or norm_folder.startswith(af + "/"):
             return True
     return False
+
+
+def _route_upsert_hint_command(top_folder: str, author: str) -> str:
+    """`memory route upsert` 안내 명령 한 줄 — 성공-path 힌트(#7)와 거부 힌트(#51)가
+    같은 포맷을 공유한다(문구 드리프트 방지). 자동 등재는 하지 않는다 — desc 는 사람 몫.
+    """
+    return (f"python infra/teammode.py memory route upsert "
+            f"--root <루트> --path {top_folder} "
+            f"--desc \"<한 줄 설명>\" --author {author}")
 
 # INDEX 행 구분자 — 파이프 표 형식
 _INDEX_TABLE_HEADER = "| 가중치 | 경로 | 내용 | 편집일 |"
@@ -1051,8 +1059,12 @@ def _validate_filename_chars(filename: str) -> str | None:
     return None
 
 
-def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str | None:
+def _validate_knowledge_path(team_root: Path, folder: str, filename: str,
+                              author: str | None = None) -> str | None:
     """folder/filename 이 안전한지 검증. 위반 시 에러 메시지 반환.
+
+    author 가 주어지면 허용-폴더 거부 메시지에 route upsert 힌트를 내장한다(#51 —
+    거부당한 사용자가 다음 행동을 즉시 알도록. 포맷은 성공-path 힌트와 공유).
 
     - folder: _KNOWLEDGE_ALLOWED_FOLDERS 안의 슬래시 포함 경로 (예: 'team/decisions').
       하위 경로 분리자(/)는 허용, 상위 이탈(..)은 불허.
@@ -1085,9 +1097,14 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str
                     f"차단 목록: {', '.join(_KNOWLEDGE_BLOCKED_FOLDERS)}")
 
     if not _knowledge_folder_allowed(team_root, norm_folder):
-        return (f"folder '{folder}' 는 허용되지 않습니다. "
-                f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} (및 그 하위, "
-                f"또는 루트 INDEX 라우팅 맵에 등재된 최상위 폴더)")
+        msg = (f"folder '{folder}' 는 허용되지 않습니다. "
+               f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} (및 그 하위, "
+               f"또는 루트 INDEX 라우팅 맵에 등재된 최상위 폴더)")
+        if author:
+            top = norm_folder.split("/")[0] + "/"
+            msg += (f"\n[hint] 먼저 등록: "
+                    f"{_route_upsert_hint_command(top, author)}")
+        return msg
 
     # ── folder: .. 세그먼트 금지 ──────────────────────────────────
     # isascii() 강제: isalnum() 은 유니코드라 전각문자(Ａ 등)·한글이 통과한다.
@@ -1332,7 +1349,7 @@ def _root_index_find_row(lines: list, path: str, prefix: bool = False) -> "int |
         stripped = line.strip()
         if not stripped.startswith("|"):
             continue
-        # 첫 번째 칸(경로 열)만 매칭 — 설명 칸의 `soma/` 언급이 실제 route 행
+        # 첫 번째 칸(경로 열)만 매칭 — 설명 칸의 `product/` 언급이 실제 route 행
         # 없이 커버로 오인되는 false-negative 차단(codex P2).
         first_cell = stripped.split("|", 2)[1] if stripped.count("|") >= 2 else ""
         if marker in first_cell:
@@ -1591,7 +1608,8 @@ def cmd_knowledge(team_root: Path, action: str | None,
         수행해 **같은 커밋에 포함**(advisory·비차단: 실패해도 본작업·커밋은 진행).
       - traversal 차단(_validate_knowledge_path).
       - 멱등: 같은 내용 재호출 → 변경 없음(커밋 안 생김).
-      - 대상 범위: product/·team/·team/decisions/·soma/ 등 _KNOWLEDGE_ALLOWED_FOLDERS.
+      - 대상 범위: product/·team/·team/decisions/ 등 _KNOWLEDGE_ALLOWED_FOLDERS
+        (+ 루트 INDEX 라우팅 맵에 등재된 팀 전용 최상위 폴더 — 동적 허용).
         sessions/·meeting/ 은 제외.
     """
     if action == "write":
@@ -1625,7 +1643,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
             return 2
 
         # folder/filename traversal + containment 가드 + 허용 폴더 검증 (P1-1 포함)
-        err = _validate_knowledge_path(team_root, folder, filename)
+        err = _validate_knowledge_path(team_root, folder, filename, author=author)
         if err is not None:
             print(f"[error] memory write: {err}", file=sys.stderr)
             return 2
@@ -1810,9 +1828,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
             root_index_path = team_root / "memory" / "INDEX.md"
             if not _root_index_covers_top(root_index_path, top_folder):
                 print(f"[hint] '{top_folder}'가 루트 INDEX에 미등재 — 등록: "
-                      f"python infra/teammode.py memory route upsert "
-                      f"--root <루트> --path {top_folder} "
-                      f"--desc \"<한 줄 설명>\" --author {author}")
+                      f"{_route_upsert_hint_command(top_folder, author)}")
         except Exception:
             pass  # advisory — 힌트 실패가 write 를 막지 않는다
 
