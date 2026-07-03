@@ -271,6 +271,7 @@ def test_remind_end_to_end_through_normalize(env, tmp_path):
         {"event": "UserPromptSubmit", "script": "session-log-remind.py", "mode": "on"}])
     # TMPDIR 격리를 위해 env.run 은 os.environ 상속 — 카운터는 별도지만 age 트리거로 발화
     assert proc.returncode == 0
-    # 발화 시 평문 stdout(JSON 아님) — "세션 로그" 안내 포함 여부만 확인
+    # 발화 시 안내 포함 여부만 확인 — "세션로그 미작성"은 강/약·compact/full
+    # 모든 발화 변형에 공통(compact 약발화는 "세션 로그"(공백) 문구가 없다).
     if proc.stdout.strip():
-        assert "세션 로그" in proc.stdout
+        assert "세션로그 미작성" in proc.stdout

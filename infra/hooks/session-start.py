@@ -61,6 +61,13 @@ try:
 except ImportError:
     def _ensure_utf8_io() -> None:  # 모듈 부재여도 훅은 동작(보정만 스킵)
         return
+# 세션로그 규칙 단일 소스(compact hook context) — 시블링 모듈(auto_pull 과 동일 패턴).
+# 리마인더(session-log-remind, compact 기본)의 "(규칙: 세션 시작 주입 참조)"가 가리키는
+# 블록을 여기서 세션당 1회 주입한다. 부재 시 규칙 블록만 생략(advisory — 주입은 계속).
+try:
+    from _slog_rules import SESSION_LOG_RULES as _SESSION_LOG_RULES  # type: ignore
+except ImportError:
+    _SESSION_LOG_RULES = None
 
 
 def _team_root() -> str:
@@ -221,6 +228,13 @@ def _build_context(root: Path) -> str | None:
         if _gl_path.is_file():
             lines.append("")
             lines.append(_gl_path.read_text(encoding="utf-8").rstrip())
+
+    # 세션로그 규칙 — 세션당 1회, 압축 블록(≤6줄). 리마인더(compact)가 매번 장문
+    # 룰셋을 싣는 대신 이 블록을 "(규칙: 세션 시작 주입 참조)"로 가리킨다(단일 소스
+    # _slog_rules — 드리프트 방지). 모듈 부재 시 생략(advisory).
+    if _SESSION_LOG_RULES:
+        lines.append("")
+        lines.append(_SESSION_LOG_RULES)
 
     if index_text.strip():
         lines.append("")
