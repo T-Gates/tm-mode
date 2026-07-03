@@ -720,7 +720,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             print("  설치된 에이전트를 감지할 수 없습니다. 계속 진행합니다.")
         selected_agents: list[str] = list(installed) if installed else []
 
-        print("\n" + _hi("[2/5] 에이전트 선택") + "  (스페이스=토글, Enter=확정)")
+        print("\n" + _hi("[2/5] 에이전트 선택"))
 
         def _agents_fallback() -> list[int]:
             """raw 불가 시(테스트 포함) 기존 번호 토글 루프 그대로(§7.4 H3, cli:337-360 1:1).
@@ -728,12 +728,14 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             (a) 빈입력(Enter)까지 무한 토글, (b) 매 토글 input 1회,
             (c) 미설치 토큰 거부, (d) 콤마/공백 다중토큰.
             selected_agents(클로저)를 갱신하고 인덱스 리스트를 반환한다.
+            마크는 raw 메뉴(_pick_many)와 동일한 ◉/◯ — `[x]`는 '제외'로 오독(1c).
             """
+            print("  (번호=켜고끄기, Enter=확정 — ◉ 켜짐 / ◯ 꺼짐)")
             while True:
                 for i, ag in enumerate(all_agents, 1):
-                    mark = "x" if ag in selected_agents else " "
+                    mark = "◉ " if ag in selected_agents else "◯ "
                     note = "" if ag in installed else "  (미설치)"
-                    print(f"  [{mark}] {i}) {ag}{note}")
+                    print(f"  {mark}{i}) {ag}{note}")
                 raw = _prompt("  ›", "")
                 if not raw.strip():
                     break  # Enter → 현재 선택 그대로 확정

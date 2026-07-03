@@ -361,6 +361,33 @@ class TestWizardTty:
         assert "claude" in agent_args
         assert "codex" not in agent_args
 
+    def test_agent_toggle_renders_filled_hollow_markers(self, tmp_path, capsys):
+        """2단계 렌더링: 선택=◉ / 해제=◯ — `[x]`는 '제외'로 오독됨(온보딩 1c).
+
+        codex 를 토글 off 한 뒤 확정 → 출력에 켜짐(◉ claude)과
+        꺼짐(◯ codex) 이 모두 보여야 하고, 옛 `[x]`/`[ ]` 표기와
+        범례 없는 헤더가 다시 나오면 회귀.
+        """
+        inputs = [
+            str(tmp_path / "dest"),
+            "2",      # codex off
+            "",       # 확정
+            "1", "alice", "", "N", "Y",
+        ]
+        self._run_wizard(tmp_path, inputs, installed_agents=["claude", "codex"])
+        out = capsys.readouterr().out
+        # 선택된 claude 줄은 ◉, 해제된 codex 줄은 ◯
+        assert "◉ 1) claude" in out
+        assert "◯ 2) codex" in out
+        # 첫 렌더(둘 다 선택)에서 codex 도 ◉ 로 시작
+        assert "◉ 2) codex" in out
+        # 옛 표기 금지 — [x] 는 '제외'로 읽힘
+        assert "[x]" not in out
+        assert "[ ]" not in out
+        # 범례가 ◉/◯ 의미를 명시
+        assert "◉ 켜짐" in out
+        assert "◯ 꺼짐" in out
+
     def test_agent_toggle_repeats_until_enter(self, tmp_path):
         """번호를 여러 번 = 매번 토글(루프 살아있음). codex off→on 하면 다시 둘 다.
 
