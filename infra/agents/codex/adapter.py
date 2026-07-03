@@ -14,8 +14,13 @@ Codex 특성(events.json 으로 데이터 표현 — 코드 분기 하드코딩 
 현재 Codex 는 PreToolUse 를 지원하므로 confirm-action/kb-write-guard 같은 차단 훅도
 등록 대상이다.
 
+설계 원칙(#D1 — 훅 trust): **훅 command 문자열은 안정 유지(normalize 래퍼)** — Codex 는
+훅을 per-key trusted_hash([hooks.state])로 게이트하므로 command identity 가 바뀌면
+사용자 재-trust 전까지 headless(exec)에서 훅이 **무음 정지**한다. command 를 바꾸는
+변경(인터프리터 경로·env prefix·인자 순서 포함)은 신중히.
+
 CLI:
-  adapter.py sync [--on|--off]   manifest → config.toml (멱등)
+  adapter.py sync [--on|--off]   manifest → config.toml (멱등) + trust 검사(read-only)
   adapter.py uninstall           teammode 블록 제거
 """
 from __future__ import annotations
@@ -63,6 +68,19 @@ _EVENT_TABLE = re.compile(r"^\s*\[\[hooks\.[A-Za-z0-9_-]+\]\]\s*$")
 _ANY_SECTION = re.compile(r"^\s*\[")
 # _COMMAND_LINE: 훅 테이블의 command 한 줄 문자열 값(managed SHAPE 증명 P2-3 입력).
 _COMMAND_LINE = re.compile(r"""^\s*command\s*=\s*(['"])(.*)\1\s*$""")
+
+# ── #D1 훅 trust 검사(read-only) 전용 패턴 ──
+# _EVENT_TABLE_NAMED: [[hooks.<Event>]] 헤더에서 이벤트명 캡처(파일 전체 순번 집계용).
+_EVENT_TABLE_NAMED = re.compile(r"^\s*\[\[hooks\.([A-Za-z0-9_-]+)\]\]\s*$")
+# _HOOK_SUBTABLE: [[hooks.<Event>.hooks]] 서브테이블 헤더(훅 순번 j 집계용).
+_HOOK_SUBTABLE = re.compile(r"^\s*\[\[hooks\.([A-Za-z0-9_-]+)\.hooks\]\]\s*$")
+# _STATE_HEADER: [hooks.state."<key>"] 엔트리 헤더 — key 는 quoted TOML 키.
+_STATE_HEADER = re.compile(r"""^\s*\[hooks\.state\.(['"])(.+)\1\]\s*$""")
+# _TRUSTED_HASH_LINE: hooks.state 엔트리의 trusted_hash 값.
+_TRUSTED_HASH_LINE = re.compile(r"""^\s*trusted_hash\s*=\s*(['"])([^'"]+)\1\s*$""")
+# _HOOK_KV_LINE: 훅 테이블/서브테이블의 관심 키(matcher/command/timeout/statusMessage).
+_HOOK_KV_LINE = re.compile(
+    r"^\s*(matcher|command|timeout|statusMessage)\s*=\s*(.+?)\s*$")
 
 
 class Adapter(BaseAdapter):
@@ -283,6 +301,13 @@ class Adapter(BaseAdapter):
         if changed:
             changes.append(f"[sync] Codex 훅 {len(toml_entries)}개 등록")
 
+        # #D1: 방금 쓴 teammode 훅들의 codex trust 상태 read-only 검사.
+        # untrusted(키 부재)/modified(불일치)면 1줄 안내 — headless(exec) 무음 스킵 창을
+        # 가시화한다. 검사 실패는 내부에서 전부 조용히 삼킨다(sync 를 절대 실패시키지 않음).
+        trust_warn = self.check_hook_trust()
+        if trust_warn:
+            warnings.append(trust_warn)
+
         # warn 도배 방지: 같은 이벤트 미지원으로 발생한 warn 들을 묶어 1줄 요약 출력.
         # 형식 "[warn] {script}: {agent} 미지원(이벤트 {event})..." 을 파싱해 집계.
         # 다른 패턴(MCP 별칭 미보장, 매처 표현 불가)은 그대로 출력(드문 케이스, 도배 아님).
@@ -317,6 +342,231 @@ class Adapter(BaseAdapter):
         if not changed and not warnings and not infos:
             changes.append("[ok] 변경 없음")
         return changes
+
+    # ── #D1 훅 trust 검사(read-only) ──────────────────────────────────────
+    #
+    # Codex 는 훅을 config.toml [hooks.state] 의 per-key trusted_hash 로 게이트한다:
+    # untrusted(키 부재)/modified(해시 불일치) 훅은 headless(exec)에서 **무경고 스킵**.
+    # 여기서는 방금 쓴 teammode 훅들의 기대 해시를 재계산·비교해 문제가 있으면 1줄만
+    # 안내한다. trusted_hash 를 **직접 기록하지 않는다** — 사용자 동의 게이트 우회 금지.
+    #
+    # 해시/키 스펙(비공개 구현 디테일 — 라이브 벡터 5개로 독립 재현 검증, 2026-07-03):
+    #   trusted_hash = "sha256:" + SHA256(canonical_JSON(payload))
+    #   payload = {"event_name": <snake 라벨>, "hooks": [{"async": false, "command",
+    #              "statusMessage", "timeout", "type": "command"}], "matcher": <값>}
+    #   - canonical = 키 정렬 + compact 구분자(",", ":") + ensure_ascii=False
+    #   - **부재 필드는 payload 키 생략**(실측: statusMessage 없는 Stop 라이브 벡터가
+    #     '생략'으로만 재현, null 은 불일치). matcher 없으면 키 생략.
+    #   hooks.state 키 = "<config 절대경로>:<snake 라벨>:<per-event 테이블 순번>:<훅 순번>"
+    #   - 테이블 순번은 **파일 전체 기준**(사용자 훅이 앞에 있으면 밀린다).
+    # 버전 게이트: 위 스펙은 codex-cli 0.142.x 실측 — 다른 버전은 검사 자체를 조용히
+    # skip(오탐 안내 방지). 새 버전은 재검증 후 TRUST_SPEC_VERSIONS 에 추가.
+    # (codex 문답 수렴: semver allowlist / hooks.state 부재도 경고 / 정확 키 매칭만 /
+    #  bypass 플래그 문구 미포함 / 매 sync 후 검사 / enabled=false 는 의도적 비활성으로
+    #  간주 — trusted_hash 일치면 경고 제외.)
+
+    CODEX_BIN = "codex"  # 버전 프로브 바이너리 — 테스트는 인스턴스 속성으로 재지정
+    TRUST_SPEC_VERSIONS = ((0, 142),)  # (major, minor) allowlist — 실측 검증된 버전대만
+
+    def _codex_version(self) -> Optional[str]:
+        """`codex --version` → 'X.Y.Z' 또는 None(부재·실패·timeout — 전부 무해).
+
+        캐시하지 않는다(값싼 호출, 버전 업그레이드 즉시 반영). 테스트는 이 메서드를
+        인스턴스 속성으로 주입해 호스트 설치 여부와 무관한 결정성을 얻는다.
+        """
+        import subprocess
+        try:
+            r = subprocess.run([self.CODEX_BIN, "--version"],
+                               capture_output=True, text=True, timeout=5)
+        except Exception:  # noqa: BLE001 — 부재/권한/timeout 전부 '버전 미상'으로 강등
+            return None
+        m = re.search(r"(\d+\.\d+\.\d+)", (r.stdout or "") + " " + (r.stderr or ""))
+        return m.group(1) if m else None
+
+    def _trust_spec_version_ok(self) -> bool:
+        """버전 게이트 — 해시 스펙이 실측 검증된 버전대(0.142.x)만 True."""
+        v = self._codex_version()
+        if not v:
+            return False
+        try:
+            major, minor = (int(p) for p in v.split(".")[:2])
+        except ValueError:
+            return False
+        return (major, minor) in self.TRUST_SPEC_VERSIONS
+
+    @staticmethod
+    def expected_trust_hash(label: str, hooks: list, matcher: Optional[str] = None) -> str:
+        """codex trusted_hash 재계산 — 스펙 상단 주석 참조(golden 테스트 대상).
+
+        hooks: codex payload 모양의 훅 dict 리스트(부재 필드는 키 자체가 없어야 함).
+        """
+        import hashlib
+        import json as _json
+        payload: dict = {"event_name": label, "hooks": hooks}
+        if matcher is not None:
+            payload["matcher"] = matcher
+        s = _json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                        ensure_ascii=False)
+        return "sha256:" + hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _snake_label(event: str) -> str:
+        """Codex 이벤트명 → hooks.state 키의 snake 라벨(PreToolUse → pre_tool_use)."""
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", event).lower()
+
+    @staticmethod
+    def _toml_scalar(raw: str):
+        """trust 검사용 한 줄 TOML 값 파싱 — 문자열(우리 _toml_str 산출형)·정수만.
+
+        해석 불가 → None(그 필드는 payload 에서 생략 — 오인보다 미검증이 안전).
+        """
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] in "'\"" and raw.endswith(raw[0]):
+            val = raw[1:-1]
+            if raw[0] == '"':
+                # _toml_str 산출물의 역변환(\" 와 \\ 만) — 그 외 이스케이프는 액면 유지.
+                val = val.replace('\\"', '"').replace("\\\\", "\\")
+            return val
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    def _parse_trust_view(self, text: str):
+        """(managed_hooks, state) — trust 검사에 필요한 두 시야를 한 번의 라인 스캔으로.
+
+        managed_hooks: teammode 마커 블록 안 훅들의
+          {label, i(파일 전체 기준 per-event 테이블 순번), j(테이블 내 훅 순번),
+           matcher, command, timeout, statusMessage}
+        state: [hooks.state."<key>"] → trusted_hash 값 dict.
+        멀티라인 문자열 안의 헤더-모양 라인은 _purge_legacy_markers 와 동일한 보수
+        토글로 무시한다(사용자 데이터를 테이블로 오인해 순번이 밀리는 것 방지).
+        """
+        state: dict = {}
+        managed: list = []
+        per_event: dict = {}   # 이벤트명 → 지금까지 본 [[hooks.X]] 테이블 수(파일 전체)
+        in_block = False
+        cur: Optional[dict] = None        # 블록 안 현재 이벤트 테이블 컨텍스트
+        cur_hook: Optional[dict] = None   # 블록 안 현재 훅 서브테이블 컨텍스트
+        state_key: Optional[str] = None   # 현재 hooks.state 엔트리 키
+        in_ml: Optional[str] = None       # 멀티라인 문자열 상태("'''"/'\"\"\"' 또는 None)
+        for ln in text.split("\n"):
+            if in_ml is None:
+                stripped = ln.strip()
+                if stripped == BLOCK_START:
+                    in_block, cur, cur_hook, state_key = True, None, None, None
+                    continue
+                if stripped == BLOCK_END:
+                    in_block, cur, cur_hook, state_key = False, None, None, None
+                    continue
+                m = _HOOK_SUBTABLE.match(ln)
+                if m:
+                    state_key = None
+                    if in_block and cur is not None and m.group(1) == cur["event"]:
+                        cur_hook = {"label": self._snake_label(cur["event"]),
+                                    "i": cur["i"], "j": cur["next_j"],
+                                    "matcher": cur["matcher"], "command": None,
+                                    "timeout": None, "statusMessage": None}
+                        cur["next_j"] += 1
+                        managed.append(cur_hook)
+                    else:
+                        cur, cur_hook = None, None
+                    continue
+                m = _EVENT_TABLE_NAMED.match(ln)
+                if m:
+                    event = m.group(1)
+                    i = per_event.get(event, 0)
+                    per_event[event] = i + 1
+                    state_key, cur_hook = None, None
+                    cur = ({"event": event, "i": i, "next_j": 0, "matcher": None}
+                           if in_block else None)
+                    continue
+                m = _STATE_HEADER.match(ln)
+                if m:
+                    key = m.group(2)
+                    if m.group(1) == '"':
+                        key = key.replace('\\"', '"').replace("\\\\", "\\")
+                    state_key, cur, cur_hook = key, None, None
+                    continue
+                if _ANY_SECTION.match(ln):
+                    # 그 외 테이블/섹션 — 모든 컨텍스트 종료(bare [hooks.state] 포함).
+                    state_key, cur, cur_hook = None, None, None
+                    continue
+                if state_key is not None:
+                    hm = _TRUSTED_HASH_LINE.match(ln)
+                    if hm:
+                        state[state_key] = hm.group(2)
+                elif in_block and (cur_hook is not None or cur is not None):
+                    kv = _HOOK_KV_LINE.match(ln)
+                    if kv:
+                        key, val = kv.group(1), self._toml_scalar(kv.group(2))
+                        if cur_hook is not None:
+                            if key in ("command", "timeout", "statusMessage"):
+                                cur_hook[key] = val
+                        elif key == "matcher" and cur is not None:
+                            cur["matcher"] = val
+            # 멀티라인 문자열 구분자 소비(안/밖 토글) — _purge_legacy_markers 와 동일.
+            rest = ln
+            while True:
+                if in_ml is None:
+                    p1 = rest.find("'''")
+                    p2 = rest.find('"""')
+                    if p1 == -1 and p2 == -1:
+                        break
+                    if p2 == -1 or (p1 != -1 and p1 < p2):
+                        in_ml, rest = "'''", rest[p1 + 3:]
+                    else:
+                        in_ml, rest = '"""', rest[p2 + 3:]
+                else:
+                    p = rest.find(in_ml)
+                    if p == -1:
+                        break
+                    rest = rest[p + 3:]
+                    in_ml = None
+        return managed, state
+
+    def check_hook_trust(self) -> Optional[str]:
+        """teammode 훅의 codex trust 상태 read-only 검사 — 경고 1줄 또는 None.
+
+        sync 마지막에 항상 호출되며 단독 호출도 가능하다. **절대 raise 하지 않는다** —
+        어떤 실패(버전 미상·파싱 불가·config 읽기 실패)도 None 으로 강등해 sync 를
+        실패시키지 않는다. hooks.state 섹션 자체가 없어도 '전부 untrusted' 로 경고한다
+        (첫 설치 사용자의 핵심 실패 모드 — codex 문답 R1-2 수렴).
+        TEAMMODE_CODEX_TRUST_CHECK=0 이면 검사 생략(테스트 결정성·운영 escape hatch).
+        """
+        try:
+            if os.environ.get("TEAMMODE_CODEX_TRUST_CHECK") == "0":
+                return None
+            if not self._trust_spec_version_ok():
+                return None
+            text = self._read_config()
+            if not text or BLOCK_START not in text:
+                return None
+            managed, state = self._parse_trust_view(text)
+            # 키의 경로 성분은 정확 매칭만(abspath+expanduser) — suffix 폴백은 다른
+            # config 의 trust 를 오인할 수 있어 '경고 누락' 방향(codex 문답 R2-b).
+            cfg = os.path.abspath(os.path.expanduser(str(self.settings_path)))
+            bad = 0
+            for h in managed:
+                if not isinstance(h.get("command"), str):
+                    continue  # command 를 못 읽은 훅은 미검증(오탐 방지)
+                hook = {"async": False, "command": h["command"], "type": "command"}
+                if h.get("statusMessage") is not None:
+                    hook["statusMessage"] = h["statusMessage"]
+                if h.get("timeout") is not None:
+                    hook["timeout"] = h["timeout"]
+                expected = self.expected_trust_hash(
+                    h["label"], [hook], matcher=h.get("matcher"))
+                key = f"{cfg}:{h['label']}:{h['i']}:{h['j']}"
+                if state.get(key) != expected:
+                    bad += 1
+            if not bad:
+                return None
+            return (f"[warn] codex 훅 {bad}개가 아직 trust되지 않음 — codex(TUI)를 "
+                    f"한 번 열어 hook trust 프롬프트에서 Trust를 눌러야 "
+                    f"headless(exec)에서도 훅이 동작합니다")
+        except Exception:  # noqa: BLE001 — 검사는 부가 기능: 어떤 실패도 sync 를 못 막음
+            return None
 
     def _get_status_message(self) -> str:
         """Codex hook statusMessage 문자열 — '[<팀명>] 팀모드 ON'.

@@ -39,6 +39,7 @@ description: Use right after a tm-mode install (`tm-mode init` / `tm-mode join`)
 > 마지막 줄에 **전체 판정**(전부 정상 / 빠진 항목 목록)을 한 줄로.
 
 - 메인은 이 서브의 final 결과만 받아 §진입흐름 3 으로 종합한다. **서브 자기보고를 의심**해야 할 만큼 중요하면 빠진 항목만 메인이 직접 재확인.
+- **Codex 사용자 한 줄 안내**: 첫 설치·훅 변경 후에는 codex(TUI)를 한 번 열어 hook trust 프롬프트에서 **Trust** 를 눌러야 한다 — 아니면 headless(`codex exec`)에서 훅이 조용히 스킵된다(`tm on` 이 감지하면 [warn] 으로 알려준다).
 
 ---
 

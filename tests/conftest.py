@@ -145,6 +145,11 @@ def _isolate_pull_state(tmp_path_factory, monkeypatch):
     # 개발자 셸의 TEAMMODE_MEMBER 가 hook subprocess 로 새면 폴백/멤버격리 테스트가
     # 오염된다(테스트는 격리 환경 가정) — 기본 제거. 멤버 지정 테스트는 자체 env 로 덮는다.
     monkeypatch.delenv("TEAMMODE_MEMBER", raising=False)
+    # #D1: codex 훅 trust 검사는 호스트의 `codex --version` 실측에 민감하다 — 켜두면
+    # codex 0.142.x 가 깔린 머신에서만 sync 가 [warn] 을 내 stdout/반환값 단언이 갈라진다
+    # (머신 의존 비결정성). 기본 차단 — trust 테스트만 이 env 를 지우고 버전 프로브를
+    # 명시 주입한다(tests/test_codex_trust_check.py).
+    monkeypatch.setenv("TEAMMODE_CODEX_TRUST_CHECK", "0")
 
 
 def _claude_json_footprint(raw: bytes):
