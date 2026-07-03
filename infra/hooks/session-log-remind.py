@@ -69,8 +69,13 @@ except ImportError:
 # session-start 가 _slog_rules.SESSION_LOG_RULES 를 주입한다).
 try:
     from _slog_rules import RULES_REF as _RULES_REF  # type: ignore
+    _HAS_RULES_MODULE = True
 except ImportError:
+    # 규칙 모듈 부재 = session-start 가 규칙을 주입하지 못하는 배포 상태일 수 있음
+    # (부분 배포·복사 누락). 이때 compact 의 "규칙 참조"는 허공을 가리키므로
+    # 리마인더를 레거시 장문으로 강등한다(codex P2 — fail-to-verbose).
     _RULES_REF = "(규칙: 세션 시작 주입 참조)"
+    _HAS_RULES_MODULE = False
 
 
 def _team_root() -> str:
@@ -171,11 +176,14 @@ def _context_style(root: str) -> str:
     """
     ux = _load_team_config(root).get("ux")
     if not isinstance(ux, dict):
-        return "compact"
+        return "compact" if _HAS_RULES_MODULE else "full"
     slr = ux.get("session_log_remind")
     if not isinstance(slr, dict):
-        return "compact"
-    return "full" if slr.get("context_style") == "full" else "compact"
+        return "compact" if _HAS_RULES_MODULE else "full"
+    if slr.get("context_style") == "full":
+        return "full"
+    # 규칙 모듈이 없으면 compact 의 참조가 깨진 상태 — 장문으로 강등(codex P2).
+    return "compact" if _HAS_RULES_MODULE else "full"
 
 
 def _valid_member_name(name: str) -> bool:
