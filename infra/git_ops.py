@@ -13,11 +13,13 @@ killpg·`--ff-only`·subprocess+git 양쪽 타임아웃·자격증명/SSH 프롬
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 # git 로컬 작업의 기본 타임아웃(초) — hang 으로 작업을 막지 않게 한다.
 # 2초: 로컬 commit/checkout/rev-list 류는 2초면 충분(세션 시작 스냅함 유지).
@@ -411,6 +413,113 @@ def clear_sync_warning(team_root: str) -> None:
         os.remove(sync_warning_path(team_root))
     except OSError:
         pass
+
+
+# ── push-pending ledger (#45 async push) ───────────────────────────
+# auto-commit 훅은 커밋까지만 동기이고 push 는 detach 된 push-worker 몫이다.
+# 이 ledger 가 correctness 의 단일 소스 — "커밋됐지만 아직 push 안 됨" 상태를
+# 팀별 파일로 남겨, worker 유실(머신 슬립·Windows detach 실패·크래시)에도
+# session-start recovery 가 상태를 복원한다. detach 생존은 신뢰 대상이 아니다.
+
+def push_pending_path(team_root: str) -> str:
+    """team_root 별 push-pending ledger 경로(sync-warning 과 동일 팀별 격리 규약)."""
+    return os.path.join(_state_dir(), f"push-pending-{_team_key(team_root)}")
+
+
+def write_push_pending(team_root: str) -> None:
+    """pending 마커 원자 기록(임시파일 + os.replace — 부분 쓰기 상태 방지). 무raise.
+
+    내용은 진단용(root·기록시각)일 뿐 계약이 아니다 — 판정은 파일 존재+mtime 만 쓴다.
+    """
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        payload = json.dumps(
+            {"root": os.path.normpath(str(team_root)),
+             "written_at": datetime.now().isoformat(timespec="seconds")},
+            ensure_ascii=False)
+        tmp = push_pending_path(team_root) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, push_pending_path(team_root))
+    except OSError:
+        pass  # ledger 기록 실패는 커밋을 막지 않는다(best-effort — 훅 철칙)
+
+
+def read_push_pending(team_root: str) -> str:
+    """pending 마커 내용(없으면 ''). 무raise."""
+    try:
+        with open(push_pending_path(team_root), encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def clear_push_pending(team_root: str) -> None:
+    """pending 마커 제거(멱등·무raise). push 성공 + ahead==0 확인 후에만 호출할 것 —
+    push 도중 새 커밋이 생겼으면 pending 을 유지해야 유실이 없다(#45 정정)."""
+    try:
+        os.remove(push_pending_path(team_root))
+    except OSError:
+        pass
+
+
+def push_pending_age_seconds(team_root: str):
+    """pending 마커 나이(초). 없으면 None. UserPromptSubmit 초경량 검사용 —
+    stat 1회만 수행한다(장수 세션에서 매 발화 비용 최소화)."""
+    try:
+        return max(0.0, float(time.time() - os.stat(push_pending_path(team_root)).st_mtime))
+    except OSError:
+        return None
+
+
+def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
+    """**plain push only** — push-worker 전용 (#45 정정: plain-push-only).
+
+    worker 는 로컬 히스토리를 절대 건드리지 않는다(rebase/fetch 복구 금지) —
+    worker 가 rebase 복구 중일 때 사용자가 편집하면 다음 auto-commit 훅의
+    add/commit 이 index.lock 으로 실패하고, 훅은 예외를 삼켜 exit 0 이므로
+    **편집 커밋이 조용히 유실**된다. push 지연보다 명백히 나쁜 회귀라 경합
+    표면을 push 로 한정한다. 정합 복구는 기존 채널(session-start do_reconcile·
+    teammode pull)에 위임한다.
+
+    - 성공 → (True, detail)
+    - upstream 미설정만 `push -u origin HEAD` 1회 (이슈 #34 와 동일 사유 —
+      새 브랜치 평문 push 는 영원히 실패하므로).
+    - non-ff → (False, "non-fast-forward") — 복구 없음, 마커만(호출부 몫).
+    - 그 외 실패/타임아웃 → (False, detail). 절대 예외를 전파하지 않는다.
+    """
+    try:
+        prc, pout, perr = run_git(
+            ["-C", team_root, *http_timeout_opts(timeout), "push"],
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "push timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"push exec error: {exc}"
+    if prc == 0:
+        return True, "pushed"
+
+    combined = (perr or "") + "\n" + (pout or "")
+    if _is_no_upstream(combined):
+        try:
+            urc, uout, uerr = run_git(
+                ["-C", team_root, *http_timeout_opts(timeout),
+                 "push", "-u", "origin", "HEAD"],
+                timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, "push -u timeout"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"push -u exec error: {exc}"
+        if urc == 0:
+            return True, "pushed (set upstream)"
+        ucombined = (uerr or "") + "\n" + (uout or "")
+        if _is_non_fast_forward(ucombined):
+            return False, "non-fast-forward"
+        return False, f"push -u failed: {ucombined.strip()[:200]}"
+
+    if _is_non_fast_forward(combined):
+        return False, "non-fast-forward"
+    return False, f"push failed: {combined.strip()[:200]}"
 
 
 def _is_non_fast_forward(text: str) -> bool:
