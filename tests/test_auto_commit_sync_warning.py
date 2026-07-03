@@ -1,7 +1,9 @@
-"""이슈 #23 — auto-commit 훅의 push 실패 가시화(sync-warning 마커).
+"""이슈 #23 → #45 — auto-commit 의 push 가시화 계약.
 
-push 못 한 채 커밋만 쌓이면(committed & not pushed) 마커를 남기고, push 성공이면
-묵은 마커를 지운다. 커밋 거동 자체는 불변(비차단 유지).
+#45 async push 전환으로 훅은 sync-warning 을 직접 쓰지/지우지 않는다 —
+커밋 성공 시 **pending ledger 기록 + worker kick** 까지가 훅 몫이고,
+실패 가시화(sync-warning)는 push-worker, 회복 판정은 session-start 가 담당한다.
+커밋 거동 자체는 불변(비차단 유지).
 """
 import importlib.util
 import io
@@ -34,6 +36,7 @@ class _FakeGitOps:
         self.cleared = 0
 
     def do_commit(self, root, message, push=False, paths=None):
+        self.push_arg = push
         return self._result
 
     def write_sync_warning(self, root, detail):
@@ -42,6 +45,14 @@ class _FakeGitOps:
     def clear_sync_warning(self, root):
         self.cleared += 1
         self.cleared_root = root
+
+    # ── #45 pending ledger 표면 (훅이 호출) ──
+    def read_push_pending(self, root):
+        return ""
+
+    def write_push_pending(self, root):
+        self.pending_writes = getattr(self, "pending_writes", 0) + 1
+        return True  # #45 bool 계약 — False 면 훅이 fallback 마커를 쓴다
 
 
 def _run(mod, fake, root, monkeypatch):
@@ -53,31 +64,35 @@ def _run(mod, fake, root, monkeypatch):
     return mod.main()
 
 
-def test_push_failure_writes_marker(tmp_path, monkeypatch):
+def test_commit_success_writes_pending_not_marker(tmp_path, monkeypatch):
+    """#45: 커밋 성공 → pending 기록. sync-warning 은 훅이 쓰지 않는다(worker 몫)."""
+    monkeypatch.setenv("TEAMMODE_DISABLE_PUSH_WORKER", "1")
     root = tmp_path / "team"
     root.mkdir()
     (root / ".teammode-active").write_text("")
     res = go.CommitResult(ok=True, committed=True, pushed=False,
-                          detail="committed; push failed: rejected")
+                          detail="committed")
     fake = _FakeGitOps(res)
     rc = _run(_load_hook(), fake, root, monkeypatch)
     assert rc == 0                        # 비차단 유지
-    assert len(fake.warnings) == 1        # 마커 기록됨
-    assert "rejected" in fake.warnings[0][1]
+    assert fake.push_arg is False         # 동기 push 폐기(#45)
+    assert getattr(fake, "pending_writes", 0) == 1
+    assert fake.warnings == []            # 마커는 worker 몫
     assert fake.cleared == 0
 
 
-def test_push_success_clears_marker(tmp_path, monkeypatch):
+def test_hook_never_clears_marker(tmp_path, monkeypatch):
+    """#45: 회복 판정(clear)도 훅 몫이 아니다 — worker 가 push 성공+ahead==0 후 지운다."""
+    monkeypatch.setenv("TEAMMODE_DISABLE_PUSH_WORKER", "1")
     root = tmp_path / "team"
     root.mkdir()
     (root / ".teammode-active").write_text("")
-    res = go.CommitResult(ok=True, committed=True, pushed=True,
-                          detail="committed and pushed")
+    res = go.CommitResult(ok=True, committed=True, pushed=False,
+                          detail="committed")
     fake = _FakeGitOps(res)
     rc = _run(_load_hook(), fake, root, monkeypatch)
     assert rc == 0
-    assert fake.warnings == []            # 마커 기록 안 함
-    assert fake.cleared == 1              # 묵은 마커 회복 제거
+    assert fake.cleared == 0              # 훅은 clear 하지 않는다
 
 
 def test_nothing_to_commit_no_marker(tmp_path, monkeypatch):
@@ -92,6 +107,7 @@ def test_nothing_to_commit_no_marker(tmp_path, monkeypatch):
     assert rc == 0
     assert fake.warnings == []
     assert fake.cleared == 0
+    assert getattr(fake, "pending_writes", 0) == 0  # 커밋 없으면 pending 도 없다(#45)
 
 
 # ─── 이슈 #9(a): TEAMMODE_HOME 스테일 시 stderr 경고 ───

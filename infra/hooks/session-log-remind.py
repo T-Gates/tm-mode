@@ -391,6 +391,42 @@ def _global_sessions_mtime(root: str) -> float:
     return max(os.path.getmtime(f) for f in sessions)
 
 
+# #45 pending-age 경고 — 임계(초)와 재경고 스로틀(초).
+_PENDING_WARN_AGE_SECONDS = 600
+_PENDING_WARN_THROTTLE_SECONDS = 1800
+
+
+def _warn_push_pending_age(root: str) -> None:
+    """push-pending 이 오래 남아 있으면 stderr 1줄(#45 — 초경량, 무raise).
+
+    worker 는 보통 수 초 안에 끝난다 — 10분 넘게 남은 pending 은 worker 유실/실패
+    신호다. 매 발화 스팸을 막기 위해 warned 마커(mtime)로 30분당 1회만 경고.
+    stdout(additionalContext 채널)은 건드리지 않는다 — compact 계약(⑦) 불변.
+    """
+    try:
+        import git_ops as _go  # 지연 import — 부재 시 검사만 생략(훅 철칙)
+    except ImportError:
+        return
+    try:
+        age = _go.push_pending_age_seconds(root)
+        if age is None or age < _PENDING_WARN_AGE_SECONDS:
+            return
+        warned = _go.push_pending_path(root) + ".warned"
+        try:
+            since = time.time() - os.stat(warned).st_mtime
+        except OSError:
+            since = None
+        if since is not None and since < _PENDING_WARN_THROTTLE_SECONDS:
+            return
+        with open(warned, "w", encoding="utf-8") as f:
+            f.write("warned")
+        print(f"[teammode] push 미완(pending)이 {int(age // 60)}분째 남아 있습니다 — "
+              f"worker 유실 가능. 다음 편집 커밋 시 재시도되며, 세션 재시작이 "
+              f"확실합니다.", file=sys.stderr)
+    except Exception:  # noqa: BLE001 — 경고 실패가 세션을 막지 않는다
+        pass
+
+
 def main() -> int:
     _ensure_utf8_io()  # 한글 출력이 Windows cp949 stdout 에서 크래시 방지
     try:
@@ -406,6 +442,10 @@ def main() -> int:
     # 팀 모드 활성 시에만 동작
     if not os.path.isfile(os.path.join(root, ".teammode-active")):
         return 0
+
+    # #45: 초경량 pending-age 검사 — 장수 세션 구멍 폐쇄(세션 시작 recovery 만으론
+    # 세션 중간에 죽은 worker 를 못 본다). stat 1~2회, 리마인더 발사와 독립.
+    _warn_push_pending_age(root)
 
     # (레포 최신화는 여기서 하지 않는다 — SessionStart 훅이 세션당 1회 담당.)
 

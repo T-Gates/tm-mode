@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import time as _time
 from datetime import datetime, timedelta, timezone
 
 # git_ops 는 infra/ 에 있다(이 파일은 infra/hooks/). 단일 소스 안전장치 재사용.
@@ -87,6 +89,34 @@ def _warn_if_stale_home(root: str) -> None:
         pass  # 경고 실패가 훅을 막지 않는다(철칙: 비차단)
 
 
+_WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "push-worker.py")
+
+
+def _kick_push_worker(root: str) -> None:
+    """push-worker detach kick(#45) — 공용 git_ops.kick_push_worker 위임(드리프트 방지).
+
+    spawn 실패/조기사망해도 pending ledger 가 남아 session-start recovery 가
+    재kick 한다(ledger 가 안전장치). kill-switch 로 생략된 경우는 경고 없이 침묵.
+    """
+    if _git_ops is None:
+        return
+    ok = _git_ops.kick_push_worker(root, _WORKER_PATH)
+    if not ok:
+        try:
+            if os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") == "1":
+                # codex P2: kill-switch 가 프로덕션 셸에 남으면 무음 pending 만
+                # 쌓인다 — 비활성 사실을 확실히 표면화(테스트도 이 줄은 무해).
+                print("[teammode] push-worker 비활성(TEAMMODE_DISABLE_PUSH_WORKER)"
+                      " — push 는 세션 시작 recovery 에 위임됩니다.",
+                      file=sys.stderr)
+            else:
+                print("[teammode] push-worker 시작 실패 — pending 은 세션 시작 시 "
+                      "재시도됩니다.", file=sys.stderr)
+        except (OSError, UnicodeError):
+            pass
+
+
 def main() -> int:
     # ── 0. 입력 파싱 (실패해도 세션 무차단) ──
     try:
@@ -124,20 +154,42 @@ def main() -> int:
         stamp = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         message = f"chore(teammode): auto-commit {stamp} KST"
 
-        # ── 4. paths 만 스테이징 + 자동 push(6/23 철학) ──
-        # push 실패는 비차단: do_commit 이 커밋을 보존(ok=True·pushed=False)하므로 무해.
-        result = _git_ops.do_commit(root, message=message, push=True, paths=paths)
+        # ── 3.5 잔존 pending 즉시 가시화(#45) — '한 편집 늦은' 경고 1줄 ──
+        # 이전 편집의 push 가 아직 미완이면(worker 지연/실패) 조용히 묻지 않는다.
+        # 비차단: 경고만 남기고 커밋은 정상 진행(worker 가 이번 것까지 drain).
+        if _git_ops.read_push_pending(root):
+            print("[teammode] 이전 auto-commit 의 push 미완(pending) — "
+                  "worker 가 재시도합니다.", file=sys.stderr)
 
-        # ── 5. push 실패 가시화(이슈 #23) — 비차단 유지, 조용히 묻지 않는다 ──
-        # 커밋은 됐는데 push 못 했으면(다른 클론이 먼저 push 해 non-ff, 인증/네트워크,
-        # GH007 private email 등) 로컬 커밋만 쌓인다 → 마커 + stderr 로 표면화.
-        # push 성공이면 회복으로 보고 묵은 마커를 지운다. (커밋 거동은 불변.)
-        if getattr(result, "committed", False) and not getattr(result, "pushed", False):
-            _git_ops.write_sync_warning(root, result.detail or "push 실패")
-            print(f"[teammode] auto-commit push 실패(로컬 커밋은 보존) — "
-                  f"{result.detail}", file=sys.stderr)
-        elif getattr(result, "pushed", False):
-            _git_ops.clear_sync_warning(root)
+        # ── 4. paths 만 스테이징 + 커밋(동기는 여기까지 — push 는 worker 위임, #45) ──
+        # 종전 push=True 동기 push 는 훅 지연(statusMessage 고정 ~26s)·manifest 캡
+        # 경합의 원인이었다. 이제 훅은 로컬 커밋만 완주하고, push 는 pending ledger +
+        # detach worker(plain-push-only)가 담당한다. correctness 는 ledger 가 단일
+        # 소스 — worker 유실(슬립·Windows detach 실패)에도 session-start 가 복원한다.
+        result = _git_ops.do_commit(root, message=message, push=False, paths=paths)
+
+        # index.lock 경합(다른 git 프로세스와 겹침)은 1s 후 1회만 재시도(#45).
+        if (not getattr(result, "committed", False)
+                and "index.lock" in (getattr(result, "detail", "") or "")):
+            _time.sleep(1)
+            result = _git_ops.do_commit(root, message=message, push=False,
+                                        paths=paths)
+
+        # ── 5. 커밋 성공 → pending 원자 기록 + worker detach kick(#45) ──
+        # push 실패 가시화(이슈 #23)는 이제 worker(sync-warning)와 session-start
+        # (pending×ahead 판정)가 담당한다 — 훅은 ledger 기록까지만.
+        if getattr(result, "committed", False):
+            if not _git_ops.write_push_pending(root):
+                # codex P1: ledger 기록 실패를 삼키면 "커밋됨·push 안 됨·pending
+                # 없음·마커 없음" 무음 유실 — sync-warning fallback + stderr 1줄.
+                _git_ops.write_sync_warning(
+                    root, "커밋됨; push-pending 기록 실패 — push 미보장"
+                          "(XDG state 쓰기 오류)")
+                print("[teammode] push-pending 기록 실패 — push 가 예약되지 "
+                      "않았습니다(커밋은 보존). XDG state 쓰기 권한을 확인하세요.",
+                      file=sys.stderr)
+            else:
+                _kick_push_worker(root)
     except Exception:  # noqa: BLE001 — 철칙: 자동 커밋·push 실패가 작업을 막지 않는다
         return 0
 

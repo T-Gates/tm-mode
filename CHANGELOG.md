@@ -7,6 +7,7 @@
 
 ### Added
 
+- async push (#45): auto-commit 훅의 동기 구간을 로컬 커밋까지로 축소 — push 는 XDG push-pending ledger + detach `push-worker`(per-team lock·drain loop·**plain-push-only**, 로컬 히스토리 무접촉) 가 담당. 가시화 3중: session-start pending×ahead 판정(재kick/stale 자동정리/보수경고) + UserPromptSubmit pending-age 경고(30분 스로틀) + auto-commit 잔존 pending 경고 1줄. manifest 30s→20s(index.lock full retry worst 실계산).
 - `tm-import-memory` 스킬 — 외부 문서(docs 슬롯) → 팀 memory 대량 업로드: preview 확인 게이트·주제 병합·`## 출처` 절·route upsert 선행 (#51)
 - memory 허용 폴더: 루트 INDEX 라우팅 맵 등재 최상위 폴더 동적 허용 — 팀 고유 도메인(`fundraise/` 등) write/delete 가능 (#51)
 

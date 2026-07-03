@@ -467,24 +467,37 @@ def test_do_commit_budget_gone_after_local_commit_skips_push(
 # ──────────────────────────────────────────────────────────────────
 
 def test_manifest_network_hooks_timeout_covers_net_flow():
-    """session-start(do_reconcile)·auto-commit(do_commit push=True)은 내부에서
-    NET_TIMEOUT(10s) 네트워크 호출을 순차로 여러 번 할 수 있다(fetch+push+재시도).
-    manifest timeout(초 단위 — adapter 가 무변환 기록)이 3s 면 훅 러너가 git_ops
-    반환 전에 훅을 죽여 정리·sync-warning 기록까지 날린다.
+    """#45 이후 네트워크 훅은 session-start(do_reconcile: fetch+ff/rebase+push)뿐이다 —
+    auto-commit 의 동기 구간은 로컬 커밋까지(push 는 훅 캡 밖 detach worker 몫).
 
-    핵심 불변식(codex 재리뷰 P1): manifest timeout > PUSH_TOTAL_BUDGET —
-    엔진의 push 총예산이 훅 캡보다 **작아야** 엔진이 스스로 먼저 반환해
-    sync-warning 마커를 쓸 수 있다(절대값 30 이 아니라 관계가 본질)."""
+    불변식 2개:
+      ① session-start: manifest timeout > PUSH_TOTAL_BUDGET — 엔진 총예산이 훅 캡보다
+        작아야 엔진이 스스로 먼저 반환해 sync-warning 마커를 쓸 수 있다(관계가 본질).
+      ② auto-commit: manifest timeout 이 **로컬 worst-case** 를 덮는다 —
+        add/staged/commit 각 DEFAULT_TIMEOUT + index.lock 1s 재시도(로컬 2단계 재수행)
+        + ledger/kick 여유. 네트워크 여유(NET_TIMEOUT 배수)는 더 이상 불필요."""
     manifest = json.loads(
         (REPO / "infra" / "hooks" / "manifest.json").read_text(encoding="utf-8"))
-    net_scripts = {"session-start.py", "auto-commit.py"}
-    seen = set()
-    for entry in manifest:
-        if entry.get("script") in net_scripts:
-            seen.add(entry["script"])
-            assert entry.get("_timeout_unit") == "seconds"
-            assert entry.get("timeout", 0) > git_ops.PUSH_TOTAL_BUDGET, (
-                f"{entry['script']}: manifest timeout={entry.get('timeout')} ≤ "
-                f"PUSH_TOTAL_BUDGET={git_ops.PUSH_TOTAL_BUDGET} — 훅 러너가 "
-                f"엔진 반환 전에 죽여 sync-warning 마커가 유실됨")
-    assert seen == net_scripts, f"네트워크 훅 누락: {net_scripts - seen}"
+    entries = {e.get("script"): e for e in manifest if e.get("script")}
+
+    ss = entries.get("session-start.py")
+    assert ss is not None
+    assert ss.get("_timeout_unit") == "seconds"
+    assert ss.get("timeout", 0) > git_ops.PUSH_TOTAL_BUDGET, (
+        f"session-start: manifest timeout={ss.get('timeout')} ≤ "
+        f"PUSH_TOTAL_BUDGET={git_ops.PUSH_TOTAL_BUDGET} — 훅 러너가 "
+        f"엔진 반환 전에 죽여 sync-warning 마커가 유실됨")
+
+    ac = entries.get("auto-commit.py")
+    assert ac is not None
+    assert ac.get("_timeout_unit") == "seconds"
+    # 로컬 worst(codex P1): 시도당 하위호출 4개(rev-parse/add/staged/commit) —
+    # full retry 는 시도 전체를 재수행하므로 2x(4xDEFAULT_TIMEOUT) + sleep 1s.
+    local_worst = 2 * (4 * git_ops.DEFAULT_TIMEOUT) + 1
+    assert ac.get("timeout", 0) >= local_worst + 1, (
+        f"auto-commit: manifest timeout={ac.get('timeout')} < 로컬 worst "
+        f"{local_worst}+1 — 커밋 완주 전에 훅이 죽으면 ledger 를 못 쓴다")
+    # push 동기화 폐기의 회귀 방지: 네트워크 훅 수준(> PUSH_TOTAL_BUDGET)으로
+    # 되돌아가면 #45 의 훅 지연 문제가 재발한다.
+    assert ac.get("timeout", 0) <= git_ops.PUSH_TOTAL_BUDGET, (
+        "auto-commit timeout 이 push 예산 이상 — 동기 push 회귀 신호")
