@@ -92,7 +92,8 @@ def default_banner_content(team_root: Path, team_name: str) -> str:
     return f"=== {team_name} ===\n"
 
 
-def _adapter_for(agent_name, settings_path=None, skills_dir=None, member=None):
+def _adapter_for(agent_name, settings_path=None, skills_dir=None, member=None,
+                 member_fallback=None):
     """에이전트별 어댑터 팩토리.
 
     agent_name: 'claude' 또는 'codex' (agents/ 하위 디렉토리명).
@@ -148,12 +149,58 @@ def _adapter_for(agent_name, settings_path=None, skills_dir=None, member=None):
     # 재렌더해 `tm on/off` resync 회귀를 막는다(issue #26).
     if agent_name == "codex" and member is not None:
         adapter_kwargs["member"] = member
+    # member_fallback(issue #41 R2): _resolve_member_fallback 체인이 해석한 폴백 —
+    # codex 어댑터에서 '명시 member > 기존 prefix(자가치유) > 이 폴백' 순으로 소비된다.
+    if agent_name == "codex" and member_fallback is not None:
+        adapter_kwargs["member_fallback"] = member_fallback
     return Adapter(**adapter_kwargs)
 
 
 def _adapter(settings_path=None, skills_dir=None):
     """하위호환 래퍼 — claude 어댑터 단일 반환. 기존 테스트·호출 코드 무회귀."""
     return _adapter_for("claude", settings_path, skills_dir)
+
+
+def _resolve_member_fallback(settings_path=None) -> str | None:
+    """issue #41 R2 — `--member` 없이 도는 resync 의 member 자동 해석 체인(엔진 공용).
+
+    `tm on/off`(member 미지정)는 prefix 를 발명하지 못해(어댑터 자가치유는 기존 prefix
+    보존만) pre-#28 설치자 전원이 `--member` 플래그를 알아야 했다. 이 헬퍼가 cmd_on/
+    cmd_off 양쪽에서 폴백 값을 해석한다. 우선순위(높음→낮음):
+      0. 명시 --member — 이 헬퍼 밖(절대 오버라이드, cmd_on/off 가 member= 로 전달).
+      1. 어댑터별 기존 config prefix — codex 어댑터의 _existing_member_prefix 자가치유가
+         항상 이 폴백보다 우선(per-agent 최고 충실도라 여기서 다루지 않는다).
+      2. 현재 프로세스 env TEAMMODE_MEMBER — 세션이 이미 아는 값.
+      3. claude settings.json 의 env.TEAMMODE_MEMBER — install 이 같은 호스트에 기록한
+         값(inject_env_settings). settings 파일이 **실재할 때만** 읽는다(격리 안전).
+         경로는 _adapter_for 의 claude 규칙과 동일: 인자 없으면 ~/.claude/settings.json.
+      4. 전부 실패 → None + [warn] 1줄(`--member` 안내). prefix 발명 금지(현행 유지).
+    각 후보는 _validate_author 로 검증 — 무효 값은 다음 소스로 넘어간다. settings 읽기
+    실패(부재·깨진 JSON·타입 불일치)는 전부 비치명(해석 실패로 강등).
+    """
+    # 2. 현재 프로세스 env
+    cand = os.environ.get("TEAMMODE_MEMBER", "").strip()
+    if cand and _validate_author(cand) is None:
+        return cand
+    # 3. claude settings.json env (표준 경로 해석 — 파일이 실재할 때만, 격리 안전)
+    path = Path(settings_path) if settings_path else Path(
+        os.path.expanduser("~/.claude/settings.json"))
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            env = data.get("env") if isinstance(data, dict) else None
+            cand = env.get("TEAMMODE_MEMBER") if isinstance(env, dict) else None
+            if isinstance(cand, str):
+                cand = cand.strip()
+                if cand and _validate_author(cand) is None:
+                    return cand
+    except Exception:  # noqa: BLE001 — 깨진 settings 는 해석 실패로 강등(비치명)
+        pass
+    # 4. 전부 실패 — 발명하지 않는다. 안내 1줄(기존 prefix 는 어댑터 자가치유가 보존).
+    print("[warn] member 자동 해석 실패(TEAMMODE_MEMBER env·claude settings.json 모두 "
+          "부재) — 기존 prefix 가 없는 codex hook 에는 member 가 기록되지 않습니다. "
+          "`tm on --member <이름>` 으로 지정할 수 있습니다.")
+    return None
 
 
 def _render_banner(team_root: Path) -> str:
@@ -379,6 +426,11 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     else:
         # --settings 격리 모드: claude 만 배선 (실호스트 무접촉)
         _agents_to_wire = ["claude"]
+    # issue #41 R2: --member 미지정이어도 member 를 자동 해석(env → claude settings.json).
+    # 소비처(비-claude 어댑터)가 있을 때만 체인 가동 — 격리(claude 전용) 모드 노이즈 방지.
+    _member_fb = None
+    if member is None and any(_ag != "claude" for _ag in _agents_to_wire):
+        _member_fb = _resolve_member_fallback(settings_path)
     _all_adapters: list = []  # 생성된 어댑터 전부 보관 — util replay 를 전부에 적용
     _failed_agents: list = []  # 실패 에이전트 수집 (지적3: 부분 실패 처리)
     for _ag in _agents_to_wire:
@@ -386,8 +438,10 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
             if _ag == "claude":
                 _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
             else:
-                # 자기 기본 경로 파생 + member 전파(codex hook prefix 유지 — issue #26).
-                _ag_adapter = _adapter_for(_ag, member=member)
+                # 자기 기본 경로 파생 + member 전파(codex hook prefix 유지 — issue #26)
+                # + 자동 해석 폴백(issue #41 R2 — 명시 member·기존 prefix 다음 순위).
+                _ag_adapter = _adapter_for(_ag, member=member,
+                                           member_fallback=_member_fb)
             _ag_adapter.sync(mode="on")
             _ag_adapter.install_skills(layer="core")
             _all_adapters.append(_ag_adapter)
@@ -583,6 +637,10 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
         _agents_to_wire = _detected or ["claude"]
     else:
         _agents_to_wire = ["claude"]
+    # issue #41 R2: off resync 도 동일 체인 — cmd_on 과 대칭(prefix 유실 방지).
+    _member_fb = None
+    if member is None and any(_ag != "claude" for _ag in _agents_to_wire):
+        _member_fb = _resolve_member_fallback(settings_path)
     _primary_adapter = None
     _failed_agents: list = []
     for _ag in _agents_to_wire:
@@ -590,8 +648,10 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
             if _ag == "claude":
                 _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
             else:
-                # member 전파 — off resync 도 codex hook prefix 를 떨구지 않게(issue #26).
-                _ag_adapter = _adapter_for(_ag, member=member)
+                # member 전파 — off resync 도 codex hook prefix 를 떨구지 않게(issue #26)
+                # + 자동 해석 폴백(issue #41 R2).
+                _ag_adapter = _adapter_for(_ag, member=member,
+                                           member_fallback=_member_fb)
             _ag_adapter.sync(mode="off")
             _uninstall_layer(_ag_adapter, "core")
             _uninstall_layer(_ag_adapter, "util")
