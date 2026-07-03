@@ -7,6 +7,7 @@
 
 ### Added
 
+- `tm-import-memory` 스킬 — 외부 문서(docs 슬롯) → 팀 memory 대량 업로드: preview 확인 게이트·주제 병합·`## 출처` 절·route upsert 선행 (#51)
 - memory 허용 폴더: 루트 INDEX 라우팅 맵 등재 최상위 폴더 동적 허용 — 팀 고유 도메인(`fundraise/` 등) write/delete 가능 (#51)
 
 - **v1 Phase 1** (#31): install 동사(role-by-verb) 재편, 호스트 메시지 i18n, push 결과 가시화
