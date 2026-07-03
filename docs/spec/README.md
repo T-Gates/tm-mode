@@ -1,8 +1,8 @@
 # tm-mode SPEC
 
-tm-mode SPEC v0.2 — 인덱스
+tm-mode SPEC v0.3 — 인덱스
 
-spec_version: **0.2**
+spec_version: **0.3**
 
 단일 권위본은 이 폴더(`docs/spec/`)입니다.
 

@@ -7,17 +7,28 @@
 
 ### Added
 
+- memory 허용 폴더: 루트 INDEX 라우팅 맵 등재 최상위 폴더 동적 허용 — 팀 고유 도메인(`fundraise/` 등) write/delete 가능 (#51)
+
 - **v1 Phase 1** (#31): install 동사(role-by-verb) 재편, 호스트 메시지 i18n, push 결과 가시화
 - `memory route {upsert|remove}` 동사 — 루트 INDEX 라우팅 맵 관리 (#16)
 - Codex PreToolUse 훅 지원 + kb-write-guard 파일별 판정 (#17)
 - session-log-remind systemMessage를 ux config로 옵트아웃 가능하게 (#25)
 - tm-context: 세션로그 심층읽기 + L2 이슈/캘린더 `tm-<provider>` 직접조회 (#13), 멤버 이모지 렌더 복구 (#14)
 
+### Removed
+
+- `soma/` 내장 정적 허용 제거 — 특정 팀 도메인의 제품 하드코딩(오염). 팀 전용 최상위 memory 폴더는 이제 `memory route upsert` 로 루트 INDEX 에 등재해야 `memory write/delete` 가 허용된다(#51). 거부 시 등록 명령 힌트를 stderr 로 안내.
+
 ### Changed
+
+- memory 정적 허용 폴더 = 범용 스캐폴드 3개(`product`·`team`·`team/decisions`)만 — 팀 전용 도메인은 route 등재 기반 동적 허용으로 일원화 (#51)
+- spec_version 0.2 → 0.3 — `memory`·`util` 동사 스펙 명문화(§3.6·§3.7) (#51)
 
 - 라이선스를 Apache-2.0으로 전환 (#27)
 
 ### Fixed
+
+- `memory write` 가 `INDEX.md` 파일명을 거부하지 않던 비대칭(엔진 관리 파일 덮어쓰기 가능) (#51)
 
 - install: 디스패치 게이트 agent-aware(`--codex --config` 인정) + `--root`→`--team-root` 번역, plain `sync`가 기존 on/off 상태 보존(statusMessage·trust 해시 유지), 비호스티드 provider 의 기존 MCP 서버 감지 안내, 사문 `--check-mcp` 제거 (#3)
 - sync: 세션 시작 시 reconcile, push 실패 표면화, non-noreply 이메일 경고 (#30)
