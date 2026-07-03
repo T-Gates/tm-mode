@@ -190,21 +190,19 @@ tm-mode 스킬 셋 재편 — "커스터마이징"을 한 스킬로 통합:
 - ~~**tm-reset 삭제**~~ — ✅ 완료(2026-06-20 제거, 별도 항목 위).
 - 연계: 위 "personality 완료판정 결함"도 tm-customize 쪽에서 결정적 판정으로 해소.
 
-## 흡수 경로 탐지 결함 — check-mcp가 _teammode_managed만 인식 (2026-06-20 도그푸딩 — Jane)
-- tm-connect §1② 흡수 = "팀이 이미 다른 경로로 연결한 서비스 탐지"인데, check-mcp(install.py:182)는 `entry.get("_teammode_managed") is True`만 connected 판정 → **tm-mode가 등록한 MCP만 인식**.
-- 결과: 기존 비-tm-mode 연결(acme-toolkit이 등록한 linear/slack/notion MCP)을 흡수 대상으로 **탐지 못 함**. 흡수 의도 ↔ 탐지 메커니즘 불일치.
-- 부수 발견: 그 linear MCP args가 `acme-toolkit/infra/mcp/linear-mcp/dist/server.js` 의존 → acme 정리 시 깨짐. 흡수로 끊어야 하는데 자동흡수 불가.
-- 개선안: 흡수 탐지가 _teammode_managed 외 "역할 provider와 매칭되는 기존 MCP"도 후보로 띄워 사람 확인. 또는 흡수=수동(핸들러 생성 + 기존 토큰키 재사용) 경로를 스킬에 명시(현재 §1②가 check-mcp 자동탐지에만 의존).
+## ~~흡수 경로 탐지 결함 — check-mcp가 _teammode_managed만 인식~~ (2026-06-20 도그푸딩 — Jane) → ✅ 해소(2026-07-03, #3)
+- **해소 방식**: `--check-mcp` CLI 는 스킬·스펙 어디서도 호출하지 않는 사문이라 **제거**, "역할 provider와 매칭되는 기존 MCP 감지"는 어댑터 `install-mcp` 내부로 흡수(#3). placeholder 대상 provider(slack/google 등)는 등록 전에 사용자 서버(키 토큰·url·command 매칭)를 감지해 placeholder 대신 `[info] 기존 서버 발견 — tm-<provider> 별칭으로 재사용하려면 …` 안내를 낸다(자동 채택은 소유권 마커 부재로 금지 — 사람 확인).
+- (원 기록) tm-connect §1② 흡수 = "팀이 이미 다른 경로로 연결한 서비스 탐지"인데, 구 check-mcp 는 `_teammode_managed` 만 connected 판정 → tm-mode가 등록한 MCP만 인식. 기존 비-tm-mode 연결(acme-toolkit이 등록한 linear/slack/notion MCP)을 흡수 대상으로 탐지 못 함. 그 linear MCP args가 `acme-toolkit/infra/mcp/linear-mcp/dist/server.js` 의존 → acme 정리 시 깨짐.
 
 ## 온보딩 발견성 + "왜+다음" 침묵 — tm-mode 전반 불친절 (2026-06-20 도그푸딩, Jane 핵심지적)
 "불친절"의 정체 = 자동화 부족이 아니라 **발견성·피드백 부재**:
 - **KB 발견성**: 메모리(KB) 개념은 README §기둥②에 있으나 **tm-onboard에 소개 0** → 새 팀원은 KB 존재를 모르고, 첫 마주침이 kb-write-guard 차단("memory 직접편집 금지→memory write 경유")인데 "왜/KB가 뭔지"가 없음. 문서엔 있으나 필요한 순간엔 없음.
-- **침묵하는 실패(공통 뿌리)**: check-mcp `{"connected":false}`(왜인지 X)·훅 직접실행 무출력·personality 오탐(✅로 거짓보고)·흡수 막다른길. 전부 "왜+다음 액션"을 안 알려줌.
+- **침묵하는 실패(공통 뿌리)**: ~~check-mcp `{"connected":false}`(왜인지 X)~~(check-mcp 는 2026-07-03 제거 — install-mcp 감지 안내가 "왜+다음 액션"을 냄)·훅 직접실행 무출력·personality 오탐(✅로 거짓보고)·흡수 막다른길. 전부 "왜+다음 액션"을 안 알려줌.
 - 구분: 토큰발급·핸들러 커밋확인 같은 **의도된 보안 마찰은 유지**(없애면 위험), 단 "왜 필요한지" 안내로 부드럽게.
 - 개선(P0급 UX):
   ① tm-onboard에 "기둥② 메모리(KB)" 한 단락 + tm-memory/tm-manage-memory 존재 안내 (L1·L2처럼 progressive 소개)
   ② kb-write-guard 차단 메시지에 KB 개념·이유 1줄
-  ③ **실패/차단/빈슬롯 출력에 "왜 + 다음 액션" 원칙** 전반 적용 (check-mcp가 "연결 없음, 흡수하려면 X"까지)
+  ③ **실패/차단/빈슬롯 출력에 "왜 + 다음 액션" 원칙** 전반 적용 (MCP 는 install-mcp 의 기존 서버 감지 안내로 일부 적용됨 — 2026-07-03)
   ④ 상태 보고 정직성 (personality 등 오탐 제거 — 위 결정적 판정 항목과 연결)
 
 ## 배너 기본값 부재 + config 비동기 (2026-06-20 도그푸딩, Jane)

@@ -232,10 +232,40 @@ class Adapter(BaseAdapter):
                     return val
         return None
 
+    def _infer_existing_mode(self) -> Optional[str]:
+        """plain sync 자기치유(C2) — 기존 teammode-hooks 블록에서 현 상태 추론(재정의).
+
+        codex 실회귀: mode=None 렌더는 statusMessage 를 드랍하는데 trust 해시가
+        statusMessage 를 포함해 재작성이 재-trust 까지 유발했다. 계약(codex 문답
+        2026-07-03 R2-2): ON 신호는 OR —
+          ① 블록 안 statusMessage 존재(on 렌더의 고유 산물)
+          ② 블록이 manifest mode=="on" 스크립트를 참조(과거 statusMessage 없이
+             on 렌더된 블록도 off 오판 없이 self-heal).
+        블록 부재 → None(최초 off/base — 기존 스펙 유지). 실패는 전부 None 강등.
+        """
+        try:
+            text = self._read_config()
+            m = re.search(
+                re.escape(BLOCK_START) + r"(.*?)" + re.escape(BLOCK_END),
+                text, re.S)
+            if not m:
+                return None
+            block = m.group(1)
+            if "statusMessage" in block:
+                return "on"
+            if any(s in block for s in self._on_mode_scripts()):
+                return "on"
+        except Exception:  # noqa: BLE001 — 추론은 부가 기능: 실패해도 sync 를 못 막음
+            return None
+        return None
+
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []
         warnings = []
         infos = []
+        if mode is None:
+            # C2 self-heal: plain sync 는 기존 managed 상태 보존(강등·재-trust 방지).
+            mode = self._infer_existing_mode()
         wanted = self._wanted_entries(mode)
 
         # config services 1회 로드 — 빈 슬롯 우선 규칙(§2.9/§7.2)·install-mcp 선행(§2.7).
@@ -903,6 +933,43 @@ class Adapter(BaseAdapter):
             servers[name] = {"_teammode_managed": True}
         return servers
 
+    def _user_mcp_server_view(self, servers=None) -> dict:
+        """config.toml **전체**의 사용자 [mcp_servers.*] 섹션 → 감지용 뷰(#3, 재정의).
+
+        부모(claude)는 mcpServers dict 를 받지만 codex 는 TOML 라인 스캔이 필요해
+        직접 파일을 읽는다(servers 인자는 시그니처 호환용 — 무시). teammode 관리
+        블록(# teammode-mcp-*) 안 섹션은 자기 소유라 뷰에서 제외한다.
+        값 파싱은 감지용 근사(한 줄 url/command/args 를 액면 그대로) — 부분문자열
+        매칭에만 쓰이므로 따옴표·배열 구두점이 남아도 무해하다.
+        """
+        text = self._read_config()
+        managed = re.compile(
+            re.escape(self.MCP_BLOCK_START) + r".*?"
+            + re.escape(self.MCP_BLOCK_END), re.S)
+        outside = managed.sub("", text)
+        view: dict = {}
+        cur = None
+        for ln in outside.split("\n"):
+            m = re.match(r"\s*\[mcp_servers\.([^\]]+)\]\s*$", ln)
+            if m:
+                name = m.group(1).strip().strip('"')
+                cur = {"url": None, "command": ""}
+                view[name] = cur
+                continue
+            if re.match(r"\s*\[", ln):
+                cur = None  # 다른 테이블 시작 — 섹션 종료
+                continue
+            if cur is None:
+                continue
+            kv = re.match(r"\s*(url|command|args)\s*=\s*(.+?)\s*$", ln)
+            if kv:
+                key, raw = kv.group(1), kv.group(2)
+                if key == "url":
+                    cur["url"] = raw.strip("'\"")
+                else:  # command / args — 감지용으로 이어붙임
+                    cur["command"] = (cur["command"] + " " + raw).strip()
+        return view
+
     def _toml_str_list(self, items: list) -> str:
         """문자열 리스트 → TOML 배열 리터럴(args 등). 각 항목은 _toml_str 로 안전 인용."""
         return "[" + ", ".join(self._toml_str(str(a)) for a in items) + "]"
@@ -1006,6 +1073,9 @@ class Adapter(BaseAdapter):
                     if isinstance(prov, str) and prov.strip() and prov not in connected:
                         connected.append(prov)
 
+        # #3: 감지용 사용자 서버 뷰 — config.toml 전체의 비관리 [mcp_servers.*] 섹션.
+        user_view = self._user_mcp_server_view()
+
         providers_with_packs = []
         aliases = []  # N2: 실제 변경과 무관하게 "등록 대상" provider 별칭 추적.
         for provider in connected:
@@ -1017,6 +1087,22 @@ class Adapter(BaseAdapter):
                 changes.append(f"[info] {provider}: provider 팩 없음 → MCP 등록 생략")
                 continue
             alias = self.resolve_server_alias(provider)
+            # #3: placeholder 대상 provider 에 동일 provider 로 보이는 사용자 서버가
+            # 이미 있으면 → 죽은 placeholder 대신 재사용 안내만(claude 와 동일 계약).
+            # 목록에서 빠지므로 과거 stale placeholder 는 블록 재렌더/제거로 사라진다.
+            if (self._mcp_http_url(pack) is None
+                    and self._mcp_launch_command(pack) is None):
+                existing_name = self._find_existing_provider_server(
+                    provider, user_view)
+                if existing_name:
+                    changes.append(
+                        f"[info] {provider}: 기존 MCP 서버 '{existing_name}' 발견"
+                        f"(사용자 등록으로 보임) → placeholder 미등록. 팀 배선에 "
+                        f"재사용하려면 같은 기동 커맨드를 관리 별칭 {alias} 으로 "
+                        f"직접 연결하세요: `codex mcp add {alias} -- "
+                        f"<'{existing_name}' 의 기동 커맨드>` "
+                        f"(자동 채택은 소유권 확인 불가라 하지 않음 — 안내만)")
+                    continue
             # (alias, canonical, pack): 섹션 키=별칭(tm-<provider>), _canonical_server=정규명.
             providers_with_packs.append((alias, provider, pack))
             aliases.append(alias)

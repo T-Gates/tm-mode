@@ -62,151 +62,10 @@ def _parse_uninstall(argv):
     return opts
 
 
-# ─────────────────────────── MCP 연결 조회 (--check-mcp, S2) ───────────────────────────
-#
-# 읽기 전용 조회: 팀이 이미 쓰는 MCP alias 가 에이전트 설정 파일에 실재하는지 확인.
-# dotfile 직접 읽기 대신 CLI 로 위임해 호스트 무접촉 원칙을 지킨다.
-# 출력(stdout JSON): {"connected": true, "alias": "tm-<provider>"} 또는 {"connected": false}
-#
-# 내부 경로 해석은 기존 agent_mcp_path / agent_settings_path 를 재활용(중복 구현 금지).
-
-_VALID_AGENTS = ("claude", "codex")
-
-# teammode 가 MCP 를 등록하는 별칭 네임스페이스 접두 — 어댑터 resolve_server_alias 와
-# 동일 규약(linear → tm-linear). install.py 는 어댑터를 인스턴스화하지 않는 조회 경로라
-# 같은 규약을 여기 명시한다(드리프트 방지: 한쪽만 바뀌면 connected 오판). 멱등 부착.
-_MCP_ALIAS_PREFIX = "tm-"
-
-
-def _server_alias(provider: str) -> str:
-    """정규 서버명 → 등록 별칭(`tm-<provider>`). 어댑터 resolve_server_alias 와 대칭."""
-    if provider.startswith(_MCP_ALIAS_PREFIX):
-        return provider
-    return _MCP_ALIAS_PREFIX + provider
-
-
-def _parse_check_mcp(argv):
-    """--check-mcp argv → opts dict. 알 수 없는 플래그 무시."""
-    opts = {"provider": None, "root": None, "agent": None, "settings": None}
-    it = iter(argv)
-    for a in it:
-        if a == "--check-mcp":
-            opts["provider"] = next(it, None)
-        elif a == "--root":
-            opts["root"] = next(it, None)
-        elif a == "--agent":
-            opts["agent"] = next(it, None)
-        elif a == "--settings":
-            opts["settings"] = next(it, None)
-    return opts
-
-
-def _read_claude_mcp_servers(mcp_path: Path) -> dict:
-    """~/.claude.json (또는 격리 등가물)에서 mcpServers dict 반환. 부재/깨짐 → {}."""
-    if not mcp_path.is_file():
-        return {}
-    try:
-        data = json.loads(mcp_path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            servers = data.get("mcpServers")
-            return servers if isinstance(servers, dict) else {}
-    except (ValueError, OSError):
-        pass
-    return {}
-
-
-def _read_codex_mcp_servers(config_path: Path) -> dict:
-    """codex config.toml 의 teammode-mcp 블록에서 등록 서버명 집합 파싱. 부재/깨짐 → {}.
-
-    값은 claude 와 동일하게 {"_teammode_managed": True} 형태로 정규화해 통일된 판정 가능.
-    """
-    import re
-    if not config_path.is_file():
-        return {}
-    try:
-        text = config_path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    MCP_BLOCK_START = "# teammode-mcp-start"
-    MCP_BLOCK_END = "# teammode-mcp-end"
-    pattern = re.compile(
-        re.escape(MCP_BLOCK_START) + r"(.*?)" + re.escape(MCP_BLOCK_END),
-        re.S)
-    m = pattern.search(text)
-    if not m:
-        return {}
-    servers: dict = {}
-    for sm in re.finditer(r"\[mcp_servers\.([^\]]+)\]", m.group(1)):
-        name = sm.group(1).strip().strip('"')
-        servers[name] = {"_teammode_managed": True}
-    return servers
-
-
-def cmd_check_mcp(argv, *, home=None, out=None, err=None) -> int:
-    """--check-mcp query CLI (S2). 읽기 전용. stdout JSON 출력.
-
-    내부 파일 경로 결정에 기존 il.agent_mcp_path (claude) 및
-    il.agent_settings_path (codex) 를 재활용 — 중복 구현 없음.
-    """
-    if out is None:
-        out = print
-    if err is None:
-        def err(*a, **k):
-            print(*a, file=sys.stderr, **k)
-    if home is None:
-        home = Path(os.path.expanduser("~"))
-
-    opts = _parse_check_mcp(argv)
-
-    provider = opts.get("provider") or ""
-    if not provider:
-        err("[error] --check-mcp: provider 를 지정하세요. 예) --check-mcp linear")
-        return 2
-
-    agent = opts.get("agent")
-    if not agent:
-        err("[error] --check-mcp: --agent <claude|codex> 가 필수입니다.")
-        return 2
-    if agent not in _VALID_AGENTS:
-        err(f"[error] --check-mcp: 알 수 없는 에이전트 '{agent}'. "
-            f"지원: {list(_VALID_AGENTS)}")
-        return 2
-
-    settings_override = opts.get("settings")  # None 이면 실호스트 경로
-
-    if agent == "claude":
-        # claude MCP 파일 경로: il.agent_mcp_path 재활용.
-        # 격리(settings_override 있음): (mcp_flag, path) 튜플 → path 추출.
-        # 실호스트(None 반환): 직접 ~/.claude.json 구성.
-        mcp_result = il.agent_mcp_path(
-            agent, home=home, settings_override=settings_override)
-        if mcp_result is not None:
-            mcp_path = mcp_result[1]  # (flag, path) 튜플
-        else:
-            mcp_path = home / ".claude.json"
-        servers = _read_claude_mcp_servers(mcp_path)
-    else:
-        # codex: MCP는 settings(config.toml) 내 블록 — agent_mcp_path 는 None 반환.
-        # il.agent_settings_path 로 config.toml 경로 재활용.
-        cfg_path = il.agent_settings_path(
-            agent, home=home, settings_override=settings_override)
-        servers = _read_codex_mcp_servers(cfg_path)
-
-    # 등록 별칭은 tm-<provider> (resolve_server_alias). provider(정규 서버명)로 질의하되
-    # 실제 등록 키는 별칭이므로 별칭으로 조회한다. 하위 호환: 별칭 항목이 없으면 정규명
-    # 키도 본다(과거 항등 등록분 / 사용자 동명 항목은 _teammode_managed 가 걸러줌).
-    alias = _server_alias(provider)
-    entry = servers.get(alias)
-    if isinstance(entry, dict) and entry.get("_teammode_managed") is True:
-        out(json.dumps({"connected": True, "alias": alias}))
-        return 0
-    entry = servers.get(provider)
-    if isinstance(entry, dict) and entry.get("_teammode_managed") is True:
-        out(json.dumps({"connected": True, "alias": provider}))
-        return 0
-
-    out(json.dumps({"connected": False}))
-    return 0
+# [삭제] --check-mcp query CLI (S2) — 스킬·스펙 어디서도 호출하지 않는 사문이었고
+# (테스트만 참조), teammode 가 등록한 alias 만 인식해 "사용자 기존 MCP 감지"(#3)
+# 목적에도 못 미쳤다. 감지는 어댑터 install-mcp 내부 후보 안내로 흡수(codex 문답
+# 2026-07-03 R2-5 수렴 — 재활용보다 제거+어댑터 helper 신설이 깨끗).
 
 
 def _default_profile(platform=None):
@@ -385,28 +244,70 @@ def _split_agent(argv):
     return agent, rest
 
 
-def _strip_dispatch_only_args(rest):
-    """어댑터로 넘기기 전 부트스트랩/디스패처 전용 인자를 제거 (#5).
+# 어댑터 서브커맨드(동사) 집합 — 게이트의 value-flag 값 검증에 사용(값이 동사를
+# 삼키는 UX 사고 방지: `--config sync` 처럼 값 결손이면 명확히 exit 2).
+_ADAPTER_VERBS = ("sync", "uninstall", "install-mcp", "install-skills")
 
-    어댑터는 --settings(claude)/--config(codex) 만 안다. 부트스트랩 전용 인자를
-    그대로 넘기면 어댑터 argparse 가 'unrecognized arguments' 로 깨진다
-    (`--codex uninstall --root .` 사고).
+
+def _flag_value_state(rest, flag):
+    """value-flag 의 (존재, 값유효) 판정. 값 유효 = 다음 토큰이 있고 --옵션/동사가 아님."""
+    for i, a in enumerate(rest):
+        if a == flag:
+            nxt = rest[i + 1] if i + 1 < len(rest) else None
+            ok = (nxt is not None and not nxt.startswith("--")
+                  and nxt not in _ADAPTER_VERBS)
+            return True, ok
+    return False, False
+
+
+def _translate_dispatch_args(rest):
+    """어댑터로 넘기기 전 디스패처 전용 인자를 번역·제거 (#5·C3). (argv, err) 반환.
+
+    어댑터는 --settings(claude)/--config(codex)/--team-root 등 자기 플래그만 안다.
+    부트스트랩 전용 인자를 그대로 넘기면 어댑터 argparse 가 'unrecognized arguments'
+    로 깨진다(`--codex uninstall --root .` 사고).
       --install  : 디스패처 전용(실설치 의사) — 게이트로만 쓰고 어댑터엔 안 넘김.
-      --root <값> : 부트스트랩 전용(팀 루트) — value-flag 라 다음 토큰까지 제거.
+      --root <값> : 어댑터 --team-root 로 **번역**(C3 — 과거의 무언 제거는 사용자
+                    의도를 조용히 버리는 footgun). --team-root 와 값이 다르면
+                    모호성 거부(err 반환 → exit 2), 같으면 중복 무해.
     """
     out = []
-    skip_next = False
-    for a in rest:
-        if skip_next:
-            skip_next = False
-            continue
+    root_val = None
+    root_seen = False
+    team_root_val = None
+    i = 0
+    while i < len(rest):
+        a = rest[i]
         if a == "--install":
+            i += 1
             continue
         if a == "--root":
-            skip_next = True  # 뒤따르는 값 토큰도 함께 제거
+            root_seen = True
+            if i + 1 < len(rest):
+                root_val = rest[i + 1]
+                i += 2
+            else:
+                i += 1
+            continue
+        if a == "--team-root" and i + 1 < len(rest):
+            team_root_val = rest[i + 1]
+            out.extend((a, rest[i + 1]))
+            i += 2
             continue
         out.append(a)
-    return out
+        i += 1
+    if root_seen and root_val is None:
+        return None, "[error] --root 에 팀 루트 경로 값이 필요합니다."
+    if root_val is not None:
+        if team_root_val is not None:
+            if Path(root_val).resolve() != Path(team_root_val).resolve():
+                return None, ("[error] --root 와 --team-root 값이 서로 다릅니다 "
+                              f"(--root={root_val}, --team-root={team_root_val}). "
+                              "디스패치에선 --team-root 하나만 쓰세요.")
+            # 같은 값 — --team-root 가 이미 전달되므로 번역 불필요(중복 무해).
+        else:
+            out = ["--team-root", root_val] + out
+    return out, None
 
 
 def _dispatch(agent, rest) -> int:
@@ -416,14 +317,29 @@ def _dispatch(agent, rest) -> int:
         print(f"[error] {agent} 어댑터 없음: {adapter_path}", file=sys.stderr)
         return 2
 
-    # L1-0 P2 가드(엔진 _resolve_settings 계승): 어댑터의 --settings 기본값이 실
-    # ~/.claude/settings.json 이므로, 디스패처가 명시(--settings 격리)/실설치 의사
-    # (--install) 없이 위임하면 실 호스트 오염. 둘 다 없으면 거부(exit 2).
-    if "--settings" not in rest and "--install" not in rest:
-        print("[error] --settings <경로> (격리) 또는 --install (실설치) 중 하나가 "
+    # L1-0 P2 가드(엔진 _resolve_settings 계승): 어댑터의 설정 기본값이 실 호스트
+    # (~/.claude/settings.json·~/.codex/config.toml)이므로, 디스패처가 격리 명시/
+    # 실설치 의사(--install) 없이 위임하면 실 호스트 오염 → 거부(exit 2).
+    # C1(agent-aware): 격리 의도 플래그는 에이전트 **자신의** 설정 플래그다 —
+    # _AGENT_WIRE[agent]["flag"] (claude=--settings, codex=--config). 과거엔
+    # --settings 만 인정해 `--codex --config <path> sync` 가 어댑터 도달 전
+    # exit 2 였다(internals.md 부록 A.3 known gap — 이 커밋으로 닫음).
+    # _AGENT_WIRE 미등록 에이전트는 보수 폴백(--settings)만 인정.
+    spec = il._AGENT_WIRE.get(agent)
+    iso_flag = spec["flag"] if spec else "--settings"
+    present, value_ok = _flag_value_state(rest, iso_flag)
+    if not present and "--install" not in rest:
+        print(f"[error] {iso_flag} <경로> (격리) 또는 --install (실설치) 중 하나가 "
               "필요합니다. 명시 없이 실 호스트 설정에 쓰지 않습니다.", file=sys.stderr)
         return 2
-    rest = _strip_dispatch_only_args(rest)
+    if present and not value_ok:
+        print(f"[error] {iso_flag} 에 경로 값이 필요합니다. "
+              f"예) install.py --{agent} {iso_flag} <경로> sync", file=sys.stderr)
+        return 2
+    rest, _err = _translate_dispatch_args(rest)
+    if _err:
+        print(_err, file=sys.stderr)
+        return 2
 
     sys.argv = [str(adapter_path)] + rest
     mod = runpy.run_path(str(adapter_path), run_name="__teammode_adapter__")
@@ -947,10 +863,6 @@ def main(argv=None) -> int:
     # --uninstall: 호스트 되돌리기 액션(신규). 부트스트랩·디스패치와 별개 분기.
     if "--uninstall" in argv:
         return cmd_uninstall(_parse_uninstall(argv))
-
-    # --check-mcp: MCP 연결 조회(S2). 읽기 전용, stdout JSON.
-    if "--check-mcp" in argv:
-        return cmd_check_mcp(argv)
 
     # 디스패치 모드 판정: 첫 토큰들 중 --<agent>(agents/<name>/ 존재) 가 있으면 위임.
     agent, rest = _split_agent(argv)
