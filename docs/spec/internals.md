@@ -170,7 +170,7 @@ infra/
 - `match` 생략 또는 falsy 값은 전체 매칭이다. 지원 키는 현 구현상 `action`, `mcp`뿐이다. 알 수 없는 match 키는 어댑터 번역 단계에서 표현 불가로 취급하고, normalize 런타임 필터에서는 `True`로 통과한다(unknown match를 런타임에서 막지 않음). `match`가 정확히 하나의 키만 갖는지는 현재 lint/conformance에서 검사하지 않는다.
 - `args`는 문자열 그대로 커맨드 끝에 붙는다. 리스트 파싱이나 shell escaping 재해석은 하지 않는다. 예: manifest의 `"args": "teammode-linear-create-allow"`는 `confirm-action.py`의 첫 positional 인자로 들어간다.
 - `timeout`은 **초(seconds)** 단위 선언이다. Claude settings.json 과 Codex config.toml 모두 초 단위 hook timeout 을 사용하므로 어댑터가 변환 없이 그대로 기록한다(변환 드리프트 원천 차단). 생략 시 양쪽 모두 timeout 필드를 기록하지 않는다.
-- `mode` 생략은 base 엔트리다. `"on"`은 `sync --on`일 때만 base와 함께 등록된다. `sync --off` 또는 플래그 없는 `sync`는 base만 등록한다. 현재 구현에는 "마지막 on/off 상태 기억"이 없다.
+- `mode` 생략은 base 엔트리다. `"on"`은 `sync --on`일 때 base와 함께 등록된다. `sync --off`는 base만 등록한다. 플래그 없는 `sync`는 **기존 managed 상태를 보존한다**(self-heal): 기존 설정의 teammode 소유물에서 현 상태를 추론(ON 신호 — Claude: 소유 훅 커맨드가 `mode:"on"` 스크립트를 가리킴 또는 managed statusLine 존재 / Codex: teammode-hooks 블록 안 `statusMessage` 존재 또는 `mode:"on"` 스크립트 참조)해 그 상태로 렌더하고, 소유물이 없으면 최초 off 로 간주해 base만 등록한다. 별도 상태 파일("마지막 on/off 기억")은 없다 — 추론 소스는 설정 파일 자체다. 이 계약이 없던 과거엔 plain `sync`가 ON 상태를 base-only 로 무언 강등했고, Codex 는 statusMessage 드랍이 trust 해시 불일치(재-trust 요구)까지 유발했다.
 - `fallback` 기본값은 `"drop"`이다. `"runtime"`은 이벤트는 지원하지만 매처가 표현 불가할 때 무매처로 등록하고 normalize 자가 필터에 맡기는 모드다. 이벤트 자체가 `null`이면 runtime이어도 등록할 수 없어 drop된다.
 - `strict`는 normalize 변환 실패 시 종료코드를 결정한다. 같은 `script`를 가진 manifest 엔트리 중 하나라도 `strict: true`면, 해당 script로 호출된 normalize 변환 실패가 exit 1이 된다. 아니면 exit 0이다.
 - `enforcement` 기본값은 `"advisory"`다. 현 코드에서 이 필드는 Codex `sync()`의 `event is None` 경로에서만 경고 문구를 강화한다. 즉 어떤 이벤트가 events.json에서 미지원(`null`)으로 선언됐는데 `enforcement: "block"`이면 `[warn] ... (block 강제 상실) → 비활성`을 출력한다. Codex는 현재 4종 이벤트를 모두 지원하므로 reference 매니페스트의 PreToolUse 차단 훅은 이 경로를 타지 않는다. Claude `sync()`는 `enforcement`를 읽지 않는다.
@@ -279,9 +279,10 @@ adapter.py [global-options] install-skills      # infra/skills/base/* 설치
 `sync`의 구현 계약:
 
 1. 대상 엔트리 선택:
-   - `mode is None` 또는 `mode == "off"`: manifest에서 `mode`가 없는 base 엔트리만 대상.
+   - `mode is None`(플래그 없는 `sync`): 먼저 `_infer_existing_mode()`로 기존 설정의 teammode 소유물에서 현 상태를 추론한다(self-heal). ON 으로 추론되면 on 과 동일 취급, 아니면(소유물 없음/판단 불가) base 엔트리만 대상(최초 off 간주).
+   - `mode == "off"`: manifest에서 `mode`가 없는 base 엔트리만 대상.
    - `mode == "on"`: base 엔트리 + `mode: "on"` 엔트리 대상.
-   - 현재 구현은 마지막 sync 상태를 저장하지 않는다. 플래그 없는 `sync`는 항상 off와 같은 base-only 동작이다.
+   - 별도 상태 저장은 없다. plain `sync`는 "현 상태 유지 + 재렌더"이며, manifest 미변경이면 파일 무변경(Codex trust 해시 보존)이다.
 2. 이벤트 번역:
    - `events.json.events[canonical_event]`를 읽는다.
    - 키가 없으면 `None`처럼 미지원 취급한다.
@@ -372,6 +373,7 @@ Claude 구현(`~/.claude.json` shape):
    - 원본에 `mcpServers` 키가 없고 등록할 서버도 없으면 파일을 생성하거나 touch하지 않는다.
    - 원본에 `mcpServers` 키가 있거나 서버가 남아 있으면 정규 JSON으로 직렬화해 원문과 다를 때만 쓴다.
 9. 반환 메시지가 없으면 desired alias 수로 구분한다. desired alias가 있으면 `[ok] 변경 없음 (<n>개 provider 등록됨)`, 없으면 `[info] 연결된 MCP provider 없음 (빈 슬롯)`.
+10. **기존(사용자) MCP 감지(#3)**: placeholder 대상 provider(팩에 호스티드 URL·기동 커맨드 둘 다 없음 — slack/google 등)는 등록 전에 설정 파일의 사용자 서버(비소유 `mcpServers` 항목 / Codex는 teammode 블록 밖 `[mcp_servers.*]` 섹션)에서 동일 provider 로 보이는 서버를 찾는다. 감지 규칙: ① 서버 키 토큰 매칭(비영숫자 구분, case-insensitive, `tm-` 네임스페이스 제외) ② url 부분문자열 ③ command+args 부분문자열. 감지되면 placeholder 를 등록하지 않고 `[info] <provider>: 기존 MCP 서버 '<name>' 발견 … tm-<provider> 별칭으로 직접 연결` 안내만 낸다(자동 채택 금지 — 소유권 마커가 없어 보증 불가). desired 에서 빠지므로 과거 stale placeholder 는 기존 제거 경로(`[remove-mcp]`)로 사라진다. 미탐이면 기존 동작(placeholder + 수동 안내) 유지. 호스티드/기동 커맨드가 있는 provider(linear/notion 등)는 감지와 무관하게 실등록을 유지한다.
 
 Codex 구현(`~/.codex/config.toml` shape):
 
@@ -387,7 +389,7 @@ Codex 구현(`~/.codex/config.toml` shape):
 4. provider가 하나 이상 있으면 전체 teammode MCP 블록을 렌더해 기존 블록을 교체하거나 파일 끝에 append한다. write가 일어나면 `[mcp] <alias> 등록`을 alias마다 반환하고, 바이트 동일이면 `[ok] 변경 없음 (<n>개 provider 등록됨)`을 반환한다.
 5. provider가 하나도 없으면 기존 teammode MCP 블록만 제거한다. 블록이 없으면 파일을 touch하지 않고 `[info] 연결된 MCP provider 없음 (빈 슬롯)`을 반환한다.
 6. 한계: 이 placeholder에는 `command`/`args`가 없다. Codex 런타임이 실제 MCP 서버로 기동하려 하면 에러가 날 수 있다. 현 계약은 sync가 참조할 alias 슬롯 보장까지다.
-7. 한계: Codex 구현은 TOML 전체를 파싱하지 않으므로 teammode 블록 밖의 사용자 `[mcp_servers.<same>]`와의 중복 collision을 검사하지 않는다. teammode가 관리하는 것은 marker 블록뿐이다.
+7. 한계: Codex 구현은 TOML 전체를 파싱하지 않으므로 teammode 블록 밖의 사용자 `[mcp_servers.<same>]`와의 중복 collision을 검사하지 않는다. teammode가 관리하는 것은 marker 블록뿐이다. 단 **기존 서버 감지(#3, Claude 구현 10과 동일 계약)**를 위해 블록 밖 `[mcp_servers.*]` 섹션 헤더와 한 줄 `url`/`command`/`args`는 감지용으로 라인 스캔한다(placeholder 대상 provider 한정, 등록/수정은 하지 않음).
 
 ### 2.9 폴백 정책
 
@@ -1115,7 +1117,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 | 04 §10 실호스트 쓰기 게이트 | `--yes`(실설치) 또는 `--settings`(격리) 없으면 wire 건너뜀 | `bootstrap`(wire gate)·`_dispatch` |
 | 05 전체(설계 draft) | tm-onboard SKILL.md **실제 작성됨** | `infra/skills/base/tm-onboard/SKILL.md` |
 | 05 Obsidian 등록 메커니즘 | `--register-obsidian` 단독 opt-in 액션·merge·비치명·나중 등록 | `register_obsidian`·`register_obsidian_vault` |
-| 02 §5 `sync` 무플래그 | base 엔트리만(최초 off 간주) | 어댑터 `_wanted_entries` |
+| 02 §5 `sync` 무플래그 | 기존 managed 상태 보존(self-heal `_infer_existing_mode`), 소유물 없으면 base만(최초 off 간주) | 어댑터 `_infer_existing_mode`·`_wanted_entries` |
 | L2 안전 훅 2종 | `auto-commit.py`·`confirm-action.py` 파일 실재 + manifest 등록 | `infra/hooks/manifest.json`·`infra/hooks/auto-commit.py`·`infra/hooks/confirm-action.py` |
 | L2 MCP 배선 | Claude/Codex 어댑터 `install-mcp` + install wire 선행 호출 구현 | `infra/agents/claude/adapter.py`·`infra/agents/codex/adapter.py`·`infra/install_lib.py` |
 | L2 스킬 설치 | Claude/Codex 어댑터 `install-skills` + install wire 후행 호출 구현 | `infra/agents/claude/adapter.py`·`infra/agents/codex/adapter.py`·`infra/install_lib.py` |
@@ -1139,7 +1141,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 
 - **공통 훅의 에이전트 메모리 누출**: 설계 목표는 에이전트 고유 메모리를 `agents/<name>/` 아래로 격리하는 것이나, 현 `session-start.py`/`confirm-action.py`는 Claude 출력 스키마와 Codex 한계를 직접 알고 있다. `session-log-remind.py`는 2026-06-21 재설계에서 평문 stdout 출력으로 전환해 이 갭을 해소했다.
 - ~~**bootstrap verify의 Claude 고정**: wire는 감지 에이전트별 어댑터를 호출하지만 verify는 감지 결과와 무관하게 `teammode.py on`을 실행하고, 엔진 `on`은 항상 Claude 어댑터만 로드한다.~~ → **닫힘**: verify가 `on` 호출을 제거하고 `context`만 쓰게 되어(`auto_update_on_start` 자동 커밋 부작용 회피, 이종 적대검수 B1) 어댑터 로드 자체가 사라졌다.
-- **Codex 디스패치 게이트 불일치**: Codex 어댑터 설정 옵션은 `--config`지만 `install.py --<agent>` 디스패처 게이트는 `--settings`/`--install`만 인정한다. `--codex --config <path> sync`는 어댑터 도달 전 exit 2다.
+- ~~**Codex 디스패치 게이트 불일치**: Codex 어댑터 설정 옵션은 `--config`지만 `install.py --<agent>` 디스패처 게이트는 `--settings`/`--install`만 인정한다. `--codex --config <path> sync`는 어댑터 도달 전 exit 2다.~~ → **닫힘**: 게이트가 agent-aware 로 바뀌어 `install_lib._AGENT_WIRE[agent]["flag"]`(claude=`--settings`, codex=`--config`)를 격리 의도로 인정한다. 값 결손(`--config sync` 처럼 다음 토큰이 동사/옵션)은 명확한 exit 2. `_AGENT_WIRE` 미등록 에이전트는 보수 폴백(`--settings`/`--install`)만 인정.
 - **주입 스케일 분기 미구현(§1.6)**: reference `session-start.py`는 항상 summary 라인 기반 주입, ~4인 전문/5인+ 분기 없음. 0.2 자동검사 대상 아님이라 비준수는 아니나 스펙 목표 대비 갭.
 - ~~**conformance 시나리오 03(`issue create`)**: 엔진 미구현 동사 → exit 127(의도된 RED, 서비스 슬롯 L2).~~ → **닫힘(0.2)**: `issue` 동사 구현(§3.5), 03 GREEN.
 - **lint 검사 범위**: reference `check.py lint`는 K4 일부(manifest 정규형 grep), 토큰키 데이터 파일 린트, K7(스킬 본문 정규형)을 실행한다. K3 events/actions 완전성, duplicate `(event, script)`, match 단일 키, K8 INDEX 등재는 미구현이다.

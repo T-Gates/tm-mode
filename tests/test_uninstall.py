@@ -267,27 +267,38 @@ def test_uninstall_real_host_gate(tmp_path, capsys):
     assert "--settings" in err or "--yes" in err
 
 
-# ── #5: _dispatch 부트스트랩 인자 필터 (--root/--install 가 어댑터로 새지 않음) ──
+# ── #5·C3: _dispatch 부트스트랩 인자 번역 (--install 제거, --root → --team-root) ──
 
 def _install_mod():
     return runpy.run_path(str(INFRA / "install.py"), run_name="__dispatch_test__")
 
 
-def test_strip_dispatch_only_args_removes_root_value_flag():
-    """#5: --root <값> 은 value-flag 라 플래그+값 둘 다 제거 — 어댑터로 안 샌다."""
-    strip = _install_mod()["_strip_dispatch_only_args"]
-    assert strip(["uninstall", "--root", ".", "--settings", "x"]) == \
-        ["uninstall", "--settings", "x"]
-    # codex: --config 는 보존, --root/--install 만 제거
-    assert strip(["--config", "y", "--install", "uninstall", "--root", "/t"]) == \
-        ["--config", "y", "uninstall"]
+def test_translate_dispatch_args_bridges_root_to_team_root():
+    """C3: --root <값> 은 무언 제거가 아니라 어댑터 --team-root 로 번역된다."""
+    translate = _install_mod()["_translate_dispatch_args"]
+    out, err = translate(["uninstall", "--root", ".", "--settings", "x"])
+    assert err is None
+    assert out == ["--team-root", ".", "uninstall", "--settings", "x"]
+    # codex: --config 는 보존, --install 제거, --root 번역
+    out, err = translate(["--config", "y", "--install", "uninstall", "--root", "/t"])
+    assert err is None
+    assert out == ["--team-root", "/t", "--config", "y", "uninstall"]
 
 
-def test_strip_dispatch_only_args_keeps_adapter_args():
+def test_translate_dispatch_args_keeps_adapter_args():
     """어댑터가 아는 인자(--settings/--config/서브커맨드)는 보존."""
-    strip = _install_mod()["_strip_dispatch_only_args"]
-    assert strip(["--settings", "s", "sync", "--on"]) == \
-        ["--settings", "s", "sync", "--on"]
+    translate = _install_mod()["_translate_dispatch_args"]
+    out, err = translate(["--settings", "s", "sync", "--on"])
+    assert err is None
+    assert out == ["--settings", "s", "sync", "--on"]
+
+
+def test_translate_dispatch_args_conflict_returns_error():
+    """C3 경계: --root 와 --team-root 값 불일치 → 에러(모호성 거부)."""
+    translate = _install_mod()["_translate_dispatch_args"]
+    out, err = translate(["--root", "/a", "--team-root", "/b", "sync"])
+    assert out is None and err is not None
+    assert "--team-root" in err
 
 
 # ── #4 회귀 게이트: --uninstall 이 codex 어댑터도 제거 (claude 대칭) ──
