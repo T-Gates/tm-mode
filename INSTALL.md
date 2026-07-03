@@ -33,6 +33,8 @@ tm-mode join <팀레포 clone-url>
 
 설치가 끝나면 CLI가 안내한다: **Claude Code나 Codex를 열고 `tm-onboard`라고 입력** → 설치 검증·팀모드 가치 브리핑이 자동으로 진행된다. (설치는 됐지만 팀모드는 아직 꺼져 있다 — **설치 ≠ 활성화.**)
 
+> **Codex 사용자**: 첫 설치·훅 변경 후에는 codex(TUI)를 한 번 열어 hook trust 프롬프트에서 **Trust** 를 눌러야 한다 — 아니면 headless(`codex exec`)에서 훅이 조용히 스킵된다(`tm on` 시 [warn] 으로 감지·안내).
+
 ## 3. 팀모드 켜기 (활성화)
 설치는 팀모드를 자동으로 켜지 않는다. 작업을 시작할 때 켠다:
 ```bash
