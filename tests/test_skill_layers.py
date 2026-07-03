@@ -137,6 +137,16 @@ def test_install_skills_core_creates_tm_context(tmp_path):
     assert (link / "SKILL.md").is_file()
 
 
+def test_install_skills_core_creates_tm_import_memory(tmp_path):
+    """install_skills(layer='core') 는 tm-import-memory 심링크도 생성한다 (#51)."""
+    root = _scaffold(tmp_path)
+    a = _adapter(root, tmp_path)
+    a.install_skills(layer="core")
+    link = tmp_path / "claude-skills" / "tm-import-memory"
+    assert link.exists() or link.is_symlink(), "core install 이 tm-import-memory 를 생성하지 않았다"
+    assert (link / "SKILL.md").is_file()
+
+
 def test_install_skills_core_idempotent(tmp_path):
     """install_skills(layer='core') 는 멱등이다."""
     root = _scaffold(tmp_path)
