@@ -349,12 +349,14 @@ def auto_update_on_start(team_root: Path) -> None:
             # 멱등: 변경 없음 — do_commit 호출 안 함
             return
 
-        # 변경 있음: paths 한정 자동 커밋 + 자동 push(6/23 철학). push 실패는 비차단.
+        # 변경 있음: pathspec 한정 자동 커밋 + 자동 push(6/23 철학). push 실패는 비차단.
+        # ⚠️ paths 가 아니라 **pathspecs**(positive+exclude) — 안 그러면 `git add -- infra`
+        # 가 infra/skills/util 의 로컬 변경까지 자동 커밋에 섞는다(#36 codex 지적).
         commit_res = _git_ops.do_commit(
             str(team_root),
             message="chore: sync teammode engine from upstream [auto]",
             push=True,
-            paths=list(res.paths),
+            paths=list(res.pathspecs or res.paths),
         )
 
         if not commit_res.ok:
@@ -532,6 +534,9 @@ def cmd_update(team_root: Path, dry_run: bool = False) -> int:
     if dry_run:
         if res.diff:
             print(f"tm-mode update [dry-run] — 동기화하면 바뀔 파일({paths}):")
+            # util 이 pathspec 으로 제외됐으면 "누락 아님 보호"임을 1줄 안내(#36).
+            if any(":(exclude)" in ps for ps in res.pathspecs):
+                print("  제외: infra/skills/util (인스턴스 소유 util 스킬 — 보호)")
             print(res.diff)
             print("  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)")
         else:
