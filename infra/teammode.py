@@ -1106,6 +1106,10 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str
     if fn_err is not None:
         return fn_err
 
+    # INDEX.md 는 엔진 관리 파일(폴더 4열 표) — write 로 덮어쓰기 금지 (delete 와 대칭)
+    if filename == "INDEX.md":
+        return "INDEX.md 는 엔진이 관리합니다 — memory write 로 쓸 수 없습니다."
+
     # ── containment: 정규화된 절대경로가 memory/ 하위여야 한다 ────
     candidate = (team_root / "memory" / folder / filename).resolve()
     try:

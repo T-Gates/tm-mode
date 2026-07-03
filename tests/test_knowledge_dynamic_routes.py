@@ -164,3 +164,17 @@ def test_unregistered_folder_delete_rejected(tmp_path):
     target.write_text("x", encoding="utf-8")
     r = _run(root, "memory", "delete", "--path", "legal/x.md", "--author", "test")
     assert r.returncode == 2
+
+
+# ── INDEX.md write 거부 (delete 와 대칭) ────────────────────────────
+
+def test_index_md_filename_write_rejected(tmp_path):
+    """--filename INDEX.md 거부 — 엔진 관리 폴더 INDEX 덮어쓰기 차단 (delete 와 대칭)."""
+    root = tmp_path / "team"
+    root.mkdir()
+    _init_git(root)
+    r = _run(root, "memory", "write", "--folder", "product",
+             "--filename", "INDEX.md", "--content", "x",
+             "--author", "test", "--weight", "📎")
+    assert r.returncode == 2
+    assert "INDEX.md" in r.stderr
