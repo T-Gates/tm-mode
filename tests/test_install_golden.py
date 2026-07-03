@@ -285,13 +285,25 @@ def test_D3_connected_slot_registers_mcp_in_isolation(tmp_path):
     assert not real_mcp.exists()
     codex_cfg = iso / "codex" / "config.toml"
     assert codex_cfg.is_file()
-    assert "teammode-mcp-start" in codex_cfg.read_text()  # placeholder 블록 등록됨(N6)
+    codex_text = codex_cfg.read_text()
+    assert "teammode-mcp-start" in codex_text  # placeholder 블록 등록됨(N6)
+    # issue #41 R3 — 신규 설치 E2E 락: codex config.toml 훅 블록이 **정확히 1개**
+    # (append 사고 회귀 차단) + member prefix(git user Mona → mona)가 hook command 에
+    # 박힌다(#28 member 흐름 회귀 차단).
+    assert codex_text.count("# teammode-hooks-start") == 1
+    assert codex_text.count("# teammode-hooks-end") == 1
+    assert "env TEAMMODE_MEMBER=mona " in codex_text
     # 멱등: 재실행해도 격리 MCP 파일 동일, 실경로 여전히 부재.
     before = iso_mcp.read_text()
     proc2 = _run_install(team, home, ["--settings", str(iso)])
     assert proc2.returncode == 0
     assert iso_mcp.read_text() == before
     assert not real_mcp.exists()
+    # issue #41 R3 — 재설치 후에도 훅 블록은 여전히 1개(append 금지 락) + prefix 유지.
+    codex_text2 = codex_cfg.read_text()
+    assert codex_text2.count("# teammode-hooks-start") == 1
+    assert codex_text2.count("# teammode-hooks-end") == 1
+    assert "env TEAMMODE_MEMBER=mona " in codex_text2
 
 
 # ─────────────────────────── I-dry — dry-run 무접촉 ───────────────────────────

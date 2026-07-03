@@ -51,6 +51,19 @@ except ImportError:
 BLOCK_START = "# teammode-hooks-start"
 BLOCK_END = "# teammode-hooks-end"
 
+# issue #41 R1 — legacy/어긋난 마커 자기치유용 패턴들.
+# _MARKER_LINE: 모든 teammode 마커 변형(`# teammode-<이름>-start|end`)을 라인 단위로 인식.
+#   라인 선두 앵커라 TOML 문자열 값 안의 마커-모양 부분문자열(command = '...')은 안 잡는다.
+_MARKER_LINE = re.compile(r"^\s*#\s*teammode-([A-Za-z0-9_]+)-(start|end)\s*$")
+# _HOOKS_TABLE: teammode 훅 블록 본문을 이루는 [[hooks.*]] 테이블 헤더(서브테이블 포함).
+_HOOKS_TABLE = re.compile(r"^\s*\[\[hooks\.")
+# _EVENT_TABLE: 이벤트 단위 테이블 헤더([[hooks.<Event>]] — 서브테이블 [[hooks.X.hooks]] 제외).
+_EVENT_TABLE = re.compile(r"^\s*\[\[hooks\.[A-Za-z0-9_-]+\]\]\s*$")
+# _ANY_SECTION: 임의 TOML 섹션/테이블 헤더(고아 start 전방 스캔의 정지 경계 판정용).
+_ANY_SECTION = re.compile(r"^\s*\[")
+# _COMMAND_LINE: 훅 테이블의 command 한 줄 문자열 값(managed SHAPE 증명 P2-3 입력).
+_COMMAND_LINE = re.compile(r"""^\s*command\s*=\s*(['"])(.*)\1\s*$""")
+
 
 class Adapter(BaseAdapter):
     """Codex 어댑터 — 번역 코어는 상속, config 포맷·폴백만 재정의."""
@@ -67,6 +80,11 @@ class Adapter(BaseAdapter):
         # (문서가 command 에 `$(...)` 명령치환 예시를 보임 — 셸 경유 근거) build_command 가
         # `env VAR=val <command>` prefix 로 안전 전달한다. None 이면 prefix 없음(하위호환).
         self.member = kwargs.pop("member", None)
+        # member_fallback(issue #41 R2): 엔진(teammode.py)의 자동 해석 체인
+        # (env TEAMMODE_MEMBER → claude settings.json env)이 넘기는 폴백 멤버명.
+        # 우선순위는 명시 self.member > 기존 config prefix(자가치유) > member_fallback —
+        # 이미 박힌 prefix 가 per-agent 최고 충실도라 폴백이 그걸 덮지 않는다.
+        self.member_fallback = kwargs.pop("member_fallback", None)
         # N3: Codex 는 MCP 를 ~/.codex/config.toml 의 [mcp_servers.*] 블록으로 등록하므로
         # 부모(claude)가 상속시키는 mcp_config_path(=~/.claude.json) 를 절대 쓰지 않는다.
         # 상속된 실경로가 latent footgun 으로 새지 않게 봉인 — 부모 _read_mcp_config/
@@ -102,8 +120,11 @@ class Adapter(BaseAdapter):
         assigns = []
         # self.member(install/`tm on --member` 경로) 우선, 없으면 self-healing 으로 현재
         # config.toml 에 이미 박힌 prefix 를 재사용 — member 없이 도는 `tm on/off` resync 가
-        # prefix 를 떨구는 회귀를 막는다(issue #26, codex review).
-        member = self.member or self._existing_member_prefix()
+        # prefix 를 떨구는 회귀를 막는다(issue #26, codex review). 둘 다 없으면 엔진의
+        # 자동 해석 체인이 넘긴 member_fallback(issue #41 R2 — env/claude settings 유래)
+        # 을 마지막으로 쓴다. 셋 다 없으면 prefix 생략(발명 금지, 하위호환).
+        member = (self.member or self._existing_member_prefix()
+                  or self.member_fallback)
         if member and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", member):
             assigns.append(f"TEAMMODE_MEMBER={member}")
         home = self._home_prefix_value()
@@ -312,8 +333,241 @@ class Adapter(BaseAdapter):
             return self.settings_path.read_text(encoding="utf-8")
         return ""
 
+    def _purge_legacy_markers(self, existing: str) -> str:
+        """teammode 마커 잔재를 걷어내 '정상 소유물만 남은' 텍스트를 돌려준다(issue #41 R1).
+
+        실측 사고(2026-07-03, Acme): 과거 버전이 `# teammode-hooks-start` …
+        `# teammode-mcp-end` 로 **마커 이름이 어긋난** 블록을 남겼고, 정상 쌍만 찾는
+        _write_block 이 인식 실패 → 새 블록 append → 훅 2중 등록(구 블록은 prefix 없음 +
+        stale timeout). 이 함수가 resync/uninstall 의 쓰기 전에 항상 돌아, 어떤 잔재가
+        있어도 수동 수술 없이 '정상 블록 정확히 1개'로 수렴하게 한다.
+
+        유지(정상 소유물 — 안 지움):
+          - 문서상 **첫 번째** 정상 hooks-start↔hooks-end 쌍: _write_block 의 교체 앵커
+            (제자리 교체 의미·멱등 보존). 두 번째 이후 hooks 쌍은 append 사고의 잔해 → 제거.
+            단, 범위 안에 mcp 마커가 중첩된 hooks 쌍은 앵커로 못 쓴다(codex P2-1 —
+            통짜 교체가 안쪽 MCP 블록을 죽임): hooks 마커 + 소유 증명 테이블만 제거.
+          - 정상 mcp-start↔mcp-end 쌍: _write_mcp_block 소유 — 훅 sync 가 살아있는 MCP
+            등록을 지우면 안 된다.
+        제거(잔재):
+          - 이름이 어긋난 start↔end 쌍(예: hooks-start↔mcp-end) — 스택 쌍짓기(가장
+            가까운 start↔end)라 비탐욕 최단 범위. 중첩된 정상 쌍은 안쪽부터 짝지어져
+            보존된다.
+          - 알 수 없는 이름의 정상 쌍(과거 네이밍 변형).
+          - 고아 end 마커: 마커 라인만.
+          - 고아 start 마커: 마커 라인 + 보수 전방 스캔(_orphan_start_span) 범위.
+        판단 불가한 내용은 남긴다 — 잔재 일부가 남는 쪽 오류는 다음 sync 가 다시 시도
+        하지만, 사용자 설정을 지우는 쪽 오류는 복구 불가이기 때문.
+        """
+        if "teammode-" not in existing:
+            return existing
+        lines = existing.split("\n")
+        markers = []  # (line_idx, 마커이름, start|end)
+        # 멀티라인 문자열 상태 추적(codex P2-2): TOML 멀티라인 문자열('''/\"\"\") **안의**
+        # 마커-모양 라인은 사용자 데이터다(예: command 가 다른 파일에 마커를 쓰는 스크립트).
+        # 라인 스캔이 그걸 진짜 마커로 오인하면 사용자 설정이 지워지므로, 구분자 등장을
+        # 라인마다 순차 소비해 안/밖 상태를 토글하고 '안'에서는 마커 인식을 끈다.
+        # ── 스캐너 휴리스틱의 한계(의도된 보수 근사, 완전한 TOML 파서가 아님) ──
+        #   - 한 줄(basic/literal) 문자열 값 안의 ''' / """ 부분문자열(예: x = "a '''")
+        #     을 멀티라인 개시로 오인할 수 있다 → 이후 마커 인식이 꺼진다.
+        #   - basic 멀티라인 안의 이스케이프(\" 등)·주석 안의 구분자도 액면 그대로 센다.
+        #   오인의 방향은 항상 '마커를 놓쳐 잔재가 남는' 쪽(fail-safe) — 잔재는 다음
+        #   sync 가 재시도하고, 사용자 설정을 지우는 쪽 오류는 발생하지 않는다.
+        in_ml = None  # None=문자열 밖, 아니면 현재 열린 구분자("'''" 또는 '"""')
+        for i, ln in enumerate(lines):
+            if in_ml is None:
+                m = _MARKER_LINE.match(ln)
+                if m:
+                    # 마커 라인은 정규식상 따옴표를 못 담는다 — 상태 갱신 불필요.
+                    markers.append((i, m.group(1), m.group(2)))
+                    continue
+            rest = ln
+            while True:
+                if in_ml is None:
+                    p1 = rest.find("'''")
+                    p2 = rest.find('"""')
+                    if p1 == -1 and p2 == -1:
+                        break
+                    if p2 == -1 or (p1 != -1 and p1 < p2):
+                        in_ml, rest = "'''", rest[p1 + 3:]
+                    else:
+                        in_ml, rest = '"""', rest[p2 + 3:]
+                else:
+                    p = rest.find(in_ml)
+                    if p == -1:
+                        break  # 이 줄에서 안 닫힘 — 다음 줄도 문자열 안
+                    rest = rest[p + 3:]
+                    in_ml = None
+        if not markers:
+            return existing
+        # 스택 쌍짓기: end 는 가장 가까운 미결 start 와 짝 — 어긋난 이름 조합도 쌍이 된다.
+        pairs = []        # (start_idx, end_idx, start_name, end_name)
+        orphan_ends = []  # 짝 없는 end 마커 라인
+        stack = []        # 미결 start 들
+        for idx, name, kind in markers:
+            if kind == "start":
+                stack.append((idx, name))
+            elif stack:
+                s_idx, s_name = stack.pop()
+                pairs.append((s_idx, idx, s_name, name))
+            else:
+                orphan_ends.append(idx)
+        orphan_starts = stack  # EOF 까지 짝 못 찾은 start 들
+
+        keep: set = set()
+        remove: set = set()
+        hooks_anchor_seen = False
+        for s, e, s_name, e_name in sorted(pairs):
+            if s_name == e_name == "hooks" and not hooks_anchor_seen:
+                # codex P2-1: 정상 hooks 쌍이라도 그 **범위 안에** mcp 마커가 있으면
+                # (손상 레이아웃: hooks-start … mcp-start … mcp-end … hooks-end)
+                # 앵커로 keep 하면 안 된다 — _write_block 이 hooks 범위를 통짜 교체해
+                # 안쪽의 살아있는 MCP 블록까지 죽인다. 이 경우 hooks 마커 두 줄 +
+                # 소유 증명된 훅 테이블(고아 start 와 동일한 보수 규칙)만 걷어내고
+                # 안쪽 정상 mcp 쌍은 그대로 둔다 → 다음 쓰기가 새 블록을 append.
+                inner_mcp = [i for i, name, _k in markers
+                             if s < i < e and name == "mcp"]
+                if inner_mcp:
+                    remove.add(s)
+                    remove.add(e)
+                    remove.update(self._owned_table_span(lines, s + 1))
+                    remove.update(self._owned_table_span(lines, max(inner_mcp) + 1))
+                else:
+                    hooks_anchor_seen = True   # 교체 앵커(문서상 첫 정상 hooks 쌍)
+                    keep.update(range(s, e + 1))
+            elif s_name == e_name == "mcp":
+                keep.update(range(s, e + 1))
+            else:
+                remove.update(range(s, e + 1))
+        for idx in orphan_ends:
+            remove.add(idx)
+        for idx, _name in orphan_starts:
+            remove.update(self._orphan_start_span(lines, idx))
+        remove -= keep  # 제거 범위에 중첩된 정상 소유물은 보존
+        if not remove:
+            return existing
+        return "\n".join(ln for i, ln in enumerate(lines) if i not in remove)
+
+    def _orphan_start_span(self, lines: list, idx: int) -> set:
+        """고아 start 마커의 제거 범위(라인 인덱스 집합) — 보수적으로 산정.
+
+        end 마커가 없어 블록 경계를 모른다. 근거 있는 범위만 지운다: 마커 라인 자체 +
+        직후에 이어지는 소유 증명된 훅 테이블 연속 구간(_owned_table_span).
+        """
+        span = {idx}
+        span.update(self._owned_table_span(lines, idx + 1))
+        return span
+
+    def _owned_table_span(self, lines: list, start: int) -> set:
+        """start 부터 이어지는 **소유 증명된 [[hooks.*]] 테이블 연속 구간**의 라인 집합.
+
+        마커 없는(고아 start·중첩 손상) 상태에서 삭제 범위를 정하는 공용 스캐너.
+        선택 근거(보수 규칙): _render_block 이 렌더하는 블록 본문은 전부 normalize.py
+        경유 [[hooks.*]] 테이블이므로, '소유 테이블 연속 구간'이 옛 블록 본문의 안전한
+        상계다. 정지 경계 — 다른 마커 라인, hooks 아닌 TOML 섹션, 테이블 밖 일반 텍스트,
+        **소유 증명 실패한 hooks 테이블**(사용자 훅일 수 있음 — 절대 안 지운다).
+
+        소유 증명(codex P2-3): is_owned 의 느슨한 꼬리 판정(agents/codex/normalize.py
+        부분문자열)만으로는 사용자가 직접 normalize.py 를 경유시킨 훅도 잡힌다.
+        이 삭제 경로 **만은** managed command SHAPE(_is_managed_command_shape:
+        `[env KEY=VAL…] <python> <normalize.py> <manifest 의 알려진 스크립트>`)를
+        요구한다 — 증명 실패면 잔재를 남긴다(다음 sync 재시도, 무해). is_owned 자체는
+        다른 소비처(재sync 갱신 판정 등)가 있으므로 여기서 바꾸지 않는다.
+        """
+        span: set = set()
+        known = self._known_hook_scripts()
+        n = len(lines)
+        i = start
+        while i < n:
+            ln = lines[i]
+            if not ln.strip():
+                i += 1
+                continue
+            if _MARKER_LINE.match(ln) or not _HOOKS_TABLE.match(ln):
+                break  # 다른 마커/비-hooks 내용 — 블록 본문 아님, 스캔 종료
+            # 이벤트 테이블 1그룹: 이 헤더부터 다음 이벤트 테이블/비-hooks 섹션/마커 전까지
+            # ([[hooks.X.hooks]] 서브테이블·matcher/command/timeout 행은 같은 그룹).
+            j = i + 1
+            while j < n:
+                nxt = lines[j]
+                if (_MARKER_LINE.match(nxt) or _EVENT_TABLE.match(nxt)
+                        or (_ANY_SECTION.match(nxt) and not _HOOKS_TABLE.match(nxt))):
+                    break
+                j += 1
+            group = lines[i:j]
+            if not self._group_provably_managed(group, known):
+                break  # 소유 증명 없는 테이블 — 사용자 훅일 수 있으므로 여기서 멈춤
+            span.update(range(i, j))
+            i = j
+        return span
+
+    def _known_hook_scripts(self) -> set:
+        """hooks manifest 가 선언한 스크립트 파일명 집합 — managed SHAPE 판정의 화이트리스트.
+
+        모드 무관 전체 엔트리(on 전용 포함) — 옛 블록엔 현재 모드에 없는 스크립트도
+        남아 있을 수 있다. manifest 읽기 실패 → 빈 집합(삭제 증명 불가 = 삭제 안 함).
+        """
+        try:
+            manifest = self._load_manifest()
+        except Exception:  # noqa: BLE001 — manifest 부재/깨짐은 '증명 불가'로 강등
+            return set()
+        return {e.get("script") for e in manifest
+                if isinstance(e, dict) and isinstance(e.get("script"), str)}
+
+    def _group_provably_managed(self, group: list, known_scripts: set) -> bool:
+        """테이블 그룹 라인들에 managed SHAPE 의 command 가 하나라도 있으면 True."""
+        for ln in group:
+            m = _COMMAND_LINE.match(ln)
+            if not m:
+                continue
+            val = m.group(2)
+            if m.group(1) == '"':
+                # basic 문자열 최소 언이스케이프(managed 커맨드는 _toml_str 산출물이라
+                # \\" 와 \\\\ 만 나온다). 그 외 이스케이프는 액면 유지 — 매칭 실패 시
+                # 방향은 '삭제 안 함'(fail-safe).
+                val = val.replace('\\"', '"').replace("\\\\", "\\")
+            if self._is_managed_command_shape(val, known_scripts):
+                return True
+        return False
+
+    def _is_managed_command_shape(self, command: str, known_scripts: set) -> bool:
+        """command 가 teammode 가 렌더하는 모양인지 — 고아 삭제 전용 소유 증명(P2-3).
+
+        요구 형태(build_command 의 산출 형태 전 세대 포함):
+          [env KEY=VAL …] <python 인터프리터> <팀 루트의 normalize.py> <알려진 스크립트> [args…]
+        - env prefix: 선택. `env` 뒤 `KEY=VAL` 할당 토큰 연속(셸 env(1) 문법).
+        - 인터프리터: basename 이 python* (python3, python3.11, /path/python.exe …).
+        - normalize.py 경로: is_owned 와 동일 판정(절대경로 or agents/codex/normalize.py 꼬리).
+        - 스크립트: basename 이 manifest 선언 스크립트명 중 하나.
+        어긋나면 False — '증명 불가 = 우리 것 아님'으로 삭제를 멈춘다.
+        """
+        if not known_scripts:
+            return False
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return False
+        i = 0
+        if i < len(tokens) and tokens[i] == "env":
+            i += 1
+            while i < len(tokens) and re.fullmatch(
+                    r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[i], re.S):
+                i += 1
+        if len(tokens) - i < 3:
+            return False
+        interp, norm, script = tokens[i], tokens[i + 1], tokens[i + 2]
+        interp_base = os.path.basename(interp.replace("\\", "/")).lower()
+        if not interp_base.startswith("python"):
+            return False
+        if not self.is_owned(norm):
+            return False
+        return os.path.basename(script.replace("\\", "/")) in known_scripts
+
     def _write_block(self, block: str) -> bool:
-        existing = self._read_config()
+        original = self._read_config()
+        # issue #41 R1: 정상 쌍 탐색 전에 legacy 잔재(어긋난 쌍·고아 마커·중복 블록)를
+        # 먼저 걷어낸다 — 어떤 잔재가 있어도 결과는 항상 '정상 블록 1개'(append 금지).
+        existing = self._purge_legacy_markers(original)
         pattern = re.compile(
             r"\n*" + re.escape(BLOCK_START) + r".*?" + re.escape(BLOCK_END) + r"\n*",
             re.S)
@@ -325,7 +579,7 @@ class Adapter(BaseAdapter):
         else:
             base = existing.rstrip()
             updated = (base + "\n\n" + block + "\n") if base else (block + "\n")
-        if updated == existing:
+        if updated == original:
             return False
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings_path.write_text(updated, encoding="utf-8")
@@ -430,7 +684,10 @@ class Adapter(BaseAdapter):
         return "\n".join(lines)
 
     def _write_mcp_block(self, block: str) -> bool:
-        existing = self._read_config()
+        original = self._read_config()
+        # issue #41 R1: 훅 블록과 동일 파일이므로 MCP 쓰기 경로도 legacy 잔재를 치유
+        # (install-mcp 가 sync 보다 선행 — §2.7 — 하므로 어느 쪽이 먼저 돌아도 수렴).
+        existing = self._purge_legacy_markers(original)
         pattern = re.compile(
             r"\n*" + re.escape(self.MCP_BLOCK_START) + r".*?"
             + re.escape(self.MCP_BLOCK_END) + r"\n*", re.S)
@@ -441,7 +698,7 @@ class Adapter(BaseAdapter):
         else:
             base = existing.rstrip()
             updated = (base + "\n\n" + block + "\n") if base else (block + "\n")
-        if updated == existing:
+        if updated == original:
             return False
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings_path.write_text(updated, encoding="utf-8")
@@ -530,10 +787,13 @@ class Adapter(BaseAdapter):
 
     def uninstall(self) -> list:
         existing = self._read_config()
+        # issue #41 R1: uninstall 도 legacy 잔재(어긋난 쌍·고아 마커)를 함께 걷어낸다 —
+        # 재설치 전 수동 수술 불요. 정상 블록 제거는 아래 기존 패턴이 담당.
+        cleaned = self._purge_legacy_markers(existing)
         pattern = re.compile(
             r"\n?" + re.escape(BLOCK_START) + r".*?" + re.escape(BLOCK_END) + r"\n?",
             re.S)
-        updated = pattern.sub("\n", existing)
+        updated = pattern.sub("\n", cleaned)
         # MCP 블록도 함께 제거(역순 제거 — 등록 흔적 전부)
         mcp_pattern = re.compile(
             r"\n?" + re.escape(self.MCP_BLOCK_START) + r".*?"
