@@ -1931,9 +1931,11 @@ def cmd_knowledge(team_root: Path, action: str | None,
                       file=sys.stderr)
                 return 2
         if not _knowledge_folder_allowed(team_root, norm_folder):
+            top = norm_folder.split("/")[0] + "/"
             print(f"[error] memory delete: folder '{folder_part}' 는 허용되지 않습니다. "
                   f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} "
-                  f"(및 루트 INDEX 등재 최상위 폴더)",
+                  f"(및 루트 INDEX 등재 최상위 폴더)\n"
+                  f"[hint] 먼저 등록: {_route_upsert_hint_command(top, author)}",
                   file=sys.stderr)
             return 2
 

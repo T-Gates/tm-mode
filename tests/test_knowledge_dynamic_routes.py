@@ -256,3 +256,19 @@ def test_rejection_includes_route_upsert_hint(tmp_path):
     assert "--path soma/" in r.stderr
     assert "--desc" in r.stderr
     assert "--author eunsu" in r.stderr
+
+
+def test_delete_rejection_includes_route_upsert_hint(tmp_path):
+    """미등재 팀 전용 폴더 delete 거부에도 동일 포맷 힌트 (write 와 대칭, codex 재검수)."""
+    root = tmp_path / "team"
+    root.mkdir()
+    _init_git(root)
+    target = root / "memory" / "legal" / "x.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("x", encoding="utf-8")
+    r = _run(root, "memory", "delete", "--path", "legal/x.md", "--author", "eunsu")
+    assert r.returncode == 2
+    assert "[hint]" in r.stderr, f"delete 거부에 힌트 없음:\n{r.stderr}"
+    assert "memory route upsert" in r.stderr
+    assert "--path legal/" in r.stderr
+    assert "--author eunsu" in r.stderr
