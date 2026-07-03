@@ -1596,7 +1596,7 @@ def render_install_plan(plan: InstallPlan, *, home) -> list:
     env = plan.env
     skip = " (격리/비실설치 — 실호스트 env 미주입)" if env.get(
         "real_host_env_skipped") else ""
-    lines.append(f"[plan/env] TEAMMODE_HOME={env.get('TEAMMODE_HOME','')} · "
+    lines.append(f"[plan/env] TEAMMODE_HOME={_abbr(env.get('TEAMMODE_HOME',''))} · "
                  f"TEAMMODE_MEMBER={env.get('TEAMMODE_MEMBER','')} · "
                  f"profile={_abbr(env['profile']) if env.get('profile') else '(셸 미감지)'}"
                  f"{skip}")

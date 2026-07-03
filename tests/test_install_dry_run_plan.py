@@ -172,3 +172,71 @@ def test_dry_run_cli_prints_plan_and_touches_nothing(tmp_path, monkeypatch):
     assert not (team / "memory").exists()
     assert not (team / "team.config.json").exists()
     assert "[dry-run] 변경 없음" in text
+
+
+# ── codex 적대검수 반영 (P2·P3×3) ───────────────────────────────────
+
+def test_wire_step_names_match_wire_agents_implementation(tmp_path):
+    """[P3] 동어반복 차단: WIRE_STEP_NAMES 를 실 wire_agents 호출 순서와 대조.
+
+    spy run_adapter 로 실제 호출 동사 순서를 기록해 상수와 비교 — 구현 순서가
+    바뀌면 상수만 남은 계획이 거짓말하는 것을 테스트가 잡는다.
+    """
+    calls = []
+
+    def spy(agent, verb, flag, path, extra):
+        calls.append(verb)
+        return 0
+
+    il.wire_agents(["claude"], home=tmp_path / "home",
+                   settings_override=tmp_path / "iso",
+                   run_adapter=spy, team_root=tmp_path / "team",
+                   member_name="leejhy")
+    expected = [s.split()[0] for s in il.WIRE_STEP_NAMES]
+    assert calls == expected, (
+        f"wire_agents 실호출 {calls} ≠ WIRE_STEP_NAMES {expected} — 계획 드리프트")
+
+
+def test_claude_mcp_display_matches_adapter_default_source():
+    """[P3] claude 실호스트 MCP 표시(~/.claude.json)가 어댑터 기본과 단일 소스로 묶임.
+
+    어댑터 기본은 인라인 expanduser 라 함수로 못 뽑는다 — 소스 앵커로 고정:
+    어댑터 파일에 '~/' + _AGENT_WIRE['claude']['mcp_rel'] 리터럴이 실재해야 한다.
+    어댑터 기본이 바뀌면 이 테스트가 깨져 plan 표시를 함께 고치게 강제한다.
+    """
+    adapter_src = (REPO / "infra" / "agents" / "claude" / "adapter.py").read_text(
+        encoding="utf-8")
+    literal = "~/" + il._AGENT_WIRE["claude"]["mcp_rel"]
+    assert literal in adapter_src, (
+        f"claude 어댑터 기본 MCP 경로 리터럴 {literal!r} 부재 — plan 표시와 드리프트")
+
+
+def test_render_abbreviates_team_root_under_home(tmp_path):
+    """[P3] team_root 가 HOME 하위(~/teammode/x 일반 설치)여도 절대 홈경로 비유출."""
+    home = tmp_path / "home"
+    team = home / "teammode" / "myrepo"
+    plan = _plan(tmp_path, team_root=team, home=home)
+    text = "\n".join(il.render_install_plan(plan, home=home))
+    assert str(home) not in text, f"TEAMMODE_HOME 렌더에서 홈경로 유출:\n{text}"
+    assert "~/teammode/myrepo" in text
+
+
+def test_dry_run_without_yes_is_honest_about_skips(tmp_path, monkeypatch):
+    """[P2] --yes 없는 dry-run: 같은 인자의 실 실행처럼 'env 미주입·autopush 꺼짐'
+    으로 정직하게 렌더(--yes 를 붙였을 때와 계약이 다름을 표시)."""
+    import io, contextlib, runpy as _rp
+    team = tmp_path / "team"
+    team.mkdir()
+    subprocess.run(["git", "init", "-q", str(team)], capture_output=True)
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    mod = _rp.run_path(str(REPO / "infra" / "install.py"), run_name="__dr2__")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+        rc = mod["bootstrap"](
+            il.parse_args(["--root", str(team), "--dry-run",
+                           "--member-name", "leejhy"]),
+            home=home, python_version=(3, 12))
+    assert rc == 0
+    assert "미주입" in buf.getvalue(), (
+        "--yes 없는 dry-run 이 실호스트 env 주입처럼 렌더됨(정직성 위반)")

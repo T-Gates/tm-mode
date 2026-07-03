@@ -680,7 +680,10 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
             team_name_default=team_name_default, home=home,
             settings_override=opts.settings, shell=_shell,
             platform=sys.platform,
-            real_host_install=(opts.settings is None))
+            # 정직성(codex P2): 같은 인자의 non-dry 실행과 계약 일치 — --yes 없이는
+            # wire/env/autopush 전부 건너뛰므로 계획도 그렇게 렌더한다. AGENTS.md 절차가
+            # "--yes 를 붙이면 이 계획대로 실행"임을 사용자에게 설명한다.
+            real_host_install=(bool(opts.yes) and opts.settings is None))
         for _line in il.render_install_plan(_plan, home=home):
             out(_line)
         out("[dry-run] 변경 없음 — 계획만 출력했습니다(settings·memory·env 무접촉).")
