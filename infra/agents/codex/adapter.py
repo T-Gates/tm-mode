@@ -24,6 +24,7 @@ import argparse
 import os
 import re
 import runpy
+import shlex
 import sys
 from pathlib import Path
 from typing import Optional
@@ -75,29 +76,59 @@ class Adapter(BaseAdapter):
         super().__init__(*args, **kwargs)
 
     def build_command(self, entry: dict) -> str:
-        """기본 command 에 TEAMMODE_MEMBER env prefix 를 붙인다(Codex hook 전용).
+        """기본 command 에 TEAMMODE_MEMBER·TEAMMODE_HOME env prefix 를 붙인다(Codex hook 전용).
 
         Codex 는 hook command 를 셸로 실행하고(공식 hooks 문서가 command 에 `$(...)` 명령
         치환 예시를 보이는 것이 근거) command hook 에 env 필드가 없으므로, 멀티멤버 팀에서
         '나'를 가르는 TEAMMODE_MEMBER(session-log-remind·kb-write-guard 의 단일 소스)를
         `env VAR=val <command>` prefix 로 전달한다. member 가 self.member·기존 prefix 둘 다
-        없거나 형식이 이상하면 prefix 없이 기본 command 를 반환한다(하위호환·fail-safe).
+        없거나 형식이 이상하면 member 는 생략한다(하위호환·fail-safe).
         self.member 가 None 이면 현재 config.toml 에 박힌 기존 prefix 를 재사용한다(self-healing,
         `_existing_member_prefix`) — member 없이 도는 `tm on/off` resync 가 prefix 를 떨구지 않게. 값은 ascii 영숫자로 시작하는
         '-_' 단일 토큰만 허용 — command 가 셸로 실행되므로 공백/메타문자 토큰은 인젝션 위험이
-        있어 거부한다(session-log-remind `_valid_member_name` 과 동일 규칙). TEAMMODE_HOME 은
-        셸 프로파일/`__file__` 폴백으로 이미 닿으므로 prefix 에 넣지 않는다(경로 공백/따옴표
-        쿼팅 회피). ⚠️ `VAR=val cmd` 는 POSIX 셸 전제 — Windows 미작동(0002 migration 문서의
-        known-limitation 참조).
+        있어 거부한다(session-log-remind `_valid_member_name` 과 동일 규칙).
+
+        TEAMMODE_HOME(issue #9b): 훅은 env/cwd 만 읽으므로(`__file__` 폴백 없음 — #28 의
+        제외 사유는 오판) 셸 프로파일만으로는 셸 종류·스냅샷 스테일에 종속된다. 여기서
+        같은 prefix 채널에 핀한다. member 와 달리 값이 자유 문자열(경로)이므로
+        **shlex.quote 로 쿼팅**해 공백/따옴표/비ASCII 경로를 셸에 정확히 전달한다.
+        self-healing 파서는 불필요 — 값은 생성자가 항상 받는 self.team_root 에서 sync
+        마다 재파생된다(레포 이동 시 다음 sync 가 자동 갱신). TOML 한 줄 문자열로 표현
+        불가한 제어문자(개행 등) 경로만 핀 생략(_home_prefix_value, 프로파일 폴백).
+        ⚠️ `VAR=val cmd` 는 POSIX 셸 전제 — Windows 미작동(0002 migration 문서의
+        known-limitation 참조, Windows 는 setx 채널이 담당).
         """
         command = super().build_command(entry)
+        assigns = []
         # self.member(install/`tm on --member` 경로) 우선, 없으면 self-healing 으로 현재
         # config.toml 에 이미 박힌 prefix 를 재사용 — member 없이 도는 `tm on/off` resync 가
         # prefix 를 떨구는 회귀를 막는다(issue #26, codex review).
         member = self.member or self._existing_member_prefix()
         if member and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", member):
-            return f"env TEAMMODE_MEMBER={member} {command}"
+            assigns.append(f"TEAMMODE_MEMBER={member}")
+        home = self._home_prefix_value()
+        if home:
+            assigns.append(f"TEAMMODE_HOME={shlex.quote(home)}")
+        if assigns:
+            return "env " + " ".join(assigns) + f" {command}"
         return command
+
+    def _home_prefix_value(self) -> Optional[str]:
+        """prefix 에 핀할 팀루트 절대경로 — 표현 불가 경로만 None(핀 생략, 프로파일 폴백).
+
+        shlex.quote 가 공백/따옴표/메타문자/비ASCII 를 전부 안전 쿼팅하므로 값 검증으로
+        걸러낼 필요가 없다. 유일한 예외는 개행/CR — config.toml 의 command 는 한 줄
+        TOML 문자열(_toml_str)이라 표현 자체가 불가하다. 이 병리적 경로는 [warn] 1회
+        출력 후 미핀(훅은 셸 프로파일/cwd 폴백으로 동작, 이슈 #9a 경고가 표면화).
+        """
+        home = str(self.team_root)
+        if "\n" in home or "\r" in home:
+            if not getattr(self, "_warned_home_unpinnable", False):
+                self._warned_home_unpinnable = True
+                print(f"[warn] 팀루트 경로에 개행 문자가 있어 TEAMMODE_HOME 을 hook "
+                      f"command 에 핀하지 못했습니다(셸 프로파일 폴백): {home!r}")
+            return None
+        return home
 
     def _existing_member_prefix(self) -> Optional[str]:
         """현재 config.toml 의 managed hook 블록에서 기존 `env TEAMMODE_MEMBER=<x>` 를 파싱.
@@ -119,8 +150,25 @@ class Adapter(BaseAdapter):
         scope = m.group(1) if m else ""
         if not scope:
             return None
-        pm = re.search(r"env TEAMMODE_MEMBER=([A-Za-z0-9][A-Za-z0-9_-]*)", scope)
-        return pm.group(1) if pm else None
+        # command 라인의 셸 토큰만 신뢰 — 블록 통짜 텍스트 매칭은 quoted
+        # TEAMMODE_HOME 값 안의 member-모양 부분문자열(예: 경로에 'env
+        # TEAMMODE_MEMBER=x' 포함)을 오인할 수 있다(codex P2). 선두 `env` 뒤의
+        # 실제 할당 토큰에서만 값을 취하고, 검증 정규식으로 재확인한다.
+        for cm in re.finditer(r"command\s*=\s*(['\"])(.*?)\1", scope):
+            try:
+                tokens = shlex.split(cm.group(2))
+            except ValueError:
+                continue
+            if not tokens or tokens[0] != "env":
+                continue
+            for tok in tokens[1:]:
+                if "=" not in tok:
+                    break  # env 할당 구간 종료(커맨드 본문 시작)
+                key, _, val = tok.partition("=")
+                if key == "TEAMMODE_MEMBER" and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_-]*", val):
+                    return val
+        return None
 
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []

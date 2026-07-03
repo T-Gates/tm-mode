@@ -670,14 +670,16 @@ def find_similar_names(name: str, existing, *, max_distance: int = 2) -> list:
     return out
 
 
-def inject_member_env_settings(settings_path: Path, member_name: str) -> bool:
-    """Claude Code settings.json 의 env 에 TEAMMODE_MEMBER 를 박는다.
+def inject_env_settings(settings_path: Path, env_map: dict) -> bool:
+    """Claude Code settings.json 의 env 에 키들을 박는다 (TEAMMODE_MEMBER·TEAMMODE_HOME).
 
-    셸 프로파일 env 주입(TEAMMODE_HOME, §9)과 달리 settings.json env 는
-    Claude Code 가 훅·도구 환경에 주입한다 — 가드훅(kb-write-guard)이
-    TEAMMODE_MEMBER 로 본인 세션로그를 판정하려면 이 경로라야 닿는다.
+    셸 프로파일 env 주입(§9)과 달리 settings.json env 는 Claude Code 가 훅·도구
+    환경에 직접 주입한다 — 셸 종류(zsh/bash/fish)·프로파일 스냅샷 스테일과 무관하게
+    닿는 유일한 경로다. TEAMMODE_MEMBER(가드훅의 본인 판정)에 더해 TEAMMODE_HOME 도
+    여기 핀한다(issue #9b) — JSON 이라 경로 공백/따옴표/비ASCII 쿼팅 문제가 없다.
 
-    멱등: 같은 값이면 무변경(False), 새로 박거나 바뀌면 True.
+    멱등·자가치유: 전부 같은 값이면 무변경(False), 새로 박거나 바뀌면 True
+    (레포 이동 후 재설치 시 새 경로로 갱신). 다른 env 키·최상위 키는 무접촉.
     """
     try:
         data = (json.loads(settings_path.read_text(encoding="utf-8"))
@@ -689,13 +691,52 @@ def inject_member_env_settings(settings_path: Path, member_name: str) -> bool:
     env = data.get("env")
     if not isinstance(env, dict):
         env = {}
-    if env.get("TEAMMODE_MEMBER") == member_name:
+    if all(env.get(k) == v for k, v in env_map.items()):
         return False
-    env["TEAMMODE_MEMBER"] = member_name
+    env.update(env_map)
     data["env"] = env
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return True
+
+
+def inject_member_env_settings(settings_path: Path, member_name: str) -> bool:
+    """TEAMMODE_MEMBER 단일 키 주입 — inject_env_settings 의 하위호환 래퍼."""
+    return inject_env_settings(settings_path, {"TEAMMODE_MEMBER": member_name})
+
+
+def remove_env_settings(settings_path: Path, keys) -> bool:
+    """settings.json env 에서 우리 키만 제거 — inject_env_settings 의 역함수 (uninstall 대칭).
+
+    호스트 철칙: 다른 env 키·최상위 키 무접촉. 우리 키만 있던 env 블록은 통째로
+    제거(흔적 0). 파일 부재/깨짐/키 없음 → 무동작 False (raise 금지, 멱등).
+    """
+    settings_path = Path(settings_path)
+    try:
+        if not settings_path.is_file():
+            return False
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False  # 깨진 파일은 건드리지 않는다(안전)
+    if not isinstance(data, dict):
+        return False
+    env = data.get("env")
+    if not isinstance(env, dict):
+        return False
+    ours = [k for k in keys if k in env]
+    if not ours:
+        return False
+    for k in ours:
+        del env[k]
+    if not env:
+        del data["env"]  # 우리가 비운 env 블록은 흔적 없이
+    try:
+        settings_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+    except OSError:
+        return False
     return True
 
 

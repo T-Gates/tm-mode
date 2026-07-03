@@ -324,6 +324,16 @@ def cmd_uninstall(opts, *, platform=None) -> int:
         except Exception as e:  # noqa: BLE001
             print(f"[warn] {_agent} 어댑터 uninstall 건너뜀(비치명): {e}", file=sys.stderr)
 
+    # 2.5 settings.json env 우리 키 제거 — inject_env_settings 의 역함수(대칭, issue #9b).
+    #     install 이 박은 TEAMMODE_MEMBER·TEAMMODE_HOME 만 제거, 남의 env 키 무접촉.
+    #     codex 의 home/member 핀은 hook command 블록 소속이라 2단계 블록 제거로 함께 사라짐.
+    try:
+        if il.remove_env_settings(Path(settings_path),
+                                  ("TEAMMODE_MEMBER", "TEAMMODE_HOME")):
+            removed.append("settings.json env (TEAMMODE_MEMBER·TEAMMODE_HOME)")
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] settings.json env 제거 건너뜀(비치명): {e}", file=sys.stderr)
+
     # 3. env 제거 — install_lib.remove_injected_env (우리 표식만)
     #    Windows: reg delete HKCU\Environment(레지스트리). POSIX: 셸 프로파일 우리 줄.
     #    ⚠️ 격리(--settings)면 install 도 실 env 를 안 건드렸으므로(bootstrap ⑥ 스킵)
@@ -812,20 +822,25 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         except Exception as _e:
             err(f"[warn] agents config 기록 실패(비치명): {_e}")
 
-    # settings.json env 에 TEAMMODE_MEMBER 주입 — 가드훅(kb-write-guard)이 본인
-    # 세션로그를 판정하는 단일 소스. 셸 프로파일(TEAMMODE_HOME)과 달리 settings.json
-    # env 라야 훅·도구 환경에 닿는다. settings_override 면 격리 경로에 박힌다.
+    # settings.json env 에 TEAMMODE_MEMBER·TEAMMODE_HOME 주입 — 가드훅(kb-write-guard)
+    # 의 본인 판정 단일 소스 + 훅 팀루트(issue #9b). 셸 프로파일과 달리 settings.json
+    # env 라야 셸 종류·프로파일 스냅샷 스테일과 무관하게 훅·도구 환경에 닿는다.
+    # settings_override 면 격리 경로에 박힌다.
     # ⚠️ claude 가 배선된 경우만 — codex-only 호스트에 stray ~/.claude/settings.json
     #    을 만들지 않는다(Opus 적대검수 blocker).
     if "claude" in (wire.wired or []):
         try:
             _claude_settings = il.agent_settings_path(
                 "claude", home=home, settings_override=settings_override)
-            if _claude_settings and il.inject_member_env_settings(
-                    _claude_settings, member_name):
-                out(f"[env] settings.json: TEAMMODE_MEMBER={member_name}")
+            if _claude_settings and il.inject_env_settings(
+                    _claude_settings,
+                    {"TEAMMODE_MEMBER": member_name,
+                     "TEAMMODE_HOME": str(team_root)}):
+                out(f"[env] settings.json: TEAMMODE_MEMBER={member_name}, "
+                    f"TEAMMODE_HOME={team_root}")
         except Exception as e:
-            err(f"[warn] settings.json env(TEAMMODE_MEMBER) 주입 실패(비치명): {e}")
+            err(f"[warn] settings.json env(TEAMMODE_MEMBER·TEAMMODE_HOME) "
+                f"주입 실패(비치명): {e}")
 
     # ⑥ env 주입 (§9, m2) — 런타임 훅용 TEAMMODE_HOME 을 셸 프로파일에 멱등 1줄.
     # 셸은 $SHELL 에서(주입). 미지원/미감지 셸은 경고만(비치명 — L1 핵심은 메모리+훅).
