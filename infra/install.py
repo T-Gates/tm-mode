@@ -666,6 +666,23 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     out(f"[plan] member_name={member_name or '(미정)'}")
 
     if opts.dry_run:
+        # clone-and-go: dry-run 을 **동의 게이트**로 — 실호스트에 무엇을 쓸지
+        # (settings·MCP·skills·env·훅·autopush·Trust) 실 wire 와 단일 소스로 계산해
+        # 전부 보여준다. 에이전트가 이 출력을 사용자에게 제시하고 대화 승인을 받은
+        # 뒤에야 --yes 실행이 정당하다(AGENTS.md 첫 접촉 절차).
+        try:
+            _shell = il.detect_shell(os.environ.get("SHELL"))
+        except Exception:  # noqa: BLE001 — 셸 감지 실패는 계획 표시에 비치명
+            _shell = None
+        _plan = il.plan_install(
+            team_root=team_root, agents=_wire_agents,
+            member_name=member_name, role=role,
+            team_name_default=team_name_default, home=home,
+            settings_override=opts.settings, shell=_shell,
+            platform=sys.platform,
+            real_host_install=(opts.settings is None))
+        for _line in il.render_install_plan(_plan, home=home):
+            out(_line)
         out("[dry-run] 변경 없음 — 계획만 출력했습니다(settings·memory·env 무접촉).")
         return 0
 
