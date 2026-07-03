@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- install: 디스패치 게이트 agent-aware(`--codex --config` 인정) + `--root`→`--team-root` 번역, plain `sync`가 기존 on/off 상태 보존(statusMessage·trust 해시 유지), 비호스티드 provider 의 기존 MCP 서버 감지 안내, 사문 `--check-mcp` 제거 (#3)
 - sync: 세션 시작 시 reconcile, push 실패 표면화, non-noreply 이메일 경고 (#30)
 - mcp: 공식 hosted MCP(notion/linear)를 http로 등록, 수동 attach 안내 (#29)
 - codex: 훅에 `TEAMMODE_MEMBER` 전달, fallback 리마인더 무한반복 중단 (#28)

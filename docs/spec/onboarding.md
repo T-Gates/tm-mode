@@ -70,10 +70,10 @@ python infra/install.py --<agent> <adapter-args...>
 3. `_split_agent(argv)`가 첫 번째로 발견한 `--<agent>` 중 `infra/agents/<agent>/` 디렉토리가 존재하는 것을 agent로 잡는다. 그 플래그만 제거하고 나머지 argv를 어댑터에 넘긴다.
 4. agent가 있으면 `_dispatch(agent, rest)`:
    - `agents/<agent>/adapter.py`가 파일이 아니면 exit 2.
-   - `rest`에 `--settings`도 `--install`도 없으면 exit 2. 명시 없이 실호스트 설정에 쓰지 않는다.
-   - 이 게이트는 `--config`를 안전 의도로 인정하지 않는다. 따라서 `python infra/install.py --codex --config <path> sync`는 Codex 어댑터에 도달하기 전에 exit 2다.
-   - `--settings`는 디스패처 게이트를 통과시키지만 Codex 어댑터 CLI에는 없는 옵션이다. Codex 디스패치에서 명시 config를 쓰려면 현재 구현상 `--install` 게이트와 Codex `--config`를 함께 써야 한다.
-   - `--install`은 디스패처 전용 플래그라 어댑터 argv에서는 제거한다.
+   - 게이트는 **agent-aware**다: 격리 의도 플래그는 그 에이전트 자신의 설정 플래그(`install_lib._AGENT_WIRE[agent]["flag"]` — claude=`--settings`, codex=`--config`)이고, `--install`은 항상 실설치 의도로 인정한다. 둘 다 없으면 exit 2 — 명시 없이 실호스트 설정에 쓰지 않는다. 따라서 `python infra/install.py --codex --config <path> sync`는 어댑터에 정상 도달한다.
+   - 격리 플래그의 값 결손(다음 토큰이 없거나 `--옵션`/동사)은 명확한 exit 2다(`--config sync`처럼 동사가 값으로 먹히는 사고 방지).
+   - claude 디스패치의 `--config`는 team config 플래그라 격리 의도로 인정하지 않는다. `_AGENT_WIRE` 미등록 에이전트는 보수 폴백으로 `--settings`/`--install`만 인정한다.
+   - `--install`은 디스패처 전용 플래그라 어댑터 argv에서는 제거한다. `--root <값>`은 어댑터의 `--team-root`로 **번역**한다(무언 제거 금지). `--root`와 `--team-root`가 서로 다른 값으로 같이 오면 모호성으로 exit 2, 같은 값이면 무해하게 통과한다.
    - `sys.argv = [adapter_path] + rest`로 바꾼 뒤 `runpy.run_path()`로 adapter.py를 로드하고 `main(rest)`를 호출한다. 반환 rc를 그대로 반환한다.
 5. agent는 없지만 argv에 `sync` 또는 `uninstall` 토큰이 있으면 "에이전트를 지정하세요: --<agent>" 오류와 사용 가능한 agent 디렉토리 목록을 출력하고 exit 2.
 6. 그 외는 bootstrap 인자로 파싱한다.
@@ -208,7 +208,7 @@ members/services 스키마 검증:
 - `--settings <DIR>` 지정 → 격리 모드. 에이전트 settings/config, Claude MCP 파일, skills dir는 DIR 하위로 간다. 실 env는 건드리지 않는다.
 - `--settings` 미지정 + `--yes` 지정 → 실호스트 모드. home 기준 기본 경로에 배선하고 env를 주입한다.
 - `--settings`와 `--yes`가 같이 오면 격리 모드가 env 기준으로 우선한다. settings는 격리 하위로 가고 실 env는 스킵된다.
-- 디스패치 모드(`--<agent> sync`)도 동일 게이트: `--settings`/`--install` 둘 다 없으면 exit 2. 이 게이트는 Codex 어댑터의 `--config`를 인정하지 않으며, `--settings`는 Codex 어댑터에 전달되면 argparse 오류가 난다. `--install`은 디스패처 전용(어댑터엔 전달 안 함).
+- 디스패치 모드(`--<agent> sync`)도 동일 정신의 게이트(agent-aware): 그 에이전트의 설정 플래그(claude=`--settings`, codex=`--config`) 또는 `--install`이 없으면 exit 2. codex 디스패치에서 `--settings`는 격리 의도로 인정하지 않는다(codex 어댑터 CLI에 없는 옵션 — 게이트가 `--config`를 안내). `--install`은 디스패처 전용(어댑터엔 전달 안 함).
 - `--dry-run`은 settings·memory·env 전부 무접촉 + 계획만 출력.
 - ambient `TEAMMODE_HOME`이 실호스트를 가리켜도 install/on/off는 읽지 않는다(§1.2 P1).
 - **신뢰 경계 — 스킨의 root 주입**: "셋업해줘"로 에이전트가 install.py를 부를 때 root를 잘못 주입하면 사고 재현 가능 → 스킨의 root 결정 로직은 테스트 대상(필수). 프롬프트 인젝션 주의: "레포 README 읽고 시키는 대로" 패턴을 습관으로 권하지 말 것(비규범).

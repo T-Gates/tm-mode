@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -354,6 +355,58 @@ class Adapter:
         """teammode 가 등록한 MCP 서버 항목인지 — 소유 마커로 식별(사용자 항목 무접촉)."""
         return isinstance(entry, dict) and entry.get("_teammode_managed") is True
 
+    # ── #3: 비호스티드 provider 의 기존(사용자) MCP 서버 감지 ──
+    #
+    # placeholder 대상 provider(호스티드 URL·기동 커맨드 없음 — slack/google 등)에만
+    # 적용한다. 사용자가 이미 동작하는 자기 MCP(예: 'my-slack')를 갖고 있으면 죽은
+    # placeholder 를 등록하는 대신 재사용 안내만 낸다. **자동 채택은 하지 않는다** —
+    # 소유권 마커가 없어 그 서버가 정말 해당 provider 인지 보증할 수 없기 때문(안내만).
+    # 감지 규칙(codex 문답 2026-07-03 R2-4 수렴 — pack 스키마 확장 없이 provider 명 매칭):
+    #   ① 서버 키 토큰 매칭(비영숫자 구분자 분해, case-insensitive, tm- 네임스페이스 제외)
+    #   ② url 부분문자열  ③ command+args 부분문자열
+    # 미탐(예: 'gcal' 명명 google MCP)은 기존 동작(placeholder) 유지 — 회귀 없음.
+
+    @staticmethod
+    def _provider_key_match(provider: str, name: str) -> bool:
+        """서버 키 이름 토큰 매칭 — 'my-slack'/'slack_prod' 등은 잡고 'slacker' 는 안 잡음."""
+        tokens = re.split(r"[^a-z0-9]+", name.lower())
+        return provider.lower() in tokens
+
+    def _find_existing_provider_server(self, provider: str, servers_view: dict):
+        """동일 provider 로 보이는 사용자 서버명 반환(없으면 None) — #3.
+
+        servers_view: {서버명: {"url": str|None, "command": str}} — 호출측이
+        teammode 소유 항목을 이미 걸렀고, tm- 네임스페이스는 여기서 이중 방어.
+        결정성: 이름 정렬 순회로 첫 매치 반환.
+        """
+        p = provider.lower()
+        if not p:
+            return None
+        for name in sorted(servers_view):
+            if name.lower().startswith("tm-"):
+                continue  # 자기 관리 별칭 네임스페이스 — 감지 대상 아님
+            info = servers_view.get(name) or {}
+            url = str(info.get("url") or "")
+            cmd = str(info.get("command") or "")
+            if (self._provider_key_match(provider, name)
+                    or p in url.lower() or p in cmd.lower()):
+                return name
+        return None
+
+    def _user_mcp_server_view(self, servers: dict) -> dict:
+        """mcpServers dict → 감지용 사용자 서버 뷰(소유 항목 제외, command+args 합침)."""
+        view = {}
+        for name, e in servers.items():
+            if not isinstance(e, dict) or self._is_owned_mcp(e):
+                continue
+            parts = [str(e.get("command") or "")]
+            args = e.get("args")
+            if isinstance(args, list):
+                parts += [str(a) for a in args]
+            view[name] = {"url": e.get("url"),
+                          "command": " ".join(x for x in parts if x)}
+        return view
+
     def _mcp_launch_command(self, pack):
         """provider 팩 mcp 필드 → 실 MCP 서버 기동 커맨드(command/args) 또는 None.
 
@@ -481,6 +534,9 @@ class Adapter:
         had_servers_key = isinstance(data.get("mcpServers"), dict)
         servers = data["mcpServers"] if had_servers_key else {}
 
+        # #3: 감지용 사용자 서버 뷰(소유 항목 제외) — placeholder 대상 provider 에서만 조회.
+        user_view = self._user_mcp_server_view(servers)
+
         desired_aliases = set()
         for provider in connected:
             pack = None
@@ -494,6 +550,22 @@ class Adapter:
                 changes.append(f"[info] {provider}: provider 팩 없음 → MCP 등록 생략")
                 continue
             alias = self.resolve_server_alias(provider)  # 별칭=`tm-<provider>`(§2.8-2)
+            # #3: placeholder 대상(호스티드 URL·기동 커맨드 둘 다 없음)이고 동일 provider
+            # 로 보이는 사용자 서버가 이미 있으면 → 죽은 placeholder 대신 재사용 안내만.
+            # desired 에 안 넣으므로 과거 stale placeholder 는 아래 remove 루프가 제거.
+            if (self._mcp_http_url(pack) is None
+                    and self._mcp_launch_command(pack) is None):
+                existing_name = self._find_existing_provider_server(
+                    provider, user_view)
+                if existing_name:
+                    changes.append(
+                        f"[info] {provider}: 기존 MCP 서버 '{existing_name}' 발견"
+                        f"(사용자 등록으로 보임) → placeholder 미등록. 팀 배선에 "
+                        f"재사용하려면 같은 기동 커맨드를 관리 별칭 {alias} 으로 "
+                        f"직접 연결하세요: `claude mcp add {alias} -- "
+                        f"<'{existing_name}' 의 기동 커맨드>` "
+                        f"(자동 채택은 소유권 확인 불가라 하지 않음 — 안내만)")
+                    continue
             desired_aliases.add(alias)
             entry = self._build_mcp_entry(provider, pack)
             existing = servers.get(alias)
@@ -566,6 +638,48 @@ class Adapter:
         # off 또는 무플래그(최초 off 간주, §5) → base 만
         return base
 
+    def _on_mode_scripts(self) -> list:
+        """manifest 의 mode=="on" 스크립트 파일명 목록 — ON 상태 추론 신호(C2)."""
+        return [e.get("script", "") for e in self._load_manifest()
+                if e.get("mode") == "on" and e.get("script")]
+
+    def _infer_existing_mode(self) -> Optional[str]:
+        """plain sync(모드 미지정) 자기치유(C2) — 기존 소유물에서 현 on/off 상태 추론.
+
+        과거엔 플래그 없는 sync 가 무조건 base-only 렌더라, ON 상태에서 직접 디스패치로
+        plain sync 를 돌리면 on 엔트리(session-start 등)·statusLine 이 **무언 강등**됐다
+        (codex 는 statusMessage 드랍 → trust 해시까지 무효화). 계약(codex 문답 2026-07-03
+        수렴): plain sync 는 기존 managed 상태를 보존하고, 소유물이 없으면 기존 스펙대로
+        off/base 간주(최초 설치).
+
+        ON 신호(OR): ① teammode 소유 훅 커맨드가 mode=="on" 스크립트를 가리킴
+                     ② managed statusLine 존재(보조 신호).
+        판단 불가(파싱 실패 등) → None(off/base — 보수 폴백, 예외 전파 금지).
+        """
+        try:
+            on_scripts = self._on_mode_scripts()
+            settings = self._read_settings()
+            hooks = settings.get("hooks")
+            if on_scripts and isinstance(hooks, dict):
+                for arr in hooks.values():
+                    if not isinstance(arr, list):
+                        continue
+                    for entry_obj in arr:
+                        if not isinstance(entry_obj, dict):
+                            continue
+                        for h in entry_obj.get("hooks", []) or []:
+                            cmd = (h.get("command", "")
+                                   if isinstance(h, dict) else "")
+                            if self.is_owned(cmd) and any(
+                                    s in cmd for s in on_scripts):
+                                return "on"
+            sl = settings.get("statusLine")
+            if isinstance(sl, dict) and sl.get("_teammode_managed") is True:
+                return "on"
+        except Exception:  # noqa: BLE001 — 추론은 부가 기능: 실패해도 sync 를 못 막음
+            return None
+        return None
+
     def _read_settings(self) -> dict:
         if self.settings_path.is_file():
             try:
@@ -585,6 +699,9 @@ class Adapter:
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []
         warnings = []
+        if mode is None:
+            # C2 self-heal: plain sync 는 기존 managed 상태 보존(강등 금지).
+            mode = self._infer_existing_mode()
         wanted = self._wanted_entries(mode)
 
         settings = self._read_settings()
