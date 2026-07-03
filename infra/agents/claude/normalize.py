@@ -283,6 +283,12 @@ def main(argv=None) -> int:
     # ── 1. 변환 ──
     try:
         raw = json.loads(raw_text) if raw_text.strip() else {}
+        # top-level 이 JSON object 가 아니면(list/str/num/null) 변형 wire — 변환 실패
+        # 정책(§6.2-4)으로 합류시킨다. 방치하면 raw.get 이 AttributeError 로 크래시해
+        # 비-strict 훅의 fail-open-quietly 계약(B1)을 깬다.
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"top-level JSON 이 object 가 아님: {type(raw).__name__}")
         canonical = normalize(raw, events)
     except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
         # ── 4. 변환 실패 정책 ──
