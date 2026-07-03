@@ -197,18 +197,47 @@ def test_wire_step_names_match_wire_agents_implementation(tmp_path):
         f"wire_agents 실호출 {calls} ≠ WIRE_STEP_NAMES {expected} — 계획 드리프트")
 
 
-def test_claude_mcp_display_matches_adapter_default_source():
-    """[P3] claude 실호스트 MCP 표시(~/.claude.json)가 어댑터 기본과 단일 소스로 묶임.
+def test_wire_failure_skips_downstream_steps(tmp_path):
+    """[재검수] install-mcp 실패 조기 continue: sync 뿐 아니라 install-skills 도 생략
+    — 계획의 순서 계약이 실패 경로에서도 유지됨을 고정."""
+    calls = []
 
-    어댑터 기본은 인라인 expanduser 라 함수로 못 뽑는다 — 소스 앵커로 고정:
-    어댑터 파일에 '~/' + _AGENT_WIRE['claude']['mcp_rel'] 리터럴이 실재해야 한다.
-    어댑터 기본이 바뀌면 이 테스트가 깨져 plan 표시를 함께 고치게 강제한다.
+    def failing(agent, verb, flag, path, extra):
+        calls.append(verb)
+        return 1 if verb == "install-mcp" else 0
+
+    res = il.wire_agents(["claude"], home=tmp_path / "home",
+                         settings_override=tmp_path / "iso",
+                         run_adapter=failing, team_root=tmp_path / "team",
+                         member_name="leejhy")
+    assert calls == ["install-mcp"], (
+        f"install-mcp 실패 후 후속 단계가 실행됨: {calls}")
+    assert res.ok is False
+
+
+def test_claude_mcp_display_matches_adapter_default_instance(tmp_path, monkeypatch):
+    """[P3 강화] claude 실호스트 MCP 표시가 **어댑터 실인스턴스 기본**과 일치.
+
+    소스 텍스트 앵커는 주석 오염에 취약(codex 재검수) — fake HOME 으로 Adapter 를
+    실제 생성해 mcp_config_path 기본값과 plan 표시를 비교한다. 어댑터 기본이
+    바뀌면 즉시 깨져 plan 표시를 함께 고치게 강제한다.
     """
-    adapter_src = (REPO / "infra" / "agents" / "claude" / "adapter.py").read_text(
-        encoding="utf-8")
-    literal = "~/" + il._AGENT_WIRE["claude"]["mcp_rel"]
-    assert literal in adapter_src, (
-        f"claude 어댑터 기본 MCP 경로 리터럴 {literal!r} 부재 — plan 표시와 드리프트")
+    import runpy as _rp
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    ad = _rp.run_path(str(REPO / "infra" / "agents" / "claude" / "adapter.py"),
+                      run_name="__mcp_default_test__")
+    adapter = ad["Adapter"](
+        agent_dir=str(REPO / "infra" / "agents" / "claude"),
+        manifest_path=str(REPO / "infra" / "hooks" / "manifest.json"),
+        settings_path=str(home / ".claude" / "settings.json"),
+        team_root=str(tmp_path / "team"),
+    )
+    plan_display = Path(home) / il._AGENT_WIRE["claude"]["mcp_rel"]
+    assert Path(adapter.mcp_config_path) == plan_display, (
+        f"어댑터 기본 {adapter.mcp_config_path} ≠ plan 표시 {plan_display} — "
+        f"dry-run 이 거짓 경로를 보여주게 됨")
 
 
 def test_render_abbreviates_team_root_under_home(tmp_path):
