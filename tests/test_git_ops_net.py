@@ -75,6 +75,36 @@ def test_local_verbs_stay_at_default_timeout(name):
 # #34 — no-upstream 브랜치 push 자동 복구(-u origin HEAD 1회 재시도)
 # ──────────────────────────────────────────────────────────────────
 
+# ── B1(codex) — 글로벌/시스템 git 설정·HOME 격리(hermetic) ─────────────────
+# bare/clone 통합 테스트는 제품 코드(git_ops)가 os.environ 상속으로 git 을 부른다.
+# 개발자/CI 이미지의 commit.gpgsign=true, core.hooksPath, init.templateDir 같은
+# 글로벌 설정이 새어 들어오면 테스트가 환경 따라 깨진다. 모든 테스트에 빈 설정
+# 파일을 GIT_CONFIG_GLOBAL/SYSTEM 으로 강제하고 HOME 도 tmp 로 돌린다.
+
+@pytest.fixture(autouse=True)
+def _hermetic_git_env(tmp_path_factory, monkeypatch):
+    iso = tmp_path_factory.mktemp("git-iso")
+    empty_cfg = iso / "empty-gitconfig"
+    empty_cfg.write_text("")
+    monkeypatch.setenv("HOME", str(iso))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(iso / "xdg"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")  # 구 git 대비 벨트앤브레이스
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
+def test_git_env_is_hermetic():
+    """이 모듈의 git 호출이 실 글로벌/시스템 설정을 보지 않는다(B1 회귀 가드)."""
+    for scope in ("--global", "--system"):
+        proc = subprocess.run(
+            ["git", "config", scope, "--list"],
+            capture_output=True, text=True, env={**os.environ},
+        )
+        assert (proc.stdout or "").strip() == "", (
+            f"{scope} git 설정이 테스트 env 로 새어 들어옴: {proc.stdout!r}")
+
+
 def _git(cwd, *args, check=True):
     env = {
         **os.environ,
@@ -304,6 +334,36 @@ def test_do_commit_push_budget_exhaustion_returns_with_marker_friendly_result(
     assert res.committed is True           # 커밋은 보존(철칙)
     assert res.pushed is False
     assert "budget" in res.detail, res.detail
+
+
+def test_net_timeout_floor_holds_for_nonpositive_caller_timeout(
+        tmp_path, monkeypatch):
+    """[codex A1] timeout<=0 으로 호출돼도 네트워크 타임아웃 하한 1s 가 유지된다.
+
+    종전 클램프 min(timeout, max(1, 남은예산)) 은 caller timeout 이 0/음수면
+    하한(1s) 문서 계약이 깨져 push 가 즉시 TimeoutExpired 로 죽었다(커밋만 남고
+    push 미수행). 하한은 항상 바깥에서 강제돼야 한다: max(1, min(timeout, 남은예산)).
+    """
+    for bad_timeout in (0, -3):
+        calls = []
+        monkeypatch.setattr(git_ops, "run_git", _fake_run_git_recorder(calls))
+        res = git_ops.do_commit(str(tmp_path), "m", push=True,
+                                timeout=bad_timeout)
+        assert res.committed is True
+        assert res.pushed is True, res.detail
+        push_calls = _calls_with_verb(calls, "push")
+        assert push_calls, f"push 호출 없음: {calls}"
+        for args, t in push_calls:
+            assert t >= 1, (
+                f"timeout={bad_timeout} 호출에서 push subprocess timeout={t} — "
+                f"하한 1s 계약 위반: {args}")
+            # 같은 클램프 불변식이 git 자체 방어(http.lowSpeedTime)에도 적용된다 —
+            # 0 은 curl 저속 감지를 끄고(defense-in-depth 무력화), 음수는 부적합.
+            lst = [a for a in args if str(a).startswith("http.lowSpeedTime=")]
+            assert lst, f"http.lowSpeedTime 옵션 누락: {args}"
+            for opt in lst:
+                assert int(opt.split("=", 1)[1]) >= 1, (
+                    f"timeout={bad_timeout} 호출에서 {opt} — 하한 1s 계약 위반")
 
 
 def test_do_commit_push_fast_path_unaffected_by_budget(tmp_path, monkeypatch):

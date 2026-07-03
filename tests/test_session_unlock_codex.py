@@ -4,10 +4,13 @@
   (1) normalize 가 훅 stdin top-level 세션 id(`session_id`→`sessionId` 순서 probe,
       비어있지 않은 문자열만)를 **모든 이벤트**의 정규 스키마로 승격한다.
       다른 키(thread_id/rollout_id/conversation_id)는 조사하지 않는다.
-  (2) kb-write-guard 는 후보 최대 2개(정규 stdin session_id + env CLAUDE_*_SESSION_ID)를
-      ^[A-Za-z0-9._-]{1,128}$ 로 검증(플래그 파일명에 박히므로 traversal 거부, malformed
-      는 드롭)·중복 제거 후, **어느 후보든** 정확한 플래그 경로가 존재+TTL 유효하면
-      unlock. 후보가 비었을 때만 fail-closed deny. 플래그 내용은 진단용(빈 파일도 유효).
+  (2) kb-write-guard 는 세션 id 후보를 **배타 우선순위**로 하나만 고른다 —
+      env CLAUDE_*_SESSION_ID 가 유효하면 env 후보만(권위), env 부재/malformed 일 때만
+      정규 stdin session_id 폴백(Codex 경로). 후보는 ^[A-Za-z0-9._-]{1,128}$ 로 검증
+      (플래그 파일명에 박히므로 traversal 거부, malformed 는 드롭). 선택된 후보의
+      정확한 플래그 경로가 존재+TTL 유효하면 unlock, 후보가 비면 fail-closed deny.
+      union 금지(codex A2-스푸핑): stdin 은 조작 가능해 env 세션이 타 세션 창을
+      훔칠 수 있다. 플래그 내용은 진단용(빈 파일도 유효).
   (3) session-start 가 stdin 세션 id 를 세션별 relay 파일로 영속(스테일 프루닝 포함),
       엔진 동사 `memory unlock begin|end` 가 env 우선 → 최신 relay(mtime) → 에러 순으로
       세션 id 를 해석해 플래그를 생성/제거한다.
@@ -199,8 +202,35 @@ def test_guard_malformed_stdin_session_id_is_dropped_then_denied(tmp_path):
         assert "Traceback" not in proc.stderr
 
 
+def test_guard_stdin_spoof_cannot_ride_other_sessions_flag(tmp_path):
+    """[codex A2-스푸핑] env 세션이 있는 세션(B)이 stdin 으로 타 세션(A) id 를 주장해도
+    A 의 유효 플래그로 unlock 되면 안 된다 — env 존재 시 env 후보만 권위(배타).
+
+    stdin session_id 는 페이로드 쪽에서 조작 가능한 입력이다. env(하네스가 심는
+    프로세스 환경)가 있는데 stdin 후보를 union 으로 함께 인정하면, B 가
+    session_id="A" 를 실어 A 의 unlock 창을 훔칠 수 있다(env 바인딩 다운그레이드).
+    """
+    root = tmp_path / "team"
+    root.mkdir()
+    _active(root)
+    state = tmp_path / "state"
+    # 세션 A 가 unlock 중(A 의 플래그만 존재).
+    flag = _flag_path(state, root, "session-A")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("")
+    # 세션 B(env=B)가 stdin 으로 A 를 주장.
+    proc = _run_guard(
+        _memory_payload(root, session_id="session-A"), root,
+        _clean_env(state, {"CLAUDE_SESSION_ID": "session-B"}))
+    assert proc.returncode == 2, (
+        f"env 세션 B 가 stdin 스푸핑으로 A 의 플래그를 타면 안 된다: "
+        f"stdout={proc.stdout!r}")
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_guard_env_flag_still_unlocks_when_stdin_id_differs(tmp_path):
-    """union 후보: stdin id 플래그가 없어도 env id 플래그가 유효하면 unlock(Claude 무회귀)."""
+    """env 후보 권위: stdin id 플래그가 없어도 env id 플래그가 유효하면 unlock(Claude 무회귀)."""
     root = tmp_path / "team"
     root.mkdir()
     _active(root)

@@ -118,10 +118,14 @@ def http_timeout_opts(timeout: int) -> list:
 
     subprocess timeout 은 직접 자식(git)만 죽일 뿐 git 이 띄운 손자(git-remote-https)는
     살아남아 비라우팅 호스트에 매달릴 수 있다. git 에게도 저속/무응답을 스스로 끊게 한다.
+
+    하한 1s(codex A1과 같은 클램프 불변식): timeout<=0 이 그대로 들어가면
+    lowSpeedTime=0 은 curl 의 저속 감지를 **끄고**, 음수는 config 값으로 부적합하다
+    — 이 defense-in-depth 가 조용히 무력화되지 않게 여기서도 바닥을 깐다.
     """
     return [
         "-c", "http.lowSpeedLimit=1000",
-        "-c", f"http.lowSpeedTime={timeout}",
+        "-c", f"http.lowSpeedTime={max(1, timeout)}",
     ]
 
 
@@ -555,8 +559,14 @@ def do_commit(team_root: str, message: str, push: bool = False,
     # 비차단 반환한다(커밋은 이미 보존됨 — push 미완만 detail 로 표면화).
 
     def _net_t() -> int:
-        """남은 예산으로 클램프한 네트워크 타임아웃(하한 1s — 0/음수 방지)."""
-        return min(timeout, max(1, int(_deadline - time.monotonic())))
+        """남은 예산으로 클램프한 네트워크 타임아웃(하한 1s — 0/음수 방지).
+
+        하한(max)은 **바깥**에서 강제한다(codex A1): 종전
+        min(timeout, max(1, 남은예산)) 은 caller 가 timeout<=0 을 주면 min 이
+        그 0/음수를 그대로 통과시켜 '하한 1s' 문서 계약이 깨졌다 — 커밋만 남고
+        push 가 즉시 TimeoutExpired 로 죽는다.
+        """
+        return max(1, min(timeout, int(_deadline - time.monotonic())))
 
     def _budget_ok(reserve: int = 1) -> bool:
         """남은 예산 검사. rebase 같은 다단계 진입 전엔 reserve 를 크게 줘

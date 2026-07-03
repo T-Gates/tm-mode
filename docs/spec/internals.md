@@ -453,7 +453,7 @@ manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이
    - match가 없으면 통과한다. 알 수 없는 match key도 현재 `_matches_filter()`에서는 `True`를 반환한다.
    - 불일치면 공통 스크립트를 실행하지 않고 exit 0.
 8. 공통 스크립트 실행:
-   - `subprocess.run([sys.executable, str(HOOKS_DIR / script)] + extra_args, input=json.dumps(canonical, ensure_ascii=False), capture_output=True, text=True)`로 실행한다. 현 구현은 `script`가 파일명인지, `..`를 포함하는지, `infra/hooks/` 밖으로 탈출하는지 별도로 검증하지 않는다.
+   - `subprocess.run([sys.executable, str(HOOKS_DIR / script)] + extra_args, input=json.dumps(canonical), capture_output=True, text=True, encoding="utf-8", errors="replace")`로 실행한다. `ensure_ascii`는 **의도적으로 기본값(True)** — stdin을 순수 ASCII(`\uXXXX` 이스케이프)로 보내 자식이 어떤 locale(Windows cp949 등)로 stdin을 디코드해도 안전하다(자식 `json.loads`가 원복). 현 구현은 `script`가 파일명인지, `..`를 포함하는지, `infra/hooks/` 밖으로 탈출하는지 별도로 검증하지 않는다.
    - 공통 스크립트 stdout/stderr를 normalize 자신의 stdout/stderr로 그대로 재방출한다.
    - normalize 종료코드는 공통 스크립트 returncode와 같다. 따라서 `confirm-action.py`의 exit 2 차단이 보존된다.
    - script 파일이 없으면 Python subprocess가 보통 exit 2와 stderr를 내며, normalize는 그 returncode를 그대로 반환한다.

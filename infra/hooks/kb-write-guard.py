@@ -136,18 +136,26 @@ def _valid_session_id(value) -> str:
 
 
 def _session_candidates(data: dict) -> list:
-    """unlock 세션 id 후보(최대 2, 중복 제거) — 정규 stdin 우선, env 폴백.
+    """unlock 세션 id 후보 — **배타 우선순위**로 최대 1개(union 금지, codex A2-스푸핑).
 
-    ① data["session_id"] — normalize 가 훅 stdin 에서 승격한 정규 필드(Codex 경로).
-    ② env CLAUDE_SESSION_ID / CLAUDE_CODE_SESSION_ID — Claude 경로(구 플래그 호환).
-    각각 _valid_session_id 검증을 통과한 것만 후보가 된다.
+    ① env CLAUDE_SESSION_ID / CLAUDE_CODE_SESSION_ID — Claude 경로(구 플래그 호환).
+       하네스가 심는 프로세스 환경이라 페이로드로 조작할 수 없다 → 있으면 **권위**.
+    ② data["session_id"] — normalize 가 훅 stdin 에서 승격한 정규 필드(Codex 경로).
+       env 가 없거나 malformed 일 때만 폴백으로 쓴다.
+
+    union(둘 다 후보)이면 안 되는 이유: stdin session_id 는 페이로드 쪽에서 조작
+    가능한 입력이다. env 세션 B 가 stdin 에 session_id="A" 를 실어 보내면 A 의
+    유효 unlock 플래그로 B 의 편집이 통과한다 — env 바인딩 다운그레이드. env 가
+    있으면 env 후보만 검사해 이 스푸핑을 차단한다(엔진 `memory unlock begin` 의
+    env 우선 → relay 폴백 해석 순서와도 일치).
     """
-    candidates = []
-    for cand in (_valid_session_id(data.get("session_id")),
-                 _valid_session_id(_session_id())):
-        if cand and cand not in candidates:
-            candidates.append(cand)
-    return candidates
+    env_cand = _valid_session_id(_session_id())
+    if env_cand:
+        return [env_cand]
+    stdin_cand = _valid_session_id(data.get("session_id"))
+    if stdin_cand:
+        return [stdin_cand]
+    return []
 
 
 def unlock_flag_path(team_root: str | None = None,
@@ -207,12 +215,12 @@ def session_relay_dir(team_root: str | None = None) -> str:
 
 
 def _is_unlock_valid(team_root: str, data: dict) -> bool:
-    """unlock 플래그가 유효(존재 + TTL 미만)한지 검사(A2 — 후보 union).
+    """unlock 플래그가 유효(존재 + TTL 미만)한지 검사(A2 — 배타 우선순위 후보).
 
-    후보 세션 id(최대 2: 정규 stdin session_id, env CLAUDE_*_SESSION_ID) 각각에
-    대해 **정확한 플래그 경로**(glob 금지)를 검사하고, 어느 하나라도 존재+TTL
-    유효하면 unlock. 파일명 자체에 root_hash + session_id 가 포함되므로
-    레포별·세션별 격리는 경로 계산 단계에서 완료된다. 내용은 진단용 — 검사 안 함
+    _session_candidates 가 고른 세션 id(최대 1: env 권위, 없으면 stdin 폴백)에
+    대해 **정확한 플래그 경로**(glob 금지)를 검사하고, 존재+TTL 유효하면 unlock.
+    파일명 자체에 root_hash + session_id 가 포함되므로 레포별·세션별 격리는
+    경로 계산 단계에서 완료된다. 내용은 진단용 — 검사 안 함
     (구 빈 플래그도 그대로 유효).
 
     후보가 하나도 없으면(env 도 stdin 도 없거나 전부 malformed) fail-closed.
