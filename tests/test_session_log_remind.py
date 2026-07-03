@@ -925,14 +925,19 @@ def test_member_isolation_via_actual_hook_execution(tmp_path):
 
 # ── offset 키트(Read 끝부분+Edit 유도) ──
 
-def _fire_strong_with_log(tmp_path, member, n_lines):
+def _fire_strong_with_log(tmp_path, member, n_lines, ux=None):
     """member 분기에서 강발화시키고 세션로그를 n_lines 줄로 준비.
 
     n_lines=0 이면 파일 없음(=새 파일 안내 기대). 파일이 있으면 mtime 을 과거로
-    돌려(age≥1800) 강발화 조건을 만든다. 반환: CompletedProcess.
+    돌려(age≥1800) 강발화 조건을 만든다. ux 가 주어지면 team.config.json 의
+    ux 블록으로 넣는다(context_style/system_message 검증용). 반환: CompletedProcess.
     """
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": member}])
+    config: dict = {"members": [{"name": member}]}
+    if ux is not None:
+        config["ux"] = ux
+    (tmp_path / "team.config.json").write_text(
+        json.dumps(config), encoding="utf-8")
     agent = f"claude-kit-{n_lines}"
     date_str = _today_date_str()
     log = _my_log(tmp_path, member, date_str)
@@ -964,10 +969,11 @@ def _fire_context(proc):
 
 
 def test_log_kit_new_file_says_write(tmp_path):
-    """세션로그 파일이 없으면 Write 안내(offset 명령 아님)."""
+    """세션로그 파일이 없으면 Write 안내(offset 명령 아님) — compact 기본."""
     ctx = _fire_context(_fire_strong_with_log(tmp_path, "eunsu", 0))
-    assert "아직 없습니다" in ctx
-    assert "Write(" in ctx
+    assert "없음" in ctx
+    assert "Write" in ctx
+    assert "frontmatter(author/date/summary)" in ctx
     assert "offset=" not in ctx
 
 
@@ -976,7 +982,7 @@ def test_log_kit_short_file_offset_one(tmp_path):
     ctx = _fire_context(_fire_strong_with_log(tmp_path, "eunsu", 10))
     assert 'offset=1,' in ctx
     assert "limit=25" in ctx
-    assert "Read(" in ctx
+    assert "Read" in ctx
 
 
 def test_log_kit_long_file_offset_tail(tmp_path):
@@ -1110,3 +1116,123 @@ def test_count_lines_binary_log_no_crash(tmp_path):
     assert proc.stdout.strip(), "바이너리 로그에서 발화 실패"
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "offset=" in ctx  # 줄 수를 세어 정상 키트가 나왔다(크래시 대신)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# compact hook context — ux.session_log_remind.context_style ("compact" 기본 | "full")
+#
+# 문제: Codex 가 additionalContext 를 "hook context:" 로 화면에 그대로 노출 —
+# 장문 룰셋이 N번째 프롬프트마다 반복돼 화면을 도배했다. 해결 = 숨김이 아니라
+# **압축 주입**: 리마인더는 동적 상태(N/경로/offset)만 1~3줄로, 상세 규칙은
+# SessionStart 1회 주입(_slog_rules 단일 소스)으로 이동.
+# ══════════════════════════════════════════════════════════════════════════════
+
+RULES_REF = "(규칙: 세션 시작 주입 참조)"
+_FULL_UX = {"session_log_remind": {"context_style": "full"}}
+
+
+def test_compact_strong_existing_file_is_at_most_3_lines(tmp_path):
+    """compact 기본: 강발화(⛔)여도 additionalContext ≤3줄 — 동적 상태만 담는다."""
+    proc = _fire_strong_with_log(tmp_path, "eunsu", 25)
+    obj = json.loads(proc.stdout)
+    ctx = obj["hookSpecificOutput"]["additionalContext"]
+    assert len(ctx.splitlines()) <= 3, f"compact 인데 3줄 초과: {ctx!r}"
+    assert "⛔" in ctx  # severity 마커 유지
+    assert "현재 시각" in ctx  # ⛔ variant 는 현재시각 줄 유지
+    assert "세션로그 미작성 5번째 프롬프트" in ctx  # {N} 포함
+    log_path = str(_my_log(tmp_path, "eunsu", _today_date_str()))
+    assert log_path in ctx  # 파일 경로 포함
+    assert "offset=5, limit=25" in ctx  # 25줄 → offset=max(1,25-20)=5
+    assert "Edit로 이어쓰기" in ctx
+    assert RULES_REF in ctx  # 상세 규칙은 세션 시작 주입 참조로 위임
+
+
+def test_compact_strong_missing_file_mentions_frontmatter_write(tmp_path):
+    """compact 기본, 파일 없음: frontmatter+Write 생성 안내, offset 없음, ≤3줄."""
+    proc = _fire_strong_with_log(tmp_path, "eunsu", 0)
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert len(ctx.splitlines()) <= 3
+    log_path = str(_my_log(tmp_path, "eunsu", _today_date_str()))
+    assert log_path in ctx
+    assert "없음" in ctx
+    assert "frontmatter(author/date/summary)" in ctx
+    assert "Write 생성" in ctx
+    assert "offset=" not in ctx
+    assert RULES_REF in ctx
+
+
+def test_compact_drops_long_ruleset(tmp_path):
+    """compact 에는 장문 룰셋(06시 컷/log 동사/개인내용 등)이 없어야 한다 — 이동, 숨김 아님."""
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "eunsu", 25))
+    assert "06시 컷" not in ctx
+    assert "OS 사용자명 아님" not in ctx
+    assert "개인 내용 제외" not in ctx
+    assert "log 동사 쓰지 말 것" not in ctx
+
+
+def test_compact_weak_remind_is_single_line(tmp_path):
+    """compact 약발화(count%5==0, age<1800): 현재시각 줄 없이 한 줄."""
+    (tmp_path / ".teammode-active").write_text("")
+    _write_config(tmp_path, [{"name": "eunsu"}])
+    agent = "claude-compact-weak"
+    date_str = _today_date_str()
+    log = _my_log(tmp_path, "eunsu", date_str)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("\n".join(f"l{i}" for i in range(30)) + "\n", encoding="utf-8")
+    recent = time.time() - 300  # age < 1800 → 약발화만
+    os.utime(log, (recent, recent))
+    state_f = _state_path(tmp_path, agent, member="eunsu", root=tmp_path)
+    state_f.write_text(json.dumps({
+        "count": 4, "last_mtime": os.path.getmtime(log), "date": date_str,
+        "last_strong_remind": 0.0,
+    }))
+    proc = _run_hook(tmp_path, tmp_path, agent)
+    assert proc.returncode == 0
+    obj = json.loads(proc.stdout)
+    ctx = obj["hookSpecificOutput"]["additionalContext"]
+    assert len(ctx.splitlines()) == 1, f"compact 약발화는 1줄: {ctx!r}"
+    assert ctx.startswith("[teammode] 세션로그 미작성 5번째 프롬프트")
+    assert "⛔" not in ctx
+    assert RULES_REF in ctx
+    assert obj.get("systemMessage")  # systemMessage 는 불변(기본 on)
+
+
+def test_full_style_keeps_legacy_long_text(tmp_path):
+    """context_style="full" → 종전 장문 안내(06시 컷 등) 그대로 — 옵트백 보존."""
+    proc = _fire_strong_with_log(tmp_path, "eunsu", 25, ux=_FULL_UX)
+    obj = json.loads(proc.stdout)
+    ctx = obj["hookSpecificOutput"]["additionalContext"]
+    assert "06시 컷" in ctx  # 레거시 룰셋 문구
+    assert "log 동사 쓰지 말 것" in ctx
+    assert "개인 내용 제외" in ctx
+    assert "Read(" in ctx  # 레거시 offset 키트
+    assert RULES_REF not in ctx  # full 은 참조 문구 없이 규칙 자체를 담는다
+    assert obj.get("systemMessage")  # systemMessage 는 스타일과 무관하게 불변
+
+
+def test_full_style_new_file_keeps_legacy_write_kit(tmp_path):
+    """context_style="full" + 파일 없음 → 레거시 Write 키트 문구 유지."""
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "eunsu", 0, ux=_FULL_UX))
+    assert "아직 없습니다" in ctx
+    assert "Write(" in ctx
+
+
+def test_context_style_invalid_value_falls_back_to_compact(tmp_path):
+    """context_style 이 미지의 값이면 compact(기본) 로 동작한다."""
+    ctx = _fire_context(_fire_strong_with_log(
+        tmp_path, "eunsu", 25,
+        ux={"session_log_remind": {"context_style": "banana"}}))
+    assert "06시 컷" not in ctx
+    assert RULES_REF in ctx
+
+
+def test_compact_with_system_message_opt_out(tmp_path):
+    """compact + system_message=false: systemMessage 만 생략, compact 컨텍스트는 유지."""
+    proc = _fire_strong_with_log(
+        tmp_path, "eunsu", 25,
+        ux={"session_log_remind": {"system_message": False}})
+    obj = json.loads(proc.stdout)
+    ctx = obj["hookSpecificOutput"]["additionalContext"]
+    assert "systemMessage" not in obj
+    assert len(ctx.splitlines()) <= 3
+    assert RULES_REF in ctx

@@ -7,10 +7,18 @@
 정규 입력(stdin):
   { "event": "UserPromptSubmit", "prompt": "...", "agent": "claude", "raw": {...} }
 
-출력: JSON stdout — additionalContext(상세 안내, 모델 컨텍스트용) + systemMessage(짧은 한 줄, 사용자 화면 표시용).
+출력: JSON stdout — additionalContext(모델 컨텍스트용) + systemMessage(짧은 한 줄, 사용자 화면 표시용).
 systemMessage 방출은 옵트아웃 가능 — team.config.json 의 ux.session_log_remind.system_message
 (기본 true) 가 false 면 내지 않고 additionalContext(모델 컨텍스트)만 낸다(화면 noise 절감).
 30분 이상 미갱신 또는 5프롬프트마다 리마인드(스펙 01 §3.4 권장).
+
+additionalContext 스타일 — ux.session_log_remind.context_style ("compact" 기본 | "full"):
+Codex 는 additionalContext 를 "hook context:" 로 화면에 그대로 노출하므로, 장문 룰셋을
+매번 실어 보내면 화면이 도배된다(system_message=false 로도 못 막는 별도 채널).
+compact(기본)는 동적 상태(N번째/파일경로/offset)만 1~3줄로 싣고, 상세 규칙은
+SessionStart 1회 주입(_slog_rules 단일 소스)을 "(규칙: 세션 시작 주입 참조)"로 가리킨다.
+full 은 종전 장문 안내(base_guide+_log_kit)를 그대로 보존한 옵트백이다.
+systemMessage 거동은 스타일과 무관하게 불변.
 
 멤버 식별(B-순위):
   1. team.config.json members 가 1명 → members[0]["name"]
@@ -55,6 +63,14 @@ try:
     _HAS_WORKDAY = True
 except ImportError:
     _HAS_WORKDAY = False
+
+# 규칙 참조 문구 단일 소스 — 시블링 모듈(스크립트 실행 시 hooks/ 가 sys.path[0]).
+# 부재 시 동일 문구 폴백(짧은 참조 한 조각이라 드리프트 표면 최소 — 규칙 본문은
+# session-start 가 _slog_rules.SESSION_LOG_RULES 를 주입한다).
+try:
+    from _slog_rules import RULES_REF as _RULES_REF  # type: ignore
+except ImportError:
+    _RULES_REF = "(규칙: 세션 시작 주입 참조)"
 
 
 def _team_root() -> str:
@@ -146,6 +162,22 @@ def _system_message_enabled(root: str) -> bool:
     return val if isinstance(val, bool) else True
 
 
+def _context_style(root: str) -> str:
+    """additionalContext 스타일 — ux.session_log_remind.context_style (기본 "compact").
+
+    _system_message_enabled 와 동일한 읽기 규약(같은 ux.session_log_remind 블록).
+    "full" 만 레거시 장문(옵트백)으로 인정하고, 누락·타입 불일치·미지의 값은 전부
+    "compact" — 화면 도배 문제의 기본 해법이 compact 이기 때문(fail-to-quiet).
+    """
+    ux = _load_team_config(root).get("ux")
+    if not isinstance(ux, dict):
+        return "compact"
+    slr = ux.get("session_log_remind")
+    if not isinstance(slr, dict):
+        return "compact"
+    return "full" if slr.get("context_style") == "full" else "compact"
+
+
 def _valid_member_name(name: str) -> bool:
     """멤버명이 경로·지시문에 안전한 식별자인지 — teammode._validate_author·kb-write-guard 와 동일 규칙.
 
@@ -229,6 +261,20 @@ def _log_kit(log_path: str) -> str:
     return (f' 이어쓰기: Read({p}, offset={off}, limit=25) 로 끝부분만 읽고 Edit 로 추가. '
             f'summary(frontmatter) 갱신이 필요하면 Read({p}, offset=1, limit=6) 도. '
             f'log 동사·전체 Read 금지 — 끝 20줄만.')
+
+
+def _compact_action(log_path: str) -> str:
+    """compact 스타일의 동적 행동 조각 — 경로+offset(파일 있음) 또는 Write 생성(없음).
+
+    _log_kit 의 압축판: 규칙 설명 없이 지금 할 일만. 경로는 _log_kit 와 동일하게
+    문자열 리터럴로 이스케이프(json.dumps)해 컨텍스트 주입을 막는다.
+    """
+    n = _count_lines(log_path)
+    p = json.dumps(log_path, ensure_ascii=False)
+    if n == 0:
+        return f"{p} 없음: frontmatter(author/date/summary)+첫 항목으로 Write 생성"
+    off = max(1, n - 20)
+    return f"{p} 끝부분(Read offset={off}, limit=25)만 읽고 Edit로 이어쓰기"
 
 
 def _root_tag(root: str) -> str:
@@ -373,6 +419,9 @@ def main() -> int:
         "일상 추가는 끝 20줄만 Read, 큰 재구성·요약 갱신만 전체 Read. "
         "개인 내용 제외, 팀 작업만.")
 
+    # additionalContext 스타일 — compact(기본, 동적 상태 1~3줄) | full(레거시 장문 옵트백)
+    style = _context_style(root)
+
     # 멤버 식별
     member = _resolve_member(root)
     agent = data.get("agent", "unknown")
@@ -382,7 +431,12 @@ def main() -> int:
         state_file = _state_path(agent, member=member, root=root)
         date_str = _log_date(now)
         log_path = _my_log_path(root, member, date_str)
-        log_kit = _log_kit(log_path)  # offset 명령(끝 20줄 Read+Edit)을 코드로 깔아준다
+        if style == "full":
+            log_kit = _log_kit(log_path)  # offset 명령(끝 20줄 Read+Edit)을 코드로 깔아준다
+            action = ""
+        else:
+            log_kit = ""
+            action = _compact_action(log_path)  # 경로+offset(또는 Write 생성)만 압축
         mtime = _current_mtime(log_path)
         age = int(time.time() - mtime) if mtime > 0 else 9999
 
@@ -411,6 +465,9 @@ def main() -> int:
         # ── 폴백(degraded): 전역 mtime 기준 ──
         # 멤버를 못 정해 경로를 특정할 수 없으므로 offset 키트는 비운다(base_guide 일반 안내만).
         log_kit = ""
+        # compact 도 경로·offset 을 특정 못 한다 — 폴더 규약만 한 줄로(주입 표면 없음).
+        action = ("memory/team/sessions/<이름>/ 의 오늘 파일에 끝부분만 Read 후 "
+                  "Edit로 기록(<이름>은 members.md의 영문 이름)")
         state_file = _state_path(agent)
         age = _global_sessions_age(root)
         g_mtime = _global_sessions_mtime(root)
@@ -451,12 +508,22 @@ def main() -> int:
     strong_ok = (age >= 1800) and (now_ts - last_strong >= 1800)
     weak_ok = (count >= 5) and (count % 5 == 0)
 
+    # compact 본문 — 동적 상태(N/경로/offset)만. 규칙은 세션 시작 1회 주입 참조.
+    compact_body = f"세션로그 미작성 {count}번째 프롬프트 — {action}. {_RULES_REF}"
+
     if strong_ok:
-        context = (
-            f"{time_line}\n"
-            f"⛔ 세션 로그 30분 이상 미갱신 ({count}번째 프롬프트째 세션로그 미작성). "
-            f"첫 행동으로{base_guide}{log_kit}"
-        )
+        if style == "full":
+            context = (
+                f"{time_line}\n"
+                f"⛔ 세션 로그 30분 이상 미갱신 ({count}번째 프롬프트째 세션로그 미작성). "
+                f"첫 행동으로{base_guide}{log_kit}"
+            )
+        else:
+            # ⛔ variant 는 현재시각·30분 미갱신 severity 를 유지하되 총 ≤3줄.
+            context = (
+                f"{time_line}\n"
+                f"⛔ 세션 로그 30분 이상 미갱신 — {compact_body}"
+            )
         system_msg = f"⛔ 세션로그 미작성 — {count}번째 프롬프트째. 첫 행동으로 기록하세요"
         # 강발화 시각 기록 (멤버·폴백 둘 다 상태파일에 저장)
         if member is not None:
@@ -476,10 +543,13 @@ def main() -> int:
                 "last_strong_remind": now_ts,
             })
     elif weak_ok:
-        context = (
-            f"{time_line}\n"
-            f"{count}번째 프롬프트째 세션로그 미작성.{base_guide}{log_kit}"
-        )
+        if style == "full":
+            context = (
+                f"{time_line}\n"
+                f"{count}번째 프롬프트째 세션로그 미작성.{base_guide}{log_kit}"
+            )
+        else:
+            context = f"[teammode] {compact_body}"
         system_msg = f"📝 세션로그 미작성 — {count}번째 프롬프트째"
 
     if context:
