@@ -1459,3 +1459,151 @@ def unregister_obsidian_vault(config_path, vault_path) -> bool:
     except OSError:
         return False
     return True
+
+
+# ──────────────────────────────────────────────────────────────────
+# clone-and-go: install 계획(plan) — dry-run 을 동의 게이트로 (codex 2R 수렴)
+# ──────────────────────────────────────────────────────────────────
+# 원칙: 계획은 실 wire 가 쓰는 것과 **단일 소스**에서 뽑는다 — _AGENT_WIRE·
+# agent_*_path(호스트 경로)·wire_agents 순서·ENV_VAR·profile_path_for(env)·
+# infra/hooks/manifest.json(훅). 별도 하드코딩 목록 금지(드리프트 방지).
+# plan_install 은 테스트 가능한 구조 데이터, render_install_plan 이 ~축약과
+# 출력 포맷을 책임진다.
+
+# wire_agents 의 실제 호출 순서(§4⑤ D.1) — 여기와 wire_agents 가 어긋나면
+# 계획이 거짓말이 된다(테스트로 고정).
+WIRE_STEP_NAMES = ("install-mcp", "sync --on", "install-skills")
+
+
+@dataclass
+class InstallPlan:
+    """install 이 하려는 일의 구조화된 계획 — dry-run 렌더·동의 게이트 재료."""
+    repo_writes: list = field(default_factory=list)   # 레포 안 쓰기 대상(문자열)
+    host_paths: list = field(default_factory=list)    # [{agent, settings, mcp, skills}]
+    wire_steps: list = field(default_factory=list)    # [{agent, steps:[...]}]
+    hooks: list = field(default_factory=list)         # [{event, script, matcher?}]
+    env: dict = field(default_factory=dict)           # TEAMMODE_* · profile · skip 표시
+    autopush: dict = field(default_factory=dict)      # scaffold 자동 커밋/push 계획
+    trust_note: "str | None" = None                   # codex 배선 시 Trust 안내
+    member_blocker: "str | None" = None               # 멤버명 미정 차단 안내
+
+
+def plan_install(*, team_root, agents, member_name, role, team_name_default,
+                 home, settings_override=None, shell=None, platform=None,
+                 real_host_install=False) -> InstallPlan:
+    """install 계획 계산(부작용 0) — dry-run 출력·승인 문구의 단일 소스.
+
+    real_host_install: --yes(실설치) 의도 여부 — autopush·env 주입이 이 조건에 묶인다.
+    """
+    plan = InstallPlan()
+
+    member_disp = member_name or "<member>"
+    plan.repo_writes = [
+        f"memory/ scaffold — INDEX.md · team/members.md 등재 · "
+        f"team/sessions/{member_disp}/ · banner.txt (멱등)",
+        "team.config.json 생성/멤버 upsert",
+        "git remote 'upstream' 등록 — 템플릿 추적(tm-mode update 용, 없을 때만)",
+    ]
+
+    for agent in agents:
+        spec = _AGENT_WIRE[agent]
+        settings = agent_settings_path(agent, home=home,
+                                       settings_override=settings_override)
+        mcp = agent_mcp_path(agent, home=home, settings_override=settings_override)
+        if mcp is not None:
+            mcp_disp = str(mcp[1])
+        elif spec.get("mcp_rel"):
+            # 실호스트 모드: 어댑터 기본 경로(home 기준) — _AGENT_WIRE 가 단일 소스.
+            mcp_disp = str(Path(home) / spec["mcp_rel"])
+        else:
+            mcp_disp = "same-as-settings"  # codex: config.toml 안 MCP 블록
+        skills = agent_skills_path(agent, home=home,
+                                   settings_override=settings_override)
+        plan.host_paths.append({
+            "agent": agent,
+            "settings": str(settings),
+            "mcp": mcp_disp,
+            "skills": str(skills[1]),
+        })
+        plan.wire_steps.append({"agent": agent, "steps": list(WIRE_STEP_NAMES)})
+
+    # 훅 요약 — "낯선 레포의 훅을 내 에이전트에 배선한다"는 승인 판단 재료.
+    try:
+        manifest_path = Path(__file__).resolve().parent / "hooks" / "manifest.json"
+        for entry in json.loads(manifest_path.read_text(encoding="utf-8")):
+            if not isinstance(entry, dict) or not entry.get("script"):
+                continue
+            item = {"event": entry.get("event", ""),
+                    "script": entry.get("script", "")}
+            if entry.get("match"):
+                item["matcher"] = entry["match"]
+            plan.hooks.append(item)
+    except (OSError, ValueError):
+        plan.hooks = [{"event": "(manifest 읽기 실패)", "script": "(알 수 없음)"}]
+
+    profile = profile_path_for(shell, home) if shell else None
+    plan.env = {
+        "TEAMMODE_HOME": str(team_root),
+        "TEAMMODE_MEMBER": member_disp,
+        "profile": str(profile) if profile is not None else "",
+        "platform": platform or "",
+        # 격리(--settings) 또는 비실설치면 실호스트 env 는 건드리지 않는다.
+        "real_host_env_skipped": (settings_override is not None
+                                  or not real_host_install),
+    }
+
+    plan.autopush = {
+        "enabled_on_yes": bool(real_host_install),
+        "condition": "--yes(실설치)이고 --settings 격리가 아닐 때",
+        "note": "scaffold 변경 자동 커밋 + push 시도 — push 실패는 비치명"
+                "(sync-warning 가시화)",
+    }
+
+    if "codex" in agents:
+        plan.trust_note = ("Codex 훅 배선 후 TUI 를 한 번 열어 Trust 필요"
+                           "(trusted hash 직접 주입 없음 — 사람 결정)")
+
+    if not member_name:
+        plan.member_blocker = ("member_name 미정 — 실설치(--yes) 전 "
+                               "--member-name <영문이름> 지정 필요"
+                               "(git user.name 부재 시 추측하지 않음)")
+    return plan
+
+
+def render_install_plan(plan: InstallPlan, *, home) -> list:
+    """계획 → 사람이 승인 판단할 출력 줄들. HOME 하위 경로는 ~ 축약(개인경로 유출 완화)."""
+    home = Path(home)
+
+    def _abbr(p) -> str:
+        try:
+            return "~/" + str(Path(p).relative_to(home))
+        except (ValueError, TypeError):
+            return str(p)
+
+    lines = []
+    lines.append("[plan/repo] 레포 안 쓰기(팀 자산):")
+    for w in plan.repo_writes:
+        lines.append(f"  - {w}")
+    lines.append("[plan/host] 실호스트 파일(에이전트 배선 대상):")
+    for h in plan.host_paths:
+        lines.append(f"  - {h['agent']}: settings={_abbr(h['settings'])} · "
+                     f"mcp={_abbr(h['mcp'])} · skills={_abbr(h['skills'])}")
+    for w in plan.wire_steps:
+        lines.append(f"[plan/wire] {w['agent']}: {' → '.join(w['steps'])}")
+    lines.append("[plan/hooks] 배선될 훅(이 레포의 infra/hooks/):")
+    for hk in plan.hooks:
+        lines.append(f"  - {hk.get('event','')}: {hk.get('script','')}")
+    env = plan.env
+    skip = " (격리/비실설치 — 실호스트 env 미주입)" if env.get(
+        "real_host_env_skipped") else ""
+    lines.append(f"[plan/env] TEAMMODE_HOME={_abbr(env.get('TEAMMODE_HOME',''))} · "
+                 f"TEAMMODE_MEMBER={env.get('TEAMMODE_MEMBER','')} · "
+                 f"profile={_abbr(env['profile']) if env.get('profile') else '(셸 미감지)'}"
+                 f"{skip}")
+    ap = plan.autopush
+    lines.append(f"[plan/autopush] {ap.get('note','')} — 조건: {ap.get('condition','')}")
+    if plan.trust_note:
+        lines.append(f"[plan/trust] {plan.trust_note}")
+    if plan.member_blocker:
+        lines.append(f"[plan/blocker] {plan.member_blocker}")
+    return lines
