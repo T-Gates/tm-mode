@@ -443,21 +443,26 @@ def test_remind_silent_on_fresh_or_no_pending(xdg, tmp_path, capsys):
 # ── codex 적대검수 반영 (P1×3·P2×3·P3) ─────────────────────────────
 
 def test_clear_pending_if_unchanged_guard(xdg, tmp_path):
-    """[P1] clear race 가드: 스냅샷 이후 pending 이 재기록됐으면 clear 하지 않는다."""
-    import time as _t
+    """[P1] clear race 가드: 스냅샷 이후 pending 이 재기록됐으면 clear 하지 않는다.
+
+    판별자는 파일 내용(고유 nonce) — coarse mtime FS(1s 해상도)에서도 같은 초 내
+    재기록을 정확히 구분한다(codex 재검수). 재기록 사이에 sleep 을 두지 않는 것이
+    바로 그 검증이다.
+    """
     root = str(tmp_path / "team")
     git_ops.write_push_pending(root)
-    snap = os.stat(git_ops.push_pending_path(root)).st_mtime_ns
+    snap = git_ops.read_push_pending(root)
     # 변경 없음 → clear 성공
     assert git_ops.clear_push_pending_if_unchanged(root, snap) is True
     assert git_ops.read_push_pending(root) == ""
-    # 재기록(새 커밋의 pending) 후 옛 스냅샷으로 clear 시도 → 거부
+    # 재기록(새 커밋의 pending) — 같은 초 내 연속 기록이어도 nonce 로 구분된다.
     git_ops.write_push_pending(root)
-    snap_old = os.stat(git_ops.push_pending_path(root)).st_mtime_ns
-    _t.sleep(0.01)
-    git_ops.write_push_pending(root)  # 경합: push 도중 새 pending
+    snap_old = git_ops.read_push_pending(root)
+    git_ops.write_push_pending(root)  # 경합: push 도중 새 pending(즉시 재기록)
     assert git_ops.clear_push_pending_if_unchanged(root, snap_old) is False
     assert git_ops.read_push_pending(root) != "", "경합 pending 이 유실됐다"
+    # 빈 스냅샷은 항상 거부(보수)
+    assert git_ops.clear_push_pending_if_unchanged(root, "") is False
 
 
 def test_write_push_pending_returns_bool(xdg, tmp_path, monkeypatch):

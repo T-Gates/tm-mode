@@ -80,14 +80,10 @@ def main(argv: list) -> int:
         for _ in range(max_loops):
             if not git_ops.read_push_pending(root):
                 break  # 잔여 없음 — 정상 종료
-            # clear race 가드(codex P1): push 시작 전 pending 스냅샷 — clear 는
-            # "그때 그 pending" 이 그대로일 때만. push 도중 auto-commit 이 새 pending
-            # 을 재기록했으면 지우지 않고 loop 가 이어서 push 한다.
-            try:
-                snapshot_ns = os.stat(
-                    git_ops.push_pending_path(root)).st_mtime_ns
-            except OSError:
-                snapshot_ns = None
+            # clear race 가드(codex P1): push 시작 전 pending **내용** 스냅샷 —
+            # clear 는 "그때 그 pending"(고유 nonce 포함) 이 그대로일 때만.
+            # push 도중 auto-commit 이 재기록했으면 지우지 않고 loop 가 이어 push.
+            snapshot = git_ops.read_push_pending(root)
             pushed, detail = git_ops.push_plain(root, git_ops.NET_TIMEOUT)
             if not pushed:
                 # 실패 = sync-warning detail, pending 유지(recovery 채널이 잇는다).
@@ -102,8 +98,8 @@ def main(argv: list) -> int:
             # raw 를 사용 — has_upstream 이 입증될 때만 clear(codex P1 오판 차단).
             ahead, _behind, has_upstream = git_ops._ahead_behind_raw(
                 root, git_ops.DEFAULT_TIMEOUT)
-            if has_upstream and ahead == 0 and snapshot_ns is not None:
-                if git_ops.clear_push_pending_if_unchanged(root, snapshot_ns):
+            if has_upstream and ahead == 0 and snapshot:
+                if git_ops.clear_push_pending_if_unchanged(root, snapshot):
                     git_ops.clear_sync_warning(root)
             # clear 거부(재기록됨)·ahead>0·판정불가 → loop 가 재확인/재push.
         else:

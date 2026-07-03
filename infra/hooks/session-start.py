@@ -227,12 +227,16 @@ def _recover_push_pending(team_root: str) -> None:
             print("[teammode] push 미완(pending)이 있는데 원격 판정 불가 — "
                   "worker 를 재시작합니다(신규 브랜치면 push -u 로 처리).",
                   file=sys.stderr)
-            _git_ops.kick_push_worker(team_root, worker)
+            if not _git_ops.kick_push_worker(team_root, worker):
+                print("[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
+                      "재시도됩니다.", file=sys.stderr)
             return
         if ahead > 0:
             print(f"[teammode] 이전 세션의 push 미완(pending, ahead={ahead}) — "
                   f"worker 를 재시작합니다.", file=sys.stderr)
-            _git_ops.kick_push_worker(team_root, worker)
+            if not _git_ops.kick_push_worker(team_root, worker):
+                print("[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
+                      "재시도됩니다.", file=sys.stderr)
             return
         # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.
         _git_ops.clear_push_pending(team_root)

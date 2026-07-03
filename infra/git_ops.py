@@ -437,7 +437,10 @@ def write_push_pending(team_root: str) -> bool:
         os.makedirs(_state_dir(), exist_ok=True)
         payload = json.dumps(
             {"root": os.path.normpath(str(team_root)),
-             "written_at": datetime.now().isoformat(timespec="seconds")},
+             "written_at": datetime.now().isoformat(timespec="seconds"),
+             # nonce: compare-and-delete 식별자 — coarse mtime FS(1s 해상도)에서
+             # 같은 초 내 재기록을 mtime 으로 구분 못 하는 문제의 해법(codex 재검수).
+             "nonce": os.urandom(8).hex()},
             ensure_ascii=False)
         tmp = push_pending_path(team_root) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -466,19 +469,24 @@ def clear_push_pending(team_root: str) -> None:
         pass
 
 
-def clear_push_pending_if_unchanged(team_root: str, snapshot_mtime_ns: int) -> bool:
+def clear_push_pending_if_unchanged(team_root: str, snapshot_content: str) -> bool:
     """스냅샷 이후 pending 이 재기록되지 않았을 때만 clear (codex P1 — clear race 차단).
 
     worker 가 push 성공 → ahead==0 확인 → clear 직전에 auto-commit 이 새 커밋의
     pending 을 재기록하면, 무조건 clear 는 그 새 pending 을 삼켜 "ahead 인데 pending
-    없음" 유실 상태를 만든다. mtime_ns 가 스냅샷과 같을 때만 지운다(다르면 False —
+    없음" 유실 상태를 만든다. 판별자는 **파일 내용**(payload 에 매 기록 고유 nonce
+    포함) — mtime(_ns) 비교는 coarse mtime FS(1s 해상도)에서 같은 초 내 재기록을
+    놓친다(codex 재검수). 내용이 스냅샷과 같을 때만 지운다(다르면 False —
     호출부 drain loop 가 이어서 push).
     반환: 실제로 지웠으면 True.
     """
     path = push_pending_path(team_root)
     try:
-        if os.stat(path).st_mtime_ns != snapshot_mtime_ns:
+        if not snapshot_content:
             return False
+        with open(path, encoding="utf-8") as f:
+            if f.read().strip() != snapshot_content.strip():
+                return False
         os.remove(path)
         return True
     except OSError:
