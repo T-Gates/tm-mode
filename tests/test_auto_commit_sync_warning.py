@@ -52,6 +52,7 @@ class _FakeGitOps:
 
     def write_push_pending(self, root):
         self.pending_writes = getattr(self, "pending_writes", 0) + 1
+        return True  # #45 bool 계약 — False 면 훅이 fallback 마커를 쓴다
 
 
 def _run(mod, fake, root, monkeypatch):

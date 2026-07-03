@@ -491,7 +491,9 @@ def test_manifest_network_hooks_timeout_covers_net_flow():
     ac = entries.get("auto-commit.py")
     assert ac is not None
     assert ac.get("_timeout_unit") == "seconds"
-    local_worst = 3 * git_ops.DEFAULT_TIMEOUT + 1 + git_ops.DEFAULT_TIMEOUT  # 재시도 1회 포함
+    # 로컬 worst(codex P1): 시도당 하위호출 4개(rev-parse/add/staged/commit) —
+    # full retry 는 시도 전체를 재수행하므로 2x(4xDEFAULT_TIMEOUT) + sleep 1s.
+    local_worst = 2 * (4 * git_ops.DEFAULT_TIMEOUT) + 1
     assert ac.get("timeout", 0) >= local_worst + 1, (
         f"auto-commit: manifest timeout={ac.get('timeout')} < 로컬 worst "
         f"{local_worst}+1 — 커밋 완주 전에 훅이 죽으면 ledger 를 못 쓴다")

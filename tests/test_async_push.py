@@ -392,17 +392,6 @@ def test_recover_stale_pending_auto_cleared(tmp_path, capsys, monkeypatch):
     assert capsys.readouterr().err == ""
 
 
-def test_recover_unknown_upstream_conservative_warn(tmp_path, capsys, monkeypatch):
-    """판정불가(no upstream/git 오류) → 보수 경고, clear·kick 안 함."""
-    mod = _load_session_start()
-    fake = _FakeGo("pending", ahead=0, has_upstream=False)
-    monkeypatch.setattr(mod, "_git_ops", fake)
-    mod._recover_push_pending(str(tmp_path))
-    err = capsys.readouterr().err
-    assert "판정 불가" in err
-    assert fake.cleared == 0 and fake.kicked == 0
-
-
 def test_recover_no_pending_silent(tmp_path, capsys, monkeypatch):
     """pending 없으면 완전 침묵(판정·kick 비용 없음)."""
     mod = _load_session_start()
@@ -449,3 +438,93 @@ def test_remind_silent_on_fresh_or_no_pending(xdg, tmp_path, capsys):
     git_ops.write_push_pending(root)
     mod._warn_push_pending_age(root)          # 신선
     assert capsys.readouterr().err == ""
+
+
+# ── codex 적대검수 반영 (P1×3·P2×3·P3) ─────────────────────────────
+
+def test_clear_pending_if_unchanged_guard(xdg, tmp_path):
+    """[P1] clear race 가드: 스냅샷 이후 pending 이 재기록됐으면 clear 하지 않는다."""
+    import time as _t
+    root = str(tmp_path / "team")
+    git_ops.write_push_pending(root)
+    snap = os.stat(git_ops.push_pending_path(root)).st_mtime_ns
+    # 변경 없음 → clear 성공
+    assert git_ops.clear_push_pending_if_unchanged(root, snap) is True
+    assert git_ops.read_push_pending(root) == ""
+    # 재기록(새 커밋의 pending) 후 옛 스냅샷으로 clear 시도 → 거부
+    git_ops.write_push_pending(root)
+    snap_old = os.stat(git_ops.push_pending_path(root)).st_mtime_ns
+    _t.sleep(0.01)
+    git_ops.write_push_pending(root)  # 경합: push 도중 새 pending
+    assert git_ops.clear_push_pending_if_unchanged(root, snap_old) is False
+    assert git_ops.read_push_pending(root) != "", "경합 pending 이 유실됐다"
+
+
+def test_write_push_pending_returns_bool(xdg, tmp_path, monkeypatch):
+    """[P1] ledger 기록 성공 여부를 호출부가 알 수 있다(bool 반환)."""
+    root = str(tmp_path / "team")
+    assert git_ops.write_push_pending(root) is True
+    # 기록 불가 환경(state dir 를 파일로 막음) → False
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "blocked"))
+    blocked = tmp_path / "blocked" / "teammode"
+    blocked.parent.mkdir(parents=True, exist_ok=True)
+    blocked.write_text("not a dir", encoding="utf-8")
+    assert git_ops.write_push_pending(root) is False
+
+
+def test_auto_commit_ledger_failure_leaves_sync_warning(xdg, tmp_path):
+    """[P1] 커밋 성공 + ledger 기록 실패 → sync-warning fallback + stderr(무음 유실 차단)."""
+    _, work = _clone_pair(tmp_path)
+    _activate(work)
+    f = work / "note-lf.md"
+    f.write_text("x", encoding="utf-8")
+    # write 는 막고 sync-warning 은 살리기: pending 파일 자리를 디렉토리로 선점
+    Path(git_ops.push_pending_path(str(work))).parent.mkdir(parents=True, exist_ok=True)
+    Path(git_ops.push_pending_path(str(work))).mkdir()
+    r = _run_auto_commit(work, [f], xdg, {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+    assert r.returncode == 0
+    assert "pending 기록 실패" in r.stderr
+    assert "pending" in git_ops.read_sync_warning(str(work))
+
+
+def test_recover_unknown_upstream_still_kicks_worker(tmp_path, capsys, monkeypatch):
+    """[P2] 판정불가(무 upstream 또는 git 오류) → 보수 경고 + worker kick(영구 경고 루프 차단).
+
+    worker 의 push_plain 이 no-upstream 을 `push -u` 로 처리하므로 kick 이 안전하다.
+    """
+    mod = _load_session_start()
+    fake = _FakeGo("pending", ahead=0, has_upstream=False)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    mod._recover_push_pending(str(tmp_path))
+    err = capsys.readouterr().err
+    assert "판정 불가" in err
+    assert fake.kicked == 1, "판정불가에서 worker 를 재기동하지 않으면 신규 브랜치 pending 이 영구 잔존"
+    assert fake.cleared == 0
+
+
+def test_recovery_runs_even_when_pull_throttled(tmp_path, monkeypatch, capsys):
+    """[P2] pending recovery 는 auto-pull 스로틀과 독립 — throttle 로 조기 return 해도 실행."""
+    mod = _load_session_start()
+    fake = _FakeGo("pending", ahead=1, has_upstream=True)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+
+    class _FakePull:
+        DEFAULT_THROTTLE_SECONDS = 600
+        @staticmethod
+        def should_pull(state, now, throttle):
+            return False  # 스로틀에 막힌 상황 재현
+    monkeypatch.setattr(mod, "_auto_pull", _FakePull)
+    mod._maybe_auto_pull(str(tmp_path))
+    assert fake.kicked == 1, "스로틀에 막혀 recovery 가 실행되지 않았다"
+
+
+def test_worker_drain_exhaustion_writes_marker(xdg, tmp_path):
+    """[P3] drain 한도 소진 시(pending 잔존) sync-warning 즉시 표면화."""
+    _, work = _clone_pair(tmp_path)
+    _commit_file(work, "a.md")
+    git_ops.write_push_pending(str(work))
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg),
+                           "TEAMMODE_WORKER_MAX_LOOPS": "0"})
+    assert r.returncode == 0
+    assert "drain" in git_ops.read_sync_warning(str(work))
+    assert git_ops.read_push_pending(str(work)) != ""

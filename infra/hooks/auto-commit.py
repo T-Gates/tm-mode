@@ -102,10 +102,17 @@ def _kick_push_worker(root: str) -> None:
     if _git_ops is None:
         return
     ok = _git_ops.kick_push_worker(root, _WORKER_PATH)
-    if not ok and os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") != "1":
+    if not ok:
         try:
-            print("[teammode] push-worker 시작 실패 — pending 은 세션 시작 시 "
-                  "재시도됩니다.", file=sys.stderr)
+            if os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") == "1":
+                # codex P2: kill-switch 가 프로덕션 셸에 남으면 무음 pending 만
+                # 쌓인다 — 비활성 사실을 확실히 표면화(테스트도 이 줄은 무해).
+                print("[teammode] push-worker 비활성(TEAMMODE_DISABLE_PUSH_WORKER)"
+                      " — push 는 세션 시작 recovery 에 위임됩니다.",
+                      file=sys.stderr)
+            else:
+                print("[teammode] push-worker 시작 실패 — pending 은 세션 시작 시 "
+                      "재시도됩니다.", file=sys.stderr)
         except (OSError, UnicodeError):
             pass
 
@@ -172,8 +179,17 @@ def main() -> int:
         # push 실패 가시화(이슈 #23)는 이제 worker(sync-warning)와 session-start
         # (pending×ahead 판정)가 담당한다 — 훅은 ledger 기록까지만.
         if getattr(result, "committed", False):
-            _git_ops.write_push_pending(root)
-            _kick_push_worker(root)
+            if not _git_ops.write_push_pending(root):
+                # codex P1: ledger 기록 실패를 삼키면 "커밋됨·push 안 됨·pending
+                # 없음·마커 없음" 무음 유실 — sync-warning fallback + stderr 1줄.
+                _git_ops.write_sync_warning(
+                    root, "커밋됨; push-pending 기록 실패 — push 미보장"
+                          "(XDG state 쓰기 오류)")
+                print("[teammode] push-pending 기록 실패 — push 가 예약되지 "
+                      "않았습니다(커밋은 보존). XDG state 쓰기 권한을 확인하세요.",
+                      file=sys.stderr)
+            else:
+                _kick_push_worker(root)
     except Exception:  # noqa: BLE001 — 철칙: 자동 커밋·push 실패가 작업을 막지 않는다
         return 0
 

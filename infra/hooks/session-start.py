@@ -153,6 +153,10 @@ def _maybe_auto_pull(team_root: str) -> None:
     (급격한 세션 재시작도 throttle 창당 1회). git_ops/auto_pull 부재 시 종전 경로로 폴백.
     실패는 절대 세션·주입을 막지 않는다(철칙) — 어떤 예외도 삼킨다.
     """
+    # #45 pending recovery — pull 스로틀과 **독립**(codex P2: 스로틀에 막혀 복구가
+    # 안 도는 구멍 차단). push recovery 는 pull 비용과 별개의 correctness 경로다.
+    _recover_push_pending(team_root)
+
     # 폴백: 새 정합 경로의 의존(git_ops·auto_pull)이 없으면 종전 ff-only auto_pull.
     if _git_ops is None or _auto_pull is None:
         if _auto_pull is not None:
@@ -196,8 +200,6 @@ def _maybe_auto_pull(team_root: str) -> None:
     except Exception:  # noqa: BLE001 — 철칙: 무슨 일이 있어도 세션·주입을 막지 않는다
         pass
 
-    _recover_push_pending(team_root)
-
 
 def _recover_push_pending(team_root: str) -> None:
     """#45 pending recovery — worker 유실(머신 슬립·Windows detach 실패·크래시) 복원.
@@ -216,15 +218,20 @@ def _recover_push_pending(team_root: str) -> None:
             return
         ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
             team_root, _git_ops.DEFAULT_TIMEOUT)
+        worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "push-worker.py")
         if not has_upstream:
+            # 판정불가 = 무 upstream(신규 브랜치) 또는 git 오류 — 구분 불가하므로
+            # 보수 경고 + **kick**(codex P2: worker 의 push_plain 이 no-upstream 을
+            # `push -u` 로 처리한다 — kick 없이 경고만 반복하면 영구 잔존 UX).
             print("[teammode] push 미완(pending)이 있는데 원격 판정 불가 — "
-                  "네트워크/upstream 확인 필요(보수 경고).", file=sys.stderr)
+                  "worker 를 재시작합니다(신규 브랜치면 push -u 로 처리).",
+                  file=sys.stderr)
+            _git_ops.kick_push_worker(team_root, worker)
             return
         if ahead > 0:
             print(f"[teammode] 이전 세션의 push 미완(pending, ahead={ahead}) — "
                   f"worker 를 재시작합니다.", file=sys.stderr)
-            worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                  "push-worker.py")
             _git_ops.kick_push_worker(team_root, worker)
             return
         # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.

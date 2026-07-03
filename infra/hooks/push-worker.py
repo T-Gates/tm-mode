@@ -70,9 +70,24 @@ def main(argv: list) -> int:
             return 0
 
     try:
-        for _ in range(_MAX_DRAIN_LOOPS):
+        max_loops = _MAX_DRAIN_LOOPS
+        env_loops = os.environ.get("TEAMMODE_WORKER_MAX_LOOPS")
+        if env_loops is not None:  # 테스트 seam — 소진 경로 재현용
+            try:
+                max_loops = max(0, int(env_loops))
+            except ValueError:
+                pass
+        for _ in range(max_loops):
             if not git_ops.read_push_pending(root):
                 break  # 잔여 없음 — 정상 종료
+            # clear race 가드(codex P1): push 시작 전 pending 스냅샷 — clear 는
+            # "그때 그 pending" 이 그대로일 때만. push 도중 auto-commit 이 새 pending
+            # 을 재기록했으면 지우지 않고 loop 가 이어서 push 한다.
+            try:
+                snapshot_ns = os.stat(
+                    git_ops.push_pending_path(root)).st_mtime_ns
+            except OSError:
+                snapshot_ns = None
             pushed, detail = git_ops.push_plain(root, git_ops.NET_TIMEOUT)
             if not pushed:
                 # 실패 = sync-warning detail, pending 유지(recovery 채널이 잇는다).
@@ -83,12 +98,21 @@ def main(argv: list) -> int:
                 else:
                     git_ops.write_sync_warning(root, f"push pending; {detail}")
                 break
-            ahead, _behind = git_ops.ahead_behind(root)
-            if ahead == 0:
-                # 성공 + 잔여 0 확인 후에만 clear (push 중 새 커밋 유실 방지).
-                git_ops.clear_push_pending(root)
-                git_ops.clear_sync_warning(root)
-            # ahead > 0(push 직후 새 커밋) 또는 새 pending 재기록 → loop 가 이어 push.
+            # 판정불가(무 upstream/git 오류)를 (0,0)으로 접는 ahead_behind 대신
+            # raw 를 사용 — has_upstream 이 입증될 때만 clear(codex P1 오판 차단).
+            ahead, _behind, has_upstream = git_ops._ahead_behind_raw(
+                root, git_ops.DEFAULT_TIMEOUT)
+            if has_upstream and ahead == 0 and snapshot_ns is not None:
+                if git_ops.clear_push_pending_if_unchanged(root, snapshot_ns):
+                    git_ops.clear_sync_warning(root)
+            # clear 거부(재기록됨)·ahead>0·판정불가 → loop 가 재확인/재push.
+        else:
+            # drain 한도 소진(P3): pending 잔존이면 즉시 표면화 — 10분 age 경고를
+            # 기다리지 않는다.
+            if git_ops.read_push_pending(root):
+                git_ops.write_sync_warning(
+                    root, "push pending; worker drain limit reached — "
+                          "커밋 폭주 또는 반복 재기록(세션 시작 recovery 가 재시도)")
         return 0
     except Exception:  # noqa: BLE001 — 훅 철칙: worker 실패가 아무것도 막지 않는다
         return 0

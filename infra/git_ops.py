@@ -426,10 +426,12 @@ def push_pending_path(team_root: str) -> str:
     return os.path.join(_state_dir(), f"push-pending-{_team_key(team_root)}")
 
 
-def write_push_pending(team_root: str) -> None:
+def write_push_pending(team_root: str) -> bool:
     """pending 마커 원자 기록(임시파일 + os.replace — 부분 쓰기 상태 방지). 무raise.
 
     내용은 진단용(root·기록시각)일 뿐 계약이 아니다 — 판정은 파일 존재+mtime 만 쓴다.
+    반환: 기록 성공 여부(codex P1 — 실패를 호출부가 모르면 "커밋됨·push 안 됨·
+    pending 없음·마커 없음" 무음 유실 상태가 된다. 호출부는 False 에 fallback 가시화).
     """
     try:
         os.makedirs(_state_dir(), exist_ok=True)
@@ -441,8 +443,9 @@ def write_push_pending(team_root: str) -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(payload)
         os.replace(tmp, push_pending_path(team_root))
+        return True
     except OSError:
-        pass  # ledger 기록 실패는 커밋을 막지 않는다(best-effort — 훅 철칙)
+        return False  # ledger 기록 실패는 커밋을 막지 않는다 — 가시화는 호출부 몫
 
 
 def read_push_pending(team_root: str) -> str:
@@ -461,6 +464,25 @@ def clear_push_pending(team_root: str) -> None:
         os.remove(push_pending_path(team_root))
     except OSError:
         pass
+
+
+def clear_push_pending_if_unchanged(team_root: str, snapshot_mtime_ns: int) -> bool:
+    """스냅샷 이후 pending 이 재기록되지 않았을 때만 clear (codex P1 — clear race 차단).
+
+    worker 가 push 성공 → ahead==0 확인 → clear 직전에 auto-commit 이 새 커밋의
+    pending 을 재기록하면, 무조건 clear 는 그 새 pending 을 삼켜 "ahead 인데 pending
+    없음" 유실 상태를 만든다. mtime_ns 가 스냅샷과 같을 때만 지운다(다르면 False —
+    호출부 drain loop 가 이어서 push).
+    반환: 실제로 지웠으면 True.
+    """
+    path = push_pending_path(team_root)
+    try:
+        if os.stat(path).st_mtime_ns != snapshot_mtime_ns:
+            return False
+        os.remove(path)
+        return True
+    except OSError:
+        return False
 
 
 def push_pending_age_seconds(team_root: str):

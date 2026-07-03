@@ -20,11 +20,11 @@
     "event": "PostToolUse",
     "match": { "action": "file_edit" },
     "script": "auto-commit.py",
-    "timeout": 10,
+    "timeout": 20,
     "fallback": "runtime",
     "enforcement": "block",
     "_timeout_unit": "seconds",
-    "_timeout_note": "#45 async push: 동기 구간은 로컬 커밋까지(add/staged/commit 각 DEFAULT_TIMEOUT 2s + index.lock 1s 재시도 + ledger/kick) — push 는 detach worker 몫이라 NET_TIMEOUT 여유 불필요. 10s = 로컬 worst + 기동 여유."
+    "_timeout_note": "#45 async push: 동기 구간은 로컬 커밋까지 — push 는 detach worker 몫. 로컬 worst(codex P1 재계산) = do_commit 하위호출 4개(rev-parse/add/staged/commit) x DEFAULT_TIMEOUT 2s = 8s, index.lock 재시도 시 +1s+8s = 17s + ledger/kick 여유 = 20s. PUSH_TOTAL_BUDGET(22) 미만 유지 — 동기 push 회귀 감지선."
   },
   {
     "event": "PreToolUse",
