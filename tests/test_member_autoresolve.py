@@ -12,6 +12,8 @@
 호스트 무접촉: 모든 경로 tmp_path. conftest 가 TEAMMODE_MEMBER env 를 기본 제거하므로
 env 소스는 monkeypatch.setenv 로만 주입한다.
 """
+from __future__ import annotations
+
 import contextlib
 import json
 import os
