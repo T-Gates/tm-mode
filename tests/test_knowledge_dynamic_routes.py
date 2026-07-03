@@ -134,3 +134,33 @@ def test_no_root_index_falls_back_to_static(tmp_path):
               "--filename", "b.md", "--content", "x",
               "--author", "test", "--weight", "📎")
     assert no.returncode == 2
+
+
+# ── delete: 동적 허용 대칭 ──────────────────────────────────────────
+
+def test_route_registered_folder_delete_allowed(tmp_path):
+    """등재 폴더의 파일 delete 도 허용 (write 대칭)."""
+    root = tmp_path / "team"
+    root.mkdir()
+    _init_git(root)
+    _root_index_with(root, "| `fundraise/` | 투자유치 |")
+    w = _run(root, "memory", "write", "--folder", "fundraise",
+             "--filename", "vc-notes.md", "--content", "x",
+             "--author", "test", "--weight", "📎")
+    assert w.returncode == 0, w.stderr
+    d = _run(root, "memory", "delete", "--path", "fundraise/vc-notes.md",
+             "--author", "test")
+    assert d.returncode == 0, d.stderr
+    assert not (root / "memory" / "fundraise" / "vc-notes.md").exists()
+
+
+def test_unregistered_folder_delete_rejected(tmp_path):
+    """미등재 폴더 delete 는 계속 거부 (엔진 외부에서 생긴 파일이라도)."""
+    root = tmp_path / "team"
+    root.mkdir()
+    _init_git(root)
+    target = root / "memory" / "legal" / "x.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("x", encoding="utf-8")
+    r = _run(root, "memory", "delete", "--path", "legal/x.md", "--author", "test")
+    assert r.returncode == 2

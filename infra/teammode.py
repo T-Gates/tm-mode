@@ -1910,14 +1910,10 @@ def cmd_knowledge(team_root: Path, action: str | None,
                       f"(훅/tm-context 관리 경로)",
                       file=sys.stderr)
                 return 2
-        del_allowed = False
-        for af in _KNOWLEDGE_ALLOWED_FOLDERS:
-            if norm_folder == af or norm_folder.startswith(af + "/"):
-                del_allowed = True
-                break
-        if not del_allowed:
+        if not _knowledge_folder_allowed(team_root, norm_folder):
             print(f"[error] memory delete: folder '{folder_part}' 는 허용되지 않습니다. "
-                  f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)}",
+                  f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} "
+                  f"(및 루트 INDEX 등재 최상위 폴더)",
                   file=sys.stderr)
             return 2
 
