@@ -80,10 +80,13 @@ class ReconcileResult:
 class SyncResult:
     ok: bool                       # 동기화 성공(덮어쓰기 완료) 또는 이미 최신
     changed: bool = False          # 실제로 working tree 가 바뀌었는지
-    paths: tuple = ()              # 동기화 대상 경로(SYNC_PATHS)
+    paths: tuple = ()              # positive 경로(표시/논리용 — cmd_update 출력)
     diff: str = ""                 # 변경 미리보기(dry-run) 또는 적용된 변경 요약
     detail: str = ""               # 사람이 읽는 메시지/사유
     blocked: bool = False          # dirty 가드 등으로 중단됐는지(사람 판단 필요)
+    pathspecs: tuple = ()          # git 실행용(positive + :(exclude)... — #36).
+                                   # do_commit(paths=res.pathspecs)·checkout·diff·dirty 가
+                                   # 이걸 써서 infra/skills/util(인스턴스 소유)을 보존한다.
 
 
 def git_env() -> dict:
@@ -1064,6 +1067,33 @@ def upstream_changes(team_root: str, upstream_ref: str = "upstream/main",
 # 나중에 확장 가능하게 모듈 상수로 둔다(예: 새 엔진 디렉토리 추가 시 여기만 고친다).
 SYNC_PATHS = ["infra", "NOTICE.md"]
 
+# 엔진 동기화에서 **제외**할 경로(#36): infra/skills/util 은 인스턴스 소유(각 팀이
+# 이식한 util 스킬)라 upstream checkout 이 덮으면 유실된다. SYNC_PATHS 에 직접 넣지
+# 않고(positive 존재확인용 유지) git 실행 시에만 `_sync_pathspecs()` 가 조합한다.
+SYNC_EXCLUDE_PATHS = ["infra/skills/util"]
+
+
+def _sync_pathspecs(paths: list) -> list:
+    """positive paths → git pathspec 목록(positive + 해당 exclude). #36.
+
+    exclude(`:(exclude)X`)는 X 의 **조상 positive 가 있고** X 자체가 명시 positive 로
+    들어오지 않았을 때만 붙인다 — 기본 SYNC_PATHS(infra)는 util 보호, 향후 caller 가
+    util 을 의도적으로 sync 하려 명시하면 상쇄하지 않는다. exclude 는 절대 단독 금지
+    (positive 없이 넣으면 범위가 넓어짐).
+    """
+    specs = [str(p) for p in paths]
+    norm = {s.rstrip("/") for s in specs}
+    for ex in SYNC_EXCLUDE_PATHS:
+        ex = ex.rstrip("/")
+        if ex in norm:
+            continue  # 명시 positive 로 들어옴 — 상쇄 금지
+        # ex 의 조상 positive 가 있나(예: 'infra' 는 'infra/skills/util' 의 조상)
+        has_ancestor = any(
+            ex == p or ex.startswith(p.rstrip("/") + "/") for p in norm)
+        if has_ancestor:
+            specs.append(f":(exclude){ex}")
+    return specs
+
 
 def detect_default_branch(team_root: str, remote: str = "upstream",
                           timeout: int = DEFAULT_TIMEOUT) -> str:
@@ -1202,42 +1232,52 @@ def sync_from_upstream(team_root: str, remote: str = "upstream",
     # 2.5) upstream 에 실재하는 경로만 동기화 — NOTICE.md 등은 옛 upstream 에 없을 수
     #      있고, 없는 pathspec 으로 checkout 하면 매칭 0 에러가 난다. 존재 경로만 골라
     #      옛 upstream 과도 호환(infra 는 받고, 없는 NOTICE 는 조용히 건너뜀).
+    # 존재 필터는 **positive 만**(_path_in_ref 는 cat-file 존재확인 — pathspec 아님, #36).
     paths = [p for p in paths if _path_in_ref(team_root, ref, p, timeout)]
     if not paths:
-        return SyncResult(ok=True, changed=False, paths=(),
+        return SyncResult(ok=True, changed=False, paths=(), pathspecs=(),
                           detail="이미 최신")
 
-    # 3) 변경 유무 — 없으면 멱등 종료
-    diff = diff_paths(team_root, ref, paths, timeout=timeout)
+    # git 실행용 pathspec — positive + :(exclude)infra/skills/util (인스턴스 소유 보존).
+    pathspecs = _sync_pathspecs(paths)
+
+    # 3) 변경 유무 — 없으면 멱등 종료 (util 제외 후 판정 — util 변경은 "변경"이 아님)
+    diff = diff_paths(team_root, ref, pathspecs, timeout=timeout)
     if not diff:
         return SyncResult(ok=True, changed=False, paths=tuple(paths),
-                          detail="이미 최신")
+                          pathspecs=tuple(pathspecs), detail="이미 최신")
 
-    # 4) dirty 가드 — 덮어쓰기로 유실될 로컬 변경 차단(사람 판단 요청)
-    if _paths_dirty(team_root, paths, timeout):
-        return SyncResult(ok=False, blocked=True, paths=tuple(paths), diff=diff,
+    # 4) dirty 가드 — 덮어쓰기로 유실될 로컬 변경 차단(util 제외라 util 로컬 변경은 무block)
+    if _paths_dirty(team_root, pathspecs, timeout):
+        return SyncResult(ok=False, blocked=True, paths=tuple(paths),
+                          pathspecs=tuple(pathspecs), diff=diff,
                           detail="대상 경로에 커밋 안 된 로컬 변경이 있습니다")
 
     # 5) dry-run — 미리보기만, 실제 변경 0
     if dry_run:
-        return SyncResult(ok=True, changed=False, paths=tuple(paths), diff=diff,
+        return SyncResult(ok=True, changed=False, paths=tuple(paths),
+                          pathspecs=tuple(pathspecs), diff=diff,
                           detail="dry-run: 변경 미리보기")
 
-    # 6) checkout 덮어쓰기(staged). 자동 commit/push 없음.
+    # 6) checkout 덮어쓰기(staged). pathspec 으로 util 제외. 자동 commit/push 없음.
     try:
         rc, out, err = run_git(
             ["-C", team_root, "checkout", ref, "--",
-             *[str(p) for p in paths]], timeout=timeout)
+             *[str(p) for p in pathspecs]], timeout=timeout)
     except subprocess.TimeoutExpired:
-        return SyncResult(ok=False, paths=tuple(paths), detail="checkout timeout")
+        return SyncResult(ok=False, paths=tuple(paths),
+                          pathspecs=tuple(pathspecs), detail="checkout timeout")
     except (OSError, subprocess.SubprocessError) as exc:
         return SyncResult(ok=False, paths=tuple(paths),
+                          pathspecs=tuple(pathspecs),
                           detail=f"checkout exec error: {exc}")
     if rc != 0:
         return SyncResult(ok=False, paths=tuple(paths),
+                          pathspecs=tuple(pathspecs),
                           detail=f"checkout 실패: {((err or out) or '').strip()[:200]}")
 
-    return SyncResult(ok=True, changed=True, paths=tuple(paths), diff=diff,
+    return SyncResult(ok=True, changed=True, paths=tuple(paths),
+                      pathspecs=tuple(pathspecs), diff=diff,
                       detail="동기화 완료(staged)")
 
 
