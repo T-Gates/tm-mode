@@ -624,3 +624,160 @@ def test_unsafe_member_fallback_rejected(env):
     ])
     env.make_adapter(member=None, member_fallback="a; rm -rf /").sync(mode="on")
     assert "TEAMMODE_MEMBER" not in env.config.read_text()
+
+
+def test_off_resync_no_prefix_stays_no_prefix(env):
+    """off(preserve-only): member·기존 prefix 둘 다 없으면 off sync 도 prefix 미발명."""
+    env.write_manifest([
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+    ])
+    env.make_adapter(member=None).sync(mode="off")
+    assert "TEAMMODE_MEMBER" not in env.config.read_text()
+
+
+# ── 13. codex-review P2-1: kept hooks 쌍 안에 중첩된 정상 MCP 쌍 보존 ──
+#
+# 손상 레이아웃(hooks-start … mcp-start … mcp-end … hooks-end): purge 가 hooks 쌍을
+# 앵커로 keep 하면 _write_block 의 통짜 교체가 안쪽 MCP 블록까지 없앤다. 요구:
+# 이런 hooks 쌍은 앵커로 keep 하지 않고 마커+소유 테이블만 걷어낸 뒤 새 블록 append.
+
+def test_resync_nested_mcp_pair_inside_hooks_span_preserved(env):
+    env.write_manifest([
+        {"event": "UserPromptSubmit", "script": "session-log-remind.py", "mode": "on"},
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+    ])
+    norm = f"{env.root}/infra/agents/codex/normalize.py"
+    corrupt = (
+        "# teammode-hooks-start\n\n"
+        "[[hooks.UserPromptSubmit]]\n\n"
+        "[[hooks.UserPromptSubmit.hooks]]\n"
+        'type = "command"\n'
+        f"command = 'python3 {norm} session-log-remind.py'\n"
+        "timeout = 3\n\n"
+        "# teammode-mcp-start\n\n"
+        "[mcp_servers.tm-linear]\n"
+        "_teammode_managed = true\n\n"
+        "# teammode-mcp-end\n\n"
+        "[[hooks.PostToolUse]]\n\n"
+        "[[hooks.PostToolUse.hooks]]\n"
+        'type = "command"\n'
+        f"command = 'python3 {norm} auto-commit.py'\n"
+        "timeout = 3\n\n"
+        "# teammode-hooks-end\n"
+    )
+    env.config.write_text(_USER_TOML + "\n" + corrupt)
+    env.make_adapter(member="leejhy").sync(mode="on")
+    text = env.config.read_text()
+    _assert_single_block(text)                        # hooks 블록 정확히 1개
+    assert "[mcp_servers.tm-linear]" in text          # 안쪽 MCP 등록 보존
+    assert text.count("# teammode-mcp-start") == 1
+    assert text.count("# teammode-mcp-end") == 1
+    assert "timeout = 3" not in text                  # 옛 소유 테이블(양쪽) 소멸
+    assert text.count("session-log-remind.py") == 1   # 훅 2중 등록 없음
+    assert text.count("auto-commit.py") == 1
+    assert "env TEAMMODE_MEMBER=leejhy" in text
+    assert "command = '/usr/bin/echo user-hook'" in text
+    _assert_valid_toml(text)
+
+
+# ── 14. codex-review P2-2: 멀티라인 TOML 문자열 안의 마커-모양 라인 무시 ──
+#
+# _MARKER_LINE 은 라인 앵커라 인라인 문자열은 안전하지만, purge 는 raw 라인을
+# 스캔하므로 '''…''' / \"\"\"…\"\"\" 멀티라인 문자열 **안의** 마커-모양 라인이
+# 진짜 마커로 오인돼 사용자 설정이 지워질 수 있다. 요구: 스캔 중 멀티라인 문자열
+# 상태를 추적해 안쪽 마커-모양 라인은 무시(사용자 설정 byte-identical 보존).
+
+_ML_USER_TOML = (
+    'model = "o1"\n'
+    "banner = '''one-liner ''' \n"          # 같은 줄 open+close — 상태 오염 없음
+    "\n"
+    "[[hooks.SessionStart]]\n"
+    "\n"
+    "[[hooks.SessionStart.hooks]]\n"
+    'type = "command"\n'
+    "command = '''\n"
+    "echo hi\n"
+    "# teammode-hooks-start\n"              # 문자열 안 — 마커 아님
+    "echo bye\n"
+    "'''\n"
+    "\n"
+    "[[hooks.PostToolUse]]\n"
+    "\n"
+    "[[hooks.PostToolUse.hooks]]\n"
+    'type = "command"\n'
+    'command = """\n'
+    "echo start\n"
+    "# teammode-mcp-end\n"                  # 문자열 안 — 마커 아님
+    "echo done\n"
+    '"""\n'
+)
+
+
+def test_purge_ignores_marker_shaped_lines_inside_multiline_strings(env):
+    """멀티라인 문자열 안의 가짜 마커 쌍(hooks-start↔mcp-end 모양) → purge 무접촉."""
+    _remind_manifest(env)
+    a = env.make_adapter(member=None)
+    assert a._purge_legacy_markers(_ML_USER_TOML) == _ML_USER_TOML
+
+
+def test_purge_real_marker_after_closed_multiline_string_still_healed(env):
+    """닫힌 멀티라인 문자열 **뒤의** 진짜 잔재는 여전히 치유된다(과잉 억제 금지)."""
+    _remind_manifest(env)
+    text = _ML_USER_TOML + "\n" + _legacy_block(env)
+    a = env.make_adapter(member=None)
+    purged = a._purge_legacy_markers(text)
+    assert "# teammode-hooks-start\necho bye" in purged   # 문자열 안 가짜 마커 보존
+    assert "session-log-remind.py" not in purged           # 진짜 잔재 블록은 제거
+    assert "timeout = 3" not in purged
+
+
+# ── 15. codex-review P2-3: 고아 start 삭제는 managed command SHAPE 증명 필수 ──
+#
+# is_owned 의 느슨한 꼬리(agents/codex/normalize.py 부분문자열)로는 사용자가 직접
+# normalize.py 를 경유시킨 훅도 '소유'로 오인된다. 고아 start 삭제 경로만은
+# `[env KEY=VAL…] <python> <normalize.py> <manifest 의 알려진 스크립트>` 형태를
+# 증명해야 지운다. 증명 실패 → 잔재로 남김(다음 sync 재시도, 무해).
+
+def test_orphan_start_user_table_with_unknown_script_survives(env):
+    """normalize.py 경유라도 manifest 에 없는 스크립트면 사용자 훅 — 삭제 금지."""
+    _remind_manifest(env)
+    norm = f"{env.root}/infra/agents/codex/normalize.py"
+    orphan = (
+        "# teammode-hooks-start\n\n"
+        "[[hooks.UserPromptSubmit]]\n\n"
+        "[[hooks.UserPromptSubmit.hooks]]\n"
+        'type = "command"\n'
+        f"command = 'python3 {norm} my-custom-thing.py'\n"
+    )
+    env.config.write_text(_USER_TOML + "\n" + orphan)
+    env.make_adapter(member="leejhy").sync(mode="on")
+    text = env.config.read_text()
+    _assert_single_block(text)
+    assert "my-custom-thing.py" in text               # 사용자 테이블 보존
+    assert "command = '/usr/bin/echo user-hook'" in text
+    _assert_valid_toml(text)
+
+
+def test_orphan_start_env_prefixed_known_script_removed(env):
+    """managed SHAPE(env prefix + python + normalize.py + manifest 스크립트)는 제거."""
+    _remind_manifest(env)
+    norm = f"{env.root}/infra/agents/codex/normalize.py"
+    orphan = (
+        "# teammode-hooks-start\n\n"
+        "[[hooks.UserPromptSubmit]]\n\n"
+        "[[hooks.UserPromptSubmit.hooks]]\n"
+        'type = "command"\n'
+        f"command = 'env TEAMMODE_MEMBER=leejhy TEAMMODE_HOME=/x "
+        f"python3 {norm} session-log-remind.py'\n"
+        "timeout = 3\n"
+    )
+    env.config.write_text(_USER_TOML + "\n" + orphan)
+    env.make_adapter(member="leejhy").sync(mode="on")
+    text = env.config.read_text()
+    _assert_single_block(text)
+    assert "timeout = 3" not in text                  # 옛 소유 테이블 소멸
+    assert text.count("session-log-remind.py") == 1
+    assert "command = '/usr/bin/echo user-hook'" in text
+    _assert_valid_toml(text)

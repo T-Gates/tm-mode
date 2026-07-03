@@ -164,9 +164,10 @@ def _adapter(settings_path=None, skills_dir=None):
 def _resolve_member_fallback(settings_path=None) -> str | None:
     """issue #41 R2 — `--member` 없이 도는 resync 의 member 자동 해석 체인(엔진 공용).
 
-    `tm on/off`(member 미지정)는 prefix 를 발명하지 못해(어댑터 자가치유는 기존 prefix
-    보존만) pre-#28 설치자 전원이 `--member` 플래그를 알아야 했다. 이 헬퍼가 cmd_on/
-    cmd_off 양쪽에서 폴백 값을 해석한다. 우선순위(높음→낮음):
+    `tm on`(member 미지정)은 prefix 를 발명하지 못해(어댑터 자가치유는 기존 prefix
+    보존만) pre-#28 설치자 전원이 `--member` 플래그를 알아야 했다. 이 헬퍼는 **cmd_on
+    전용**이다 — cmd_off 는 preserve-only 라 체인을 가동하지 않는다(codex P3: off 가
+    폴백으로 prefix 를 발명하면 안 됨). 우선순위(높음→낮음):
       0. 명시 --member — 이 헬퍼 밖(절대 오버라이드, cmd_on/off 가 member= 로 전달).
       1. 어댑터별 기존 config prefix — codex 어댑터의 _existing_member_prefix 자가치유가
          항상 이 폴백보다 우선(per-agent 최고 충실도라 여기서 다루지 않는다).
@@ -637,10 +638,10 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
         _agents_to_wire = _detected or ["claude"]
     else:
         _agents_to_wire = ["claude"]
-    # issue #41 R2: off resync 도 동일 체인 — cmd_on 과 대칭(prefix 유실 방지).
-    _member_fb = None
-    if member is None and any(_ag != "claude" for _ag in _agents_to_wire):
-        _member_fb = _resolve_member_fallback(settings_path)
+    # codex P3: off 는 preserve-only — 자동 해석 체인(_resolve_member_fallback)은
+    # cmd_on 전용이라 여기서 가동하지 않는다. off 가 폴백으로 새 prefix 를 '발명'하면
+    # 안 되기 때문: 명시 --member 만 통과시키고(member_fallback=None), 기존 prefix 는
+    # 어댑터 자가치유(_existing_member_prefix)가 보존한다.
     _primary_adapter = None
     _failed_agents: list = []
     for _ag in _agents_to_wire:
@@ -648,10 +649,9 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
             if _ag == "claude":
                 _ag_adapter = _adapter_for("claude", settings_path, skills_dir)
             else:
-                # member 전파 — off resync 도 codex hook prefix 를 떨구지 않게(issue #26)
-                # + 자동 해석 폴백(issue #41 R2).
-                _ag_adapter = _adapter_for(_ag, member=member,
-                                           member_fallback=_member_fb)
+                # member 전파 — off resync 도 codex hook prefix 를 떨구지 않게(issue #26).
+                # member_fallback 은 넘기지 않는다(P3: off 는 발명 금지, 보존만).
+                _ag_adapter = _adapter_for(_ag, member=member)
             _ag_adapter.sync(mode="off")
             _uninstall_layer(_ag_adapter, "core")
             _uninstall_layer(_ag_adapter, "util")

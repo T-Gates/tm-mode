@@ -144,7 +144,7 @@ def test_missing_or_broken_settings_are_safe(tmp_path, capsys):
     assert mod["_resolve_member_fallback"](str(invalid)) is None
 
 
-# ── 통합: cmd_on/cmd_off 가 codex 어댑터에 폴백을 배선 ──────────────────
+# ── 통합: cmd_on 만 codex 어댑터에 폴백을 배선(off 는 preserve-only — codex P3) ──
 
 def _capture_adapters(tmp_path):
     """_adapter_for 대역 — 호출 kwargs 를 기록하고 MagicMock 어댑터를 돌려준다."""
@@ -196,9 +196,35 @@ def test_cmd_on_passes_env_member_fallback_to_codex(tmp_path, monkeypatch):
     assert c["member_fallback"] == "envguy"
 
 
-def test_cmd_off_passes_env_member_fallback_to_codex(tmp_path, monkeypatch):
+def test_cmd_off_never_passes_member_fallback(tmp_path, monkeypatch, capsys):
+    """codex P3: off 는 preserve-only — 해석 체인 미가동, 폴백으로 prefix 발명 금지.
+
+    env 에 member 가 있어도 off 는 member_fallback 을 어댑터에 넘기지 않는다(기존
+    prefix 는 어댑터 자가치유가 보존). 체인이 안 돌므로 [warn] 노이즈도 없다.
+    """
     calls = _run_cmd(tmp_path, "off", env_member="envguy", monkeypatch=monkeypatch)
-    assert _codex_call(calls)["member_fallback"] == "envguy"
+    c = _codex_call(calls)
+    assert c["member"] is None
+    assert c["member_fallback"] is None
+    assert "[warn]" not in capsys.readouterr().out
+
+
+def test_cmd_off_no_prefix_config_stays_no_prefix(tmp_path, capsys):
+    """off --install: member 미지정 + 해석 소스 없음 → 폴백 미전달(발명 금지) + 무경고."""
+    calls = _run_cmd(tmp_path, "off", settings=tmp_path / "absent.json")
+    c = _codex_call(calls)
+    assert c["member"] is None
+    assert c["member_fallback"] is None
+    assert "[warn]" not in capsys.readouterr().out
+
+
+def test_cmd_off_explicit_member_still_honored(tmp_path, monkeypatch):
+    """off 에서도 명시 --member 는 그대로 전달(절대 오버라이드 — preserve-only 예외)."""
+    calls = _run_cmd(tmp_path, "off", member="cli", env_member="envguy",
+                     monkeypatch=monkeypatch)
+    c = _codex_call(calls)
+    assert c["member"] == "cli"
+    assert c["member_fallback"] is None
 
 
 def test_cmd_on_settings_member_fallback_to_codex(tmp_path, monkeypatch):
