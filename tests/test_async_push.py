@@ -251,3 +251,81 @@ def test_worker_lock_single_instance(xdg, tmp_path):
     assert git_ops.read_push_pending(str(work)) != ""
     ahead, _ = git_ops.ahead_behind(str(work))
     assert ahead == 1
+
+
+# ── auto-commit 재배선 (동기=커밋까지, push=worker 위임) ─────────────
+
+AUTO_COMMIT = REPO / "infra" / "hooks" / "auto-commit.py"
+
+
+def _run_auto_commit(root: Path, files: list, xdg: Path, extra_env: dict | None = None):
+    import json as _json
+    env = os.environ.copy()
+    env["TEAMMODE_HOME"] = str(root)
+    env["XDG_STATE_HOME"] = str(xdg)
+    env.update(extra_env or {})
+    payload = _json.dumps({"event": "PostToolUse", "action": "file_edit",
+                           "files": [str(f) for f in files]})
+    return subprocess.run([sys.executable, str(AUTO_COMMIT)],
+                          input=payload, capture_output=True, text=True,
+                          env=env, timeout=30)
+
+
+def _activate(root: Path) -> None:
+    (root / ".teammode-active").write_text("on", encoding="utf-8")
+
+
+def test_auto_commit_writes_pending_and_commits_sync(xdg, tmp_path):
+    """커밋은 동기 완료 + pending 기록. push 는 훅 안에서 기다리지 않는다.
+
+    (worker kick 은 detach 라 race — 이 테스트는 '커밋 즉시성+ledger'만 고정하고
+    worker 무력화(TEAMMODE_DISABLE_PUSH_WORKER=1)로 push 를 관찰가능하게 남긴다.)
+    """
+    _, work = _clone_pair(tmp_path)
+    _activate(work)
+    f = work / "memory-note.md"
+    f.write_text("메모", encoding="utf-8")
+    r = _run_auto_commit(work, [f], xdg,
+                         {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+    assert r.returncode == 0, r.stderr
+    # 커밋은 동기 완료
+    log = subprocess.run(["git", "-C", str(work), "log", "--oneline", "-1"],
+                         capture_output=True, text=True).stdout
+    assert "auto-commit" in log
+    # push 는 훅이 직접 하지 않음(worker 몫) → ahead 1 + pending 기록
+    ahead, _ = git_ops.ahead_behind(str(work))
+    assert ahead == 1
+    assert git_ops.read_push_pending(str(work)) != ""
+
+
+def test_auto_commit_leftover_pending_warns_stderr(xdg, tmp_path):
+    """시작 시 잔존 pending 이 있으면 stderr 1줄('한 편집 늦은' 즉시 가시화)."""
+    _, work = _clone_pair(tmp_path)
+    _activate(work)
+    git_ops.write_push_pending(str(work))
+    f = work / "note2.md"
+    f.write_text("x", encoding="utf-8")
+    r = _run_auto_commit(work, [f], xdg,
+                         {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+    assert r.returncode == 0
+    assert "push" in r.stderr and "pending" in r.stderr.lower() or "미완" in r.stderr
+
+
+def test_auto_commit_kicks_worker_end_to_end(xdg, tmp_path):
+    """실제 detach kick: 훅 종료 후 worker 가 push 를 완료(폴링 최대 15s)."""
+    import time as _t
+    _, work = _clone_pair(tmp_path)
+    _activate(work)
+    f = work / "note3.md"
+    f.write_text("x", encoding="utf-8")
+    r = _run_auto_commit(work, [f], xdg)
+    assert r.returncode == 0, r.stderr
+    deadline = _t.time() + 15
+    while _t.time() < deadline:
+        ahead, _ = git_ops.ahead_behind(str(work))
+        if ahead == 0 and git_ops.read_push_pending(str(work)) == "":
+            break
+        _t.sleep(0.3)
+    ahead, _ = git_ops.ahead_behind(str(work))
+    assert ahead == 0, "worker 가 push 를 완료하지 못했다"
+    assert git_ops.read_push_pending(str(work)) == ""

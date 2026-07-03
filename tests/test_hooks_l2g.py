@@ -118,11 +118,8 @@ def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
 
 
 def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
-    """6/23 자동push 철학: auto-commit 은 do_commit(push=True) 로 호출하고,
-    push 실패해도 비차단(exit 0)·로컬 커밋 보존이다.
-
-    fake_repo 는 원격이 없어 push 가 실패하지만, do_commit 이 커밋을 보존하므로
-    훅은 exit 0 으로 끝나고 변경은 커밋된다.
+    """#45 async push 계약: auto-commit 의 동기 구간은 do_commit(push=False) 커밋까지 —
+    push 는 pending ledger + detach worker 몫이다. 훅은 비차단(exit 0)·커밋 보존.
     """
     (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "p.md").write_text("x\n")
@@ -139,6 +136,8 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
     # 서브프로세스가 아닌 in-proc 로 훅 main 을 직접 호출해 do_commit 인자를 검사한다.
     monkeypatch.setattr(go, "do_commit", spy)
     monkeypatch.setenv("TEAMMODE_HOME", str(fake_repo))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))  # ledger 격리
+    monkeypatch.setenv("TEAMMODE_DISABLE_PUSH_WORKER", "1")      # detach spawn 억제
     import importlib.util
     spec = importlib.util.spec_from_file_location("auto_commit_mod", AUTO_COMMIT)
     mod = importlib.util.module_from_spec(spec)
@@ -148,13 +147,14 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
         "event": "PostToolUse", "action": "file_edit",
         "files": [str(fake_repo / "p.md")], "agent": "claude"})))
     rc = mod.main()
-    # push 실패(원격 없음)에도 비차단: exit 0
     assert rc == 0
-    # 자동 push 철학: do_commit 은 push=True 로 호출됨
-    assert calls.get("push") is True
-    # 비차단: push 가 실패해도 로컬 커밋은 보존(p.md 가 HEAD 에 들어감)
+    # #45: 훅의 동기 push 는 폐기 — do_commit 은 push=False 로만 호출된다.
+    assert calls.get("push") is False
+    # 로컬 커밋은 동기 완주·보존(p.md 가 HEAD 에 들어감)
     committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
     assert "p.md" in committed
+    # 커밋 성공 → pending ledger 기록(worker/recovery 의 correctness 소스)
+    assert go.read_push_pending(str(fake_repo)) != ""
 
 
 def test_auto_commit_nonblocking_on_git_failure(tmp_path):
