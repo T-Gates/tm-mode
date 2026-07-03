@@ -58,7 +58,7 @@ def test_write_appends_session_backlink(tmp_path):
 def test_write_session_log_created_with_frontmatter(tmp_path):
     """세션로그가 없으면 frontmatter 포함해 생성된다."""
     _run(tmp_path, "memory", "write",
-         "--folder", "extras", "--filename", "x.md",
+         "--folder", "product", "--filename", "x.md",
          "--content", "내용.", "--author", "jun", "--weight", "📎",
          "--date", DATE)
     sp = _session_path(tmp_path, "jun", DATE)

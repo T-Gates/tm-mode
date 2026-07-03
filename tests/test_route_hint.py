@@ -6,10 +6,14 @@
 stdout 으로 출력한다(자동 등재 아님 — 설명 한 줄은 사람/AI 가 정한다).
 
 커버리지:
-  - 미등재 최상위 폴더(extras/) write → stdout 에 [hint] + `memory route upsert`
+  - 정적 허용 폴더(product/)가 루트 INDEX 미커버 → write 성공 + [hint] + `memory route upsert`
   - 등재된 폴더(team/ — 템플릿은 파일행 `team/members.md` 만 등재) write → 힌트 없음
   - 하위 폴더 write(team/decisions/)도 최상위(team/) 커버로 판단 → 힌트 없음
   - 힌트가 제안한 명령을 그대로 실행 → 루트 INDEX 에 행 등재 + 재write 시 힌트 소멸
+
+주의(#51): 팀 전용 최상위 폴더(비정적)는 미등재 write 가 [hint] 가 아니라 **거부**된다
+(route upsert 선행 계약 — tests/test_knowledge_dynamic_routes.py). 이 파일의 hint 는
+'정적 허용(범용) 폴더인데 루트 INDEX 커버가 빠진 경우'만 다룬다.
 
 모든 테스트는 tmp_path 격리 — 실 호스트 무접촉.
 """
@@ -59,6 +63,19 @@ _SEED_INDEX = (
 )
 
 
+# product 파일행을 뺀 seed — "정적 허용 폴더인데 루트 INDEX 미커버" 상태 재현용(#51)
+_SEED_INDEX_NO_PRODUCT = (
+    "# 팀 메모리 인덱스 (INDEX.md)\n"
+    "\n"
+    "세션 시작 시 주입되는 단일 진입점. 새 폴더를 만들면 여기 등재한다(필수).\n"
+    "\n"
+    "| 경로 | 여기에 넣는 것 |\n"
+    "|---|---|\n"
+    "| `team/members.md` | 멤버 명부 |\n"
+    "| `team/decisions/current.md` | 활성 결정사항 |\n"
+)
+
+
 def _seed_root_index(root: Path, content: str = _SEED_INDEX) -> Path:
     index_path = root / "memory" / "INDEX.md"
     index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,27 +94,27 @@ def _write(root: Path, folder: str, filename: str = "note.md"):
 
 # ── 미등재 최상위 폴더 → 힌트 ───────────────────────────────────────
 
-def test_write_unregistered_top_folder_emits_hint(tmp_path):
-    """루트 INDEX 에 extras/ 커버 행이 없으면 write 후 [hint] 한 줄이 나온다."""
-    _seed_root_index(tmp_path)
-    r = _write(tmp_path, "extras")
+def test_write_static_allowed_uncovered_top_folder_emits_hint(tmp_path):
+    """정적 허용 폴더(product/)가 루트 INDEX 미커버면 write 성공 후 [hint] 한 줄."""
+    _seed_root_index(tmp_path, _SEED_INDEX_NO_PRODUCT)
+    r = _write(tmp_path, "product")
     assert r.returncode == 0, r.stderr
     assert "[hint]" in r.stdout, f"[hint] 없음:\n{r.stdout}"
     assert "memory route upsert" in r.stdout
-    assert "extras/" in r.stdout
+    assert "product/" in r.stdout
     # 실 CLI 플래그명 일치 (cmd_route: --root/--path/--desc/--author 필수)
-    assert "--path extras/" in r.stdout
+    assert "--path product/" in r.stdout
     assert "--desc" in r.stdout
     assert "--author" in r.stdout
 
 
 def test_hint_is_advisory_write_still_succeeds(tmp_path):
     """힌트가 나와도 write 자체(파일·folder INDEX)는 정상 완료된다."""
-    _seed_root_index(tmp_path)
-    r = _write(tmp_path, "extras")
+    _seed_root_index(tmp_path, _SEED_INDEX_NO_PRODUCT)
+    r = _write(tmp_path, "product")
     assert r.returncode == 0, r.stderr
-    assert (tmp_path / "memory" / "extras" / "note.md").is_file()
-    assert "teammode memory write — extras/note.md 완료" in r.stdout
+    assert (tmp_path / "memory" / "product" / "note.md").is_file()
+    assert "teammode memory write — product/note.md 완료" in r.stdout
 
 
 # ── 등재된 폴더 → 힌트 없음 ─────────────────────────────────────────
@@ -119,12 +136,10 @@ def test_write_subfolder_of_registered_top_no_hint(tmp_path):
 
 
 def test_write_top_folder_row_counts_as_registered(tmp_path):
-    """폴더행 `extras/` 자체가 등재돼 있으면 힌트 없음 (route upsert 결과 모양)."""
-    _seed_root_index(tmp_path, _SEED_INDEX.replace(
-        "| `product/brand/philosophy.md` | 브랜드 철학 |\n",
-        "| `product/brand/philosophy.md` | 브랜드 철학 |\n"
-        "| `extras/` | 팀 과정 관련 정보 |\n"))
-    r = _write(tmp_path, "extras")
+    """폴더행 `product/` 자체가 등재돼 있으면 힌트 없음 (route upsert 결과 모양)."""
+    _seed_root_index(tmp_path, _SEED_INDEX_NO_PRODUCT +
+        "| `product/` | 제품 관련 메모리 |\n")
+    r = _write(tmp_path, "product")
     assert r.returncode == 0, r.stderr
     assert "[hint]" not in r.stdout
 
@@ -134,21 +149,21 @@ def test_write_top_folder_row_counts_as_registered(tmp_path):
 def test_hint_suggested_command_registers_and_silences(tmp_path):
     """힌트의 제안 명령(route upsert)을 그대로 실행 → 행 등재 + 재write 시 힌트 소멸."""
     _init_git(tmp_path)
-    index_path = _seed_root_index(tmp_path)
-    r1 = _write(tmp_path, "extras", "a.md")
+    index_path = _seed_root_index(tmp_path, _SEED_INDEX_NO_PRODUCT)
+    r1 = _write(tmp_path, "product", "a.md")
     assert "[hint]" in r1.stdout
 
-    # 힌트가 제안한 그대로: memory route upsert --root <루트> --path extras/ --desc ... --author ...
+    # 힌트가 제안한 그대로: memory route upsert --root <루트> --path product/ --desc ... --author ...
     r2 = _run(tmp_path, "memory", "route", "upsert",
-              "--path", "extras/",
-              "--desc", "팀 과정 관련 정보",
+              "--path", "product/",
+              "--desc", "제품 관련 메모리",
               "--author", "jane-doe")
     assert r2.returncode == 0, r2.stderr
     content = index_path.read_text(encoding="utf-8")
-    assert "| `extras/` | 팀 과정 관련 정보 |" in content
+    assert "| `product/` | 제품 관련 메모리 |" in content
 
     # 등재 후 같은 폴더 재write → 힌트 없음
-    r3 = _write(tmp_path, "extras", "b.md")
+    r3 = _write(tmp_path, "product", "b.md")
     assert r3.returncode == 0, r3.stderr
     assert "[hint]" not in r3.stdout
 
@@ -161,7 +176,7 @@ def test_mention_in_desc_cell_does_not_suppress_hint(tmp_path):
     idx = tmp_path / "INDEX.md"
     idx.write_text(
         "# idx\n\n| 경로 | 여기에 넣는 것 |\n|---|---|\n"
-        "| `product/` | 제품 — 관련 참고는 `extras/` 언급 |\n",
+        "| `product/` | 제품 — 관련 참고는 `fundraise/` 언급 |\n",
         encoding="utf-8")
     assert tm._root_index_covers_top(idx, "product/") is True
-    assert tm._root_index_covers_top(idx, "extras/") is False  # 설명 칸 언급은 무시
+    assert tm._root_index_covers_top(idx, "fundraise/") is False  # 설명 칸 언급은 무시

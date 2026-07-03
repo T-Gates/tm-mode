@@ -1,6 +1,6 @@
 # 스킬 시스템
 
-tm-mode SPEC v0.2 — 스킬 계층(base/core) + acme 이식 로드맵 + 온보딩 스킬 명세(§5)
+tm-mode SPEC v0.3 — 스킬 계층(base/core) + acme 이식 로드맵 + 온보딩 스킬 명세(§5)
 
 ## 스킬 계층 (base / core)
 
@@ -55,7 +55,7 @@ acme-toolkit의 검증된 스킬을 범용 tm-mode로 이식한다. acme 특정 
 
 ---
 
-tm-mode SPEC v0.2 — tm-onboard·tm-connect (§5)
+tm-mode SPEC v0.3 — tm-onboard·tm-connect (§5)
 
 ## §5. 온보딩 스킬 (tm-onboard)
 

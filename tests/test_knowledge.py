@@ -123,12 +123,12 @@ def test_knowledge_write_index_row_added(tmp_path):
 def test_knowledge_write_index_table_format(tmp_path):
     """memory write: INDEX.md 가 파이프 표 형식을 갖는다."""
     _run(tmp_path, "memory", "write",
-         "--folder", "extras",
+         "--folder", "product",
          "--filename", "schedule.md",
-         "--content", "팀 일정 정리.",
+         "--content", "제품 일정 정리.",
          "--author", "jane-doe",
          "--weight", "📎")
-    idx = _index_path(tmp_path, "extras")
+    idx = _index_path(tmp_path, "product")
     text = idx.read_text(encoding="utf-8")
     assert "| 가중치 | 경로 | 내용 | 편집일 |" in text
     assert "|--------|------|------|--------|" in text
@@ -445,9 +445,9 @@ def test_knowledge_write_commits_to_git(tmp_path):
     _init_git(root)
 
     _run(root, "memory", "write",
-         "--folder", "extras",
-         "--filename", "extras-info.md",
-         "--content", "팀 17기 정보.",
+         "--folder", "product",
+         "--filename", "product-info.md",
+         "--content", "제품 정보.",
          "--author", "jane-doe",
          "--weight", "📌")
 
@@ -455,7 +455,7 @@ def test_knowledge_write_commits_to_git(tmp_path):
     result = subprocess.run(
         ["git", "-C", str(root), "log", "--oneline"],
         capture_output=True, text=True)
-    assert "extras-info.md" in result.stdout or "memory" in result.stdout, \
+    assert "product-info.md" in result.stdout or "memory" in result.stdout, \
         f"커밋이 생성되지 않았거나 대상이 없음: {result.stdout!r}"
 
 

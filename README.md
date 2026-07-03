@@ -105,7 +105,7 @@ memory/                # 팀 메모리 (셋업 시 생성)
 conformance/           # 호환 검사 + 골든 시나리오
 ```
 
-스펙: [docs/spec/](docs/spec/README.md) — 단일 권위 SPEC v0.2.
+스펙: [docs/spec/](docs/spec/README.md) — 단일 권위 SPEC v0.3.
 
 ## 라이선스
 
