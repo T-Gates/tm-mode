@@ -68,6 +68,16 @@ try:
     from _slog_rules import SESSION_LOG_RULES as _SESSION_LOG_RULES  # type: ignore
 except ImportError:
     _SESSION_LOG_RULES = None
+# kb-write-guard — 세션 id relay 규약의 단일 소스(A2). 파일명이 하이픈이라 importlib 로
+# 로드한다(top-level 은 정의뿐이라 부작용 없음). 부재/실패 시 relay 만 생략(advisory).
+try:
+    import importlib.util as _ilu
+    _kb_spec = _ilu.spec_from_file_location(
+        "_kb_write_guard_relay", str(_HOOKS / "kb-write-guard.py"))
+    _kb_guard = _ilu.module_from_spec(_kb_spec)
+    _kb_spec.loader.exec_module(_kb_guard)
+except Exception:  # noqa: BLE001 — relay 는 부가 기능, 세션 주입을 막지 않는다
+    _kb_guard = None
 
 
 def _team_root() -> str:
@@ -187,6 +197,55 @@ def _maybe_auto_pull(team_root: str) -> None:
         pass
 
 
+def _persist_session_relay(data: dict) -> None:
+    """정규 stdin 세션 id 를 세션별 relay 파일로 영속(A2 writer relay).
+
+    Codex 세션은 CLAUDE_*_SESSION_ID env 가 없어 엔진 `memory unlock begin|end` 가
+    세션 id 를 알 길이 없었다 — SessionStart 훅이 받는 정규 stdin session_id
+    (normalize 가 raw session_id/sessionId 에서 승격)를 `<relay_dir>/<session_id>`
+    파일로 남겨 엔진이 최신 mtime 파일로 읽게 한다. 경로 규약·id 검증은
+    kb-write-guard 모듈(session_relay_dir/_valid_session_id)을 단일 소스로 재사용.
+
+    같은 기회에 TTL(SESSION_RELAY_TTL_SECONDS) 지난 스테일 항목을 프루닝한다.
+    relay 오선택은 guard 가 fail-closed(스퓨리어스 deny)로 어차피 막으므로 이
+    파일은 가용성 장치이지 보안 경계가 아니다. 실패는 무해(advisory) — 어떤
+    예외도 세션·맥락 주입을 막지 않는다.
+    """
+    if _kb_guard is None:
+        return
+    try:
+        sid = _kb_guard._valid_session_id(data.get("session_id"))
+        if not sid:
+            return  # 세션 id 없음/malformed → relay 생략(비치명)
+        # root 는 guard 와 동일하게 __file__ 기준(이 훅이 설치된 팀 레포) — guard 의
+        # root_hash 와 일치해야 relay→flag 경로가 맞는다(TEAMMODE_HOME 무신뢰).
+        team_root = str(_INFRA.parent)
+        relay_dir = _kb_guard.session_relay_dir(team_root)
+        os.makedirs(relay_dir, exist_ok=True)
+        relay_path = os.path.join(relay_dir, sid)
+        with open(relay_path, "w", encoding="utf-8") as f:
+            json.dump({"schema": "session-relay/1", "session_id": sid,
+                       "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                       "created_by_pid": os.getpid()}, f, ensure_ascii=False)
+        try:
+            os.chmod(relay_path, 0o600)  # 내용은 진단용이지만 개인 상태 — 비공개
+        except OSError:
+            pass
+        # 기회적 프루닝 — 스테일(≥TTL) 항목 제거로 디렉토리 무한 성장 방지.
+        now = time.time()
+        for name in os.listdir(relay_dir):
+            if name == sid:
+                continue
+            p = os.path.join(relay_dir, name)
+            try:
+                if now - os.stat(p).st_mtime >= _kb_guard.SESSION_RELAY_TTL_SECONDS:
+                    os.unlink(p)
+            except OSError:
+                continue  # 개별 항목 실패는 무시(advisory)
+    except Exception:  # noqa: BLE001 — 철칙: relay 실패가 세션을 막지 않는다
+        pass
+
+
 def _build_context(root: Path) -> str | None:
     """INDEX + 멤버별 최근 세션로그 summary 를 주입 문자열로 조립.
 
@@ -268,6 +327,10 @@ def main() -> int:
     # 팀 모드 활성 시에만 주입
     if not (root / ".teammode-active").is_file():
         return 0
+
+    # A2: 세션 id relay 영속 — env 없는 에이전트(Codex)도 엔진 `memory unlock` 이
+    # 세션 id 를 알 수 있게 한다. advisory(실패 무해).
+    _persist_session_relay(data)
 
     # 세션당 1회 레포 최신화 — 맥락 주입 전에(최신 상태로 주입). 실패 무해(철칙).
     _maybe_auto_pull(str(root))

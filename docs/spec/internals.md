@@ -453,7 +453,7 @@ manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이
    - match가 없으면 통과한다. 알 수 없는 match key도 현재 `_matches_filter()`에서는 `True`를 반환한다.
    - 불일치면 공통 스크립트를 실행하지 않고 exit 0.
 8. 공통 스크립트 실행:
-   - `subprocess.run([sys.executable, str(HOOKS_DIR / script)] + extra_args, input=json.dumps(canonical, ensure_ascii=False), capture_output=True, text=True)`로 실행한다. 현 구현은 `script`가 파일명인지, `..`를 포함하는지, `infra/hooks/` 밖으로 탈출하는지 별도로 검증하지 않는다.
+   - `subprocess.run([sys.executable, str(HOOKS_DIR / script)] + extra_args, input=json.dumps(canonical), capture_output=True, text=True, encoding="utf-8", errors="replace")`로 실행한다. `ensure_ascii`는 **의도적으로 기본값(True)** — stdin을 순수 ASCII(`\uXXXX` 이스케이프)로 보내 자식이 어떤 locale(Windows cp949 등)로 stdin을 디코드해도 안전하다(자식 `json.loads`가 원복). 현 구현은 `script`가 파일명인지, `..`를 포함하는지, `infra/hooks/` 밖으로 탈출하는지 별도로 검증하지 않는다.
    - 공통 스크립트 stdout/stderr를 normalize 자신의 stdout/stderr로 그대로 재방출한다.
    - normalize 종료코드는 공통 스크립트 returncode와 같다. 따라서 `confirm-action.py`의 exit 2 차단이 보존된다.
    - script 파일이 없으면 Python subprocess가 보통 exit 2와 stderr를 내며, normalize는 그 returncode를 그대로 반환한다.
@@ -468,6 +468,7 @@ manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이
 
 - **번역 코어 공유(reference)**: Codex 어댑터는 Claude `Adapter`를 상속해 번역 코어(events.json 기반)를 재사용하고, Codex 고유의 **config 포맷(TOML 블록) + 폴백 처리**만 재정의. Codex normalize는 Claude normalize의 함수를 import해 경로 상수(events.json·manifest)만 Codex 컨텍스트로 재바인딩.
 - **Codex PreToolUse 지원**: Codex는 events.json에서 `PreToolUse: "PreToolUse"`로 4종 이벤트를 모두 지원한다. `confirm-action.py`·`kb-write-guard.py` 같은 `enforcement: block` 차단 훅도 `config.toml`의 `[[hooks.PreToolUse]]`로 등록되어 exit-2 차단이 발효한다. Codex 실 훅 입력은 `tool_name`/`tool_input`(또는 top-level `name`/`input`) 형태이며, apply_patch는 `tool_input.command`에 patch 문자열을 담는다(2026-06-21 캡처) — normalize가 파일 헤더를 정규 `files[]`로 변환한다.
+- **Codex PreToolUse 차단 시맨틱(실검증, 2026-07-03, codex-cli 0.142.5)**: Codex는 Claude 호환 PreToolUse wire를 구현한다 — `PreToolUsePermissionDecisionWire`가 훅 stdout JSON의 `hookEventName`/`permissionDecision`/`permissionDecisionReason`을 파싱한다. **exit 2 = 차단**이고 stderr가 차단 사유 채널이다. `permissionDecision`은 `"deny"`만 지원(`allow`/`ask` 미지원). 통과는 exit 0 + 무출력. reference 차단 훅의 출력(deny JSON stdout + 비어있지 않은 stderr + exit 2)은 이 계약을 그대로 충족하므로 Claude·Codex 공통이다.
 - 독립 구현은 `agents/` 디렉토리 구조나 Python을 그대로 쓸 필요 없다. 보존 대상은 **선언 포맷(manifest.json·events.json)과 의미**이지 구현 언어·파일 배치가 아니다(§6 C2).
 - Codex MCP 등록 한계는 정직하게 표면화한다. `install-mcp`는 `config.toml`에 command 없는 placeholder 블록만 쓰며, 실제 기동 가능한 MCP 서버 정의는 사용자가 보강해야 할 수 있다.
 - Codex `sync()`는 `PreToolUse`를 지원하므로 `confirm-action.py`를 `[[hooks.PreToolUse]]`로 등록한다. `install-mcp`로 등록한 MCP 도구 호출도 normalize → confirm 게이트 경로로 차단 가능하다.
@@ -1144,7 +1145,7 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 - **lint 검사 범위**: reference `check.py lint`는 K4 일부(manifest 정규형 grep), 토큰키 데이터 파일 린트, K7(스킬 본문 정규형)을 실행한다. K3 events/actions 완전성, duplicate `(event, script)`, match 단일 키, K8 INDEX 등재는 미구현이다.
 - **`--update` 플래그 미사용**: install.py CLI에 파싱되나(`Options.update`) bootstrap이 사용하지 않음(멱등 재실행이 사실상 update 역할). §4.1에 명시.
 - **`--json` role 출력 미구현**: 05/04가 요구한 install의 구조화 role 출력(`--json`) 미구현 → tm-onboard가 `config_is_valid` 직접 확인으로 우회(§5.2).
-- **Codex 실 훅 입력 스키마 미확인**: normalize가 Claude 유사 형태 가정(§2.11) — Codex 실환경 캡처 후 확정.
+- ~~**Codex 실 훅 입력 스키마 미확인**: normalize가 Claude 유사 형태 가정(§2.11) — Codex 실환경 캡처 후 확정.~~ → **닫힘**: 2026-06-21 실환경 캡처(`tool_name`/`tool_input`, apply_patch=`tool_input.command`) + 2026-07-03 차단 시맨틱 실검증(codex-cli 0.142.5, §2.11)으로 입력·차단 양방향 확정.
 - **install.py uninstall의 MCP/skills 회수 누락**: install wire는 `install-mcp`·`install-skills`를 호출하지만 `cmd_uninstall()`은 Claude `Adapter.uninstall()`만 호출해 MCP 등록과 skills 설치 흔적을 제거하지 않는다.
 - **`--settings` 의미 불일치**: bootstrap은 `--settings`를 격리 디렉토리로 해석하지만 uninstall은 같은 값을 settings 파일 경로로 그대로 사용한다.
 - **normalize 경로 검증 부재**: `tool_input.file_path`는 절대경로화/경로탈출 검증 없이 `files`로 복사되고, `<script>`도 파일명·경로탈출 검증 없이 `HOOKS_DIR / script`로 실행된다.
@@ -1157,7 +1158,8 @@ unknown top-level key는 모두 reject한다. 예를 들어 `resorce_fields` 같
 ## 부록 B. 미결 (open)
 
 - [ ] 도입자 commit·push 안내 자동화 범위(install.py 경계).
-- [x] Codex 훅 입력 JSON 실스키마 확인(2026-06-21 실환경 캡처: apply_patch=`tool_input.command`) + PreToolUse 차단 시맨틱 Codex 표현 — events.json `PreToolUse: "PreToolUse"`로 확정. (Hermes 표현 가능성은 별도 이월.)
+- [x] Codex 훅 입력 JSON 실스키마 확인(2026-06-21 실환경 캡처: apply_patch=`tool_input.command`) + PreToolUse 차단 시맨틱 Codex 표현 — 2026-07-03 실검증(codex-cli 0.142.5)으로 확정: Claude 호환 wire(`PreToolUsePermissionDecisionWire` — `hookEventName`/`permissionDecision`/`permissionDecisionReason` 파싱), exit 2 = 차단 + stderr 사유 채널, `deny`만 지원(`allow`/`ask` 미지원). reference 차단 훅(deny JSON + exit 2 + stderr)이 계약 충족(§2.11). (Hermes 표현 가능성은 별도 이월.)
+- [ ] (D1) Codex 훅 신뢰 게이팅(`trusted_hash`) 미조사 — 훅 등록이 trust 확인을 요구하는지, config 변경 시 재승인 UX가 있는지 실환경 확인 필요.
 - [ ] Hermes 이벤트 매핑 실조사(pre_llm_call≈UserPromptSubmit, on_session_start≈SessionStart — 재확인).
 - [ ] normalize의 manifest 조회 비용(매 발동 파일 읽기 — 캐시 필요성).
 - [ ] 동일 provider 다중 인스턴스·역할 중복 provider의 정규 서버명 표현(정규 서버명=provider 식별자 결정의 잔여 한계).
