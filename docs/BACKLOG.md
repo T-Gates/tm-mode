@@ -145,23 +145,26 @@ teammode.py memory --root <팀루트> --topic <주제> --text <내용> [--source
 
 ---
 
-## 핫픽스 묶음 — push 후 검증 P1 견고성 (2026-06-18, BACKLOG③ 출시 후)
+## ~~핫픽스 묶음 — push 후 검증 P1 견고성~~ (2026-06-18, BACKLOG③ 출시 후) — ✅ 완료 (2026-06-18 수정, 2026-07-03 검증·마감)
 
 915fa70 push 후 7-시나리오 병렬 검증 + 윈도우 실설치 도그푸딩에서 나온 견고성 결함. **P0 0**(핵심 안전 traversal·symlink·커밋오염·고아청소·실호스트오염·거버넌스 실발동 전부 정상). 아래는 입력검증/예외처리 P1 — 출시 막을 결함 아니라 묶음 hotfix.
 
-### memory 동사 입력 견고성 (수렴 P1)
-- **미처리 예외 → 트레이스백 + exit 1** (친화 메시지 X): 긴 파일명(255자↑ → `OSError`), 권한 문제(`chmod`된 INDEX → `PermissionError`). → write/delete를 try/except로 감싸 **exit 2 + 친화 메시지**로.
-- **유니코드 author/filename 통과**: `_validate_author`가 `isalnum()` 쓰는데 파이썬 `isalnum()`은 유니코드라 한글 author·filename이 통과(예: author "햄버거"). → **`isascii()` 강제** 추가(영문/숫자/제한기호만).
-- **content 제어문자 미필터 (P2)**: memory content에 제어문자 들어가도 그대로 저장. → 정규화 or 거부.
+**마감 검증 (2026-07-03, codex 교차검수 2라운드)**: 아래 항목 전부 2026-06-18 커밋으로 이미 수정 완료 확인 — 항목별 SHA 매핑:
 
-### 거버넌스(kb-write-guard) 경미 (P1)
-- **상대경로 fail-closed 여부 경미**: file_path가 상대경로일 때 containment 판정이 CWD 의존(경미 — 실제 훅 입력은 보통 절대경로). → 명시적 처리.
-- **memory 내부 symlink**: memory/ *안에서* 밖을 가리키는 symlink 경유 편집 경계(경미).
+### memory 동사 입력 견고성 (수렴 P1) — ✅
+- ~~**미처리 예외 → 트레이스백 + exit 1**~~ → ✅ 7aaae60 (write/delete try/except → exit 2 + 친화 메시지, atomic write + INDEX 롤백. 테스트 test_knowledge_p1_hotfix.py). 추가(2026-07-03): delete 존재 사전판정의 `is_file()` 이 stat EACCES 를 False 로 접어 실존 파일을 "파일 없음(멱등) exit 0" 으로 거짓 성공 보고하던 잔여 구멍을 os.stat 직접 판정으로 마감(codex 합의 — 부모 디렉토리 탐색권한 없음 계열에서만 발현, FileNotFoundError 만 멱등 0, 그 외 OS 예외 exit 2).
+- ~~**유니코드 author/filename 통과**~~ → ✅ b057dc2 + 2672220 (isascii() 강제 — author·filename·folder 세그먼트 전부). ⚠️ 레거시 주의: isascii 이전 버전/수동 편집으로 비ASCII member 가 이미 있는 팀은 `sessions/<이름>` 디렉토리 rename + `members.md` 수정 필요(읽기는 되지만 그 author 로의 log/write 가 exit 2).
+- ~~**content 제어문자 미필터 (P2)**~~ → ✅ 2672220 (Cc/Cf/Cs + 고립 surrogate 거부, \n·\r·\t 만 허용).
+
+### 거버넌스(kb-write-guard) 경미 (P1) — ✅
+- ~~**상대경로 fail-closed 여부 경미**~~ → ✅ 933ffaa (S2-1: 상대경로는 CWD 무시·팀루트 기준 join, 판별 실패 None → fail-closed).
+- ~~**memory 내부 symlink**~~ → ✅ 933ffaa (S2-2: raw normpath / resolved 양쪽 union containment — 내부→외부 symlink 경유 편집 차단. 테스트 test_kb_write_guard.py).
 
 ### 윈도우 도그푸딩 미세 갭 (P2)
-- **전역 git identity 빈 경우**: 온보딩에 `git config user.name/email` 안내 한 줄 (AI가 로컬로 설정하게 됨).
-- **`install.py --help`가 `--root` 요구 → exit 2**: help는 root 없이 출력되게.
-- **PowerShell git stderr 빨강 래핑**: 윈도우 특유 비치명 — 문서에 주의 한 줄(선택).
+- **전역 git identity 빈 경우**: 온보딩에 `git config user.name/email` 안내 한 줄 (AI가 로컬로 설정하게 됨). — 미처리(잔존)
+- ~~**`install.py --help`가 `--root` 요구 → exit 2**~~ → ✅ 256cb77 (--help/-h 손파싱 우선 처리, root 없이 exit 0. 테스트 test_install_s3_help.py).
+- **PowerShell git stderr 빨강 래핑**: 윈도우 특유 비치명 — 문서에 주의 한 줄(선택). — 미처리(잔존)
+- (참고) install cp949 잔존 subprocess decode 경로: 190bfca 이후 install.py·install_lib.py·git_ops.py·normalize.py 의 모든 subprocess 호출에 encoding="utf-8", errors="replace" 명시 확인(2026-07-03 전수 grep) — 잔존 없음. 테스트 test_cp949_encoding.py.
 
 ### memory 동시 write race (P2, 백로그 — dev-cycle 2차 검수서 codex 적발)
 - atomic write 반영 후, 같은 topic 동시 write 중 한 writer 의 INDEX 실패 롤백이 다른 writer 가 방금 쓴 파일을 삭제/과거 내용으로 복원할 수 있음(race, fault injection 확인).

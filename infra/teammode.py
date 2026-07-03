@@ -1897,7 +1897,23 @@ def cmd_knowledge(team_root: Path, action: str | None,
 
         target_path = candidate
 
-        if not target_path.is_file():
+        # 존재 사전판정 — is_file() 은 stat 의 EACCES 등 OSError 를 False 로 접어
+        # 실존 파일을 "파일 없음(멱등) exit 0" 으로 거짓 성공 보고할 수 있다
+        # (부모 디렉토리 탐색권한 없음 계열; P1 견고성 codex 합의 2026-07-03).
+        # os.stat 으로 직접 판정: 진짜 없음(FileNotFoundError)만 멱등 exit 0,
+        # 그 외 OS 예외는 write 쪽 PermissionError 처리와 대칭으로 exit 2.
+        import stat as _stat
+        try:
+            _st_mode = os.stat(target_path).st_mode
+        except FileNotFoundError:
+            print(f"teammode memory delete — 파일 없음(멱등): {rel_path}")
+            return 0
+        except (OSError, PermissionError) as exc:
+            print(f"[error] memory delete: 파일 상태 확인 실패 — {exc}",
+                  file=sys.stderr)
+            return 2
+        if not _stat.S_ISREG(_st_mode):
+            # 디렉토리·특수파일은 삭제 대상 아님 — 기존 is_file() False 와 동일 멱등.
             print(f"teammode memory delete — 파일 없음(멱등): {rel_path}")
             return 0
 

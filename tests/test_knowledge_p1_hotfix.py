@@ -266,6 +266,54 @@ def test_knowledge_delete_permission_error_exit2(tmp_path):
     assert "Traceback" not in r.stderr, f"트레이스백이 노출됐다: {r.stderr!r}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 퍼미션 모델 전용")
+@pytest.mark.skipif(os.getuid() == 0, reason="root 는 chmod 무시 → 테스트 불가")
+def test_knowledge_delete_stat_eacces_not_false_success(tmp_path):
+    """부모 디렉토리 탐색권한 없음(chmod 000) → delete 가 '파일 없음(멱등) exit 0'
+    false-success 를 내면 안 된다 — exit 2 + 친화 메시지 + 파일 무손상.
+
+    is_file() 은 stat 의 EACCES OSError 를 False 로 접는다. 파일이 실존하는데
+    "없음"으로 성공 보고하면 호출자(스킬)가 삭제됐다고 믿는다 — write 쪽
+    PermissionError exit 2 대칭에 맞춰 stat 실패도 exit 2 여야 한다(codex 합의).
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    _init_git(root)
+
+    _run(root, "memory", "write",
+         "--folder", "team",
+         "--filename", "stat-test.md",
+         "--content", "stat 정직성 테스트.",
+         "--author", "eunsu",
+         "--weight", "📎")
+
+    target = root / "memory" / "team" / "stat-test.md"
+    assert target.is_file()
+
+    parent_dir = root / "memory" / "team"
+    parent_dir.chmod(0)  # --- : stat 자체가 EACCES
+
+    try:
+        r = _run(root, "memory", "delete",
+                 "--path", "team/stat-test.md",
+                 "--author", "eunsu")
+    finally:
+        parent_dir.chmod(
+            stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR |
+            stat.S_IRGRP | stat.S_IXGRP |
+            stat.S_IROTH | stat.S_IXOTH
+        )
+
+    assert target.is_file(), "파일이 사라졌다 — 테스트 전제 붕괴"
+    assert r.returncode == 2, (
+        f"stat EACCES 가 '파일 없음(멱등)' false-success 로 접혔다: rc={r.returncode}\n"
+        f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
+    )
+    assert "파일 없음" not in r.stdout, (
+        f"파일이 실존하는데 '파일 없음' 을 보고했다: {r.stdout!r}")
+    assert "Traceback" not in r.stderr, f"트레이스백이 노출됐다: {r.stderr!r}"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 항목 3: content 제어문자 거부 (개행·탭 제외)
 # ══════════════════════════════════════════════════════════════════════
