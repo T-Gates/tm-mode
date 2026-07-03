@@ -153,6 +153,10 @@ def _maybe_auto_pull(team_root: str) -> None:
     (급격한 세션 재시작도 throttle 창당 1회). git_ops/auto_pull 부재 시 종전 경로로 폴백.
     실패는 절대 세션·주입을 막지 않는다(철칙) — 어떤 예외도 삼킨다.
     """
+    # #45 pending recovery — pull 스로틀과 **독립**(codex P2: 스로틀에 막혀 복구가
+    # 안 도는 구멍 차단). push recovery 는 pull 비용과 별개의 correctness 경로다.
+    _recover_push_pending(team_root)
+
     # 폴백: 새 정합 경로의 의존(git_ops·auto_pull)이 없으면 종전 ff-only auto_pull.
     if _git_ops is None or _auto_pull is None:
         if _auto_pull is not None:
@@ -194,6 +198,49 @@ def _maybe_auto_pull(team_root: str) -> None:
             # ahead-only/fetch-failed/conflict/error 도 미해결이므로 마커를 보존한다.
             _git_ops.clear_sync_warning(team_root)
     except Exception:  # noqa: BLE001 — 철칙: 무슨 일이 있어도 세션·주입을 막지 않는다
+        pass
+
+
+def _recover_push_pending(team_root: str) -> None:
+    """#45 pending recovery — worker 유실(머신 슬립·Windows detach 실패·크래시) 복원.
+
+    ledger 가 correctness 의 단일 소스: pending 존재 시 age 무관 ahead 조합 판정 —
+      - 판정불가(no upstream/git 오류) → 보수 경고(clear 하지 않음).
+      - ahead > 0 → 경고 + worker **재kick 만**(세션 시작을 push 로 무겁히지 않는다 —
+        직접 push 금지가 계약).
+      - ahead == 0 → stale pending 자동 clear(이미 push 됨 — worker 가 clear 전에 죽음).
+    무raise — 세션·주입을 막지 않는다.
+    """
+    if _git_ops is None:
+        return
+    try:
+        if not _git_ops.read_push_pending(team_root):
+            return
+        ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
+            team_root, _git_ops.DEFAULT_TIMEOUT)
+        worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "push-worker.py")
+        if not has_upstream:
+            # 판정불가 = 무 upstream(신규 브랜치) 또는 git 오류 — 구분 불가하므로
+            # 보수 경고 + **kick**(codex P2: worker 의 push_plain 이 no-upstream 을
+            # `push -u` 로 처리한다 — kick 없이 경고만 반복하면 영구 잔존 UX).
+            print("[teammode] push 미완(pending)이 있는데 원격 판정 불가 — "
+                  "worker 를 재시작합니다(신규 브랜치면 push -u 로 처리).",
+                  file=sys.stderr)
+            if not _git_ops.kick_push_worker(team_root, worker):
+                print("[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
+                      "재시도됩니다.", file=sys.stderr)
+            return
+        if ahead > 0:
+            print(f"[teammode] 이전 세션의 push 미완(pending, ahead={ahead}) — "
+                  f"worker 를 재시작합니다.", file=sys.stderr)
+            if not _git_ops.kick_push_worker(team_root, worker):
+                print("[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
+                      "재시도됩니다.", file=sys.stderr)
+            return
+        # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.
+        _git_ops.clear_push_pending(team_root)
+    except Exception:  # noqa: BLE001 — 철칙
         pass
 
 
