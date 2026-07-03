@@ -965,6 +965,44 @@ _KNOWLEDGE_BLOCKED_FOLDERS = (
     "team/meeting",
 )
 
+
+def _root_index_dynamic_tops(team_root: Path) -> tuple:
+    """루트 라우팅 맵(memory/INDEX.md)의 **정확한 최상위 폴더행**만 동적 허용 후보로.
+
+    이슈 #51: 팀 고유 도메인(fundraise/ 등)은 팀마다 달라 하드코딩 불가 —
+    `memory route upsert` 가 이미 '의도적 등록 행위'라 가드 의미를 유지한 채 완화한다.
+    - 인정: 첫 칸이 `` `X/` `` (백틱 감쌈 + 단일 세그먼트 + 슬래시 종결) 인 행만.
+    - 불인정: 파일행(`X/foo.md`)·중첩 폴더행(`X/Y/`)·백틱 없는 언급 (prefix 판정 금지).
+    - 파일 없음/읽기 실패 → 빈 튜플 (정적 목록만 — 보수 폴백).
+    """
+    index_path = team_root / "memory" / "INDEX.md"
+    if not index_path.is_file():
+        return ()
+    try:
+        lines = index_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, PermissionError):
+        return ()
+    tops = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|") or stripped.count("|") < 2:
+            continue
+        first_cell = stripped.split("|", 2)[1].strip()
+        if not (first_cell.startswith("`") and first_cell.endswith("`") and len(first_cell) > 2):
+            continue
+        token = first_cell[1:-1]
+        if token.endswith("/") and token[:-1] and "/" not in token[:-1]:
+            tops.append(token[:-1])
+    return tuple(tops)
+
+
+def _knowledge_folder_allowed(team_root: Path, norm_folder: str) -> bool:
+    """정적 allowlist ∪ 루트 INDEX 동적 최상위 폴더 판정 (blocked 검사는 호출부 선행)."""
+    for af in _KNOWLEDGE_ALLOWED_FOLDERS + _root_index_dynamic_tops(team_root):
+        if norm_folder == af or norm_folder.startswith(af + "/"):
+            return True
+    return False
+
 # INDEX 행 구분자 — 파이프 표 형식
 _INDEX_TABLE_HEADER = "| 가중치 | 경로 | 내용 | 편집일 |"
 _INDEX_TABLE_SEP    = "|--------|------|------|--------|"
@@ -1046,14 +1084,10 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str) -> str
             return (f"folder '{folder}' 는 메모리 저장 대상이 아닙니다(훅/tm-context 관리 경로): "
                     f"차단 목록: {', '.join(_KNOWLEDGE_BLOCKED_FOLDERS)}")
 
-    allowed = False
-    for af in _KNOWLEDGE_ALLOWED_FOLDERS:
-        if norm_folder == af or norm_folder.startswith(af + "/"):
-            allowed = True
-            break
-    if not allowed:
+    if not _knowledge_folder_allowed(team_root, norm_folder):
         return (f"folder '{folder}' 는 허용되지 않습니다. "
-                f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} (및 그 하위)")
+                f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} (및 그 하위, "
+                f"또는 루트 INDEX 라우팅 맵에 등재된 최상위 폴더)")
 
     # ── folder: .. 세그먼트 금지 ──────────────────────────────────
     # isascii() 강제: isalnum() 은 유니코드라 전각문자(Ａ 등)·한글이 통과한다.
