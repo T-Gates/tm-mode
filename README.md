@@ -1,4 +1,10 @@
+**한국어** | [English](README.en.md)
+
 # tm-mode
+
+[![CI](https://github.com/T-Gates/tm-mode/actions/workflows/test.yml/badge.svg)](https://github.com/T-Gates/tm-mode/actions/workflows/test.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 
 > Turn your team mode on. — AI 코딩 에이전트(Claude Code · Codex)를 위한 **크로스에이전트 팀 협업 툴킷.**
 
@@ -118,7 +124,7 @@ memory/                # 팀 메모리 (셋업 시 생성)
 conformance/           # 호환 검사 + 골든 시나리오
 ```
 
-스펙: [docs/spec/](docs/spec/README.md) — 단일 권위 SPEC v0.3.
+스펙: [docs/spec/](docs/spec/README.md) — 단일 권위 SPEC v0.3. 기여자 진입 지도: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 라이선스
 
