@@ -466,6 +466,7 @@ def test_update_verb_no_auto_commit(team_with_upstream):
 
 # ── 오프라인 안전(hang 금지) ──
 
+@pytest.mark.skipif(os.name == "nt", reason="git-remote-sleep 셸 helper 는 POSIX 전제")
 def test_on_offline_upstream_no_hang(tmp_path):
     """on 자동 업데이트의 hang 내성 — 결정적 remote helper 로(실네트워크 무접촉,
     update 테스트와 동일 전환 사유: TEST-NET blackhole 은 부하에서 flaky, #36 진단)."""
@@ -490,6 +491,7 @@ def test_on_offline_upstream_no_hang(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="git-remote-sleep 셸 helper 는 POSIX 전제")
 def test_update_offline_upstream_no_hang(tmp_path):
     """offline/행업 fetch 에서 update 가 20초 내 비치명 실패하는가.
 

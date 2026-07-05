@@ -1365,7 +1365,11 @@ def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
         # 강제 대상 = skip 중 **ref 에 실재하는** 것만(codex P2 — local_only 나
         # dirty untracked 처럼 ref 부재인 path 를 넣으면 checkout 전체가 실패).
         current = _ls_tree_map(team_root, ref, timeout)
-        forced = [s.path for s in plan.skipped if s.path in current]
+        # untracked(??) 는 force 도 제외(codex 재검수) — upstream 신규와 같은 path 의
+        # untracked 로컬 파일은 `git diff ref` 패치에 안 담겨 백업이 비어 버린다.
+        # v1 은 보존이 안전선(강제하려면 raw copy 백업이 필요 — v2).
+        forced = [s.path for s in plan.skipped
+                  if s.path in current and s.status != "??"]
         if backup and forced:
             ok_backup, backup_path = _write_validation_backup(
                 team_root, ref, forced, timeout)

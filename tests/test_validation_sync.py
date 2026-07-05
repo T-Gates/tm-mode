@@ -377,3 +377,16 @@ def test_cmd_update_force_applies_with_no_safe(team_with_upstream):
     assert rc == 0, out
     assert (team / "conformance" / "check.py").read_text() == "v2\n", \
         "--force 가 무시됨(safe 0 게이트)"
+
+
+def test_force_excludes_untracked_collision_with_upstream_new(team_with_upstream):
+    """[재검수] upstream 신규와 같은 path 의 untracked 로컬 파일은 force 도 보존
+    (patch 백업이 untracked 를 못 담아 백업 없는 덮어쓰기가 됨)."""
+    team = team_with_upstream
+    _write(team, "tests/test_new.py", "my untracked draft\n")  # upstream 신규와 충돌
+    plan = _plan(team)
+    res = go.apply_validation_sync(str(team), "upstream/main", plan,
+                                   force=True, backup=True)
+    assert res.ok, res.detail
+    assert "tests/test_new.py" not in res.forced
+    assert (team / "tests" / "test_new.py").read_text() == "my untracked draft\n"
