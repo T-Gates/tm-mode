@@ -173,6 +173,7 @@ def test_commit_verb_push_no_remote_graceful(local_repo):
     assert "p" in _git(local_repo, "log", "--oneline").stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="git-remote-sleep 셸 helper 는 POSIX 전제")
 def test_commit_verb_offline_push_no_hang(repo_with_remote, tmp_path):
     # 원격을 결정적 hang(remote helper)으로 바꿔 push 가 hang 하지 않는지(타임아웃)
     env = _hang_remote(tmp_path, repo_with_remote.clone)
@@ -208,6 +209,7 @@ def test_commit_message_author_injection_blocked(local_repo):
     assert info != "hacker"  # author 변조 안 됨
 
 
+@pytest.mark.skipif(os.name == "nt", reason="git-remote-sleep 셸 helper 는 POSIX 전제")
 def test_commit_push_fail_preserves_local_commit(repo_with_remote, tmp_path,
                                                   monkeypatch):
     # 적대 검수 락: push 실패해도 로컬 커밋은 절대 롤백되지 않는다.

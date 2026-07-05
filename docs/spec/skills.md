@@ -208,7 +208,7 @@ credentials 저장:
 현재 스킬이 제시하는 저장 호출:
 
 ```bash
-python -c "import sys; sys.path.insert(0,'infra'); import credentials; \
+python3 -c "import sys; sys.path.insert(0,'infra'); import credentials; \
   credentials.store('<team>', '<scope>', '<역할>', input())"
 ```
 
