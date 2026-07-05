@@ -99,7 +99,9 @@ def team_with_upstream(tmp_path):
 def _run_engine(root, *argv, env=None):
     cmd = [sys.executable, str(ENGINE), argv[0], "--root", str(root),
            "--settings", str(Path(root) / ".s.json"), *argv[1:]]
-    return subprocess.run(cmd, capture_output=True, text=True, env=env)
+    # timeout=60: 러너 보호 하드캡 — 개별 테스트의 벽시계 단정(<20s 등)과 별개로,
+    # 엔진 subprocess 가 폭주해도 suite 전체를 물고 늘어지지 않게(#36 flaky 진단).
+    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
 
 
 # ── git_ops 빌딩블록 (fetch/behind — on 알림이 재사용) ──
@@ -465,35 +467,75 @@ def test_update_verb_no_auto_commit(team_with_upstream):
 # ── 오프라인 안전(hang 금지) ──
 
 def test_on_offline_upstream_no_hang(tmp_path):
+    """on 자동 업데이트의 hang 내성 — 결정적 remote helper 로(실네트워크 무접촉,
+    update 테스트와 동일 전환 사유: TEST-NET blackhole 은 부하에서 flaky, #36 진단)."""
     team = tmp_path / "team"
     _git(tmp_path, "init", str(team))
     (team / "memory").mkdir()
     (team / "x").write_text("x")
     _git(team, "add", ".")
     _git(team, "commit", "-m", "c")
-    _git(team, "remote", "add", "upstream", "http://192.0.2.1/r.git")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    helper = bin_dir / "git-remote-sleep"
+    helper.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    helper.chmod(0o755)
+    _git(team, "remote", "add", "upstream", "sleep::repo")
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH','')}"}
     import time
     t0 = time.time()
-    r = _run_engine(team, "on")
+    r = _run_engine(team, "on", env=env)
     elapsed = time.time() - t0
     assert elapsed < 20, f"on 이 {elapsed:.1f}s 매달림(offline upstream hang)"
     assert r.returncode == 0, r.stderr
 
 
 def test_update_offline_upstream_no_hang(tmp_path):
+    """offline/행업 fetch 에서 update 가 20초 내 비치명 실패하는가.
+
+    종전엔 TEST-NET blackhole(http://192.0.2.1)로 실 TCP 를 태웠는데, OS/libcurl/
+    시스템 부하에 따라 벽시계 결정성을 잃어 full suite 에서 121s 오탐이 났다
+    (#36 진단 — codex 합의: 선재 flaky). git **remote helper** 로 결정적 hang 을
+    만들어(fetch 프로세스가 sleep) run_git 의 timeout+killpg 계약만 검증한다 —
+    실네트워크 무접촉.
+    """
     team = tmp_path / "team"
     _git(tmp_path, "init", str(team))
     (team / "infra").mkdir()
     (team / "infra" / "x.py").write_text("x")
     _git(team, "add", ".")
     _git(team, "commit", "-m", "c")
-    _git(team, "remote", "add", "upstream", "http://192.0.2.1/r.git")
+
+    # 결정적 hang: git 이 `sleep::` URL 을 만나면 PATH 의 git-remote-sleep 을 실행한다.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    helper = bin_dir / "git-remote-sleep"
+    helper.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    helper.chmod(0o755)
+    _git(team, "remote", "add", "upstream", "sleep::repo")
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH','')}"}
+
     import time
     t0 = time.time()
-    r = _run_engine(team, "update")
+    r = _run_engine(team, "update", env=env)
     elapsed = time.time() - t0
-    assert elapsed < 20, f"update 가 {elapsed:.1f}s 매달림(offline hang)"
+    assert elapsed < 20, f"update 가 {elapsed:.1f}s 매달림(hang kill 실패)"
     assert r.returncode != 0  # fetch 실패 → 비치명 실패
+    assert "Traceback" not in r.stderr
+
+
+def test_update_missing_remote_fails_fast(tmp_path):
+    """존재하지 않는 로컬 remote(file://) — 즉시 결정적 실패(네트워크 무관)."""
+    team = tmp_path / "team"
+    _git(tmp_path, "init", str(team))
+    (team / "infra").mkdir()
+    (team / "infra" / "x.py").write_text("x")
+    _git(team, "add", ".")
+    _git(team, "commit", "-m", "c")
+    _git(team, "remote", "add", "upstream",
+         f"file://{tmp_path}/missing.git")
+    r = _run_engine(team, "update")
+    assert r.returncode != 0
     assert "Traceback" not in r.stderr
 
 
