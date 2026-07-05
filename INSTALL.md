@@ -17,7 +17,7 @@ git clone <팀레포 clone-url> && cd <팀레포>
 
 ## 1. 런처 설치 (pip 또는 curl — 택1)
 ```bash
-# pip
+# pip (PyPI 발행 후에는 `uv tool install tm-mode` / `pipx install tm-mode` 권장)
 pip install "git+https://github.com/T-Gates/tm-mode"
 
 # 또는 curl (pip 없이) — 아래 2단계 명령을 그대로 이어붙인다:
