@@ -4,11 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tm-mode"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Turn your team mode on — cross-agent team memory bootstrapper for AI coding agents."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
+license-files = ["LICENSE"]
 authors = [{ name = "T-Gates" }]
 keywords = ["ai", "agent", "claude", "codex", "team", "memory", "git"]
 classifiers = [
@@ -27,6 +28,9 @@ Repository = "https://github.com/T-Gates/tm-mode"
 
 [project.scripts]
 tm-mode = "teammode.cli:main"
+
+[tool.hatch.version]
+path = "src/teammode/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/teammode"]
