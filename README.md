@@ -30,7 +30,7 @@ tm-mode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 
 **요구사항**: `python3`(3.9+) · `git` — 이 둘뿐. (`tm-mode init`의 레포 자동 생성만 `gh` 선택 사용.)
 
-> 상태: **v0.1 — L1(팀 메모리·맥락 자동주입·세션로그·Obsidian 뷰) 동작·실사용 검증 완료.** L2(이슈·채팅·문서·캘린더 서비스 연동)는 코어 동작하며 provider 팩을 넓히는 중.
+> 상태: **v0.1 — L1(팀 메모리·맥락 자동주입·세션로그·Obsidian 뷰) 동작·실사용 검증 완료.** L2(서비스 연동)는 일부 provider(linear·notion 등 MCP 실행정보 보유분)가 동작하고, 나머지(slack·google 등)는 placeholder — provider 팩 확장 중.
 
 ---
 
