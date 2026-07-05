@@ -3,7 +3,7 @@
 
 진입 2종(등가 — 둘 다 이 cli.py 로 위임):
   pip:  pip install "git+https://github.com/T-Gates/tm-mode" && tm-mode join <url>
-  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/main/install.sh | sh -s -- join <url>
+  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.0/install.sh | sh -s -- join <url>
 
   tm-mode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
   tm-mode join <clone-url>    합류: 팀 레포 clone → 셋업
@@ -36,7 +36,11 @@ except ImportError:  # pragma: no cover - Windows 등
     termios = None  # type: ignore[assignment]
     tty = None  # type: ignore[assignment]
 
-TEMPLATE_REPO = "T-Gates/tm-mode"
+# 포크 배포: env 로 template 원본 교체 가능(2b). init --template 값이 최우선.
+TEMPLATE_REPO = os.environ.get("TM_TEMPLATE_REPO", "T-Gates/tm-mode")
+# 설치 원라이너 핀(2b) — cli.py 는 curl 로 단독 실행되므로 패키지 import 불가.
+# 릴리스마다 __init__.__version__ 과 함께 올린다(tests/test_release_pin.py 가 교차 고정).
+PIN_REF = "refs/tags/v0.1.0"
 
 
 def _err(msg: str) -> None:
@@ -510,7 +514,7 @@ def _invite_lines(url: str) -> list[str]:
     return [
         f'  pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && tm-mode join {url}',
         f'  curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
-        f'/main/install.sh | sh -s -- join {url}',
+        f'/{PIN_REF}/install.sh | sh -s -- join {url}',
     ]
 
 
