@@ -29,17 +29,17 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 
 ## ON 절차
 
-1. **레포 최신화**: `python infra/teammode.py pull --root .`
+1. **레포 최신화**: `python3 infra/teammode.py pull --root .`
    - 실패해도 비치명 — 오프라인이거나 이미 최신이면 계속 진행.
 
-2. **팀모드 켜기**: `python infra/teammode.py on --root . --install`
+2. **팀모드 켜기**: `python3 infra/teammode.py on --root . --install`
    - 엔진이 greeting 출력(team.config.json에 있으면), adapter sync(mode=on),
      `.teammode-active` 마커 생성, upstream fetch + NOTICE 비교 알림까지 한다.
    - NOTICE 알림: upstream `NOTICE.md`가 로컬과 다르면 `[공지] tm-mode 최신 업데이트: …
      — 받으려면 \`tm-mode update\`` 를 출력. 같으면 조용히 생략(매번 도배 방지).
    - ⚠️ **배너는 엔진 stdout 에 없다.** 에이전트가 아래 5단계에서 직접 `memory/banner.txt`를 Read 해 코드펜스로 출력한다.
 
-3. **맥락 주입**: `python infra/teammode.py context --root . --json`
+3. **맥락 주입**: `python3 infra/teammode.py context --root . --json`
    - JSON 결과를 파싱해 아래 웰컴 포맷으로 출력한다.
    - state=on: 정상. state=off: 배선 문제 — "훅 배선을 확인하세요(`tm-onboard`)"로 안내.
 
@@ -96,12 +96,12 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 
 2. **커밋**: 세션로그(memory/ 디렉터리만)를 팀 레포에 커밋한다.
    ```bash
-   python infra/teammode.py commit --root . --paths "memory/" --message "session: <이름> <날짜>"
+   python3 infra/teammode.py commit --root . --paths "memory/" --message "session: <이름> <날짜>"
    ```
    - `--paths memory/` 로 스테이징 범위를 세션로그 디렉터리에 한정한다 — 작업 중인 코드(infra/ 등) **전체 워킹트리를 휩쓸지 않는다**.
    - **push 는 하지 않는다** — commit 까지만. push 는 사람이 직접 결정.
 
-3. **팀모드 끄기**: `python infra/teammode.py off --root . --install`
+3. **팀모드 끄기**: `python3 infra/teammode.py off --root . --install`
    - 엔진이 adapter sync(mode=off), `.teammode-active` 마커 삭제, farewell 출력을 한다. **배너는 엔진 stdout 에 없다**(toolkit 패턴, ON 과 동일).
    - ⚠️ **farewell 직전에 에이전트가 `memory/banner.txt`를 Read 해 코드펜스(\`\`\`)로 출력한다** (ON 5-a 와 동일 방식). 파일이 없거나 내용이 공백이면 배너 생략. farewell(엔진 stdout)은 한 글자도 바꾸지 말고 그대로 옮긴다. 직접 \`\`\`를 다시 덧씌우지 마라(중복 펜스 금지) · 축약·재구성 금지.
 

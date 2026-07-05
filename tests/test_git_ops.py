@@ -247,10 +247,22 @@ def test_auto_pull_reuses_git_ops():
 
 # ── `pull` 동사 (엔진 노출) ──
 
-def _run_engine(root, *argv):
+def _run_engine(root, *argv, env=None):
     cmd = [sys.executable, str(ENGINE), argv[0], "--root", str(root),
            "--settings", str(Path(root) / ".teammode-settings.json"), *argv[1:]]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, env=env,
+                          timeout=60)  # 러너 보호 하드캡(#36 flaky 진단)
+
+def _hang_remote(tmp_path, repo, remote="origin"):
+    """결정적 hang 원격(#36 flaky 진단) — TEST-NET 실 TCP 대체(부하 flaky 차단)."""
+    bin_dir = tmp_path / "hang-bin"
+    bin_dir.mkdir(exist_ok=True)
+    helper = bin_dir / "git-remote-sleep"
+    helper.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    helper.chmod(0o755)
+    _git(repo, "remote", "set-url", remote, "sleep::repo")
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH','')}"}
+
 
 
 def test_pull_verb_ff_forwards(cloned_repo):
@@ -274,6 +286,7 @@ def test_pull_verb_requires_root(tmp_path):
     assert r.returncode != 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="git-remote-sleep 셸 helper 는 POSIX 전제")
 def test_pull_verb_offline_no_hang(tmp_path):
     """원격이 비라우팅 IP 면 타임아웃으로 끊겨야 한다(hang 금지)."""
     work = tmp_path / "off"
@@ -281,19 +294,24 @@ def test_pull_verb_offline_no_hang(tmp_path):
     (work / "x").write_text("x")
     _git(work, "add", ".")
     _git(work, "commit", "-m", "c")
-    # 비라우팅 원격 (TEST-NET-1, RFC5737) — 연결 시도는 타임아웃
-    _git(work, "remote", "add", "origin", "http://192.0.2.1/repo.git")
+    # 결정적 hang 원격(remote helper) — 실 TCP blackhole 은 부하 flaky(#36 진단)
+    _git(work, "remote", "add", "origin", "placeholder")
+    env = _hang_remote(work.parent, work)
     _git(work, "branch", "--set-upstream-to=origin/main", check=False)
     import time
     t0 = time.time()
-    r = _run_engine(work, "pull")
+    r = _run_engine(work, "pull", env=env)
     elapsed = time.time() - t0
-    # 타임아웃(do_pull 기본 5s) + 약간의 여유. hang(무한) 아님.
+    # 하한: helper hang 이 실제로 걸렸음을 증명(codex 검수 — `git pull` 은 upstream
+    # 미설정이어도 fetch 를 먼저 수행해 helper 를 태운다. 미래 git 변경으로 이 경로가
+    # 공동화되면 하한이 깨져 테스트가 알려준다). 상한: killpg 가 hang 을 자른다.
+    assert elapsed >= 5, f"helper hang 미발동({elapsed:.1f}s) — 테스트 공동화"
     assert elapsed < 20, f"pull 이 {elapsed:.1f}s 매달림 (hang)"
     assert "Traceback" not in r.stderr
 
 
-def test_do_pull_timeout_no_orphan_grandchild(tmp_path):
+@pytest.mark.skipif(os.name == "nt", reason="git-remote-sleep 셸 helper 는 POSIX 전제")
+def test_do_pull_timeout_no_orphan_grandchild(tmp_path, monkeypatch):
     """역사적 버그 회귀 락: 타임아웃 시 손자 git-remote-http(s) 고아 누수 0.
 
     do_pull(짧은 timeout) 으로 비라우팅 원격에 pull → killpg 가 손자까지 죽이는지.
@@ -306,20 +324,26 @@ def test_do_pull_timeout_no_orphan_grandchild(tmp_path):
     (work / "x").write_text("x")
     _git(work, "add", ".")
     _git(work, "commit", "-m", "c")
-    _git(work, "remote", "add", "origin", "http://192.0.2.1/r.git")
-    _git(work, "branch", "--set-upstream-to=origin/main", check=False)
+    _git(work, "remote", "add", "origin", "placeholder")
+    env = _hang_remote(work.parent, work)
+    monkeypatch.setenv("PATH", env["PATH"])  # in-proc do_pull 의 git 이 helper 를 찾게
 
     def _count_remote_http():
+        # 손자 = git-remote-sleep(helper) — killpg 가 이걸 죽이는지 감시(결정적)
         try:
-            out = subprocess.run(["pgrep", "-af", "git-remote-http"],
+            out = subprocess.run(["pgrep", "-af", "git-remote-sleep"],
                                  capture_output=True, text=True).stdout
         except OSError:
             return 0
         return len([l for l in out.splitlines() if l.strip()])
 
     before = _count_remote_http()
+    _t0 = time.time()
     res = go.do_pull(str(work), timeout=2)
-    assert res.ok is False  # 타임아웃 또는 즉시 실패 — 예외 전파 0
+    _elapsed = time.time() - _t0
+    assert res.ok is False  # 타임아웃 — 예외 전파 0
+    # 하한: helper hang 발동 증명(미발동이면 killpg 회귀락이 공동화 — codex 검수)
+    assert _elapsed >= 1.5, f"helper hang 미발동({_elapsed:.1f}s)"
     time.sleep(1.5)  # 고아가 있었다면 이 시점까지 살아있을 것
     after = _count_remote_http()
     assert after <= before, f"손자 git-remote-http 고아 누수: before={before} after={after}"

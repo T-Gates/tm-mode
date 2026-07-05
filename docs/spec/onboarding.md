@@ -27,15 +27,15 @@ tm-mode SPEC v0.3 — 설치·부트스트랩
 ### 4.1 CLI 계약
 
 ```
-python infra/install.py [--root PATH] [--agent VALUE] [--member-name NAME]
+python3 infra/install.py [--root PATH] [--agent VALUE] [--member-name NAME]
                         [--role ROLE] [--settings DIR] [--yes]
                         [--update] [--dry-run]
                         [--register-obsidian] [--obsidian-config PATH]
 
-python infra/install.py --uninstall --root PATH [--settings PATH] [--yes]
+python3 infra/install.py --uninstall --root PATH [--settings PATH] [--yes]
                         [--profile PATH] [--obsidian-config PATH]
 
-python infra/install.py --<agent> <adapter-args...>
+python3 infra/install.py --<agent> <adapter-args...>
 ```
 
 | 플래그 | 의미 | 기본 |
@@ -70,7 +70,7 @@ python infra/install.py --<agent> <adapter-args...>
 3. `_split_agent(argv)`가 첫 번째로 발견한 `--<agent>` 중 `infra/agents/<agent>/` 디렉토리가 존재하는 것을 agent로 잡는다. 그 플래그만 제거하고 나머지 argv를 어댑터에 넘긴다.
 4. agent가 있으면 `_dispatch(agent, rest)`:
    - `agents/<agent>/adapter.py`가 파일이 아니면 exit 2.
-   - 게이트는 **agent-aware**다: 격리 의도 플래그는 그 에이전트 자신의 설정 플래그(`install_lib._AGENT_WIRE[agent]["flag"]` — claude=`--settings`, codex=`--config`)이고, `--install`은 항상 실설치 의도로 인정한다. 둘 다 없으면 exit 2 — 명시 없이 실호스트 설정에 쓰지 않는다. 따라서 `python infra/install.py --codex --config <path> sync`는 어댑터에 정상 도달한다.
+   - 게이트는 **agent-aware**다: 격리 의도 플래그는 그 에이전트 자신의 설정 플래그(`install_lib._AGENT_WIRE[agent]["flag"]` — claude=`--settings`, codex=`--config`)이고, `--install`은 항상 실설치 의도로 인정한다. 둘 다 없으면 exit 2 — 명시 없이 실호스트 설정에 쓰지 않는다. 따라서 `python3 infra/install.py --codex --config <path> sync`는 어댑터에 정상 도달한다.
    - 격리 플래그의 값 결손(다음 토큰이 없거나 `--옵션`/동사)은 명확한 exit 2다(`--config sync`처럼 동사가 값으로 먹히는 사고 방지).
    - claude 디스패치의 `--config`는 team config 플래그라 격리 의도로 인정하지 않는다. `_AGENT_WIRE` 미등록 에이전트는 보수 폴백으로 `--settings`/`--install`만 인정한다.
    - `--install`은 디스패처 전용 플래그라 어댑터 argv에서는 제거한다. `--root <값>`은 어댑터의 `--team-root`로 **번역**한다(무언 제거 금지). `--root`와 `--team-root`가 서로 다른 값으로 같이 오면 모호성으로 exit 2, 같은 값이면 무해하게 통과한다.

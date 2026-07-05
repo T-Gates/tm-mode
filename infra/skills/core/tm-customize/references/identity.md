@@ -29,7 +29,7 @@
    }
    ```
 2. greeting/farewell을 기본 공식과 다르게 두면 `personality_customized`가 `true`가 된다(엔진이 런타임에 기본 공식과 비교해 판정 — 배너의 그 플래그와 동일).
-3. **확인**: `python infra/teammode.py context --root . --json`으로 반영 확인하거나, 다음 `tm on`에서 새 greeting이 뜨는지 본다.
+3. **확인**: `python3 infra/teammode.py context --root . --json`으로 반영 확인하거나, 다음 `tm on`에서 새 greeting이 뜨는지 본다.
 
 ## 팀명만 바꿀 때 참고
 

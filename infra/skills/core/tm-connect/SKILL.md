@@ -147,7 +147,7 @@ OAuth 크리덴셜 키 계약:
 - 팩의 `default_scope` 로 네임스페이스를 고른다 — `team` 이든 `personal` 이든 **v0.2 는 각자 1회 입력**이다(팀 scope 라고 도입자 1회로 끝나지 않는다 — 자동공유 미구현).
 - 저장은 엔진/모듈이 한다(스킬이 평문 토큰을 stdout·로그·세션로그에 절대 출력하지 않는다):
   ```bash
-  python -c "import sys; sys.path.insert(0,'infra'); import credentials; \
+  python3 -c "import sys; sys.path.insert(0,'infra'); import credentials; \
     credentials.store('<team>', '<scope>', '<역할>', input())"
   ```
   토큰은 표준입력으로만 흘리고, 명령행 인자·로그·세션로그 어디에도 평문으로 남기지 않는다.
@@ -173,7 +173,7 @@ OAuth 크리덴셜 키 계약:
 연결을 마치면 adapter 가 그 provider 의 **벤더 MCP alias 를 멤버 에이전트(claude/codex) 설정에 등록**하도록 **install-mcp 를 재실행**한다. install-mcp 는 §3 에서 마련한 공식/자작 MCP 산출물을 **동일하게** 다뤄 정규 서버명 alias 로 등록한다(`internals.md §2.8`). 팩의 `mcp.register_hint` 를 참고로 옮긴다.
 
 ```bash
-python infra/install.py --root . --yes        # 재배선(adapter 에 벤더 MCP alias 등록 + sync)
+python3 infra/install.py --root . --yes        # 재배선(adapter 에 벤더 MCP alias 등록 + sync)
 ```
 
 재배선 후 확인:

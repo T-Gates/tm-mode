@@ -50,14 +50,14 @@ fan-out 전에 계획 표를 보여주고 **한 번** 확인받는다:
 새 최상위 폴더가 승인됐으면 **먼저 등재**한다 (전 인자 필수 — bare 호출은 exit 2):
 
 ```
-python infra/teammode.py memory route upsert --root <팀루트> \
+python3 infra/teammode.py memory route upsert --root <팀루트> \
   --path <폴더>/ --desc "<preview 에서 승인된 한 줄 설명>" --author <멤버명>
 ```
 
 서브 결과를 주제별로 병합·중복 제거 후, 파일마다 엔진 동사로 저장한다:
 
 ```
-python infra/teammode.py memory write --root <팀루트> \
+python3 infra/teammode.py memory write --root <팀루트> \
   --folder <folder> --filename <kebab-name>.md \
   --content "<본문>
 
