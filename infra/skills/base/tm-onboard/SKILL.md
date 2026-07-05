@@ -30,7 +30,7 @@ description: Use right after a tm-mode install (`tm-mode init` / `tm-mode join`)
 > **[검증 서브에이전트 프롬프트 템플릿]** — `<팀루트>`·`<멤버명>`·`<에이전트>` 를 채워 디스패치:
 >
 > 팀 루트 `<팀루트 절대경로>` 에서 tm-mode 설치가 제대로 됐는지 **검증만** 해라. **수정·설치·git 쓰기 절대 금지(읽기 전용).** 아래 각 항목을 실제 명령/파일로 확인하고 ✅/❌ + 안 된 건 사유 한 줄로 표를 만들어 보고하라:
-> 1. **코어 엔진**: `python infra/teammode.py context --root <팀루트> --json` 이 **에러 없이** state 를 출력하는가 (설치 직후 `state=off` 가 정상 — 설치 ≠ 활성화). 출력의 팀명·멤버수·세션수도 같이 적어라(가치 브리핑에 쓰임).
+> 1. **코어 엔진**: `python3 infra/teammode.py context --root <팀루트> --json` 이 **에러 없이** state 를 출력하는가 (설치 직후 `state=off` 가 정상 — 설치 ≠ 활성화). 출력의 팀명·멤버수·세션수도 같이 적어라(가치 브리핑에 쓰임).
 > 2. **scaffold**: `memory/team/members.md` 에 `<멤버명>` 이 등재됐는가, `memory/INDEX.md` 가 있는가.
 > 3. **팀 config**: `team.config.json` 존재 + `agents` 가 기록됐는가.
 > 4. **스킬 심링크**: 에이전트 스킬 디렉토리(claude=`~/.claude/skills`, codex=해당 경로)에 `tm`·`tm-onboard`·`tm-memory` 등 tm-mode 스킬이 심링크/설치돼 있는가.

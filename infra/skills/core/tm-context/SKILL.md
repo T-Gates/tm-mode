@@ -15,7 +15,7 @@ description: Use when the user asks about team status, current situation, or nee
 ### 1. 멤버·인덱스 수집
 
 ```bash
-python infra/teammode.py context --root . --json
+python3 infra/teammode.py context --root . --json
 ```
 
 반환 JSON 스키마:
