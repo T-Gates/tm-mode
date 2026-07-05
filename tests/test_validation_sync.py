@@ -390,3 +390,145 @@ def test_force_excludes_untracked_collision_with_upstream_new(team_with_upstream
     assert res.ok, res.detail
     assert "tests/test_new.py" not in res.forced
     assert (team / "tests" / "test_new.py").read_text() == "my untracked draft\n"
+
+
+# ═══ v2 — safe_deletes (upstream 삭제 파일 안전 정리, #36 절단② 해소) ═══
+
+@pytest.fixture
+def team_with_upstream_deletes(tmp_path, monkeypatch):
+    """upstream 이 v1에서 만든 파일을 v2에서 삭제/rename — 인스턴스 잔존 시나리오."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+    team = tmp_path / "team"
+    _git(tmp_path, "init", "--bare", str(upstream))
+    _git(upstream, "symbolic-ref", "HEAD", "refs/heads/main")
+    _git(tmp_path, "clone", str(upstream), str(seed))
+    _git(seed, "config", "user.name", "t"); _git(seed, "config", "user.email", "t@t")
+    _write(seed, "tests/test_obsolete.py", "obsolete-v1\n")
+    _write(seed, "tests/test_moving.py", "moving-body\n")
+    _write(seed, "tests/test_keep.py", "keep\n")
+    _git(seed, "add", "."); _git(seed, "commit", "-m", "v1")
+    _git(seed, "branch", "-M", "main"); _git(seed, "push", "-u", "origin", "main")
+
+    _git(tmp_path, "clone", str(upstream), str(team))
+    _git(team, "config", "user.name", "t"); _git(team, "config", "user.email", "t@t")
+    _git(team, "remote", "add", "upstream", str(upstream))
+
+    # upstream v2: obsolete 삭제 + moving 을 rename + keep 유지
+    _git(seed, "rm", "-q", "tests/test_obsolete.py")
+    _git(seed, "mv", "tests/test_moving.py", "tests/test_moved.py")
+    _git(seed, "add", "-A"); _git(seed, "commit", "-m", "v2 delete+rename")
+    _git(seed, "push")
+    _git(team, "fetch", "upstream")
+    return team
+
+
+def test_upstream_deleted_file_is_safe_delete(team_with_upstream_deletes):
+    """upstream 유래(blob∈경로역사)+terminal removal(D) → safe_deletes."""
+    plan = go.plan_validation_sync(str(team_with_upstream_deletes), "upstream/main")
+    dels = {d.path: d for d in plan.safe_deletes}
+    assert "tests/test_obsolete.py" in dels
+    assert dels["tests/test_obsolete.py"].reason == "upstream-deleted"
+    # local_only 로 남지 않는다
+    assert "tests/test_obsolete.py" not in {s.path for s in plan.local_only}
+
+
+def test_renamed_away_is_safe_delete_with_target(team_with_upstream_deletes):
+    """rename-away prune: 옛 경로는 삭제 후보 + renamed_to 표시(새 경로는 safe 추가)."""
+    plan = go.plan_validation_sync(str(team_with_upstream_deletes), "upstream/main")
+    dels = {d.path: d for d in plan.safe_deletes}
+    assert "tests/test_moving.py" in dels
+    assert dels["tests/test_moving.py"].renamed_to == "tests/test_moved.py"
+    assert "tests/test_moved.py" in plan.safe_paths  # 새 경로는 신규 추가
+
+
+def test_hybrid_blob_not_deleted_marked(team_with_upstream_deletes):
+    """로컬 수정된(blob∉역사) 잔존 파일은 v2 도 삭제 안 함 — 사람 정리 후보로 표시."""
+    team = team_with_upstream_deletes
+    _write(team, "tests/test_obsolete.py", "locally modified hybrid\n")
+    _git(team, "add", "tests/test_obsolete.py")
+    _git(team, "commit", "-m", "local hybrid")
+    plan = go.plan_validation_sync(str(team), "upstream/main")
+    assert "tests/test_obsolete.py" not in {d.path for d in plan.safe_deletes}
+    lo = {s.path: s for s in plan.local_only}
+    assert "tests/test_obsolete.py" in lo
+    assert lo["tests/test_obsolete.py"].reason == "local-only-removed-upstream"
+
+
+def test_dirty_delete_candidate_preserved(team_with_upstream_deletes):
+    """삭제 후보가 dirty(커밋 안 된 편집)면 삭제 후보에서 제외·보존."""
+    team = team_with_upstream_deletes
+    _write(team, "tests/test_obsolete.py", "editing right now\n")  # uncommitted
+    plan = go.plan_validation_sync(str(team), "upstream/main")
+    assert "tests/test_obsolete.py" not in {d.path for d in plan.safe_deletes}
+
+
+def test_apply_deletes_staged_with_raw_backup(team_with_upstream_deletes):
+    """apply: 백업 디렉토리(manifest+files+restore.patch) 생성 후 git rm(staged)."""
+    team = team_with_upstream_deletes
+    plan = go.plan_validation_sync(str(team), "upstream/main")
+    res = go.apply_validation_sync(str(team), "upstream/main", plan)
+    assert res.ok, res.detail
+    assert "tests/test_obsolete.py" in res.deleted
+    # working tree 에서 사라지고 staged deletion
+    assert not (team / "tests" / "test_obsolete.py").exists()
+    status = _git(team, "status", "--short").stdout
+    assert "D  tests/test_obsolete.py" in status
+    # raw copy 백업 실재 + 원본 내용
+    assert res.backup_path
+    bdir = Path(res.backup_path)
+    assert (bdir / "files" / "tests" / "test_obsolete.py").read_text() == "obsolete-v1\n"
+    assert (bdir / "manifest.json").is_file()
+    assert (bdir / "restore.patch").is_file()
+
+
+def test_apply_delete_aborts_when_backup_fails(team_with_upstream_deletes, tmp_path):
+    """백업 실패 → 삭제 중단(ok=False), 파일 보존."""
+    team = team_with_upstream_deletes
+    plan = go.plan_validation_sync(str(team), "upstream/main")
+    sync_dir = Path(go._state_dir()) / "sync"
+    sync_dir.parent.mkdir(parents=True, exist_ok=True)
+    import shutil
+    if sync_dir.exists():
+        shutil.rmtree(sync_dir)
+    sync_dir.write_text("not a dir", encoding="utf-8")
+    res = go.apply_validation_sync(str(team), "upstream/main", plan)
+    assert res.ok is False
+    assert (team / "tests" / "test_obsolete.py").exists()
+
+
+def test_on_notify_includes_deletes(team_with_upstream_deletes, monkeypatch):
+    """tm on 알림: 갱신 N + 삭제 M 합산 표기, 적용은 없음."""
+    import io, contextlib, runpy as _rp
+    team = team_with_upstream_deletes
+    mod = _rp.run_path(str(ENGINE), run_name="__on_v2__")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        mod["auto_update_on_start"](team)
+    out = buf.getvalue()
+    assert "삭제" in out and "validation 업데이트 가능" in out
+    assert (team / "tests" / "test_obsolete.py").exists()  # 적용 안 함
+
+
+def test_cmd_update_applies_deletes(team_with_upstream_deletes):
+    """tm-mode update: 삭제까지 staged 적용 + 백업 경로 출력."""
+    team = team_with_upstream_deletes
+    rc, out = _run_engine(team, "update")
+    assert rc == 0, out
+    assert "삭제" in out
+    assert not (team / "tests" / "test_obsolete.py").exists()
+    assert not (team / "tests" / "test_moving.py").exists()
+    assert (team / "tests" / "test_moved.py").exists()  # rename 새 경로 생성
+
+
+def test_delete_candidate_dirty_at_apply_is_late_skipped(team_with_upstream_deletes):
+    """[재검수 P3] plan 후 apply 전에 dirty 가 된 삭제 후보 — 보존 + skipped 가시화."""
+    team = team_with_upstream_deletes
+    plan = go.plan_validation_sync(str(team), "upstream/main")
+    assert "tests/test_obsolete.py" in {d.path for d in plan.safe_deletes}
+    _write(team, "tests/test_obsolete.py", "EDIT AFTER PLAN\n")
+    res = go.apply_validation_sync(str(team), "upstream/main", plan)
+    assert res.ok
+    assert (team / "tests" / "test_obsolete.py").read_text() == "EDIT AFTER PLAN\n"
+    assert "tests/test_obsolete.py" in {s.path for s in res.skipped}

@@ -353,8 +353,10 @@ def auto_update_on_start(team_root: Path) -> None:
                                                       remote=UPSTREAM_REMOTE)
             _vplan = _git_ops.plan_validation_sync(
                 str(team_root), f"{UPSTREAM_REMOTE}/{_vbranch}")
-            if not _vplan.shallow and _vplan.safe_paths:
-                print(f"validation 업데이트 가능: {len(_vplan.safe_paths)}개 — "
+            _n_up = len(_vplan.safe_paths)
+            _n_del = len(getattr(_vplan, "safe_deletes", ()))
+            if not _vplan.shallow and (_n_up or _n_del):
+                print(f"validation 업데이트 가능: 갱신 {_n_up}개, 삭제 {_n_del}개 — "
                       f"tm-mode update 로 적용하세요.")
         except Exception:  # noqa: BLE001 — 알림 실패가 on 을 막지 않는다
             pass
@@ -516,15 +518,21 @@ def _run_validation_sync(team_root: Path, dry_run: bool, force: bool) -> None:
         return
 
     n_safe = len(plan.safe_paths)
+    n_del = len(getattr(plan, "safe_deletes", ()))
     n_skip = len(plan.skipped) + len(plan.local_only)
 
     if dry_run:
         if n_safe:
             print(f"tm-mode update [dry-run] — validation 동기화 대상 {n_safe}개:")
-            print(plan.diff if getattr(plan, "diff", "") else
-                  "  " + "\n  ".join(plan.safe_paths))
+            print("  " + "\n  ".join(plan.safe_paths))
         else:
             print("tm-mode update [dry-run] — validation: 갱신할 파일 없음.")
+        if n_del:
+            print(f"tm-mode update [dry-run] — validation 삭제 후보 {n_del}개"
+                  f"(백업 후 staged 삭제):")
+            for d in plan.safe_deletes:
+                arrow = f" -> {d.renamed_to}" if d.renamed_to else ""
+                print(f"  - {d.path}{arrow} ({d.reason})")
         if n_skip:
             # dry-run 은 항상 전체 출력(축약 안 함)
             print(f"  보존(skip) {n_skip}개 — 로컬 수정/전용:")
@@ -532,14 +540,21 @@ def _run_validation_sync(team_root: Path, dry_run: bool, force: bool) -> None:
                 print(f"    - {s.path} ({s.reason})")
         return
 
-    if n_safe or (force and plan.skipped):
-        # force 는 safe 0 이어도 동작해야 한다(codex P2 — skip 만 있는 상태에서
-        # --force 가 무시되면 사용자 명시 의사가 증발).
+    if n_safe or n_del or (force and plan.skipped):
+        # force 는 safe 0 이어도 동작(codex P2). v2: 삭제(n_del)도 적용 트리거.
         res = _git_ops.apply_validation_sync(str(team_root), ref, plan, force=force)
         if res.ok and res.changed:
-            print(f"tm-mode update — validation 동기화 완료 {len(res.applied)}개(staged)."
-                  + (f" 강제 덮어쓰기 {len(res.forced)}개(백업: {res.backup_path})"
-                     if res.forced else ""))
+            parts = [f"갱신 {len(res.applied)}개"]
+            if getattr(res, "deleted", ()):
+                parts.append(f"삭제 {len(res.deleted)}개")
+            msg = f"tm-mode update — validation 동기화 완료 {', '.join(parts)}(staged)."
+            if res.forced:
+                msg += f" 강제 덮어쓰기 {len(res.forced)}개"
+            if res.backup_path:
+                msg += f" 백업: {res.backup_path}"
+                msg += (" (복원: git apply '<백업>/restore.patch' 또는 files/ 복사)"
+                        if getattr(res, "deleted", ()) else "")
+            print(msg)
         elif not res.ok:
             print(f"tm-mode update — validation 적용 실패(비치명): {res.detail}",
                   file=sys.stderr)
