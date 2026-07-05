@@ -45,6 +45,9 @@ def team_with_upstream(tmp_path, monkeypatch):
     team = tmp_path / "team"
 
     _git(tmp_path, "init", "--bare", str(upstream))
+    # CI 러너는 init.defaultBranch 미설정 → bare HEAD 가 master 를 가리켜
+    # main push 후 clone 이 빈 트리가 된다(로컬은 ~/.gitconfig 로 우연히 통과).
+    _git(upstream, "symbolic-ref", "HEAD", "refs/heads/main")
     _git(tmp_path, "clone", str(upstream), str(seed))
     _git(seed, "config", "user.name", "t")
     _git(seed, "config", "user.email", "t@t")
@@ -157,6 +160,7 @@ def test_shallow_repo_skips_all(tmp_path, monkeypatch):
     upstream = tmp_path / "up.git"
     seed = tmp_path / "seed"
     _git(tmp_path, "init", "--bare", str(upstream))
+    _git(upstream, "symbolic-ref", "HEAD", "refs/heads/main")
     _git(tmp_path, "clone", str(upstream), str(seed))
     _git(seed, "config", "user.name", "t"); _git(seed, "config", "user.email", "t@t")
     _write(seed, "tests/test_a.py", "a\n")
@@ -282,3 +286,94 @@ def test_on_notifies_validation_but_does_not_apply(team_with_upstream, monkeypat
     assert "validation 업데이트 가능" in out
     # 파일은 안 바뀜(적용 안 함) — test_stale 은 여전히 stale-v1
     assert (team / "tests" / "test_stale.py").read_text() == "stale-v1\n"
+
+
+# ── codex 적대검수 반영 (P1×3·P2×2) ────────────────────────────────
+
+def test_cross_path_blob_collision_not_safe(team_with_upstream):
+    """[P1] 크로스패스 blob 충돌: 로컬 의도 수정의 blob 이 upstream 역사의 **다른
+    경로** blob 과 우연히 같아도 safe 로 오판하지 않는다(경로별 히스토리 판정)."""
+    team = team_with_upstream
+    # upstream 역사에 존재하는 내용("stale-v1\n" — tests/test_stale.py 의 v1 blob)을
+    # 전혀 다른 경로(conformance/check.py)에 로컬 의도 수정으로 커밋
+    _write(team, "conformance/check.py", "stale-v1\n")
+    _git(team, "add", "conformance/check.py")
+    _git(team, "commit", "-m", "intentional local edit (blob collides cross-path)")
+    plan = _plan(team)
+    assert "conformance/check.py" not in plan.safe_paths, \
+        "크로스패스 blob 충돌이 safe 로 오판됨 — 로컬 수정 유실 경로"
+    assert "conformance/check.py" in {s.path for s in plan.skipped}
+
+
+def test_apply_rechecks_dirty_before_checkout(team_with_upstream):
+    """[P1] plan 이후·apply 이전에 생긴 편집(stale plan)은 checkout 에서 제외·보존."""
+    team = team_with_upstream
+    plan = _plan(team)
+    assert "tests/test_stale.py" in plan.safe_paths
+    # plan 뒤에 사용자가 편집(커밋 안 함) — stale plan 그대로 apply
+    _write(team, "tests/test_stale.py", "EDITED AFTER PLAN\n")
+    res = go.apply_validation_sync(str(team), "upstream/main", plan)
+    assert res.ok
+    assert (team / "tests" / "test_stale.py").read_text() == "EDITED AFTER PLAN\n", \
+        "stale plan 이 plan 이후 편집을 덮었다(유실)"
+    assert "tests/test_stale.py" not in res.applied
+
+
+def test_force_aborts_when_backup_fails(team_with_upstream, tmp_path, monkeypatch):
+    """[P1] --force --backup 에서 백업 기록 실패 → 덮지 않고 ok=False 중단."""
+    team = team_with_upstream
+    _write(team, "conformance/check.py", "LOCAL\n")
+    _git(team, "add", "conformance/check.py"); _git(team, "commit", "-m", "local")
+    plan = _plan(team)
+    # 백업 목적지(XDG sync 디렉토리)를 파일로 선점해 백업 기록을 실패시킨다
+    sync_dir = Path(go._state_dir()) / "sync"
+    sync_dir.parent.mkdir(parents=True, exist_ok=True)
+    if sync_dir.exists():
+        import shutil
+        shutil.rmtree(sync_dir)
+    sync_dir.write_text("not a dir", encoding="utf-8")
+    res = go.apply_validation_sync(str(team), "upstream/main", plan,
+                                   force=True, backup=True)
+    assert res.ok is False, "백업 실패인데 force 덮어쓰기가 진행됨"
+    assert (team / "conformance" / "check.py").read_text() == "LOCAL\n"
+
+
+def test_force_applies_even_when_no_safe(team_with_upstream):
+    """[P2] safe 0 + skip 만 있어도 --force 는 동작한다(무시되지 않음)."""
+    team = team_with_upstream
+    # 모든 safe 를 먼저 최신화 → 남는 차이는 로컬 수정 1개(skip)뿐
+    _git(team, "checkout", "upstream/main", "--", "conformance", "tests")
+    _git(team, "add", "-A"); _git(team, "commit", "-m", "sync all")
+    _write(team, "conformance/check.py", "LOCAL ONLY DIFF\n")
+    _git(team, "add", "conformance/check.py"); _git(team, "commit", "-m", "local")
+    plan = _plan(team)
+    assert plan.safe_paths == () and plan.skipped
+    res = go.apply_validation_sync(str(team), "upstream/main", plan,
+                                   force=True, backup=True)
+    assert res.ok and res.changed and res.forced
+    assert (team / "conformance" / "check.py").read_text() == "v2\n"
+
+
+def test_force_excludes_local_only_and_dirty_local_only(team_with_upstream):
+    """[P2] ref 에 없는 로컬 파일(dirty 포함)은 force 대상에서 제외 — checkout 실패 방지."""
+    team = team_with_upstream
+    _write(team, "tests/only_here.py", "mine\n")  # untracked = dirty + ref 부재
+    plan = _plan(team)
+    res = go.apply_validation_sync(str(team), "upstream/main", plan,
+                                   force=True, backup=True)
+    assert res.ok, res.detail
+    assert "tests/only_here.py" not in res.forced
+    assert (team / "tests" / "only_here.py").read_text() == "mine\n"
+
+
+def test_cmd_update_force_applies_with_no_safe(team_with_upstream):
+    """[P2] tm-mode update --force: safe 0 + skip 만 있어도 배선이 apply 를 호출."""
+    team = team_with_upstream
+    _git(team, "checkout", "upstream/main", "--", "conformance", "tests")
+    _git(team, "add", "-A"); _git(team, "commit", "-m", "sync all")
+    _write(team, "conformance/check.py", "LOCAL\n")
+    _git(team, "add", "conformance/check.py"); _git(team, "commit", "-m", "local")
+    rc, out = _run_engine(team, "update", "--force")
+    assert rc == 0, out
+    assert (team / "conformance" / "check.py").read_text() == "v2\n", \
+        "--force 가 무시됨(safe 0 게이트)"

@@ -1153,31 +1153,34 @@ def _ls_tree_map(team_root: str, ref: str, timeout: int) -> dict:
     return result
 
 
-def _ref_history_blobs(team_root: str, ref: str, timeout: int) -> set:
-    """`git log --format= --raw --no-abbrev <ref> -- conformance tests` 의 blob 집합.
+def _ref_history_blobs(team_root: str, ref: str, timeout: int) -> dict:
+    """upstream 역사의 **경로별** blob 집합 — {path: set(blob)}. 무raise.
 
-    로컬 blob 이 이 집합에 있으면 "upstream 역사에 존재"(뒤처짐·무수정) → safe.
-    blob 만 필요하므로 path 파싱 불필요(공백 path 무관) — `:` raw 라인의 blob1·blob2 추출.
-    rename(R)·copy(C) 도 같은 raw 라인 형식이라 자동 커버.
+    전역 blob 집합은 크로스패스 충돌(로컬 의도 수정의 blob 이 **다른 경로**의 역사
+    blob 과 우연히 일치 — 빈 파일·공통 fixture)에 safe 오판을 만든다(codex P1).
+    `:` raw 라인은 `:mode1 mode2 blob1 blob2 STATUS\tpath[\tpath2]` — R/C 는
+    old/new 양쪽 path 에 양쪽 blob 을 등록한다.
     """
     try:
         rc, out, _ = run_git(
             ["-C", team_root, "log", "--format=", "--raw", "--no-abbrev",
              ref, "--", *VALIDATION_PATHS], timeout=timeout)
     except (OSError, subprocess.SubprocessError):
-        return set()
-    blobs = set()
+        return {}
+    by_path: dict = {}
     if rc != 0:
-        return blobs
+        return by_path
     for line in (out or "").splitlines():
         if not line.startswith(":"):
             continue
-        # :mode1 mode2 blob1 blob2 status<TAB>path
-        cols = line[1:].split()
-        for tok in cols[2:4]:
-            if len(tok) == 40 and all(c in "0123456789abcdef" for c in tok):
-                blobs.add(tok)
-    return blobs
+        meta, *paths = line.split("\t")
+        cols = meta[1:].split()
+        blobs = [tok for tok in cols[2:4]
+                 if len(tok) == 40 and all(c in "0123456789abcdef" for c in tok)]
+        for path in paths:
+            if path:
+                by_path.setdefault(path, set()).update(blobs)
+    return by_path
 
 
 def _validation_dirty_paths(team_root: str, timeout: int) -> dict:
@@ -1264,9 +1267,9 @@ def plan_validation_sync(team_root: str, ref: str,
         if lmeta and not cmeta:
             local_only.append(ValidationSkip(path, "local-only", lblob))
             continue
-        # 둘 다 있고 다름
-        if lblob in history:
-            safe.append(path)  # 로컬 blob 이 upstream 역사에 있음 = 뒤처짐(무수정)
+        # 둘 다 있고 다름 — **같은 경로의** 역사에 있어야 safe(크로스패스 차단)
+        if lblob in history.get(path, ()):
+            safe.append(path)  # 이 경로의 upstream 역사에 있는 blob = 뒤처짐(무수정)
         else:
             skipped.append(ValidationSkip(path, "local-unclassified", lblob))
 
@@ -1344,19 +1347,41 @@ def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
     if plan.shallow:
         return ValidationApplyResult(ok=True, changed=False, skipped=plan.skipped,
                                      detail="shallow — validation 적용 skip")
-    targets = list(plan.safe_paths)
+
+    # stale plan 가드(codex P1): plan 과 apply 는 분리 API — 그 사이에 생긴 편집을
+    # checkout 이 덮으면 유실이다. 적용 직전 dirty 를 재수집해 safe 에서 제외한다.
+    dirty_now = _validation_dirty_paths(team_root, timeout)
+    late_skips = []
+    targets = []
+    for path in plan.safe_paths:
+        if path in dirty_now:
+            late_skips.append(ValidationSkip(path, "dirty", "", dirty_now[path]))
+        else:
+            targets.append(path)
+
     forced = []
     backup_path = ""
     if force:
-        # skip 중 ref 에 실재하는 것만 강제 대상(local_only=ref 부재 → 제외)
-        forced = [s.path for s in plan.skipped]
+        # 강제 대상 = skip 중 **ref 에 실재하는** 것만(codex P2 — local_only 나
+        # dirty untracked 처럼 ref 부재인 path 를 넣으면 checkout 전체가 실패).
+        current = _ls_tree_map(team_root, ref, timeout)
+        forced = [s.path for s in plan.skipped if s.path in current]
         if backup and forced:
-            backup_path = _write_validation_backup(team_root, ref, forced, timeout)
+            ok_backup, backup_path = _write_validation_backup(
+                team_root, ref, forced, timeout)
+            if not ok_backup:
+                # 백업 실패면 덮지 않는다(codex P1) — 유실 방지가 백업의 존재 이유.
+                return ValidationApplyResult(
+                    ok=False, skipped=plan.skipped,
+                    detail="force 중단: 백업 기록 실패(XDG state 쓰기 확인) — "
+                           "덮어쓰기 진행 안 함")
         targets = targets + forced
 
     if not targets:
-        return ValidationApplyResult(ok=True, changed=False, skipped=plan.skipped,
-                                     detail="적용할 safe 파일 없음")
+        return ValidationApplyResult(
+            ok=True, changed=False,
+            skipped=tuple(list(plan.skipped) + late_skips),
+            detail="적용할 safe 파일 없음")
 
     diff = diff_paths(team_root, ref, targets, timeout=timeout)
     ok, err = _checkout_chunks(team_root, ref, targets, timeout)
@@ -1365,20 +1390,29 @@ def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
                                      backup_path=backup_path,
                                      detail=f"checkout 실패: {err}")
     return ValidationApplyResult(
-        ok=True, changed=True, applied=tuple(plan.safe_paths),
-        forced=tuple(forced), skipped=plan.skipped, backup_path=backup_path,
+        ok=True, changed=True,
+        applied=tuple(p for p in plan.safe_paths if p in set(targets)),
+        forced=tuple(forced),
+        skipped=tuple(list(plan.skipped) + late_skips),
+        backup_path=backup_path,
         diff=diff, detail="validation sync applied")
 
 
 def _write_validation_backup(team_root: str, ref: str, paths: list,
-                             timeout: int) -> str:
-    """force 덮기 전 로컬 변경을 patch 로 백업($XDG/teammode/sync/backup-*.patch). 무raise."""
+                             timeout: int):
+    """force 덮기 전 로컬 변경을 patch 로 백업. 반환 (ok, path). 무raise.
+
+    tri-state(codex P1): 빈 diff = 백업할 것 없음(ok=True, path="") — 안전 진행.
+    diff/쓰기 실패 = ok=False — 호출부는 **덮지 않고 중단**해야 한다.
+    """
     try:
         rc, out, _ = run_git(
             ["-C", team_root, "diff", "--binary", ref, "--",
              *[str(p) for p in paths]], timeout=timeout)
-        if rc != 0 or not (out or "").strip():
-            return ""
+        if rc != 0:
+            return False, ""
+        if not (out or "").strip():
+            return True, ""  # 백업할 로컬 diff 없음 — 덮어도 잃을 것 없음
         from datetime import datetime as _dt
         bdir = os.path.join(_state_dir(), "sync")
         os.makedirs(bdir, exist_ok=True)
@@ -1386,9 +1420,9 @@ def _write_validation_backup(team_root: str, ref: str, paths: list,
         bpath = os.path.join(bdir, f"backup-{_team_key(team_root)}-{stamp}.patch")
         with open(bpath, "w", encoding="utf-8") as f:
             f.write(out)
-        return bpath
+        return True, bpath
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return False, ""
 
 
 def _sync_pathspecs(paths: list) -> list:

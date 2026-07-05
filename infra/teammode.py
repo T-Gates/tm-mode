@@ -532,7 +532,9 @@ def _run_validation_sync(team_root: Path, dry_run: bool, force: bool) -> None:
                 print(f"    - {s.path} ({s.reason})")
         return
 
-    if n_safe:
+    if n_safe or (force and plan.skipped):
+        # force 는 safe 0 이어도 동작해야 한다(codex P2 — skip 만 있는 상태에서
+        # --force 가 무시되면 사용자 명시 의사가 증발).
         res = _git_ops.apply_validation_sync(str(team_root), ref, plan, force=force)
         if res.ok and res.changed:
             print(f"tm-mode update — validation 동기화 완료 {len(res.applied)}개(staged)."
