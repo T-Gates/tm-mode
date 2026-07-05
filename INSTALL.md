@@ -48,7 +48,7 @@ tm-mode join <팀레포 clone-url>
 설치는 팀모드를 자동으로 켜지 않는다. 작업을 시작할 때 켠다:
 ```bash
 # 에이전트에게 "팀모드 켜" / "tm on"   (또는 직접:)
-python infra/teammode.py on --root . --install
+python3 infra/teammode.py on --root . --install
 ```
 켜면 다음 세션부터 `session-start` 훅이 팀 맥락을 자동 주입한다. 끄려면 `... off --root . --install`.
 
@@ -81,7 +81,7 @@ python infra/teammode.py on --root . --install
 ### 제거
 `tm-mode` CLI에는 uninstall이 없다. 호스트에서 제거하려면 팀 레포 안에서:
 ```bash
-python infra/install.py --root . --uninstall
+python3 infra/install.py --root . --uninstall
 ```
 
 ---

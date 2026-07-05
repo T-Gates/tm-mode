@@ -138,7 +138,7 @@ triggers:
 ```
 
 검증 서브에이전트 확인 항목(SKILL.md §① 기준):
-1. `python infra/teammode.py context --root <팀루트> --json` — 에러 없이 state 출력 (`state=off` 정상 — 설치 ≠ 활성화)
+1. `python3 infra/teammode.py context --root <팀루트> --json` — 에러 없이 state 출력 (`state=off` 정상 — 설치 ≠ 활성화)
 2. `memory/team/members.md` 멤버 등재, `memory/INDEX.md` 존재
 3. `team.config.json` 존재 + `agents` 기록
 4. 스킬 심링크 (claude=`~/.claude/skills`, codex 해당 경로)
@@ -228,7 +228,7 @@ config 슬롯 기록:
 재배선(MCP alias 등록):
 
 ```bash
-python infra/install.py --root . --yes
+python3 infra/install.py --root . --yes
 ```
 
 - 연결 뒤 install을 재실행해 adapter가 `install-mcp`로 새 슬롯의 벤더 MCP alias를 에이전트 설정에 등록하도록 한다(§internals 2.8). 빈 슬롯이 채워지면 sync가 해당 매처를 활성화할 수 있다.
@@ -252,7 +252,7 @@ python infra/install.py --root . --yes
 tm-reset 스킬은 제거됐다. 호스트 설치 되돌리기는 `install.py --uninstall` 직접 실행으로 수행한다. 파괴적이므로 반드시 사람 확인을 먼저 받고, 되돌리는 범위를 고지한 뒤 실행한다. 상세 동작은 `docs/spec/internals.md §4.10(cmd_uninstall)`을 참조한다.
 
 ```bash
-python infra/install.py --uninstall --root . --yes
+python3 infra/install.py --uninstall --root . --yes
 ```
 
 - `install.py`가 off, Claude adapter hook uninstall, env 줄 제거, Obsidian 등록 해제를 처리한다. MCP 등록 제거와 skills 제거는 이 경로에서 처리하지 않는다.

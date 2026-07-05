@@ -173,7 +173,7 @@ OAuth 크리덴셜 키 계약:
 연결을 마치면 adapter 가 그 provider 의 **벤더 MCP alias 를 멤버 에이전트(claude/codex) 설정에 등록**하도록 **install-mcp 를 재실행**한다. install-mcp 는 §3 에서 마련한 공식/자작 MCP 산출물을 **동일하게** 다뤄 정규 서버명 alias 로 등록한다(`internals.md §2.8`). 팩의 `mcp.register_hint` 를 참고로 옮긴다.
 
 ```bash
-python infra/install.py --root . --yes        # 재배선(adapter 에 벤더 MCP alias 등록 + sync)
+python3 infra/install.py --root . --yes        # 재배선(adapter 에 벤더 MCP alias 등록 + sync)
 ```
 
 재배선 후 확인:

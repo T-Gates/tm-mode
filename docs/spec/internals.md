@@ -514,7 +514,7 @@ manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이
 엔진 `infra/teammode.py`는 현재 10개 동사만 known verb로 인정한다.
 
 ```
-python infra/teammode.py <verb> --root <팀루트> [동사별 플래그]
+python3 infra/teammode.py <verb> --root <팀루트> [동사별 플래그]
 verbs: on | off | log | context | pull | commit | update | issue | memory | util
 ```
 
@@ -583,7 +583,7 @@ argv 파서(`_parse_args`)는 `argparse`가 아니라 손파서다.
 CLI:
 
 ```
-python infra/teammode.py log --root <팀루트> --author <이름> --text <내용> [--now <ISO8601>]
+python3 infra/teammode.py log --root <팀루트> --author <이름> --text <내용> [--now <ISO8601>]
 ```
 
 - 필수 옵션:
@@ -630,7 +630,7 @@ python infra/teammode.py log --root <팀루트> --author <이름> --text <내용
 CLI:
 
 ```
-python infra/teammode.py context --root <팀루트> [--json]
+python3 infra/teammode.py context --root <팀루트> [--json]
 ```
 
 `context`는 파일을 생성하거나 수정하지 않는다. INDEX, 세션로그 frontmatter, active 마커, config role을 읽어 구조화한다. 요약 생성은 하지 않는다.
@@ -696,7 +696,7 @@ python infra/teammode.py context --root <팀루트> [--json]
 CLI:
 
 ```
-python infra/teammode.py pull --root <팀루트>
+python3 infra/teammode.py pull --root <팀루트>
 ```
 
 - 실행 전 git worktree가 아니면 `PullResult(ok=False, detail="not a git work tree")`.
@@ -714,7 +714,7 @@ python infra/teammode.py pull --root <팀루트>
 CLI:
 
 ```
-python infra/teammode.py commit --root <팀루트> --message <메시지> [--push]
+python3 infra/teammode.py commit --root <팀루트> --message <메시지> [--push]
 ```
 
 - `--message`가 없거나 값이 falsy이면 `[error] commit: --message <메시지> 가 필요합니다.`를 stderr에 쓰고 exit 2. 빈 문자열 메시지는 거부된다.
@@ -752,7 +752,7 @@ python infra/teammode.py commit --root <팀루트> --message <메시지> [--push
 CLI:
 
 ```
-python infra/teammode.py update --root <팀루트>
+python3 infra/teammode.py update --root <팀루트>
 ```
 
 `update`는 template upstream 적용 동사다. **merge 가 아니라 파일 동기화**로 동작한다. 상수는 `UPSTREAM_REMOTE = "upstream"`이고, 동기화 대상은 모듈 상수 `git_ops.SYNC_PATHS = ["infra"]`(엔진 경로)다. CLI로 remote/branch/paths를 바꿀 수 없다. 플래그는 `--dry-run`(미리보기) 하나를 받는다.
@@ -794,7 +794,7 @@ python infra/teammode.py update --root <팀루트>
 CLI:
 
 ```
-python infra/teammode.py issue --root <팀루트> [<action>] [--title <t>] [--body <b>] [--assignee <a>] [--label <l>] [--priority <p>]
+python3 infra/teammode.py issue --root <팀루트> [<action>] [--title <t>] [--body <b>] [--assignee <a>] [--label <l>] [--priority <p>]
 ```
 
 `issue`의 altitude는 `context`와 같다. 엔진은 issues 슬롯 연결 여부를 확인하고, 연결돼 있으면 정규 입력 스키마를 stdout JSON으로 echo한다. `providers/<provider>.json`의 `action_map` 해석, provider별 payload 변환, MCP 호출, 실제 이슈 생성은 하지 않는다.

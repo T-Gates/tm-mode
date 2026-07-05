@@ -66,11 +66,26 @@ def repo_with_remote(tmp_path):
     return r
 
 
-def _run_engine(root, *argv):
+def _run_engine(root, *argv, env=None):
     cmd = [sys.executable, str(ENGINE), argv[0], "--root", str(root),
            "--settings", str(Path(root) / ".s.json"), *argv[1:]]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, env=env,
+                          timeout=60)  # 러너 보호 하드캡(#36 flaky 진단)
 
+
+
+
+def _hang_remote(tmp_path, repo, remote="origin"):
+    """결정적 hang 원격(#36 flaky 진단): TEST-NET blackhole 실 TCP 는 부하에서
+    벽시계 결정성을 잃는다(121s 오탐 실측). git remote helper(sleep)로 대체 —
+    fetch/push 프로세스가 확실히 매달리고 run_git killpg 계약만 검증한다."""
+    bin_dir = tmp_path / "hang-bin"
+    bin_dir.mkdir(exist_ok=True)
+    helper = bin_dir / "git-remote-sleep"
+    helper.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    helper.chmod(0o755)
+    _git(repo, "remote", "set-url", remote, "sleep::repo")
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH','')}"}
 
 # ── git_ops.do_commit ──
 
@@ -158,14 +173,14 @@ def test_commit_verb_push_no_remote_graceful(local_repo):
     assert "p" in _git(local_repo, "log", "--oneline").stdout
 
 
-def test_commit_verb_offline_push_no_hang(repo_with_remote):
-    # 원격을 비라우팅으로 바꿔 push 가 hang 하지 않는지(타임아웃)
-    _git(repo_with_remote.clone, "remote", "set-url", "origin",
-         "http://192.0.2.1/r.git")
+def test_commit_verb_offline_push_no_hang(repo_with_remote, tmp_path):
+    # 원격을 결정적 hang(remote helper)으로 바꿔 push 가 hang 하지 않는지(타임아웃)
+    env = _hang_remote(tmp_path, repo_with_remote.clone)
     (repo_with_remote.clone / "k.txt").write_text("v\n")
     import time
     t0 = time.time()
-    r = _run_engine(repo_with_remote.clone, "commit", "--message", "offline", "--push")
+    r = _run_engine(repo_with_remote.clone, "commit", "--message", "offline",
+                    "--push", env=env)
     elapsed = time.time() - t0
     assert elapsed < 30, f"commit/push 가 {elapsed:.1f}s 매달림 (hang)"
     # 커밋은 로컬에 보존(push 만 실패)
@@ -193,10 +208,11 @@ def test_commit_message_author_injection_blocked(local_repo):
     assert info != "hacker"  # author 변조 안 됨
 
 
-def test_commit_push_fail_preserves_local_commit(repo_with_remote):
+def test_commit_push_fail_preserves_local_commit(repo_with_remote, tmp_path,
+                                                  monkeypatch):
     # 적대 검수 락: push 실패해도 로컬 커밋은 절대 롤백되지 않는다.
-    _git(repo_with_remote.clone, "remote", "set-url", "origin",
-         "http://192.0.2.1/r.git")
+    env = _hang_remote(tmp_path, repo_with_remote.clone)
+    monkeypatch.setenv("PATH", env["PATH"])  # in-proc do_commit 의 git 이 helper 를 찾게
     (repo_with_remote.clone / "p.txt").write_text("v\n")
     before = int(_git(repo_with_remote.clone, "rev-list", "--count",
                       "HEAD").stdout.strip())

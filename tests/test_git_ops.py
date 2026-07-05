@@ -247,10 +247,22 @@ def test_auto_pull_reuses_git_ops():
 
 # ── `pull` 동사 (엔진 노출) ──
 
-def _run_engine(root, *argv):
+def _run_engine(root, *argv, env=None):
     cmd = [sys.executable, str(ENGINE), argv[0], "--root", str(root),
            "--settings", str(Path(root) / ".teammode-settings.json"), *argv[1:]]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, env=env,
+                          timeout=60)  # 러너 보호 하드캡(#36 flaky 진단)
+
+def _hang_remote(tmp_path, repo, remote="origin"):
+    """결정적 hang 원격(#36 flaky 진단) — TEST-NET 실 TCP 대체(부하 flaky 차단)."""
+    bin_dir = tmp_path / "hang-bin"
+    bin_dir.mkdir(exist_ok=True)
+    helper = bin_dir / "git-remote-sleep"
+    helper.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    helper.chmod(0o755)
+    _git(repo, "remote", "set-url", remote, "sleep::repo")
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH','')}"}
+
 
 
 def test_pull_verb_ff_forwards(cloned_repo):
@@ -281,19 +293,20 @@ def test_pull_verb_offline_no_hang(tmp_path):
     (work / "x").write_text("x")
     _git(work, "add", ".")
     _git(work, "commit", "-m", "c")
-    # 비라우팅 원격 (TEST-NET-1, RFC5737) — 연결 시도는 타임아웃
-    _git(work, "remote", "add", "origin", "http://192.0.2.1/repo.git")
+    # 결정적 hang 원격(remote helper) — 실 TCP blackhole 은 부하 flaky(#36 진단)
+    _git(work, "remote", "add", "origin", "placeholder")
+    env = _hang_remote(work.parent, work)
     _git(work, "branch", "--set-upstream-to=origin/main", check=False)
     import time
     t0 = time.time()
-    r = _run_engine(work, "pull")
+    r = _run_engine(work, "pull", env=env)
     elapsed = time.time() - t0
     # 타임아웃(do_pull 기본 5s) + 약간의 여유. hang(무한) 아님.
     assert elapsed < 20, f"pull 이 {elapsed:.1f}s 매달림 (hang)"
     assert "Traceback" not in r.stderr
 
 
-def test_do_pull_timeout_no_orphan_grandchild(tmp_path):
+def test_do_pull_timeout_no_orphan_grandchild(tmp_path, monkeypatch):
     """역사적 버그 회귀 락: 타임아웃 시 손자 git-remote-http(s) 고아 누수 0.
 
     do_pull(짧은 timeout) 으로 비라우팅 원격에 pull → killpg 가 손자까지 죽이는지.
@@ -306,12 +319,14 @@ def test_do_pull_timeout_no_orphan_grandchild(tmp_path):
     (work / "x").write_text("x")
     _git(work, "add", ".")
     _git(work, "commit", "-m", "c")
-    _git(work, "remote", "add", "origin", "http://192.0.2.1/r.git")
-    _git(work, "branch", "--set-upstream-to=origin/main", check=False)
+    _git(work, "remote", "add", "origin", "placeholder")
+    env = _hang_remote(work.parent, work)
+    monkeypatch.setenv("PATH", env["PATH"])  # in-proc do_pull 의 git 이 helper 를 찾게
 
     def _count_remote_http():
+        # 손자 = git-remote-sleep(helper) — killpg 가 이걸 죽이는지 감시(결정적)
         try:
-            out = subprocess.run(["pgrep", "-af", "git-remote-http"],
+            out = subprocess.run(["pgrep", "-af", "git-remote-sleep"],
                                  capture_output=True, text=True).stdout
         except OSError:
             return 0
