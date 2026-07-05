@@ -3,7 +3,7 @@
 
 진입 2종(등가 — 둘 다 이 cli.py 로 위임):
   pip:  pip install "git+https://github.com/T-Gates/tm-mode" && tm-mode join <url>
-  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/main/install.sh | sh -s -- join <url>
+  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.0/install.sh | sh -s -- join <url>
 
   tm-mode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
   tm-mode join <clone-url>    합류: 팀 레포 clone → 셋업
@@ -36,7 +36,14 @@ except ImportError:  # pragma: no cover - Windows 등
     termios = None  # type: ignore[assignment]
     tty = None  # type: ignore[assignment]
 
-TEMPLATE_REPO = "T-Gates/tm-mode"
+# 포크 배포용 template 원본(2b). 우선순위: init --template > env TM_TEMPLATE_REPO > 기본.
+# 보안: template 은 clone 후 install.py 실행으로 이어진다 — 비기본 template 은
+# 사용자 가시 확인(TTY 프롬프트에 표시) 또는 명시 --template 없이는 진행 금지(codex P1).
+DEFAULT_TEMPLATE_REPO = "T-Gates/tm-mode"
+TEMPLATE_REPO = os.environ.get("TM_TEMPLATE_REPO", DEFAULT_TEMPLATE_REPO)
+# 설치 원라이너 핀(2b) — cli.py 는 curl 로 단독 실행되므로 패키지 import 불가.
+# 릴리스마다 __init__.__version__ 과 함께 올린다(tests/test_release_pin.py 가 교차 고정).
+PIN_REF = "refs/tags/v0.1.0"
 
 
 def _err(msg: str) -> None:
@@ -510,7 +517,7 @@ def _invite_lines(url: str) -> list[str]:
     return [
         f'  pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && tm-mode join {url}',
         f'  curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
-        f'/main/install.sh | sh -s -- join {url}',
+        f'/{PIN_REF}/install.sh | sh -s -- join {url}',
     ]
 
 
@@ -552,6 +559,16 @@ def _done(repo_dir: Path, *, created: bool = False, url: str | None = None) -> N
 
 
 def cmd_init(args) -> int:
+    # template 확정(--template > env > 기본) — 비기본 template 은 코드 실행으로
+    # 이어지므로(clone → install.py) 사용자 가시 게이트를 최우선 강제(codex P1):
+    #   비-TTY: --template 명시 없인 env 무시·중단. (TTY 확인은 생성 직전 프롬프트에서)
+    template = getattr(args, "template", None) or TEMPLATE_REPO
+    if template != DEFAULT_TEMPLATE_REPO and not getattr(args, "template", None) \
+            and not sys.stdin.isatty():
+        _err(f"TM_TEMPLATE_REPO({template})는 비대화 실행에서 무시됩니다 — "
+             f"의도했다면 `--template {template}` 로 명시하세요.")
+        return 1
+
     if not _have("git"):
         _err("git 이 필요합니다.")
         return 2
@@ -589,12 +606,14 @@ def cmd_init(args) -> int:
     # 생성 직전 owner/repo 최종 확인 — 소유자 오선택 방어(엉뚱한 계정에 조용히 생성 방지).
     # 비-TTY(인자로 OWNER/REPO 받은 경우 등)는 자동 진행.
     if sys.stdin.isatty():
-        if _prompt(f"📦 새 팀 레포를 '{full}' 에 만듭니다. 맞나요? [Y/n]", "Y").strip().lower() == "n":
+        _tpl = f" (template: {template})" if template != DEFAULT_TEMPLATE_REPO else ""
+        if _prompt(f"📦 새 팀 레포를 '{full}' 에 만듭니다{_tpl}. 맞나요? [Y/n]",
+                   "Y").strip().lower() == "n":
             _err(f"취소됨 — 위치를 직접 지정하려면 `tm-mode init <OWNER>/{repo}` 로 다시 실행하세요.")
             return 1
-    print(f"{full} 레포를 생성합니다 (template: {TEMPLATE_REPO})")
+    print(f"{full} 레포를 생성합니다 (template: {template})")
     rc = subprocess.run(["gh", "repo", "create", full,
-                        "--template", TEMPLATE_REPO, vis]).returncode
+                        "--template", template, vis]).returncode
     if rc != 0:
         _err("레포 생성 실패 — 권한·이름 중복을 확인하세요.")
         return rc
@@ -951,6 +970,8 @@ def main(argv=None) -> int:
     pi.add_argument("repo", nargs="?", help="OWNER/REPO 또는 REPO (생략 시 대화형)")
     pi.add_argument("--team-name", help="팀 이름(미지정 시 레포명 기본)")
     pi.add_argument("--public", action="store_true", help="공개 레포(기본 private)")
+    pi.add_argument("--template", default=None,
+                    help=f"template 레포(OWNER/REPO, 기본 {DEFAULT_TEMPLATE_REPO} — 포크 배포용)")
     # 셋업 정보(설치위치·에이전트·멤버·역할·obsidian)는 join wizard 가 대화로 묻는다.
     pi.set_defaults(func=cmd_init)
 

@@ -21,7 +21,7 @@ git clone <팀레포 clone-url> && cd <팀레포>
 pip install "git+https://github.com/T-Gates/tm-mode"
 
 # 또는 curl (pip 없이) — 아래 2단계 명령을 그대로 이어붙인다:
-#   curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/main/install.sh | sh -s -- <명령>
+#   curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.0/install.sh | sh -s -- <명령>
 ```
 
 ## 2. 팀 만들기 / 합류
