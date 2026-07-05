@@ -1072,6 +1072,324 @@ SYNC_PATHS = ["infra", "NOTICE.md"]
 # 않고(positive 존재확인용 유지) git 실행 시에만 `_sync_pathspecs()` 가 조합한다.
 SYNC_EXCLUDE_PATHS = ["infra/skills/util"]
 
+# ── 2층 validation 동기화(#36 PR2) ──────────────────────────────────
+# conformance/·tests/ 는 upstream 소유 검증층이지만 인스턴스가 손댈 수 있다(예약
+# 경로 tests/local·conformance/local, 강화판 check.py). 파일 단위 blob-history 판정:
+# 로컬 무수정=safe 갱신 / 커밋 안 된 수정(dirty)·로컬 커밋 수정=skip 보존.
+VALIDATION_PATHS = ["conformance", "tests"]
+VALIDATION_EXCLUDE_PREFIXES = ("tests/local/", "conformance/local/")
+VALIDATION_EXCLUDE_SEGMENTS = ("__pycache__", ".pytest_cache")
+VALIDATION_EXCLUDE_SUFFIXES = (".pyc",)
+
+
+@dataclass(frozen=True)
+class ValidationSkip:
+    path: str
+    reason: str          # dirty | local-unclassified | local-only | shallow
+    blob: str = ""       # local HEAD blob (untracked/shallow 는 "")
+    status: str = ""     # dirty 일 때 porcelain XY, 그 외 ""
+
+
+@dataclass(frozen=True)
+class ValidationPlan:
+    ref: str
+    safe_paths: tuple = ()
+    skipped: tuple = ()          # ValidationSkip[]
+    local_only: tuple = ()       # ValidationSkip[]
+    up_to_date: tuple = ()
+    skip_hash: str = ""
+    shallow: bool = False
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class ValidationApplyResult:
+    ok: bool
+    changed: bool = False
+    applied: tuple = ()
+    forced: tuple = ()
+    skipped: tuple = ()
+    backup_path: str = ""
+    diff: str = ""
+    detail: str = ""
+
+
+def _validation_excluded(path: str) -> bool:
+    if path.startswith(VALIDATION_EXCLUDE_PREFIXES):
+        return True
+    if path.endswith(VALIDATION_EXCLUDE_SUFFIXES):
+        return True
+    parts = path.split("/")
+    return any(seg in parts for seg in VALIDATION_EXCLUDE_SEGMENTS)
+
+
+def _is_shallow_repo(team_root: str, timeout: int) -> bool:
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "rev-parse", "--is-shallow-repository"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return True  # 알 수 없으면 보수적으로 shallow 취급(validation skip)
+    return rc == 0 and (out or "").strip() == "true"
+
+
+def _ls_tree_map(team_root: str, ref: str, timeout: int) -> dict:
+    """`git ls-tree -r -z <ref> -- conformance tests` → {path: (mode,type,blob)}. 무raise."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "ls-tree", "-r", "-z", ref, "--", *VALIDATION_PATHS],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    result = {}
+    if rc != 0:
+        return result
+    for entry in (out or "").split("\0"):
+        if not entry:
+            continue
+        meta, _tab, path = entry.partition("\t")
+        cols = meta.split()
+        if len(cols) >= 3 and path:
+            result[path] = (cols[0], cols[1], cols[2])
+    return result
+
+
+def _ref_history_blobs(team_root: str, ref: str, timeout: int) -> set:
+    """`git log --format= --raw --no-abbrev <ref> -- conformance tests` 의 blob 집합.
+
+    로컬 blob 이 이 집합에 있으면 "upstream 역사에 존재"(뒤처짐·무수정) → safe.
+    blob 만 필요하므로 path 파싱 불필요(공백 path 무관) — `:` raw 라인의 blob1·blob2 추출.
+    rename(R)·copy(C) 도 같은 raw 라인 형식이라 자동 커버.
+    """
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "log", "--format=", "--raw", "--no-abbrev",
+             ref, "--", *VALIDATION_PATHS], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    blobs = set()
+    if rc != 0:
+        return blobs
+    for line in (out or "").splitlines():
+        if not line.startswith(":"):
+            continue
+        # :mode1 mode2 blob1 blob2 status<TAB>path
+        cols = line[1:].split()
+        for tok in cols[2:4]:
+            if len(tok) == 40 and all(c in "0123456789abcdef" for c in tok):
+                blobs.add(tok)
+    return blobs
+
+
+def _validation_dirty_paths(team_root: str, timeout: int) -> dict:
+    """`git status --porcelain=v1 -z --untracked-files=all` → {path: XY}. 무raise.
+
+    커밋 안 된 수정·staged·untracked 를 잡는다 — checkout 이 덮으면 유실될 로컬 변경
+    (blob-history 판정보다 우선 skip). rename/copy 는 old/new path 양쪽 등록.
+    """
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "status", "--porcelain=v1", "-z",
+             "--untracked-files=all", "--", *VALIDATION_PATHS], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    dirty = {}
+    if rc != 0:
+        return dirty
+    tokens = (out or "").split("\0")
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok:
+            i += 1
+            continue
+        xy = tok[:2]
+        path = tok[3:] if len(tok) > 3 else ""
+        if path:
+            dirty[path] = xy
+        # rename/copy(R/C): 다음 토큰이 원본(old) path
+        if xy and xy[0] in ("R", "C"):
+            i += 1
+            if i < len(tokens) and tokens[i]:
+                dirty[tokens[i]] = xy
+        i += 1
+    return dirty
+
+
+def _validation_skip_hash(skipped, local_only) -> str:
+    import json as _json
+    items = sorted((s.path, s.reason, s.blob)
+                   for s in list(skipped) + list(local_only))
+    return hashlib.sha256(
+        _json.dumps(items, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def plan_validation_sync(team_root: str, ref: str,
+                         timeout: int = DEFAULT_TIMEOUT) -> ValidationPlan:
+    """validation 층(conformance/·tests/) 파일 단위 동기화 계획. 무raise(철칙).
+
+    판정 순서: excluded? → dirty? → up_to_date? → blob-history safe? → skip.
+    - dirty(커밋 안 된 수정/staged/untracked): 무조건 skip(덮으면 유실).
+    - local==current(mode/type/blob): up_to_date.
+    - upstream 만 있음(local 없음): safe addition.
+    - local 만 있음(current 없음): local_only(v1 삭제 안 함).
+    - 둘 다 있고 다름 + local blob 이 upstream 역사에 있음: safe(뒤처짐).
+    - 그 외: skip(local-unclassified — 로컬 수정으로 간주 보존).
+    """
+    if _is_shallow_repo(team_root, timeout):
+        return ValidationPlan(ref=ref, shallow=True,
+                              detail="shallow clone — validation 전체 skip(엔진은 정상)")
+
+    local = _ls_tree_map(team_root, "HEAD", timeout)
+    current = _ls_tree_map(team_root, ref, timeout)
+    history = _ref_history_blobs(team_root, ref, timeout)
+    dirty = _validation_dirty_paths(team_root, timeout)
+
+    safe, skipped, local_only, up_to_date = [], [], [], []
+    for path in sorted(set(local) | set(current)):
+        if _validation_excluded(path):
+            continue
+        lmeta = local.get(path)
+        cmeta = current.get(path)
+        lblob = lmeta[2] if lmeta else ""
+        if path in dirty:
+            skipped.append(ValidationSkip(path, "dirty", lblob, dirty[path]))
+            continue
+        if lmeta and cmeta and lmeta == cmeta:
+            up_to_date.append(path)
+            continue
+        if not lmeta and cmeta:
+            safe.append(path)  # upstream 신규
+            continue
+        if lmeta and not cmeta:
+            local_only.append(ValidationSkip(path, "local-only", lblob))
+            continue
+        # 둘 다 있고 다름
+        if lblob in history:
+            safe.append(path)  # 로컬 blob 이 upstream 역사에 있음 = 뒤처짐(무수정)
+        else:
+            skipped.append(ValidationSkip(path, "local-unclassified", lblob))
+
+    return ValidationPlan(
+        ref=ref, safe_paths=tuple(safe), skipped=tuple(skipped),
+        local_only=tuple(local_only), up_to_date=tuple(up_to_date),
+        skip_hash=_validation_skip_hash(skipped, local_only), shallow=False)
+
+
+def validation_cache_path(team_root: str) -> str:
+    """validation skip-cache 경로($XDG_STATE_HOME/teammode/sync/<team_key>.json)."""
+    return os.path.join(_state_dir(), "sync", f"{_team_key(team_root)}.json")
+
+
+def validation_skip_seen(team_root: str, skip_hash: str) -> bool:
+    """이 skip_hash 가 직전 기록과 같은지(반복 skip 축약 판정용). 무raise."""
+    if not skip_hash:
+        return False
+    try:
+        import json as _json
+        with open(validation_cache_path(team_root), encoding="utf-8") as f:
+            return _json.load(f).get("skip_hash") == skip_hash
+    except (OSError, ValueError):
+        return False
+
+
+def record_validation_skip(team_root: str, skip_hash: str, counts=None) -> None:
+    """skip-cache 기록(원자). last_warned 는 정보용(판정엔 skip_hash 만). 무raise."""
+    try:
+        import json as _json
+        from datetime import datetime as _dt
+        path = validation_cache_path(team_root)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = _json.dumps({
+            "version": 1,
+            "repo_id": _team_key(team_root),
+            "root": os.path.normpath(str(team_root)),
+            "skip_hash": skip_hash,
+            "last_warned": _dt.now().isoformat(timespec="seconds"),
+            "counts": counts or {},
+        }, ensure_ascii=False)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _checkout_chunks(team_root: str, ref: str, paths: list, timeout: int):
+    """paths 를 200개 단위 chunk 로 checkout(argv 길이·구버전 git 호환). (ok, err) 반환."""
+    for i in range(0, len(paths), 200):
+        chunk = [str(p) for p in paths[i:i + 200]]
+        try:
+            rc, out, err = run_git(
+                ["-C", team_root, "checkout", ref, "--", *chunk], timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, "checkout timeout"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"checkout exec error: {exc}"
+        if rc != 0:
+            return False, ((err or out) or "").strip()[:200]
+    return True, ""
+
+
+def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
+                          force: bool = False, backup: bool = True,
+                          timeout: int = DEFAULT_TIMEOUT) -> ValidationApplyResult:
+    """validation 계획 적용 — safe_paths 만 checkout(staged). 자동 commit/push 없음.
+
+    force: skip(로컬 수정) 중 upstream ref 에 존재하는 path 도 덮는다 — backup=True 면
+    먼저 로컬 diff 를 patch 로 XDG 아래 백업. local_only(ref 부재)는 force 도 삭제 안 함(v1).
+    무raise(철칙).
+    """
+    if plan.shallow:
+        return ValidationApplyResult(ok=True, changed=False, skipped=plan.skipped,
+                                     detail="shallow — validation 적용 skip")
+    targets = list(plan.safe_paths)
+    forced = []
+    backup_path = ""
+    if force:
+        # skip 중 ref 에 실재하는 것만 강제 대상(local_only=ref 부재 → 제외)
+        forced = [s.path for s in plan.skipped]
+        if backup and forced:
+            backup_path = _write_validation_backup(team_root, ref, forced, timeout)
+        targets = targets + forced
+
+    if not targets:
+        return ValidationApplyResult(ok=True, changed=False, skipped=plan.skipped,
+                                     detail="적용할 safe 파일 없음")
+
+    diff = diff_paths(team_root, ref, targets, timeout=timeout)
+    ok, err = _checkout_chunks(team_root, ref, targets, timeout)
+    if not ok:
+        return ValidationApplyResult(ok=False, skipped=plan.skipped,
+                                     backup_path=backup_path,
+                                     detail=f"checkout 실패: {err}")
+    return ValidationApplyResult(
+        ok=True, changed=True, applied=tuple(plan.safe_paths),
+        forced=tuple(forced), skipped=plan.skipped, backup_path=backup_path,
+        diff=diff, detail="validation sync applied")
+
+
+def _write_validation_backup(team_root: str, ref: str, paths: list,
+                             timeout: int) -> str:
+    """force 덮기 전 로컬 변경을 patch 로 백업($XDG/teammode/sync/backup-*.patch). 무raise."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "diff", "--binary", ref, "--",
+             *[str(p) for p in paths]], timeout=timeout)
+        if rc != 0 or not (out or "").strip():
+            return ""
+        from datetime import datetime as _dt
+        bdir = os.path.join(_state_dir(), "sync")
+        os.makedirs(bdir, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        bpath = os.path.join(bdir, f"backup-{_team_key(team_root)}-{stamp}.patch")
+        with open(bpath, "w", encoding="utf-8") as f:
+            f.write(out)
+        return bpath
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
 
 def _sync_pathspecs(paths: list) -> list:
     """positive paths → git pathspec 목록(positive + 해당 exclude). #36.
