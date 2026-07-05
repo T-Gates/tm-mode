@@ -520,3 +520,15 @@ def test_cmd_update_applies_deletes(team_with_upstream_deletes):
     assert not (team / "tests" / "test_obsolete.py").exists()
     assert not (team / "tests" / "test_moving.py").exists()
     assert (team / "tests" / "test_moved.py").exists()  # rename 새 경로 생성
+
+
+def test_delete_candidate_dirty_at_apply_is_late_skipped(team_with_upstream_deletes):
+    """[재검수 P3] plan 후 apply 전에 dirty 가 된 삭제 후보 — 보존 + skipped 가시화."""
+    team = team_with_upstream_deletes
+    plan = go.plan_validation_sync(str(team), "upstream/main")
+    assert "tests/test_obsolete.py" in {d.path for d in plan.safe_deletes}
+    _write(team, "tests/test_obsolete.py", "EDIT AFTER PLAN\n")
+    res = go.apply_validation_sync(str(team), "upstream/main", plan)
+    assert res.ok
+    assert (team / "tests" / "test_obsolete.py").read_text() == "EDIT AFTER PLAN\n"
+    assert "tests/test_obsolete.py" in {s.path for s in res.skipped}

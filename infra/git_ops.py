@@ -1431,8 +1431,14 @@ def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
     # ── v2: safe_deletes — 백업(raw copy) 선행 후 git rm(staged) ──
     deleted = []
     delete_backup = ""
-    del_targets = [d for d in plan.safe_deletes
-                   if d.path not in dirty_now]  # 적용 직전 dirty 재검사(삭제도 동일)
+    del_targets = []
+    for d in plan.safe_deletes:  # 적용 직전 dirty 재검사(삭제도 동일)
+        if d.path in dirty_now:
+            # 조용히 빠지면 delete-only 계획에서 출력 없이 끝난다(codex P3) — 가시화
+            late_skips.append(ValidationSkip(d.path, "dirty", d.blob,
+                                             dirty_now[d.path]))
+        else:
+            del_targets.append(d)
     if del_targets:
         ok_b, delete_backup = _write_validation_delete_backup(
             team_root, ref, [d.path for d in del_targets], timeout)
@@ -1463,8 +1469,11 @@ def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
     diff = diff_paths(team_root, ref, targets, timeout=timeout)
     ok, err = _checkout_chunks(team_root, ref, targets, timeout)
     if not ok:
-        return ValidationApplyResult(ok=False, skipped=plan.skipped,
-                                     backup_path=backup_path,
+        # 삭제가 이미 staged 됐을 수 있다(codex P2) — deleted·백업 경로를 잃지 않는다
+        return ValidationApplyResult(ok=False, changed=bool(deleted),
+                                     deleted=tuple(deleted),
+                                     skipped=plan.skipped,
+                                     backup_path=backup_path or delete_backup,
                                      detail=f"checkout 실패: {err}")
     return ValidationApplyResult(
         ok=True, changed=True,
@@ -1497,7 +1506,9 @@ def _write_validation_delete_backup(team_root: str, ref: str, paths: list,
             src = os.path.join(team_root, rel)
             dst = os.path.join(files_dir, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            _shutil.copy2(src, dst)
+            # follow_symlinks=False: raw copy 계약 — 심링크는 링크 자체를 보존
+            # (기본값은 target 내용 복사·broken link 실패 — codex P2)
+            _shutil.copy2(src, dst, follow_symlinks=False)
         rc, out, _ = run_git(
             ["-C", team_root, "diff", "--binary", ref, "--",
              *[str(p) for p in paths]], timeout=timeout)
