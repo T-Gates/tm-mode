@@ -35,10 +35,26 @@ def test_no_main_tracking_oneliners_in_user_docs():
 
 
 def test_template_repo_configurable():
-    """TEMPLATE_REPO: env TM_TEMPLATE_REPO 로 override 가능(포크 배포)."""
+    """TEMPLATE_REPO: --template 플래그 + env(가시 게이트 동반) — 포크 배포(2b)."""
     t = (REPO / "src" / "teammode" / "cli.py").read_text(encoding="utf-8")
     assert re.search(r'TEMPLATE_REPO\s*=\s*os\.environ\.get\(\s*"TM_TEMPLATE_REPO"', t), \
         "TEMPLATE_REPO 하드코딩 — env 설정가능화 필요(2b)"
+    assert '"--template"' in t, "init --template 플래그 없음(P3)"
+
+
+def test_nontty_env_template_rejected(tmp_path, monkeypatch):
+    """[codex P1] 비-TTY 에서 env 만의 비기본 template 은 생성 전에 중단(악성 주입 차단)."""
+    import subprocess, sys
+    cli = REPO / "src" / "teammode" / "cli.py"
+    r = subprocess.run(
+        [sys.executable, str(cli), "init", "evil-owner/evil-repo"],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        env={**__import__("os").environ,
+             "TM_TEMPLATE_REPO": "attacker/malicious-template"},
+        cwd=str(tmp_path), timeout=30)
+    assert r.returncode != 0
+    assert "TM_TEMPLATE_REPO" in (r.stderr + r.stdout)
+    assert "--template" in (r.stderr + r.stdout)
 
 
 def test_cli_pin_ref_matches_version():
