@@ -345,8 +345,22 @@ def auto_update_on_start(team_root: Path) -> None:
             # fetch 실패·remote 없음·offline — 조용히 skip(on 막지 않음)
             return
 
+        # 2층 validation(#36 PR2): on 자동 경로는 **적용하지 않고 알림만** — 훅 경로에
+        # 보수 판정 UX(파일별 skip 상세)를 섞지 않는다. 적용은 사람이 tm-mode update 로.
+        # engine changed 여부와 무관(engine 최신이어도 validation 은 별개로 대상일 수 있음).
+        try:
+            _vbranch = _git_ops.detect_default_branch(str(team_root),
+                                                      remote=UPSTREAM_REMOTE)
+            _vplan = _git_ops.plan_validation_sync(
+                str(team_root), f"{UPSTREAM_REMOTE}/{_vbranch}")
+            if not _vplan.shallow and _vplan.safe_paths:
+                print(f"validation 업데이트 가능: {len(_vplan.safe_paths)}개 — "
+                      f"tm-mode update 로 적용하세요.")
+        except Exception:  # noqa: BLE001 — 알림 실패가 on 을 막지 않는다
+            pass
+
         if not res.changed:
-            # 멱등: 변경 없음 — do_commit 호출 안 함
+            # 멱등: 엔진 변경 없음 — do_commit 호출 안 함(validation 알림은 위에서 이미)
             return
 
         # 변경 있음: pathspec 한정 자동 커밋 + 자동 push(6/23 철학). push 실패는 비차단.
@@ -488,7 +502,66 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     return 0
 
 
-def cmd_update(team_root: Path, dry_run: bool = False) -> int:
+def _run_validation_sync(team_root: Path, dry_run: bool, force: bool) -> None:
+    """cmd_update 의 2층 — validation(conformance/·tests/) 파일 단위 동기화(#36 PR2).
+
+    엔진(1층) 처리 뒤 같은 ref 로 plan→apply. 자동 commit/push 없음(엔진과 동일 계약).
+    dry-run 이면 계획만. 같은 skip_hash 반복이면 skip 상세를 한 줄로 축약(skip-cache).
+    """
+    branch = _git_ops.detect_default_branch(str(team_root), remote=UPSTREAM_REMOTE)
+    ref = f"{UPSTREAM_REMOTE}/{branch}"
+    plan = _git_ops.plan_validation_sync(str(team_root), ref)
+    if plan.shallow:
+        print("tm-mode update — validation: shallow clone 이라 건너뜀(엔진은 정상).")
+        return
+
+    n_safe = len(plan.safe_paths)
+    n_skip = len(plan.skipped) + len(plan.local_only)
+
+    if dry_run:
+        if n_safe:
+            print(f"tm-mode update [dry-run] — validation 동기화 대상 {n_safe}개:")
+            print(plan.diff if getattr(plan, "diff", "") else
+                  "  " + "\n  ".join(plan.safe_paths))
+        else:
+            print("tm-mode update [dry-run] — validation: 갱신할 파일 없음.")
+        if n_skip:
+            # dry-run 은 항상 전체 출력(축약 안 함)
+            print(f"  보존(skip) {n_skip}개 — 로컬 수정/전용:")
+            for s in list(plan.skipped) + list(plan.local_only):
+                print(f"    - {s.path} ({s.reason})")
+        return
+
+    if n_safe or (force and plan.skipped):
+        # force 는 safe 0 이어도 동작해야 한다(codex P2 — skip 만 있는 상태에서
+        # --force 가 무시되면 사용자 명시 의사가 증발).
+        res = _git_ops.apply_validation_sync(str(team_root), ref, plan, force=force)
+        if res.ok and res.changed:
+            print(f"tm-mode update — validation 동기화 완료 {len(res.applied)}개(staged)."
+                  + (f" 강제 덮어쓰기 {len(res.forced)}개(백업: {res.backup_path})"
+                     if res.forced else ""))
+        elif not res.ok:
+            print(f"tm-mode update — validation 적용 실패(비치명): {res.detail}",
+                  file=sys.stderr)
+    else:
+        print("tm-mode update — validation: 이미 최신(갱신할 파일 없음).")
+
+    # skip 가시화 — 같은 skip_hash 반복이면 축약(skip-cache)
+    if n_skip:
+        if _git_ops.validation_skip_seen(str(team_root), plan.skip_hash):
+            print(f"  validation 보존(skip) {n_skip}개 — 이전과 동일(변동 없음).")
+        else:
+            print(f"  validation 보존(skip) {n_skip}개 — 로컬 수정/전용이라 덮지 않음"
+                  f"(전체는 --dry-run 으로 확인, 강제는 --force):")
+            for s in (list(plan.skipped) + list(plan.local_only))[:10]:
+                print(f"    - {s.path} ({s.reason})")
+            _git_ops.record_validation_skip(
+                str(team_root), plan.skip_hash,
+                counts={"skipped": len(plan.skipped),
+                        "local_only": len(plan.local_only)})
+
+
+def cmd_update(team_root: Path, dry_run: bool = False, force: bool = False) -> int:
     """upstream(템플릿)의 엔진 파일을 **파일 동기화**로 적용 — 슬라이스 T2.
 
     왜 merge 가 아닌가: 도입 레포는 GitHub *template* 으로 생성돼 upstream 과 공통
@@ -541,10 +614,14 @@ def cmd_update(team_root: Path, dry_run: bool = False) -> int:
             print("  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)")
         else:
             print("tm-mode update [dry-run] — 이미 최신입니다(변경 없음).")
+        # 2층 validation(#36 PR2) — dry-run 계획도 함께 표시
+        _run_validation_sync(team_root, dry_run=True, force=force)
         return 0
 
     if not res.changed:
-        print("tm-mode update — 이미 최신입니다.")
+        print("tm-mode update — 엔진: 이미 최신입니다.")
+        # 엔진이 최신이어도 validation 은 별개로 동기화 대상일 수 있다(#36 PR2).
+        _run_validation_sync(team_root, dry_run=False, force=force)
         return 0
 
     # 적용됨(staged) — 무엇이 바뀌었나 사람이 읽는 요약. push·commit 안 함.
@@ -552,6 +629,8 @@ def cmd_update(team_root: Path, dry_run: bool = False) -> int:
     print(res.diff)
     print("  변경은 스테이지됨(자동 커밋·push 안 함). 검토 후 직접 커밋하세요:\n"
           "  git commit -m 'chore: sync teammode engine from upstream'")
+    # 2층 validation(#36 PR2) — 엔진 뒤 같은 ref 로 파일 단위 동기화
+    _run_validation_sync(team_root, dry_run=False, force=force)
     return 0
 
 
@@ -2643,7 +2722,7 @@ def _parse_args(argv):
     """
     verb = None
     opts: dict = {"install": False, "json": False, "push": False,
-                  "dry_run": False, "positionals": []}
+                  "dry_run": False, "force": False, "positionals": []}
     it = iter(argv)
     for a in it:
         if a in _VALUE_FLAGS:
@@ -2656,6 +2735,8 @@ def _parse_args(argv):
             opts["push"] = True
         elif a == "--dry-run":
             opts["dry_run"] = True
+        elif a == "--force":
+            opts["force"] = True
         elif not a.startswith("-"):
             # 첫 non-flag = verb, 이후 non-flag = positional(서브액션 등). 하니스가
             # `issue --root <root> create …` 처럼 --root 를 verb 와 서브액션 사이에
@@ -2752,7 +2833,7 @@ def main(argv=None) -> int:
         return cmd_commit(team_root, message, opts["push"], paths=paths)
 
     if verb == "update":
-        return cmd_update(team_root, dry_run=opts["dry_run"])
+        return cmd_update(team_root, dry_run=opts["dry_run"], force=opts["force"])
 
     if verb == "issue":
         # 첫 positional = 서브액션(예: create). --root 가 verb 와 서브액션 사이에
