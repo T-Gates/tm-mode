@@ -39,8 +39,10 @@
 
 ```
 에이전트 세션 시작
-  └ session-start 훅: 팀원별 최근 세션로그 + memory INDEX + 가이드라인 주입
-      └ (auto) update 알림·pull — upstream 엔진/검증층 뒤처짐 감지
+  └ session-start 훅: 팀 원격(origin) 정합(세션당 1회) + 팀원별 최근 세션로그
+    + memory INDEX + 가이드라인 주입
+  └ (tm on 시) auto_update_on_start: upstream 엔진/검증층 뒤처짐 감지·알림
+    — 적용은 tm-mode update 에서만
 작업 중
   └ user-prompt-submit 훅: 세션로그 미작성 리마인드(1~3줄)
   └ kb-write-guard 훅: memory/ 직접 Edit 차단(관리 스킬 경유 강제, 본인 세션로그 예외)
