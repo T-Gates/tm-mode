@@ -1,0 +1,53 @@
+# 릴리스 발행 — v* 태그 push 시 build → PyPI (Trusted Publishing/OIDC, 시크릿 불필요).
+# 선행 1회(사람): PyPI 프로젝트 tm-mode 에 Trusted Publisher 등록
+#   (owner T-Gates / repo tm-mode / workflow publish.yml / environment pypi).
+# 등록 전엔 publish 단계가 실패할 뿐 레포에 무해하다.
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Verify wheel contains LICENSE + version matches tag
+        run: |
+          python - <<'PY'
+          import glob, os, re, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          assert any(n.endswith("licenses/LICENSE") or n.endswith("LICENSE")
+                     for n in names), f"wheel 에 LICENSE 없음: {names}"
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          m = re.search(r"-(\d+\.\d+\.\d+)-", os.path.basename(whl))
+          assert m and f"v{m.group(1)}" == tag, \
+              f"버전({m and m.group(1)}) ≠ 태그({tag}) — __init__.__version__ 갱신 누락"
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
