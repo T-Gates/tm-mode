@@ -559,6 +559,16 @@ def _done(repo_dir: Path, *, created: bool = False, url: str | None = None) -> N
 
 
 def cmd_init(args) -> int:
+    # template 확정(--template > env > 기본) — 비기본 template 은 코드 실행으로
+    # 이어지므로(clone → install.py) 사용자 가시 게이트를 최우선 강제(codex P1):
+    #   비-TTY: --template 명시 없인 env 무시·중단. (TTY 확인은 생성 직전 프롬프트에서)
+    template = getattr(args, "template", None) or TEMPLATE_REPO
+    if template != DEFAULT_TEMPLATE_REPO and not getattr(args, "template", None) \
+            and not sys.stdin.isatty():
+        _err(f"TM_TEMPLATE_REPO({template})는 비대화 실행에서 무시됩니다 — "
+             f"의도했다면 `--template {template}` 로 명시하세요.")
+        return 1
+
     if not _have("git"):
         _err("git 이 필요합니다.")
         return 2
@@ -595,15 +605,6 @@ def cmd_init(args) -> int:
     # ① 레포 "생성"만 (--clone 없음) — clone·셋업은 join 이 담당(생성 ↔ 참여 분리).
     # 생성 직전 owner/repo 최종 확인 — 소유자 오선택 방어(엉뚱한 계정에 조용히 생성 방지).
     # 비-TTY(인자로 OWNER/REPO 받은 경우 등)는 자동 진행.
-    # template 확정(--template > env > 기본) — 비기본 template 은 코드 실행으로
-    # 이어지므로(clone → install.py) 사용자 가시 게이트를 강제한다(codex P1):
-    #   TTY: 프롬프트에 template 표시 / 비-TTY: --template 명시 없인 env 무시·중단.
-    template = getattr(args, "template", None) or TEMPLATE_REPO
-    if template != DEFAULT_TEMPLATE_REPO and not getattr(args, "template", None) \
-            and not sys.stdin.isatty():
-        _err(f"TM_TEMPLATE_REPO({template})는 비대화 실행에서 무시됩니다 — "
-             f"의도했다면 `--template {template}` 로 명시하세요.")
-        return 1
     if sys.stdin.isatty():
         _tpl = f" (template: {template})" if template != DEFAULT_TEMPLATE_REPO else ""
         if _prompt(f"📦 새 팀 레포를 '{full}' 에 만듭니다{_tpl}. 맞나요? [Y/n]",
