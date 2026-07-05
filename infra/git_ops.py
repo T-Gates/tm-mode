@@ -1091,13 +1091,22 @@ class ValidationSkip:
 
 
 @dataclass(frozen=True)
+class ValidationDelete:
+    path: str
+    blob: str = ""
+    reason: str = "upstream-deleted"   # upstream-deleted | upstream-renamed
+    renamed_to: str = ""
+
+
+@dataclass(frozen=True)
 class ValidationPlan:
     ref: str
     safe_paths: tuple = ()
     skipped: tuple = ()          # ValidationSkip[]
     local_only: tuple = ()       # ValidationSkip[]
     up_to_date: tuple = ()
-    skip_hash: str = ""
+    safe_deletes: tuple = ()     # ValidationDelete[] — v2(#36 절단② 해소)
+    skip_hash: str = ""          # skipped+local_only 만(삭제는 action 대상 — 미포함)
     shallow: bool = False
     detail: str = ""
 
@@ -1108,8 +1117,9 @@ class ValidationApplyResult:
     changed: bool = False
     applied: tuple = ()
     forced: tuple = ()
+    deleted: tuple = ()          # v2 — staged 삭제된 path
     skipped: tuple = ()
-    backup_path: str = ""
+    backup_path: str = ""        # force patch 또는 삭제 raw-copy 디렉토리
     diff: str = ""
     detail: str = ""
 
@@ -1153,34 +1163,53 @@ def _ls_tree_map(team_root: str, ref: str, timeout: int) -> dict:
     return result
 
 
-def _ref_history_blobs(team_root: str, ref: str, timeout: int) -> dict:
-    """upstream 역사의 **경로별** blob 집합 — {path: set(blob)}. 무raise.
+_ZERO_BLOB = "0" * 40
 
-    전역 blob 집합은 크로스패스 충돌(로컬 의도 수정의 blob 이 **다른 경로**의 역사
-    blob 과 우연히 일치 — 빈 파일·공통 fixture)에 safe 오판을 만든다(codex P1).
-    `:` raw 라인은 `:mode1 mode2 blob1 blob2 STATUS\tpath[\tpath2]` — R/C 는
-    old/new 양쪽 path 에 양쪽 blob 을 등록한다.
+
+def _ref_history_index(team_root: str, ref: str, timeout: int):
+    """upstream 역사 인덱스 — (history_by_path, latest_by_path). 무raise.
+
+    - history_by_path: {path: set(blob)} — 크로스패스 충돌 차단(codex P1). R/C 는
+      old/new 양쪽 path 에 양쪽 blob 등록. zero-blob 제외.
+    - latest_by_path: {path: ("deleted"|"renamed-away"|"renamed-into"|<kind>, renamed_to)}
+      — log 는 최신→과거 순이므로 **첫 관측**이 ref 기준 최신 이벤트(setdefault).
+      terminal removal(D/R-away) 판정에 사용(v2 safe_deletes — blob 존재만으론
+      "과거에 지워진 적 있음"과 "지금 없음"을 구분 못 함).
+    - `-M` 필수: rename 이 D+A 로 쪼개지면 R-away 를 못 본다.
     """
     try:
         rc, out, _ = run_git(
-            ["-C", team_root, "log", "--format=", "--raw", "--no-abbrev",
+            ["-C", team_root, "log", "--format=", "--raw", "-M", "--no-abbrev",
              ref, "--", *VALIDATION_PATHS], timeout=timeout)
     except (OSError, subprocess.SubprocessError):
-        return {}
+        return {}, {}
     by_path: dict = {}
+    latest: dict = {}
     if rc != 0:
-        return by_path
+        return by_path, latest
     for line in (out or "").splitlines():
         if not line.startswith(":"):
             continue
         meta, *paths = line.split("\t")
         cols = meta[1:].split()
+        if len(cols) < 5 or not paths:
+            continue
         blobs = [tok for tok in cols[2:4]
-                 if len(tok) == 40 and all(c in "0123456789abcdef" for c in tok)]
+                 if len(tok) == 40 and tok != _ZERO_BLOB
+                 and all(c in "0123456789abcdef" for c in tok)]
+        kind = cols[4][0]
+        if kind in ("R", "C") and len(paths) >= 2:
+            old_p, new_p = paths[0], paths[1]
+            latest.setdefault(old_p, ("renamed-away", new_p))
+            latest.setdefault(new_p, ("renamed-into", old_p))
+        elif kind == "D":
+            latest.setdefault(paths[0], ("deleted", ""))
+        else:
+            latest.setdefault(paths[0], (kind, ""))
         for path in paths:
             if path:
                 by_path.setdefault(path, set()).update(blobs)
-    return by_path
+    return by_path, latest
 
 
 def _validation_dirty_paths(team_root: str, timeout: int) -> dict:
@@ -1245,10 +1274,11 @@ def plan_validation_sync(team_root: str, ref: str,
 
     local = _ls_tree_map(team_root, "HEAD", timeout)
     current = _ls_tree_map(team_root, ref, timeout)
-    history = _ref_history_blobs(team_root, ref, timeout)
+    history, latest = _ref_history_index(team_root, ref, timeout)
     dirty = _validation_dirty_paths(team_root, timeout)
 
     safe, skipped, local_only, up_to_date = [], [], [], []
+    safe_deletes = []
     for path in sorted(set(local) | set(current)):
         if _validation_excluded(path):
             continue
@@ -1265,7 +1295,23 @@ def plan_validation_sync(team_root: str, ref: str,
             safe.append(path)  # upstream 신규
             continue
         if lmeta and not cmeta:
-            local_only.append(ValidationSkip(path, "local-only", lblob))
+            # v2(#36 절단② 해소): upstream 유래 + terminal removal 이면 safe_delete.
+            # blob∈경로역사 = 이 파일은 upstream 이 준 그대로(무수정) / latest 가
+            # D·R-away = upstream 이 실제로 없앤 것. 둘 다 충족해야 삭제 후보 —
+            # 로컬 창작·하이브리드는 blob 불일치로 보존(사람 정리 후보 표시만).
+            ev, ren_to = latest.get(path, ("", ""))
+            if lblob in history.get(path, ()) and ev in ("deleted", "renamed-away"):
+                safe_deletes.append(ValidationDelete(
+                    path, blob=lblob,
+                    reason=("upstream-renamed" if ev == "renamed-away"
+                            else "upstream-deleted"),
+                    renamed_to=ren_to))
+            elif ev in ("deleted", "renamed-away"):
+                # terminal removal 인데 blob 불일치 — 자동 삭제 금지, 후보 명시(codex R2)
+                local_only.append(ValidationSkip(
+                    path, "local-only-removed-upstream", lblob))
+            else:
+                local_only.append(ValidationSkip(path, "local-only", lblob))
             continue
         # 둘 다 있고 다름 — **같은 경로의** 역사에 있어야 safe(크로스패스 차단)
         if lblob in history.get(path, ()):
@@ -1276,6 +1322,7 @@ def plan_validation_sync(team_root: str, ref: str,
     return ValidationPlan(
         ref=ref, safe_paths=tuple(safe), skipped=tuple(skipped),
         local_only=tuple(local_only), up_to_date=tuple(up_to_date),
+        safe_deletes=tuple(safe_deletes),
         skip_hash=_validation_skip_hash(skipped, local_only), shallow=False)
 
 
@@ -1381,11 +1428,37 @@ def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
                            "덮어쓰기 진행 안 함")
         targets = targets + forced
 
-    if not targets:
+    # ── v2: safe_deletes — 백업(raw copy) 선행 후 git rm(staged) ──
+    deleted = []
+    delete_backup = ""
+    del_targets = [d for d in plan.safe_deletes
+                   if d.path not in dirty_now]  # 적용 직전 dirty 재검사(삭제도 동일)
+    if del_targets:
+        ok_b, delete_backup = _write_validation_delete_backup(
+            team_root, ref, [d.path for d in del_targets], timeout)
+        if not ok_b:
+            return ValidationApplyResult(
+                ok=False, skipped=plan.skipped,
+                detail="삭제 중단: 백업 기록 실패(XDG state 쓰기 확인) — "
+                       "삭제 진행 안 함")
+        ok_rm, rm_err = _git_rm_chunks(
+            team_root, [d.path for d in del_targets], timeout)
+        if not ok_rm:
+            return ValidationApplyResult(
+                ok=False, skipped=plan.skipped, backup_path=delete_backup,
+                detail=f"git rm 실패: {rm_err}")
+        deleted = [d.path for d in del_targets]
+
+    if not targets and not deleted:
         return ValidationApplyResult(
             ok=True, changed=False,
             skipped=tuple(list(plan.skipped) + late_skips),
             detail="적용할 safe 파일 없음")
+    if not targets:
+        return ValidationApplyResult(
+            ok=True, changed=True, deleted=tuple(deleted),
+            skipped=tuple(list(plan.skipped) + late_skips),
+            backup_path=delete_backup, detail="validation 삭제 적용")
 
     diff = diff_paths(team_root, ref, targets, timeout=timeout)
     ok, err = _checkout_chunks(team_root, ref, targets, timeout)
@@ -1396,10 +1469,69 @@ def apply_validation_sync(team_root: str, ref: str, plan: ValidationPlan,
     return ValidationApplyResult(
         ok=True, changed=True,
         applied=tuple(p for p in plan.safe_paths if p in set(targets)),
-        forced=tuple(forced),
+        forced=tuple(forced), deleted=tuple(deleted),
         skipped=tuple(list(plan.skipped) + late_skips),
-        backup_path=backup_path,
+        backup_path=backup_path or delete_backup,
         diff=diff, detail="validation sync applied")
+
+
+def _write_validation_delete_backup(team_root: str, ref: str, paths: list,
+                                    timeout: int):
+    """삭제 전 raw copy 백업 디렉토리 생성. 반환 (ok, dir_path). 무raise.
+
+    구조(codex R2 확정): backup-<key>-<ts>-safe-deletes/{manifest.json, restore.patch,
+    files/<원경로>}. canonical source 는 files/ 원본 복사 — restore.patch 는
+    `git diff --binary <ref> -- paths`(ref 에 없고 로컬에 있으므로 재추가 patch).
+    셋 중 하나라도 실패하면 (False, "") — 호출부는 삭제를 중단해야 한다.
+    """
+    try:
+        import json as _json
+        import shutil as _shutil
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        bdir = os.path.join(_state_dir(), "sync",
+                            f"backup-{_team_key(team_root)}-{stamp}-safe-deletes")
+        files_dir = os.path.join(bdir, "files")
+        os.makedirs(files_dir, exist_ok=True)
+        for rel in paths:
+            src = os.path.join(team_root, rel)
+            dst = os.path.join(files_dir, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _shutil.copy2(src, dst)
+        rc, out, _ = run_git(
+            ["-C", team_root, "diff", "--binary", ref, "--",
+             *[str(p) for p in paths]], timeout=timeout)
+        if rc != 0:
+            return False, ""
+        with open(os.path.join(bdir, "restore.patch"), "w", encoding="utf-8") as f:
+            f.write(out or "")
+        with open(os.path.join(bdir, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write(_json.dumps({
+                "version": 1, "kind": "safe-deletes", "ref": ref,
+                "root": os.path.normpath(str(team_root)),
+                "paths": list(paths),
+                "restore": "git apply restore.patch 또는 files/ 내용 복사",
+            }, ensure_ascii=False, indent=1))
+        return True, bdir
+    except (OSError, subprocess.SubprocessError):
+        return False, ""
+
+
+def _git_rm_chunks(team_root: str, paths: list, timeout: int):
+    """`git rm -- <paths>` 200개 chunk(staged 삭제 — --cached 금지: 워킹트리 잔존이
+    바로 '잔존 테스트 실행' 문제라 파일 자체를 지워야 한다). (ok, err) 반환."""
+    for i in range(0, len(paths), 200):
+        chunk = [str(p) for p in paths[i:i + 200]]
+        try:
+            rc, out, err = run_git(
+                ["-C", team_root, "rm", "-q", "--", *chunk], timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, "git rm timeout"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"git rm exec error: {exc}"
+        if rc != 0:
+            return False, ((err or out) or "").strip()[:200]
+    return True, ""
 
 
 def _write_validation_backup(team_root: str, ref: str, paths: list,
