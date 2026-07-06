@@ -553,14 +553,25 @@ def _pick_owner() -> str | None:
     choices = [c for c in ([me] + orgs.splitlines()) if c]
     if not choices:
         return None
-    print("Where should the team repo be created?  (pick an account or org)")
-    for i, c in enumerate(choices, 1):
-        print(f"  {i}) {c}{' (personal account)' if i == 1 else ' (org)'}")
-    sel = _prompt("Select a number", "1")
-    try:
-        idx = int(sel) - 1
-    except ValueError:
-        idx = 0
+    labeled = [f"{c}{' (personal account)' if i == 0 else ' (org)'}"
+               for i, c in enumerate(choices)]
+
+    def _owner_fallback() -> int:
+        print(_hi("◆  Where should the team repo be created?")
+              + _dim("   — pick an account or org"))
+        for i, c in enumerate(labeled, 1):
+            print(f"  {i}) {c}")
+        sel = _prompt("  Select a number  ›", "1")
+        try:
+            i = int(sel) - 1
+        except ValueError:
+            return 0
+        return i if 0 <= i < len(choices) else 0
+
+    idx = _pick_one(
+        "Where should the team repo be created? — pick an account or org",
+        "(↑↓ move · Enter to confirm)", labeled,
+        default_index=0, fallback=_owner_fallback, collapse="Owner")
     return choices[idx] if 0 <= idx < len(choices) else choices[0]
 
 
@@ -682,6 +693,11 @@ def cmd_init(args) -> int:
         _err("GitHub authentication required — run `gh auth login` and try again.")
         return 2
 
+    if sys.stdin.isatty():
+        _rail_top(_hi("tm-mode") + _dim(" · create a new team"))
+        _rail(_dim("Nothing is created until you confirm."))
+        _rail()
+
     # OWNER/REPO 결정 (org 자동선택 금지)
     target = args.repo
     if target and "/" in target:
@@ -695,11 +711,14 @@ def cmd_init(args) -> int:
         # team.config.json 은 팀 레포에 커밋(공유)되므로 창립자가 여기서 한 번 정하면
         # 모든 팀원에게 같은 정체성이 퍼진다.
         if not getattr(args, "team_name", None):
-            args.team_name = _prompt(
-                "Team name  (used in the team banner, status-line badge, and greeting)",
-                owner) or owner
-        repo = target or _prompt("Repository name (team repo)",
-                                 f"{_slugify(args.team_name)}-team")
+            print(_hi("◆  Team name") + _dim("   — used in the team banner, status-line badge, and greeting"))
+            args.team_name = _prompt("  Team name  ›", owner) or owner
+            if sys.stdout.isatty() and _raw_capable():
+                _collapse_lines(2, "Team name", args.team_name)
+        print(_hi("◆  Repository name") + _dim("   — the GitHub repo your team will live in"))
+        repo = target or _prompt("  Repository name  ›", f"{_slugify(args.team_name)}-team")
+        if sys.stdout.isatty() and _raw_capable():
+            _collapse_lines(2, "Repository name", repo)
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
     # 팀명 미정(OWNER/REPO 직접지정 등 비대화 경로) 폴백 = owner.
@@ -711,11 +730,16 @@ def cmd_init(args) -> int:
     # 비-TTY(인자로 OWNER/REPO 받은 경우 등)는 자동 진행.
     if sys.stdin.isatty():
         _tpl = f" (template: {template})" if template != DEFAULT_TEMPLATE_REPO else ""
-        if _prompt(f"Create the team repo at '{full}'{_tpl}?  [Y/n]",
-                   "Y").strip().lower() in ("n", "no"):
-            _err(f"Cancelled — to choose the location yourself, re-run as `tm-mode init <OWNER>/{repo}`.")
+
+        def _create_fallback() -> bool:
+            raw = _prompt(f"Create the team repo at '{full}'{_tpl}?  [Y/n]", "Y")
+            return raw.strip().lower() not in ("n", "no")
+        if not _confirm(f"Create the team repo at '{full}'{_tpl}?", default=True,
+                        fallback=_create_fallback, collapse="Create repo"):
+            _rail_end(f"Cancelled — to choose the location yourself, re-run as `tm-mode init <OWNER>/{repo}`.")
             return 1
-    print(f"Creating repository {full} (template: {template})")
+    _rail(_dim(f"creating repository {full} (template: {template})")) \
+        if sys.stdin.isatty() else print(f"Creating repository {full} (template: {template})")
     rc = subprocess.run(["gh", "repo", "create", full,
                         "--template", template, vis]).returncode
     if rc != 0:
