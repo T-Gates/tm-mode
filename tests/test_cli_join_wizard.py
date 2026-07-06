@@ -255,8 +255,8 @@ class TestNonTtyPath:
         rc, _ = self._run_join(tmp_path, member_name="alice")
         assert rc == 0
         out = capsys.readouterr().out
-        assert "비대화 모드" in out
-        assert "기본값" in out
+        assert "Non-interactive" in out
+        assert "defaults" in out
         assert "tm-onboard" in out
 
 
@@ -385,8 +385,8 @@ class TestWizardTty:
         assert "[x]" not in out
         assert "[ ]" not in out
         # 범례가 ◉/◯ 의미를 명시
-        assert "◉ 켜짐" in out
-        assert "◯ 꺼짐" in out
+        assert "◉ on" in out
+        assert "◯ off" in out
 
     def test_agent_toggle_repeats_until_enter(self, tmp_path):
         """번호를 여러 번 = 매번 토글(루프 살아있음). codex off→on 하면 다시 둘 다.
@@ -519,7 +519,7 @@ class TestWizardTty:
         dest, member, extra, _, _cs = self._run_wizard(
             tmp_path, inputs, installed_agents=[])
         out = capsys.readouterr().out
-        assert "감지" in out or "에이전트" in out
+        assert "detected" in out or "agent" in out.lower()
 
     def test_folder_exists_nonempty_other_location(self, tmp_path):
         """1단계: 기존 비어있지 않은 폴더 → 1번(다른 위치) 선택 → 새 위치 지정."""
@@ -693,11 +693,11 @@ def test_done_message_created_vs_joined(capsys):
     """init 경유(created=True)면 '생성 완료', join 직접이면 '합류 완료'."""
     cli._done(Path("/x/team"), created=True)
     out = capsys.readouterr().out
-    assert "팀 생성 완료" in out and "팀 합류 완료" not in out
+    assert "Created" in out and "Joined" not in out
 
     cli._done(Path("/x/team"), created=False)
     out = capsys.readouterr().out
-    assert "팀 합류 완료" in out and "팀 생성 완료" not in out
+    assert "Joined" in out and "Created" not in out
 
 
 # ─── D6: _done 통일 끝 블록(초대 명령 + tm-onboard) ─────────────────────────
@@ -982,10 +982,10 @@ def test_init_asks_team_name_before_repo_and_defaults_repo_from_slug():
         cli.main(["init"])
 
     labels = [label for label, _ in prompts]
-    team_idx = next(i for i, l in enumerate(labels) if "팀명" in l)
-    repo_idx = next(i for i, l in enumerate(labels) if "레포 이름" in l)
+    team_idx = next(i for i, l in enumerate(labels) if "Team name" in l)
+    repo_idx = next(i for i, l in enumerate(labels) if "Repository name" in l)
     assert team_idx < repo_idx, "팀명을 레포명보다 먼저 물어야 함"
-    repo_defaults = [d for label, d in prompts if "레포 이름" in label]
+    repo_defaults = [d for label, d in prompts if "Repository name" in label]
     assert repo_defaults == ["t-gates-team"]
 
 
@@ -995,7 +995,7 @@ def test_init_repo_default_derives_from_entered_team_name():
 
     def fake_prompt(label, default=""):
         prompts.append((label, default))
-        if "팀명" in label:
+        if "Team name" in label:
             return "ACME"
         return default
 
@@ -1008,7 +1008,7 @@ def test_init_repo_default_derives_from_entered_team_name():
          patch("teammode.cli.cmd_join", return_value=0):
         cli.main(["init"])
 
-    repo_defaults = [d for label, d in prompts if "레포 이름" in label]
+    repo_defaults = [d for label, d in prompts if "Repository name" in label]
     assert repo_defaults == ["acme-team"]
 
 
