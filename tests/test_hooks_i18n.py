@@ -342,3 +342,44 @@ def test_confirm_action_ko_team_denies_in_korean(tmp_path):
     assert proc.returncode == 2
     reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
     assert "사람 확인이 필요합니다" in reason
+
+
+# ── codex 적대검수 반영(2026-07-07): 키 드리프트·엣지 회귀락 ──
+
+def test_all_hook_t_keys_exist_in_catalog():
+    """[P2] 모든 훅의 t()/i18n.t() hook_* 키가 en_US 카탈로그에 존재 — 오타/누락 시
+    조용히 키-원문 폴백되는 드리프트를 메타로 차단."""
+    import re as _re, sys as _sys
+    from pathlib import Path as _P
+    _sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "infra"))
+    import i18n as _i18n
+    hooks = (_P(__file__).resolve().parents[1] / "infra" / "hooks")
+    pat = _re.compile(r'(?:_i18n\.t|_t|i18n\.t|\bt)\(\s*["\'](hook_[a-z0-9_]+)["\']')
+    keys = set()
+    for f in hooks.glob("*.py"):
+        keys |= set(pat.findall(f.read_text(encoding="utf-8")))
+    assert keys, "훅에서 hook_* 키를 하나도 못 찾음(정규식 점검)"
+    cat = _i18n.MESSAGES["en_US"]
+    missing = sorted(k for k in keys if k not in cat)
+    assert not missing, f"en_US 카탈로그 누락 키: {missing}"
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("cfg,expected", [
+    ({"team": {"locale": None}}, "ko"),       # 명시 null
+    ({"team": {"locale": ""}}, "ko"),          # 빈 문자열
+    ({"team": {"locale": "   "}}, "ko"),       # 공백
+    ({"team": []}, "ko"),                       # team 이 비-dict → locale 없음 취급
+    ({"team": {"locale": "EN_us"}}, "en"),     # 대소문자 무관
+    ({"team": {"locale": "ko"}}, "ko"),        # 2글자
+    (None, "en"),                               # config 파싱 실패 전달
+    ("not a dict", "en"),                       # 루트 비-dict
+])
+def test_team_lang_from_config_edges(cfg, expected):
+    import sys as _sys
+    from pathlib import Path as _P
+    _sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "infra"))
+    import i18n as _i18n
+    assert _i18n.team_lang_from_config(cfg) == expected

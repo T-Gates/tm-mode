@@ -432,6 +432,8 @@ def main() -> int:
     _maybe_auto_pull(str(root))
 
     # 팀 locale → 주입 언어(PR-i1). config 1회 읽기 — 실패는 ko/en 폴백 계약이 흡수.
+    # locale 판정용 config 1회 open — session-start 는 세션당 1회만 실행되므로
+    # 무해하다(매 프롬프트 도는 session-log-remind 와 달리 재사용 최적화 불요).
     lang = _hook_lang(str(root))
 
     try:
