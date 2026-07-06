@@ -99,7 +99,7 @@ def test_inject_unsupported_shell(tmp_path):
     home.mkdir()
     res = il.inject_env("tcsh", home, tmp_path / "team")
     assert res["injected"] is False
-    assert "미지원" in res["reason"]
+    assert "unsupported shell" in res["reason"]
 
 
 def test_inject_cleans_duplicate_markers(tmp_path):

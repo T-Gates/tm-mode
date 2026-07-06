@@ -466,7 +466,7 @@ def test_wire_agents_blank_team_root_raises(tmp_path):
     """wire_agents(team_root='') → ValueError (조용한 '.' 변질 금지)."""
     def run_adapter(agent, verb, flag, path, extra_args=None):
         return 0
-    with pytest.raises(ValueError, match="빈 문자열"):
+    with pytest.raises(ValueError, match="empty/whitespace"):
         il.wire_agents(["claude"], home=tmp_path,
                        settings_override=tmp_path / "iso",
                        team_root="",

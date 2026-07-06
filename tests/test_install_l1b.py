@@ -329,6 +329,6 @@ def test_bootstrap_i8_conflict_exit3(tmp_path, capsys):
                                           "--member-name", "alice"]),
                            home=home, python_version=(3, 13))
     assert rc == 3
-    assert "충돌" in capsys.readouterr().err
+    assert "conflict" in capsys.readouterr().err
     # members.md 무변경
     assert (team / "memory" / "team" / "members.md").read_text() == members_before
