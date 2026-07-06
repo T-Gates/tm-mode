@@ -54,3 +54,27 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write   # npm Trusted Publishing (OIDC) — 시크릿 불필요
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'          # OIDC publish 요건: npm 11.5.1+ / Node 22.14+
+          registry-url: 'https://registry.npmjs.org'
+      - name: Verify npm version matches tag
+        run: |
+          cd npm
+          node -e "
+            const v = require('./package.json').version;
+            const tag = process.env.GITHUB_REF_NAME;
+            if ('v' + v !== tag) { console.error('npm 버전(' + v + ') ≠ 태그(' + tag + ')'); process.exit(1); }
+          "
+      - name: Publish to npm (OIDC)
+        run: cd npm && npm publish
