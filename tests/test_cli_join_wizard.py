@@ -407,19 +407,56 @@ class TestWizardTty:
         assert "claude" in agent_args and "codex" in agent_args
 
     def test_role_passed(self, tmp_path):
-        """5단계: 역할 입력 → --role extra."""
+        """5단계: 역할 picker 번호 선택 → --role extra.
+
+        role_choices = [Skip, developer, pm, …, Other] 이므로 developer = 2번.
+        """
         inputs = [
             str(tmp_path / "dest"),
             "",
             "1",
             "alice",
-            "developer",
+            "2",       # 역할 picker: 2 = developer (1=Skip)
             "N",
             "Y",
         ]
         dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
         assert "--role" in extra
         assert "developer" in extra
+
+    def test_role_other_freeform(self, tmp_path):
+        """5단계: 'Other…' 선택 → 목록에 없는 역할 자유입력(§7.2 H1 의도 보존).
+
+        role_choices = [Skip, developer, pm, designer, researcher, marketer,
+        ops, lead, Other] → Other = 9번. 이어서 자유텍스트를 받는다.
+        """
+        inputs = [
+            str(tmp_path / "dest"),
+            "",
+            "1",
+            "alice",
+            "9",         # 역할 picker: 9 = Other…
+            "founder",   # 자유입력 역할
+            "N",
+            "Y",
+        ]
+        dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
+        assert "--role" in extra
+        assert "founder" in extra
+
+    def test_role_skip_default(self, tmp_path):
+        """5단계: Enter(빈 입력) → 기본 Skip → --role 없음."""
+        inputs = [
+            str(tmp_path / "dest"),
+            "",
+            "1",
+            "alice",
+            "",          # 역할 picker: Enter = 기본 Skip
+            "N",
+            "Y",
+        ]
+        dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
+        assert "--role" not in extra
 
     def test_obsidian_yes(self, tmp_path):
         """6단계: y 입력 → --register-obsidian extra."""
@@ -496,7 +533,7 @@ class TestWizardTty:
             "",
             "1",
             "bob",
-            "pm",
+            "3",       # 역할 picker: 3 = pm (1=Skip, 2=developer)
             "N",
             "Y",
         ]

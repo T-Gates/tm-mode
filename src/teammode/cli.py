@@ -984,11 +984,35 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                 slug = _slugify(guess) if guess else ""
                 member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug or None) or None
 
-        # ── 5단계(구 5): 역할 — 자유텍스트 1입력 유지(§7.2 H1, 위젯화 금지) ──
-        # ROLES 는 권장목록 표시용 데이터로만 쓴다(_pick_one 금지).
+        # ── 5단계(구 5): 역할 — picker(기본 Skip) + Other 자유입력 ──
+        # §7.2 H1(위젯화 금지)을 뒤집는다(사용자 결정 2026-07-07): 다른 단계처럼
+        # 화살표 선택으로 통일하되, 목록에 없는 역할은 "Other…"로 여전히 자유입력한다
+        # (H1 의도인 커스텀 역할 보존). Skip 이 기본 하이라이트.
         _rail()
-        print(_hi("◆  Step 4 of 5 · Your role   — optional (" + " / ".join(ROLES) + ")"))
-        role = _ask_text("  › (Enter to skip)", "")  # default 없음 → _prompt 폴백, 1입력
+        role_choices = ["Skip (no role)"] + list(ROLES) + ["Other… (type your own)"]
+
+        def _role_fallback() -> int:
+            print(_hi("◆  Step 4 of 5 · Your role") + _dim("   — optional"))
+            for i, c in enumerate(role_choices, 1):
+                print(f"  {i}) {c}")
+            sel = _prompt("  Select a number (Enter to skip)  ›", "1")
+            try:
+                idx = int(sel) - 1
+            except ValueError:
+                return 0
+            return idx if 0 <= idx < len(role_choices) else 0
+
+        role_pick = _pick_one(
+            "Step 4 of 5 · Your role — optional",
+            "(↑↓ move · Enter to confirm · default Skip)",
+            role_choices, default_index=0,
+            fallback=_role_fallback, collapse="Your role")
+        if role_pick == 0:
+            role = ""
+        elif role_pick == len(role_choices) - 1:      # Other… → 자유입력
+            role = _ask_text("  Your role  ›", "").strip()
+        else:
+            role = ROLES[role_pick - 1]
         _rail()
 
         # ── 6단계(구 6): Obsidian — _confirm(§7.3: default=True, n/no 만 부정) ──
