@@ -17,7 +17,7 @@
 
 ### ⓐ 팀에 합류 (팀원 — 팀 레포가 이미 있을 때)
 
-가장 흔한 경우. `git` 만 있으면 된다.
+가장 흔한 경우 — 공통 요구사항(python3·git) 외 추가 도구 불필요(**`gh` 안 씀**).
 
 ```bash
 pip install "git+https://github.com/T-Gates/tm-mode"   # 런처 (PyPI 발행 후: pipx install tm-mode)

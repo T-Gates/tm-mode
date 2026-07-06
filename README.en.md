@@ -13,7 +13,7 @@ Common requirements: **`python3` (3.9+) · `git`**. Anything else is per-case be
 
 ### ⓐ Join a team (member — the team repo already exists)
 
-The common case. You only need `git`.
+The common case — nothing beyond the common requirements (python3·git); **no `gh` needed**.
 
 ```bash
 pip install "git+https://github.com/T-Gates/tm-mode"   # launcher (after PyPI: pipx install tm-mode)
