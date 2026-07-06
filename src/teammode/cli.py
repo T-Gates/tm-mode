@@ -105,6 +105,7 @@ _ANSI = {
     "warn": "\x1b[33m",    # 노랑 — 주의
     "hi": "\x1b[36m",      # 시안 — 강조·명령
     "dim": "\x1b[2m",      # 흐림 — 부가·비활성
+    "inv": "\x1b[7m",      # 반전 — 커서 하이라이트(clack 풍)
 }
 
 
@@ -136,6 +137,40 @@ def _warn(text: str) -> str:
 
 def _hi(text: str) -> str:
     return _paint(text, "hi")
+
+
+# ── clack 풍 세로 레일(2026-07-06 리스킨) — 순수 문자+ANSI, 외부 의존 0 ──
+# 위저드 전체가 ┌…│…└ 한 덩어리로 이어지고, 끝난 단계는 ◇ 한 줄로 접힌다.
+# 비-TTY/raw-불가에선 같은 문자가 정적으로 찍힐 뿐(폴백 계약 §7.1 불변).
+
+def _rail_top(text: str) -> None:
+    print(_dim("┌  ") + text)
+
+
+def _rail(text: str = "") -> None:
+    print(_dim("│") + (("  " + text) if text else ""))
+
+
+def _rail_done(label: str, value: str) -> None:
+    """완료 단계 접힘 줄: ◇ label ─ value"""
+    print(_dim("◇  ") + label + _dim("  ─  ") + value)
+
+
+def _rail_end(text: str) -> None:
+    print(_dim("└  ") + text)
+
+
+def _collapse_lines(n: int, label: str, value: str) -> None:
+    """직전 n 줄(위젯 렌더)을 지우고 ◇ 접힘 한 줄로 대체(raw/tty 전용)."""
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write(f"\x1b[{n}A")
+    for _ in range(n):
+        sys.stdout.write("\x1b[2K\x1b[1B")
+    sys.stdout.write(f"\x1b[{n}A")
+    sys.stdout.write("\x1b[2K")
+    sys.stdout.flush()
+    _rail_done(label, value)
 
 
 def _dim(text: str) -> str:
@@ -238,11 +273,16 @@ def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
         # 커서를 위로 total 줄 올리고 각 줄을 지운다.
         sys.stdout.write(f"\x1b[{total}A")
     if show_title:
-        sys.stdout.write("\x1b[2K" + _hi(title) + "\n")
-    sys.stdout.write("\x1b[2K" + _dim(hint) + "\n")
+        sys.stdout.write("\x1b[2K" + _hi("◆  ") + title + "\n")
+    rail = _dim("│  ")
+    sys.stdout.write("\x1b[2K" + rail + _dim(hint) + "\n")
     for i, ln in enumerate(lines):
-        prefix = _hi("❯ ") if i == cursor else "  "
-        sys.stdout.write(f"\x1b[2K{prefix}{ln}\n")
+        if i == cursor:
+            # clack 풍: 현재 줄 반전 하이라이트(❯ 유지 — 스크린리더/무색 터미널 겸용)
+            sys.stdout.write("\x1b[2K" + rail + _hi("❯ ")
+                             + _ANSI["inv"] + ln + _ANSI["reset"] + "\n")
+        else:
+            sys.stdout.write(f"\x1b[2K{rail}  {ln}\n")
     sys.stdout.flush()
 
 
@@ -256,7 +296,8 @@ def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
 
 def _pick_one(title: str, hint: str, choices: list[str],
               *, default_index: int = 0,
-              fallback: "callable | None" = None) -> int:
+              fallback: "callable | None" = None,
+              collapse: str | None = None) -> int:
     """단일 선택(라디오). 선택된 인덱스 반환.
 
     fallback: raw 불가 시 호출할 번호입력 콜백 `() -> int`. None 이면 내장 번호입력
@@ -291,6 +332,9 @@ def _pick_one(title: str, hint: str, choices: list[str],
             elif key in ("down", "j"):
                 cursor = (cursor + 1) % len(choices)
             elif key == "enter":
+                if collapse is not None:
+                    n = len(choices) + (2 if title else 1)
+                    _collapse_lines(n, collapse, choices[cursor])
                 return cursor
             elif key in ("abort", "eof"):
                 raise KeyboardInterrupt  # Ctrl-C/D = 취소 → main 이 130 종료(승인으로 둔갑 방지)
@@ -306,7 +350,8 @@ def _pick_many(title: str, hint: str, choices: list[str],
                *, selected: list[int] | None = None,
                disabled: set[int] | None = None,
                min_select: int = 0,
-               fallback: "callable | None" = None) -> list[int]:
+               fallback: "callable | None" = None,
+               collapse: str | None = None) -> list[int]:
     """복수 선택(체크박스 ◉/◯ 토글). 선택된 인덱스 리스트 반환.
 
     disabled: 비활성(미설치) 인덱스 — raw 커서는 skip, toggle 무시.
@@ -323,6 +368,8 @@ def _pick_many(title: str, hint: str, choices: list[str],
     # raw 메뉴 — 첫 커서는 활성 항목으로.
     enabled = [i for i in range(len(choices)) if i not in disabled]
     if not enabled:
+        if collapse is not None:  # 레일 연속성: 전부 비활성이어도 ◇ 줄은 남긴다
+            _rail_done(collapse, _dim("(none)"))
         return sorted(sel)
     cursor = enabled[0]
     first = True
@@ -352,6 +399,11 @@ def _pick_many(title: str, hint: str, choices: list[str],
                         sel.add(cursor)
             elif key == "enter":
                 if len(sel) >= min_select:
+                    if collapse is not None:
+                        n = len(choices) + (2 if title else 1)
+                        _collapse_lines(n, collapse,
+                                        ", ".join(choices[i] for i in sorted(sel))
+                                        or _dim("(none)"))
                     return sorted(sel)
                 # min_select 미달 → Enter 무시(최소 선택 강제). 메뉴 유지.
             elif key in ("abort", "eof"):
@@ -396,7 +448,8 @@ def _ask_text(label: str, default: str | None = None) -> str:
 
 
 def _confirm(title: str, *, default: bool = True,
-             fallback: "callable | None" = None) -> bool:
+             fallback: "callable | None" = None,
+             collapse: str | None = None) -> bool:
     """예/아니오 확인. §7.3 의미론: default=True, 부정은 n/no 만, 빈입력=default.
 
     fallback: raw 불가 시 콜백 `() -> bool`. None 이면 내장 Y/n 입력
@@ -415,7 +468,7 @@ def _confirm(title: str, *, default: bool = True,
     # raw 메뉴 — 예/아니오 두 항목 라디오
     yes_idx = 0 if default else 1
     idx = _pick_one(title, "(↑↓ move · Enter to confirm)",
-                    ["Yes", "No"], default_index=yes_idx)
+                    ["Yes", "No"], default_index=yes_idx, collapse=collapse)
     return idx == 0
 
 
@@ -703,8 +756,9 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
     """
     home = Path.home()
 
-    print("Setting up your team — 5 quick steps, then a summary to confirm.\n"
-          "No host settings are written until you approve.\n")
+    _rail_top(_hi("tm-mode") + " · Setting up your team — 5 quick steps, then a summary to confirm.")
+    _rail(_dim("No host settings are written until you approve."))
+    _rail()
 
     while True:  # 7단계에서 n → 전체 재시작
         # ── 1단계: 설치 위치 ──────────────────────────────────────────────
@@ -713,7 +767,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             repo_name = repo_name[:-4]
         default_dest = home / "teammode" / repo_name
 
-        print(_hi("Step 1 of 5 · Where to install") + "   — the folder that will hold your team repo")
+        print(_hi("◆  Step 1 of 5 · Where to install") + _dim("   — the folder that will hold your team repo"))
+        _step1_clean = True  # 충돌 안내가 찍히면 접지 않는다(정보 보존)
         while True:
             # 경로 = _ask_text(prefill). raw 불가(테스트 포함)면 _prompt 로 폴백 → 동일 1입력.
             raw = _ask_text("  ›", str(default_dest))
@@ -728,6 +783,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                     "", "(↑↓ move · Enter to confirm)",
                     ["Choose another location", "Reinstall into this folder (skip clone)"],
                     default_index=0, fallback=_dir_fallback)
+                _step1_clean = False
                 if pick == 1:
                     clone_skip = True
                     break
@@ -735,6 +791,9 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             else:
                 clone_skip = False
                 break
+        if _step1_clean and sys.stdout.isatty() and _raw_capable():
+            _collapse_lines(2, "Where to install", str(dest))
+        _rail()
 
         # ── 2단계: 에이전트 선택 ──────────────────────────────────────────
         installed = _detect_agents_from_install_lib(home)
@@ -743,7 +802,6 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             print("  No coding agents detected. Continuing anyway.")
         selected_agents: list[str] = list(installed) if installed else []
 
-        print("\n" + _hi("Step 2 of 5 · Your agents") + "   — which AI coding agents to wire up")
 
         def _agents_fallback() -> list[int]:
             """raw 불가 시(테스트 포함) 기존 번호 토글 루프 그대로(§7.4 H3, cli:337-360 1:1).
@@ -781,19 +839,20 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
 
         disabled_idx = {i for i, ag in enumerate(all_agents) if ag not in installed}
         sel_idx = _pick_many(
-            "",
+            "Step 2 of 5 · Your agents — which AI coding agents to wire up",
             "(↑↓ move · Space to toggle · Enter to confirm · not installed = unavailable"
             + (" · at least 1)" if installed else ")"),
             all_agents,
             selected=[i for i, ag in enumerate(all_agents) if ag in selected_agents],
             disabled=disabled_idx, min_select=(1 if installed else 0),
-            fallback=_agents_fallback)
+            fallback=_agents_fallback, collapse="Your agents")
         selected_agents = [all_agents[i] for i in sel_idx]
+        _rail()
 
         # ── clone (단계 2.5): members.md 읽기 전에 실행 → 기존멤버 목록 정확하게 읽힘 ──
         # clone_skip 이거나 clone_fn 이 없으면 건너뜀(테스트·재사용 경로).
         if not clone_skip and clone_fn is not None:
-            print(f"Cloning...  {url} → {dest}")
+            _rail(_dim(f"cloning  {url} → {dest}"))
             ok = clone_fn(url, dest)
             if not ok:
                 _err("Clone failed — check repo access (SSH key / `gh auth login`).")
@@ -804,15 +863,15 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         members_file = dest / "memory" / "team" / "members.md"
         existing_members = _parse_members_md(members_file)
 
-        print("\n" + _hi("Step 3 of 5 · You") + "   — new to this team, or already a member?")
-
         def _member_kind_fallback() -> int:
+            print(_hi("◆  Step 3 of 5 · You") + _dim("   — new to this team, or already a member?"))
             c = _prompt("  1) New member   2) Existing member  ›", "1")
             return 1 if c.strip() == "2" else 0
         kind = _pick_one(
-            "", "(↑↓ move · Enter to confirm)",
+            "Step 3 of 5 · You — new to this team, or already a member?",
+            "(↑↓ move · Enter to confirm)",
             ["New member", "Existing member"], default_index=0,
-            fallback=_member_kind_fallback)
+            fallback=_member_kind_fallback, collapse="You")
         is_new = kind != 1
 
         # ── 4단계: 이름 (3단계 안에서 처리) ─────────────────────────────
@@ -828,6 +887,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                         break
             else:
                 member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug) or slug
+            if sys.stdout.isatty() and _raw_capable():
+                _collapse_lines(1, "Your name", member)
         else:
             if existing_members:
                 # 기존팀원 = _pick_one(번호 1입력). "직접입력" 항목 금지(§7.5 H4).
@@ -842,8 +903,9 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                         return 0
                     return idx if 0 <= idx < len(existing_members) else 0
                 pick = _pick_one(
-                    "", "(↑↓ move · Enter to confirm)",
-                    existing_members, default_index=0, fallback=_existing_fallback)
+                    "Pick your name", "(↑↓ move · Enter to confirm)",
+                    existing_members, default_index=0, fallback=_existing_fallback,
+                    collapse="Your name")
                 member = existing_members[pick] if 0 <= pick < len(existing_members) \
                     else existing_members[0]
             else:
@@ -854,39 +916,44 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
 
         # ── 5단계(구 5): 역할 — 자유텍스트 1입력 유지(§7.2 H1, 위젯화 금지) ──
         # ROLES 는 권장목록 표시용 데이터로만 쓴다(_pick_one 금지).
-        print("\n" + _hi("Step 4 of 5 · Your role") + "   — optional (" + _dim(" / ".join(ROLES)) + ")")
+        _rail()
+        print(_hi("◆  Step 4 of 5 · Your role") + _dim("   — optional (" + " / ".join(ROLES) + ")"))
         role = _ask_text("  › (Enter to skip)", "")  # default 없음 → _prompt 폴백, 1입력
+        if sys.stdout.isatty() and _raw_capable():
+            _collapse_lines(2, "Your role", role or _dim("(skipped)"))
+        _rail()
 
         # ── 6단계(구 6): Obsidian — _confirm(§7.3: default=True, n/no 만 부정) ──
-        print("\n" + _hi("Step 5 of 5 · Obsidian") + "   — link your team memory as an Obsidian vault?")
-
         def _obsidian_fallback() -> bool:
+            print(_hi("◆  Step 5 of 5 · Obsidian") + _dim("   — link your team memory as an Obsidian vault?"))
             obsidian_raw = _prompt("  › [Y/n]", "Y")
             return obsidian_raw.strip().lower() not in ("n", "no")
         register_obsidian = _confirm(
-            "Link your team memory as an Obsidian vault?", default=True,
-            fallback=_obsidian_fallback)
+            "Step 5 of 5 · Obsidian — link your team memory as an Obsidian vault?",
+            default=True, fallback=_obsidian_fallback, collapse="Obsidian")
 
         # ── 요약 확인 ─────────────────────────────────────────────────────
-        print()
-        print("── Review ─────────────────────────────────────────")
-        print(f"  Team      : {url}")
-        print(f"  Location  : {dest}")
-        print(f"  Agents    : {', '.join(selected_agents) if selected_agents else '(none)'}")
-        print(f"  Name      : {member or '(unset)'}")
-        print(f"  Role      : {role or '(skipped)'}")
-        print(f"  Obsidian  : {'link' if register_obsidian else 'skip'}")
-        print(f"  Clone     : {'skip — reuse existing folder' if clone_skip else 'fresh clone'}")
-        print("──────────────────────────────────────────────────")
+        _rail()
+        print(_hi("◆  Review"))
+        _rail(f"Team      : {url}")
+        _rail(f"Location  : {dest}")
+        _rail(f"Agents    : {', '.join(selected_agents) if selected_agents else '(none)'}")
+        _rail(f"Name      : {member or '(unset)'}")
+        _rail(f"Role      : {role or '(skipped)'}")
+        _rail(f"Obsidian  : {'link' if register_obsidian else 'skip'}")
+        _rail(f"Clone     : {'skip — reuse existing folder' if clone_skip else 'fresh clone'}")
+        _rail()
 
         def _confirm_fallback() -> bool:
             confirm = _prompt("Proceed with this setup? [Y/n]", "Y")
             return confirm.strip().lower() not in ("n", "no")
         proceed = _confirm("Proceed with this setup?", default=True,
-                           fallback=_confirm_fallback)
+                           fallback=_confirm_fallback, collapse="Proceed")
         if not proceed:
-            print("  Starting over.\n")
+            _rail_end("Starting over.")
+            print()
             continue  # while True 재시작
+        _rail_end(_ok("Approved — running the install you just reviewed."))
         break  # 확인 완료
 
     # ── 8단계: extra 인자 조립 ────────────────────────────────────────────
