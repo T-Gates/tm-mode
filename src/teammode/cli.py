@@ -428,10 +428,10 @@ def _resolve_member(opt_member: str | None) -> str | None:
         # TTY: 빈 슬러그면 반복 입력 강제
         if not slug:
             while True:
-                val = _prompt("Member name (letters only, required)").strip()
+                val = _prompt("Member name (lowercase letters, digits, - or _; required)").strip()
                 if val:
                     return val
-        return _prompt("Member name (letters only)", slug) or None
+        return _prompt("Member name (lowercase letters, digits, - or _)", slug) or None
     # 비-TTY: 빈 슬러그면 git email local-part fallback
     if not slug:
         slug = _git_user_email_local_part()
@@ -455,7 +455,7 @@ def _pick_owner() -> str | None:
     print("Where should the team repo be created?  (pick an account or org)")
     for i, c in enumerate(choices, 1):
         print(f"  {i}) {c}{' (personal account)' if i == 1 else ' (org)'}")
-    sel = _prompt("Select", "1")
+    sel = _prompt("Select a number", "1")
     try:
         idx = int(sel) - 1
     except ValueError:
@@ -533,7 +533,7 @@ def _done(repo_dir: Path, *, created: bool = False, url: str | None = None) -> N
     print()
     print(_ok(f"✓ {'Created' if created else 'Joined'} {team_name}.") + f"   {repo_dir}")
     print()
-    print(f"Your agents now have {_hi('team mode')} — while it is on, the whole")
+    print(f"Your agents now have {_hi('team mode')} — while it's on, the whole")
     print("team shares context and maintains team memory together.")
 
     bar = "─" * 58
@@ -611,8 +611,8 @@ def cmd_init(args) -> int:
     if sys.stdin.isatty():
         _tpl = f" (template: {template})" if template != DEFAULT_TEMPLATE_REPO else ""
         if _prompt(f"Create the team repo at '{full}'{_tpl}?  [Y/n]",
-                   "Y").strip().lower() == "n":
-            _err(f"Cancelled — to choose the location yourself, run `tm-mode init <OWNER>/{repo}` again.")
+                   "Y").strip().lower() in ("n", "no"):
+            _err(f"Cancelled — to choose the location yourself, re-run as `tm-mode init <OWNER>/{repo}`.")
             return 1
     print(f"Creating repository {full} (template: {template})")
     rc = subprocess.run(["gh", "repo", "create", full,
@@ -627,14 +627,14 @@ def cmd_init(args) -> int:
     # 곧바로 clone 하면 infra/ 가 없어 join 이 실패한다(E2E 로 확인). infra/ 가 채워질
     # 때까지 폴링 대기한 뒤 join 으로 넘어간다.
     if not _wait_template_ready(full):
-        _err(f"Template contents are still syncing (the repo was created). In a moment, "
+        _err(f"Template contents are still syncing (the repo was created). Give it a moment, then "
              f"finish setup with `tm-mode join {url}`.")
         return 1
 
     # ② 곧바로 join 으로 — 방금 만든 레포를 본인 머신에 clone+셋업(생성 → 참여, 단일 경로).
     # 팀원 초대 안내는 끝 블록(_done)에서 join 합류자와 통일해 한 번만 출력한다(D6).
     print()
-    print("Repository is ready. Now installing it on your machine (join).")
+    print("The repository is ready. Now installing it on your machine (join).")
     args.url = url
     # init 파서엔 없는, cmd_join(특히 비-TTY 경로)이 참조하는 속성 보강.
     # 셋업 정보는 TTY 면 wizard 가 묻고, 비-TTY 면 이 기본값으로 진행.
@@ -822,12 +822,12 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             if not slug:
                 # 빈 슬러그: 반복 강제 (default 없음 → _ask_text 가 _prompt 로 폴백, 1입력 유지)
                 while True:
-                    val = _ask_text("  Your name (lowercase, letters only, required)  ›").strip()
+                    val = _ask_text("  Your name (lowercase letters, digits, - or _; required)  ›").strip()
                     if val:
                         member = val
                         break
             else:
-                member = _ask_text("  Your name (lowercase, letters only)  ›", slug) or slug
+                member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug) or slug
         else:
             if existing_members:
                 # 기존팀원 = _pick_one(번호 1입력). "직접입력" 항목 금지(§7.5 H4).
@@ -850,7 +850,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                 print("  (no members.md — enter your name)")
                 guess = _git_user_name()
                 slug = _slugify(guess) if guess else ""
-                member = _ask_text("  Your name (lowercase, letters only)  ›", slug or None) or None
+                member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug or None) or None
 
         # ── 5단계(구 5): 역할 — 자유텍스트 1입력 유지(§7.2 H1, 위젯화 금지) ──
         # ROLES 는 권장목록 표시용 데이터로만 쓴다(_pick_one 금지).
@@ -858,13 +858,13 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         role = _ask_text("  › (Enter to skip)", "")  # default 없음 → _prompt 폴백, 1입력
 
         # ── 6단계(구 6): Obsidian — _confirm(§7.3: default=True, n/no 만 부정) ──
-        print("\n" + _hi("Step 5 of 5 · Obsidian") + "   — open your team memory as an Obsidian vault?")
+        print("\n" + _hi("Step 5 of 5 · Obsidian") + "   — link your team memory as an Obsidian vault?")
 
         def _obsidian_fallback() -> bool:
             obsidian_raw = _prompt("  › [Y/n]", "Y")
-            return obsidian_raw.strip().lower() != "n"
+            return obsidian_raw.strip().lower() not in ("n", "no")
         register_obsidian = _confirm(
-            "Open your team memory as an Obsidian vault", default=True,
+            "Link your team memory as an Obsidian vault?", default=True,
             fallback=_obsidian_fallback)
 
         # ── 요약 확인 ─────────────────────────────────────────────────────
@@ -881,7 +881,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
 
         def _confirm_fallback() -> bool:
             confirm = _prompt("Proceed with this setup? [Y/n]", "Y")
-            return confirm.strip().lower() != "n"
+            return confirm.strip().lower() not in ("n", "no")
         proceed = _confirm("Proceed with this setup?", default=True,
                            fallback=_confirm_fallback)
         if not proceed:
@@ -968,7 +968,7 @@ def cmd_join(args, *, created: bool = False) -> int:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="tm-mode", description="team mode bootstrap launcher")
+    p = argparse.ArgumentParser(prog="tm-mode", description="Team mode bootstrap launcher")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("init", help="Create a new team repo (template) → then join (clone + setup)")
@@ -987,7 +987,7 @@ def main(argv=None) -> int:
     pj.add_argument("--agent", action="append", metavar="AGENT",
                     help="Agent (claude/codex). For non-TTY; repeatable")
     pj.add_argument("--role", help="Role (for non-TTY)")
-    pj.add_argument("--obsidian", action="store_true", help="Register Obsidian vault (for non-TTY)")
+    pj.add_argument("--obsidian", action="store_true", help="Link the Obsidian vault (for non-TTY)")
     pj.set_defaults(func=cmd_join)
 
     args = p.parse_args(argv)

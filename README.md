@@ -148,8 +148,10 @@ team setup (introducer, once)  →  personal setup (each member)  →  service c
 2. **Get the team repo onto the machine** (this writes only the cloned folder):
    - **Join** → ask for the team repo URL (their team lead has it), then
      `git clone <team-repo-url> ~/teammode/<repo>` and work in that folder.
-   - **New team** → requires the GitHub CLI, logged in (`gh auth status`; help the
-     user install/login if missing), then
+     (If they paste *this* repo's URL — github.com/T-Gates/tm-mode — that's the
+     product template, not a team: switch to the **New team** flow instead.)
+   - **New team** → requires the GitHub CLI, logged in (`gh auth status`; if missing, have the user run `gh auth login` in their own
+     terminal and tell you when it's done), then
      `gh repo create <owner>/<name> --template T-Gates/tm-mode --private` and
      clone it as above. (Template copying can lag a few seconds — retry the clone.)
 3. **Show the plan and get explicit approval — no host settings are written yet**:
@@ -161,7 +163,7 @@ team setup (introducer, once)  →  personal setup (each member)  →  service c
    `python3 infra/install.py --root . --yes [--member-name <name>]`
 5. Tell the user to run **`/tm-onboard`** in their agent session — it verifies the
    install and turns team mode on. If any step fails, report the exact error and
-   stop. Do not guess-repair.
+   stop. Do not guess at fixes.
 
 (If you are already inside a cloned team repo, skip step 2 — and prefer that repo's
 `AGENTS.md` "첫 접촉" bootstrap, which is this same plan → approval → install contract.)
@@ -277,6 +279,8 @@ https://github.com/T-Gates/tm-mode 읽고 tm-mode 세팅해줘.
 
 에이전트가 이 페이지를 읽고 **새 팀인지 / 기존 팀 합류인지** 물어본 뒤 레포를
 클론하고, **호스트 설정을 쓰기 전에** 반드시 설치 계획을 보여주고 승인을 받습니다.
+
+<sub>에이전트용 정확한 절차는 상단 영어 절 [For AI agents](#for-ai-agents-setup-instructions) 참조.</sub>
 
 ---
 

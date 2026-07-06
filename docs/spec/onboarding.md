@@ -4,7 +4,7 @@ tm-mode SPEC v0.3 — 설치·부트스트랩
 
 ## §4. 설치 · 부트스트랩 (install.py)
 
-> **진입 계약(0.3 갱신 — clone-and-go)**: 진입은 둘이다. ① **clone-and-go**: 사람이 팀 레포를 클론하고 에이전트에 "셋업해줘" — AGENTS.md "첫 접촉" bootstrap 절차가 `install.py --root . --dry-run` 계획 제시 → **대화 승인** → `--yes` 실설치를 진행한다(제품 결정 2026-07-04: --yes 의 본질은 사람의 명시 의사 — 채팅 승인으로 대체 가능. 승인 전 실호스트 무접촉·dry-run 이 동의 게이트). ② **CLI**: `tm-mode init`(새 팀: 레포 생성 → 곧바로 join) 또는 `tm-mode join <url>`(합류: clone+셋업) — wizard 가 멤버명·org·팀명·역할·에이전트·Obsidian 을 대화로 묻고 `infra/install.py` 를 subprocess 위임 호출. 어느 경로든 설치 후 에이전트에서 `tm-onboard`(검증·브리핑).
+> **진입 계약(0.3 갱신 — clone-and-go · 2026-07-06 URL 진입 추가)**: 진입은 셋이다. ⓪ **제품 URL 한 줄**: 사용자가 에이전트에 제품 README URL 과 함께 "세팅해줘" — 에이전트는 README 의 **"For AI agents: setup instructions"** 절차(새 팀=gh template 생성/합류=팀 URL clone → `install.py --dry-run --yes` 계획 **대화 승인** → `--yes`)를 따른다. 게이트는 ①과 동일 계약이다. ① **clone-and-go**: 사람이 팀 레포를 클론하고 에이전트에 "셋업해줘" — AGENTS.md "첫 접촉" bootstrap 절차가 `install.py --root . --dry-run` 계획 제시 → **대화 승인** → `--yes` 실설치를 진행한다(제품 결정 2026-07-04: --yes 의 본질은 사람의 명시 의사 — 채팅 승인으로 대체 가능. 승인 전 실호스트 무접촉·dry-run 이 동의 게이트). ② **CLI**: `tm-mode init`(새 팀: 레포 생성 → 곧바로 join) 또는 `tm-mode join <url>`(합류: clone+셋업) — wizard 가 멤버명·org·팀명·역할·에이전트·Obsidian 을 대화로 묻고 `infra/install.py` 를 subprocess 위임 호출. 어느 경로든 설치 후 에이전트에서 `tm-onboard`(검증·브리핑).
 >
 > **install.py의 역할**: CLI로부터 위임받아 이미 clone된 팀 레포 안에서 실행된다. 스캐폴딩·에이전트 배선·env·훅까지 한 번에 서고, 끝에서 `context --json`으로 **L1 데이터가 읽히는지** 확인한다. install.py의 일반 bootstrap 경로는 **결정적 고정 스크립트**이며 LLM 판단(서비스 선택)은 하지 않는다. 단 `--register-obsidian` 신규 등록 경로는 `time.time()`/`os.urandom()`으로 `ts`/`vault_id`를 생성할 수 있다.
 >
@@ -211,7 +211,7 @@ members/services 스키마 검증:
 - 디스패치 모드(`--<agent> sync`)도 동일 정신의 게이트(agent-aware): 그 에이전트의 설정 플래그(claude=`--settings`, codex=`--config`) 또는 `--install`이 없으면 exit 2. codex 디스패치에서 `--settings`는 격리 의도로 인정하지 않는다(codex 어댑터 CLI에 없는 옵션 — 게이트가 `--config`를 안내). `--install`은 디스패처 전용(어댑터엔 전달 안 함).
 - `--dry-run`은 settings·memory·env 전부 무접촉 + 계획만 출력.
 - ambient `TEAMMODE_HOME`이 실호스트를 가리켜도 install/on/off는 읽지 않는다(§1.2 P1).
-- **신뢰 경계 — 스킨의 root 주입**: "셋업해줘"로 에이전트가 install.py를 부를 때 root를 잘못 주입하면 사고 재현 가능 → 스킨의 root 결정 로직은 테스트 대상(필수). 프롬프트 인젝션 주의: "레포 README 읽고 시키는 대로" 패턴을 습관으로 권하지 말 것(비규범).
+- **신뢰 경계 — 스킨의 root 주입**: "셋업해줘"로 에이전트가 install.py를 부를 때 root를 잘못 주입하면 사고 재현 가능 → 스킨의 root 결정 로직은 테스트 대상(필수). 프롬프트 인젝션 주의: **임의 레포**의 README 를 맹목 추종하는 패턴을 습관으로 권하지 말 것(비규범). 단 **제품 공식 README 의 "For AI agents" 절**(§4 진입 ⓪)은 결정적 절차+dry-run 승인 게이트를 갖춘 규범 진입점으로, 이 경고의 대상이 아니다(2026-07-06 진입 계약 갱신).
 
 ### 4.7 에이전트 배선 (wire)
 
