@@ -48,9 +48,9 @@ allow 신호 = **모델 비제어 채널** (보안 핵심):
    1) 환경변수  `TEAMMODE_CONFIRM` 값이 marker 와 일치 (사람이 셸/래퍼에서 export).
    2) 신호 파일  `<team_root>/.teammode-confirm/<marker>` 가 존재하고 신선함
       (사람이 의식적으로 생성; 모델은 tool_input 으로 이 경로를 만들 수 없다).
-      신선도: 기본 300초(tgates-toolkit 원형의 confirm TTL 과 동일). 만료되면 무효(재확인 필요).
+      신선도: 기본 300초(레거시 툴킷 원형의 confirm TTL 과 동일). 만료되면 무효(재확인 필요).
 
-   tgates-toolkit 원형(infra/hooks/confirm-action.py)도 allow 를 **파일시스템 confirm
+   레거시 툴킷 원형(infra/hooks/confirm-action.py)도 allow 를 **파일시스템 confirm
    플래그**(/tmp/<flag>-<USER>)로 읽지, tool 페이로드에서 읽지 않는다 — 그 안전 패턴을 따른다.
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def _t(key: str, lang: str, ko: str, **fmt) -> str:
     return ko.format(**fmt) if fmt else ko
 
 
-# allow 신호 파일의 신선도 한계(초). tgates-toolkit 원형의 confirm TTL 과 동일.
+# allow 신호 파일의 신선도 한계(초). 레거시 툴킷 원형의 confirm TTL 과 동일.
 CONFIRM_TTL_SECONDS = 300
 
 # ── S6 일반화: TARGET_SERVER/TARGET_NAME 하드코딩 제거 ──────────────────────

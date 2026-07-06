@@ -314,7 +314,7 @@ def members_are_valid(members) -> bool:
 def upsert_member_role(team_root: Path, name: str, role=None) -> dict:
     """config.members 에 **자기 {name, role} 엔트리만** upsert (A2.2 — 각자 upsert).
 
-    은수 결정(2026-06-16): config "도입자 쓰기·팀원 읽기" 원칙을 **"자기 name 엔트리만
+    팀 결정(2026-06-16): config "도입자 쓰기·팀원 읽기" 원칙을 **"자기 name 엔트리만
     upsert"로 완화**. 각 멤버가 install 시 자기것만 추가/갱신하고 **타인 name 엔트리는
     절대 안 건드린다**(register_member identity 충돌판정과 정합: 같은 name=자기갱신,
     타인 name=무접촉).
@@ -649,7 +649,7 @@ def find_similar_names(name: str, existing, *, max_distance: int = 2) -> list:
       - Levenshtein 편집거리 <= max_distance, 또는
       - 공통 프리픽스 길이 >= 짧은쪽 길이의 80%
     동일 이름은 제외(그건 register_member 의 UNIQUE 가 처리).
-    junhyun↔junhyung(거리1) 같은 케이스를 잡는다.
+    jonathan↔jonathon(거리1) 같은 케이스를 잡는다.
     """
     n = name.strip().lower()
     out = []
@@ -839,7 +839,7 @@ def scaffold_memory(team_root: Path, *, member_name: str, role: str,
     members_file = team_root / "memory" / "team" / "members.md"
     added = register_member(members_file, member_name, identity=identity)
 
-    # config.members 자기 엔트리만 upsert (A2.2 — 각자 upsert, 은수 결정).
+    # config.members 자기 엔트리만 upsert (A2.2 — 각자 upsert, 팀 결정).
     # 도입자도 자기것 upsert(도입자 config 작성 직후라 유효 config 존재). 팀원은
     # 도입자가 만든 유효 config 에 자기것만 추가 — 타인 엔트리는 무접촉.
     # config 부재/깨짐이면 upsert 가 무작업(role 판정에 영향 0).

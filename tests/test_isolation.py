@@ -1,6 +1,6 @@
 """슬라이스 0 + P1 — 환경 격리 회귀 테스트.
 
-P0 사고 재발 방지: ambient 환경에 TEAMMODE_HOME(또는 구 TGATES_HOME)이 set돼 있어도
+P0 사고 재발 방지: ambient 환경에 TEAMMODE_HOME(또는 구 LEGACY_TOOL_HOME)이 set돼 있어도
 verify/conform 러너는 그 경로를 절대 건드리지 않는다. SubprocessEngine 은 ambient
 env 를 차단하고 run root 만 명시 주입해야 한다(`env -i` 정신).
 
@@ -29,7 +29,7 @@ def test_isolated_env_excludes_ambient_team_home(tmp_path, monkeypatch):
     fake_host = tmp_path / "REAL_HOST"
     fake_host.mkdir()
     monkeypatch.setenv("TEAMMODE_HOME", str(fake_host))
-    monkeypatch.setenv("TGATES_HOME", str(fake_host))
+    monkeypatch.setenv("LEGACY_TOOL_HOME", str(fake_host))
 
     run_root = tmp_path / "runroot"
     run_root.mkdir()
@@ -38,7 +38,7 @@ def test_isolated_env_excludes_ambient_team_home(tmp_path, monkeypatch):
     # P1: 엔진은 팀 루트를 env 가 아니라 `--root` 로 받는다 → env 에 팀 루트 지시
     # 변수가 아예 없어야 한다(ambient 누수 0). run root 는 argv 의 --root 로 전달됨.
     assert "TEAMMODE_HOME" not in env
-    assert "TGATES_HOME" not in env
+    assert "LEGACY_TOOL_HOME" not in env
     # 화이트리스트 변수는 그대로 통과 (PATH 등)
     assert "PATH" in env or "PATH" not in os.environ
     # run root 는 run() 이 argv 에 --root 로 끼워 넣는다
@@ -57,7 +57,7 @@ def test_verify_does_not_touch_ambient_host(tmp_path, monkeypatch):
     sentinel.write_text("ORIGINAL HOST BANNER")
 
     monkeypatch.setenv("TEAMMODE_HOME", str(fake_host))
-    monkeypatch.setenv("TGATES_HOME", str(fake_host))
+    monkeypatch.setenv("LEGACY_TOOL_HOME", str(fake_host))
 
     run_root = tmp_path / "runroot"
     run_root.mkdir()
@@ -113,7 +113,7 @@ def test_direct_off_ignores_ambient_team_home(tmp_path):
 
     env = dict(os.environ)
     env["TEAMMODE_HOME"] = str(victim)   # 피해자를 가리키도록 심는다
-    env["TGATES_HOME"] = str(victim)
+    env["LEGACY_TOOL_HOME"] = str(victim)
 
     proc = _run_engine(
         ["off", "--root", str(run_root),

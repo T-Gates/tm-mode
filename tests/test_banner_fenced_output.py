@@ -22,7 +22,7 @@ def _run(root: Path, verb: str, *argv):
 
 
 def _write_config(root: Path, **team_extra):
-    team = {"name": "tgates", "timezone": "Asia/Seoul", "locale": "ko_KR"}
+    team = {"name": "acme", "timezone": "Asia/Seoul", "locale": "ko_KR"}
     team.update(team_extra)
     cfg = {"spec_version": "0.1", "team": team, "services": {}}
     (root / "team.config.json").write_text(

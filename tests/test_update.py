@@ -1,6 +1,6 @@
 """슬라이스 T / T2 — 템플릿 풀(upstream fetch + update 동사) 테스트.
 
-설계(은수: "팀모드 킬때 템플릿 풀도" + 2026-06-17 재설계):
+설계(팀: "팀모드 킬때 템플릿 풀도" + 2026-06-17 재설계):
   - `on` 시 upstream 을 **fetch 만** 자동(조용·실패무시·타임아웃). behind 면 변경목록+알림.
   - **merge 는 쓰지 않는다** — 도입 레포가 GitHub *template* 으로 생성돼 upstream 과
     공통 조상이 0(unrelated histories)이라 merge/pull --ff-only 가 영원히 막힌다.

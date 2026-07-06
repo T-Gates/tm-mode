@@ -88,7 +88,7 @@ def _write(root: Path, folder: str, filename: str = "note.md"):
                 "--folder", folder,
                 "--filename", filename,
                 "--content", "테스트 내용 한 줄.",
-                "--author", "eunsu",
+                "--author", "bob",
                 "--weight", "📎")
 
 
@@ -157,7 +157,7 @@ def test_hint_suggested_command_registers_and_silences(tmp_path):
     r2 = _run(tmp_path, "memory", "route", "upsert",
               "--path", "product/",
               "--desc", "제품 관련 메모리",
-              "--author", "eunsu")
+              "--author", "bob")
     assert r2.returncode == 0, r2.stderr
     content = index_path.read_text(encoding="utf-8")
     assert "| `product/` | 제품 관련 메모리 |" in content

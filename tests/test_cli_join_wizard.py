@@ -319,7 +319,7 @@ class TestWizardTty:
 
         with patch("teammode.cli._detect_agents_from_install_lib",
                    return_value=list(installed_agents)), \
-             patch("teammode.cli._git_user_name", return_value="Eunsu Jang"), \
+             patch("teammode.cli._git_user_name", return_value="Jane Doe"), \
              patch.object(sys.stdin, "isatty", return_value=True), \
              patch("builtins.input", side_effect=inputs) as mock_input:
             dest, member, extra, clone_skip = cli._wizard_join(
@@ -333,13 +333,13 @@ class TestWizardTty:
             str(tmp_path / "new-dest"),  # 1) 위치
             "",                           # 2) 에이전트 (Enter=전부)
             "1",                          # 3) 새 팀원
-            "eunsu-jang",                 # 4) 이름
+            "jane-doe",                 # 4) 이름
             "",                           # 5) 역할 (생략)
             "N",                          # 6) Obsidian
             "Y",                          # 7) 확인
         ]
         dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
-        assert member == "eunsu-jang"
+        assert member == "jane-doe"
         assert "--register-obsidian" not in extra
 
     def test_agent_toggle(self, tmp_path):
@@ -1012,7 +1012,7 @@ def test_init_asks_team_name_before_repo_and_defaults_repo_from_slug():
     with patch("teammode.cli._have", return_value=True), \
          patch("teammode.cli.subprocess.run",
                return_value=MagicMock(returncode=0, stdout="")), \
-         patch("teammode.cli._pick_owner", return_value="T-Gates"), \
+         patch("teammode.cli._pick_owner", return_value="Acme"), \
          patch("teammode.cli._prompt", side_effect=fake_prompt), \
          patch("teammode.cli._wait_template_ready", return_value=True), \
          patch("teammode.cli.cmd_join", return_value=0):
@@ -1023,7 +1023,7 @@ def test_init_asks_team_name_before_repo_and_defaults_repo_from_slug():
     repo_idx = next(i for i, l in enumerate(labels) if "Repository name" in l)
     assert team_idx < repo_idx, "팀명을 레포명보다 먼저 물어야 함"
     repo_defaults = [d for label, d in prompts if "Repository name" in label]
-    assert repo_defaults == ["t-gates-team"]
+    assert repo_defaults == ["acme-team"]
 
 
 def test_init_repo_default_derives_from_entered_team_name():
@@ -1033,20 +1033,20 @@ def test_init_repo_default_derives_from_entered_team_name():
     def fake_prompt(label, default=""):
         prompts.append((label, default))
         if "Team name" in label:
-            return "TGATES"
+            return "ACMECO"
         return default
 
     with patch("teammode.cli._have", return_value=True), \
          patch("teammode.cli.subprocess.run",
                return_value=MagicMock(returncode=0, stdout="")), \
-         patch("teammode.cli._pick_owner", return_value="T-Gates"), \
+         patch("teammode.cli._pick_owner", return_value="Acme"), \
          patch("teammode.cli._prompt", side_effect=fake_prompt), \
          patch("teammode.cli._wait_template_ready", return_value=True), \
          patch("teammode.cli.cmd_join", return_value=0):
         cli.main(["init"])
 
     repo_defaults = [d for label, d in prompts if "Repository name" in label]
-    assert repo_defaults == ["tgates-team"]
+    assert repo_defaults == ["acmeco-team"]
 
 
 class TestExplicitFlagsSkipWizard:

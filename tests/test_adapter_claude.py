@@ -210,13 +210,13 @@ def test_args_passed_through(env):
     env.write_manifest([
         {"event": "PreToolUse",
          "match": {"mcp": {"server": "linear", "tool": "create_issue"}},
-         "script": "confirm-action.py", "args": "tgates-allow", "fallback": "runtime"},
+         "script": "confirm-action.py", "args": "acme-allow", "fallback": "runtime"},
     ])
     env.make_adapter().sync(mode="on")
     cmds = _all_commands(_load(env.settings))
     cmd = [c for e, m, c in cmds if e == "PreToolUse"][0]
     assert "confirm-action.py" in cmd
-    assert "tgates-allow" in cmd
+    assert "acme-allow" in cmd
 
 
 # ── timeout 단위 — manifest 초 → settings.json 초 (변환 없음) ──

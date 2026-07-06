@@ -335,14 +335,14 @@ def test_wire_agents_codex_passes_member(tmp_path):
     il.wire_agents(["codex"], home=tmp_path,
                    settings_override=tmp_path / "iso",
                    team_root=tmp_path / "myteam",
-                   member_name="leejhy",
+                   member_name="alice",
                    run_adapter=run_adapter)
 
     for verb in ("install-mcp", "sync", "install-skills"):
         extra = seen[("codex", verb)]
         assert "--member" in extra, f"codex {verb} extra_args 에 --member 없음: {extra}"
         idx = extra.index("--member")
-        assert extra[idx + 1] == "leejhy"
+        assert extra[idx + 1] == "alice"
 
 
 def test_wire_agents_claude_does_not_get_member(tmp_path):
@@ -356,7 +356,7 @@ def test_wire_agents_claude_does_not_get_member(tmp_path):
     il.wire_agents(["claude", "codex"], home=tmp_path,
                    settings_override=tmp_path / "iso",
                    team_root=tmp_path / "myteam",
-                   member_name="leejhy",
+                   member_name="alice",
                    run_adapter=run_adapter)
 
     for verb in ("install-mcp", "sync", "install-skills"):
@@ -395,7 +395,7 @@ def test_wire_agents_member_value_is_str(tmp_path):
     il.wire_agents(["codex"], home=tmp_path,
                    settings_override=tmp_path / "iso",
                    team_root=tmp_path / "myteam",
-                   member_name="leejhy",
+                   member_name="alice",
                    run_adapter=run_adapter)
 
     extra = seen[("codex", "sync")]

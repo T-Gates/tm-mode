@@ -59,8 +59,8 @@ def team_with_upstream(tmp_path):
     (team / "infra").mkdir()
     (team / "infra" / "engine.py").write_text("team-old\n")
     # 인스턴스 소유 util 스킬 — sync 가 절대 건드리면 안 됨
-    (team / "infra" / "skills" / "util" / "tgates-schedule").mkdir(parents=True)
-    (team / "infra" / "skills" / "util" / "tgates-schedule" / "SKILL.md").write_text(
+    (team / "infra" / "skills" / "util" / "acme-schedule").mkdir(parents=True)
+    (team / "infra" / "skills" / "util" / "acme-schedule" / "SKILL.md").write_text(
         "INSTANCE OWNED — DO NOT SYNC\n")
     (team / "team.config.json").write_text('{"team":{"name":"t"}}\n')
     _git(team, "add", ".")
@@ -103,7 +103,7 @@ def test_sync_pathspecs_no_exclude_without_ancestor():
 def test_sync_preserves_util_and_updates_engine(team_with_upstream):
     """engine stale 파일은 갱신, util 인스턴스 파일은 무변경, diff 에 util 없음."""
     team = team_with_upstream
-    util_file = team / "infra" / "skills" / "util" / "tgates-schedule" / "SKILL.md"
+    util_file = team / "infra" / "skills" / "util" / "acme-schedule" / "SKILL.md"
     res = go.sync_from_upstream(str(team))
     assert res.ok and res.changed, res.detail
     # engine 갱신됨
@@ -118,7 +118,7 @@ def test_sync_preserves_util_and_updates_engine(team_with_upstream):
 def test_sync_util_local_change_does_not_block(team_with_upstream):
     """util 의 커밋 안 된 로컬 변경이 있어도 dirty block 안 됨 + 변경 보존."""
     team = team_with_upstream
-    util_file = team / "infra" / "skills" / "util" / "tgates-schedule" / "SKILL.md"
+    util_file = team / "infra" / "skills" / "util" / "acme-schedule" / "SKILL.md"
     util_file.write_text("locally edited util\n")  # uncommitted
     res = go.sync_from_upstream(str(team))
     assert res.blocked is False, "util 로컬 변경이 sync 를 오block"
@@ -151,7 +151,7 @@ def test_do_commit_with_exclude_pathspec_skips_util(team_with_upstream):
     # sync 로 engine 을 staged 상태로 만든 뒤, util 에 로컬 변경을 staged 로 추가
     res = go.sync_from_upstream(str(team))
     assert res.changed
-    util_file = team / "infra" / "skills" / "util" / "tgates-schedule" / "SKILL.md"
+    util_file = team / "infra" / "skills" / "util" / "acme-schedule" / "SKILL.md"
     util_file.write_text("edited during sync window\n")
     _git(team, "add", "infra/skills/util")  # 일부러 util 을 staged
     # 자동 커밋이 pathspecs(exclude 포함)로 커밋 → util 은 빠져야

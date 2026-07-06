@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """auto_pull — 상시 레포 최신화 (throttled auto-pull) 순수 함수 모듈.
 
-설계(은수 새벽 합의):
+설계(팀 새벽 합의):
   UserPromptSubmit 훅이 매 프롬프트마다 팀 레포를 최신화하되,
   ① 스로틀로 과부하를 막고, ② **실패는 절대 작업을 막지 않는다(철칙)**.
 

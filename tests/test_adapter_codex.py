@@ -251,8 +251,8 @@ def test_build_command_member_prefix(env):
     'TEAMMODE_HOME= 이후 꼬리(실행 커맨드)'가 동일한지로 base 보존을 검증한다.
     """
     base = env.make_adapter(member=None).build_command(_remind_entry())
-    cmd = env.make_adapter(member="leejhy").build_command(_remind_entry())
-    assert cmd.startswith("env TEAMMODE_MEMBER=leejhy "), cmd
+    cmd = env.make_adapter(member="alice").build_command(_remind_entry())
+    assert cmd.startswith("env TEAMMODE_MEMBER=alice "), cmd
     assert "TEAMMODE_HOME=" in base and "TEAMMODE_HOME=" in cmd
     assert (cmd.split("TEAMMODE_HOME=", 1)[1]
             == base.split("TEAMMODE_HOME=", 1)[1]), (
@@ -293,7 +293,7 @@ def test_build_command_rejects_unsafe_member(env, bad):
 
 
 @pytest.mark.parametrize("ok", [
-    "leejhy", "eunsu", "a", "A1", "user-name", "user_name", "u1-2_3", "X",
+    "alice", "bob", "a", "A1", "user-name", "user_name", "u1-2_3", "X",
 ])
 def test_build_command_accepts_valid_member(env, ok):
     """정상 토큰(영숫자 시작 + 영숫자/-/_)은 prefix 가 붙는다."""
@@ -303,12 +303,12 @@ def test_build_command_accepts_valid_member(env, ok):
 
 def test_is_owned_holds_with_member_prefix(env):
     """prefix 가 붙어도 is_owned True — normalize substring 매칭이 prefix 에 안 깨진다."""
-    a = env.make_adapter(member="leejhy")
+    a = env.make_adapter(member="alice")
     cmd = a.build_command(_remind_entry())
-    assert cmd.startswith("env TEAMMODE_MEMBER=leejhy ")
+    assert cmd.startswith("env TEAMMODE_MEMBER=alice ")
     assert a.is_owned(cmd) is True, f"prefix 붙은 command 가 소유 판정 실패: {cmd!r}"
     # 음성 대조: teammode 소유가 아닌 임의 command 는 False
-    assert a.is_owned("env TEAMMODE_MEMBER=leejhy /usr/bin/echo hi") is False
+    assert a.is_owned("env TEAMMODE_MEMBER=alice /usr/bin/echo hi") is False
 
 
 # ── 10. issue #26 (codex review): tm on/off resync 가 prefix 를 떨구지 않는다 ──
@@ -328,20 +328,20 @@ def test_resync_without_member_preserves_existing_prefix(env):
         {"event": "UserPromptSubmit", "script": "session-log-remind.py", "mode": "on"},
     ])
     # 1) install 경로: member 박아 최초 sync → 두 hook 다 prefix
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     t1 = env.config.read_text()
-    assert t1.count("env TEAMMODE_MEMBER=leejhy") >= 2, t1
+    assert t1.count("env TEAMMODE_MEMBER=alice") >= 2, t1
 
     # 2) tm on resync(member 없음) → self-healing 으로 prefix 보존
     env.make_adapter(member=None).sync(mode="on")
     t2 = env.config.read_text()
-    assert "env TEAMMODE_MEMBER=leejhy" in t2, f"on resync 후 prefix 유실: {t2!r}"
+    assert "env TEAMMODE_MEMBER=alice" in t2, f"on resync 후 prefix 유실: {t2!r}"
     assert "session-log-remind.py" in t2
 
     # 3) tm off resync(member 없음) → base hook(auto-commit) prefix 보존
     env.make_adapter(member=None).sync(mode="off")
     t3 = env.config.read_text()
-    assert "env TEAMMODE_MEMBER=leejhy" in t3, f"off resync 후 prefix 유실: {t3!r}"
+    assert "env TEAMMODE_MEMBER=alice" in t3, f"off resync 후 prefix 유실: {t3!r}"
 
 
 def test_resync_without_member_no_existing_prefix_stays_clean(env):
@@ -361,13 +361,13 @@ def test_resync_member_arg_overrides_and_updates_prefix(env):
         {"event": "PostToolUse", "match": {"action": "file_edit"},
          "script": "auto-commit.py", "fallback": "runtime"},
     ])
-    env.make_adapter(member="leejhy").sync(mode="on")
-    assert "env TEAMMODE_MEMBER=leejhy" in env.config.read_text()
+    env.make_adapter(member="alice").sync(mode="on")
+    assert "env TEAMMODE_MEMBER=alice" in env.config.read_text()
     # 다른 member 로 재sync → 새 member 로 갱신(기존 prefix 파싱보다 self.member 우선)
-    env.make_adapter(member="eunsu").sync(mode="on")
+    env.make_adapter(member="bob").sync(mode="on")
     t = env.config.read_text()
-    assert "env TEAMMODE_MEMBER=eunsu" in t, t
-    assert "TEAMMODE_MEMBER=leejhy" not in t, f"옛 member 가 남음: {t!r}"
+    assert "env TEAMMODE_MEMBER=bob" in t, t
+    assert "TEAMMODE_MEMBER=alice" not in t, f"옛 member 가 남음: {t!r}"
 
 
 def test_existing_member_prefix_ignores_outside_managed_block(env):
@@ -383,7 +383,7 @@ def test_existing_member_prefix_ignores_outside_managed_block(env):
 
 # ── 11. issue #41 R1: legacy/어긋난 마커 블록 자기치유 — resync 는 항상 정확히 1블록 ──
 #
-# 실측 사고(2026-07-03, T-Gates): 과거 버전이 `# teammode-hooks-start` … `# teammode-mcp-end`
+# 실측 사고(2026-07-03, 도그푸딩): 과거 버전이 `# teammode-hooks-start` … `# teammode-mcp-end`
 # 로 마커가 어긋난 블록을 남겼고, 정상 쌍만 찾는 _write_block 이 인식 실패 → append →
 # 훅 2중 등록(구 블록은 prefix 없음 + stale timeout 3s). 요구: 어떤 잔재(어긋난 쌍·고아
 # start/end·중복 블록·과거 네이밍)가 있어도 resync 후 결과는 '정상 마커의 블록 정확히 1개'.
@@ -438,13 +438,13 @@ def test_resync_heals_mismatched_marker_legacy_block(env):
     """사고 원형: hooks-start↔mcp-end 어긋난 쌍 → append 아닌 제거 후 1블록 재기록."""
     _remind_manifest(env)
     env.config.write_text(_USER_TOML + "\n" + _legacy_block(env))
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "# teammode-mcp-end" not in text          # 어긋난 잔재 소멸
     assert "timeout = 3" not in text                  # stale timeout 소멸
     assert text.count("session-log-remind.py") == 1   # 훅 2중 등록 없음
-    assert "env TEAMMODE_MEMBER=leejhy" in text       # prefix 정상
+    assert "env TEAMMODE_MEMBER=alice" in text       # prefix 정상
     assert "command = '/usr/bin/echo user-hook'" in text  # 사용자 훅 보존
     _assert_valid_toml(text)
 
@@ -454,11 +454,11 @@ def test_resync_heals_two_stale_blocks(env):
     _remind_manifest(env)
     stale = _legacy_block(env, end="# teammode-hooks-end")
     env.config.write_text(_USER_TOML + "\n" + stale + "\n" + stale)
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert text.count("session-log-remind.py") == 1
-    assert "env TEAMMODE_MEMBER=leejhy" in text
+    assert "env TEAMMODE_MEMBER=alice" in text
     assert "command = '/usr/bin/echo user-hook'" in text
     _assert_valid_toml(text)
 
@@ -467,7 +467,7 @@ def test_resync_heals_orphan_end_marker(env):
     """짝 없는 end 마커 → 마커 라인만 제거, 사용자 내용 보존."""
     _remind_manifest(env)
     env.config.write_text(_USER_TOML + "\n# teammode-hooks-end\n")
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "command = '/usr/bin/echo user-hook'" in text
@@ -491,7 +491,7 @@ def test_resync_heals_orphan_start_with_owned_tables(env):
     )
     user_after = '\n[user_section]\nkey = "keep-me"\n'
     env.config.write_text(_USER_TOML + "\n" + orphan + user_after)
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "timeout = 3" not in text                  # 옛 소유 테이블 소멸
@@ -512,7 +512,7 @@ def test_resync_orphan_start_never_eats_user_tables(env):
         "command = '/usr/bin/echo mine'\n"
     )
     env.config.write_text(_USER_TOML + "\n" + orphan)
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "command = '/usr/bin/echo mine'" in text   # 사용자 훅 보존
@@ -526,7 +526,7 @@ def test_resync_removes_unknown_legacy_marker_pair(env):
     legacy = _legacy_block(env, start="# teammode-legacy-start",
                            end="# teammode-legacy-end")
     env.config.write_text(_USER_TOML + "\n" + legacy)
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "teammode-legacy-start" not in text
@@ -546,7 +546,7 @@ def test_resync_healing_preserves_valid_mcp_block(env):
         "# teammode-mcp-end\n"
     )
     env.config.write_text(mcp + "\n" + _legacy_block(env))
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "[mcp_servers.tm-linear]" in text
@@ -559,9 +559,9 @@ def test_resync_healing_idempotent(env):
     """치유 후 재sync 는 무변경(멱등) — 정상 상태에서 치유가 아무것도 안 건드린다."""
     _remind_manifest(env)
     env.config.write_text(_USER_TOML + "\n" + _legacy_block(env))
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     t1 = env.config.read_text()
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     t2 = env.config.read_text()
     assert t1 == t2
 
@@ -597,10 +597,10 @@ def test_existing_prefix_wins_over_member_fallback(env):
         {"event": "PostToolUse", "match": {"action": "file_edit"},
          "script": "auto-commit.py", "fallback": "runtime"},
     ])
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     env.make_adapter(member=None, member_fallback="envguy").sync(mode="on")
     text = env.config.read_text()
-    assert "env TEAMMODE_MEMBER=leejhy" in text
+    assert "env TEAMMODE_MEMBER=alice" in text
     assert "envguy" not in text
 
 
@@ -668,7 +668,7 @@ def test_resync_nested_mcp_pair_inside_hooks_span_preserved(env):
         "# teammode-hooks-end\n"
     )
     env.config.write_text(_USER_TOML + "\n" + corrupt)
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)                        # hooks 블록 정확히 1개
     assert "[mcp_servers.tm-linear]" in text          # 안쪽 MCP 등록 보존
@@ -677,7 +677,7 @@ def test_resync_nested_mcp_pair_inside_hooks_span_preserved(env):
     assert "timeout = 3" not in text                  # 옛 소유 테이블(양쪽) 소멸
     assert text.count("session-log-remind.py") == 1   # 훅 2중 등록 없음
     assert text.count("auto-commit.py") == 1
-    assert "env TEAMMODE_MEMBER=leejhy" in text
+    assert "env TEAMMODE_MEMBER=alice" in text
     assert "command = '/usr/bin/echo user-hook'" in text
     _assert_valid_toml(text)
 
@@ -752,7 +752,7 @@ def test_orphan_start_user_table_with_unknown_script_survives(env):
         f"command = 'python3 {norm} my-custom-thing.py'\n"
     )
     env.config.write_text(_USER_TOML + "\n" + orphan)
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "my-custom-thing.py" in text               # 사용자 테이블 보존
@@ -769,12 +769,12 @@ def test_orphan_start_env_prefixed_known_script_removed(env):
         "[[hooks.UserPromptSubmit]]\n\n"
         "[[hooks.UserPromptSubmit.hooks]]\n"
         'type = "command"\n'
-        f"command = 'env TEAMMODE_MEMBER=leejhy TEAMMODE_HOME=/x "
+        f"command = 'env TEAMMODE_MEMBER=alice TEAMMODE_HOME=/x "
         f"python3 {norm} session-log-remind.py'\n"
         "timeout = 3\n"
     )
     env.config.write_text(_USER_TOML + "\n" + orphan)
-    env.make_adapter(member="leejhy").sync(mode="on")
+    env.make_adapter(member="alice").sync(mode="on")
     text = env.config.read_text()
     _assert_single_block(text)
     assert "timeout = 3" not in text                  # 옛 소유 테이블 소멸

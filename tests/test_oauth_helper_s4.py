@@ -125,34 +125,34 @@ class TestCredentialKeyContract:
 
     def test_api_key_stored_as_role_key(self, creds):
         """api_key 는 기존 방식 — 역할 이름이 그대로 키."""
-        creds.store("tgates", "personal", "issues", "sk-abc123")
-        assert creds.load("tgates", "personal", "issues") == "sk-abc123"
+        creds.store("acme", "personal", "issues", "sk-abc123")
+        assert creds.load("acme", "personal", "issues") == "sk-abc123"
 
     def test_bot_token_stored_as_role_key(self, creds):
         """bot_token 도 역할 이름이 키."""
         _bot_tok = "xoxb" + "-bot-token"
-        creds.store("tgates", "personal", "chat", _bot_tok)
-        assert creds.load("tgates", "personal", "chat") == _bot_tok
+        creds.store("acme", "personal", "chat", _bot_tok)
+        assert creds.load("acme", "personal", "chat") == _bot_tok
 
     def test_oauth_access_token_key_pattern(self, creds):
         """oauth access_token 은 <역할>_access_token 키."""
-        creds.store("tgates", "personal", "docs_access_token", "ya29.access-xyz")
-        assert creds.load("tgates", "personal", "docs_access_token") == "ya29.access-xyz"
+        creds.store("acme", "personal", "docs_access_token", "ya29.access-xyz")
+        assert creds.load("acme", "personal", "docs_access_token") == "ya29.access-xyz"
 
     def test_oauth_refresh_token_key_pattern(self, creds):
         """oauth refresh_token 은 <역할>_refresh_token 키."""
-        creds.store("tgates", "personal", "docs_refresh_token", "1//refresh-xyz")
-        assert creds.load("tgates", "personal", "docs_refresh_token") == "1//refresh-xyz"
+        creds.store("acme", "personal", "docs_refresh_token", "1//refresh-xyz")
+        assert creds.load("acme", "personal", "docs_refresh_token") == "1//refresh-xyz"
 
     def test_api_key_and_oauth_coexist_for_different_roles(self, creds):
         """api_key 역할과 oauth 역할이 같은 금고에 공존."""
-        creds.store("tgates", "personal", "issues", "sk-api-key")
-        creds.store("tgates", "personal", "calendar_access_token", "ya29.cal-access")
-        creds.store("tgates", "personal", "calendar_refresh_token", "1//cal-refresh")
+        creds.store("acme", "personal", "issues", "sk-api-key")
+        creds.store("acme", "personal", "calendar_access_token", "ya29.cal-access")
+        creds.store("acme", "personal", "calendar_refresh_token", "1//cal-refresh")
 
-        assert creds.load("tgates", "personal", "issues") == "sk-api-key"
-        assert creds.load("tgates", "personal", "calendar_access_token") == "ya29.cal-access"
-        assert creds.load("tgates", "personal", "calendar_refresh_token") == "1//cal-refresh"
+        assert creds.load("acme", "personal", "issues") == "sk-api-key"
+        assert creds.load("acme", "personal", "calendar_access_token") == "ya29.cal-access"
+        assert creds.load("acme", "personal", "calendar_refresh_token") == "1//cal-refresh"
 
 
 # ── 4-B. pkce_flow ─────────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ class TestPkceFlow:
         monkeypatch.setattr(helper.webbrowser, "open", _make_mock_browser_open("fake-code"))
 
         result = helper.pkce_flow(
-            team="tgates",
+            team="acme",
             role="calendar",
             auth_url="https://auth.example.com/oauth/authorize",
             token_url="https://auth.example.com/oauth/token",
@@ -192,7 +192,7 @@ class TestPkceFlow:
         monkeypatch.setattr(helper.webbrowser, "open", _make_mock_browser_open("code-123"))
 
         helper.pkce_flow(
-            team="tgates",
+            team="acme",
             role="calendar",
             auth_url="https://auth.example.com/oauth/authorize",
             token_url="https://auth.example.com/oauth/token",
@@ -202,8 +202,8 @@ class TestPkceFlow:
 
         # 금고에서 직접 확인
         creds_mod = _load_mod(CREDENTIALS_MOD, "_test_creds_check_s4")
-        at = creds_mod.load("tgates", "personal", "calendar_access_token")
-        rt = creds_mod.load("tgates", "personal", "calendar_refresh_token")
+        at = creds_mod.load("acme", "personal", "calendar_access_token")
+        rt = creds_mod.load("acme", "personal", "calendar_refresh_token")
         assert at == "ya29.stored-access"
         assert rt == "1//stored-refresh"
 
@@ -217,7 +217,7 @@ class TestPkceFlow:
         monkeypatch.setattr(helper.webbrowser, "open", _make_mock_browser_open("code-no-rt"))
 
         result = helper.pkce_flow(
-            team="tgates",
+            team="acme",
             role="docs",
             auth_url="https://auth.example.com/authorize",
             token_url="https://auth.example.com/token",
@@ -241,7 +241,7 @@ class TestPkceFlow:
 
         with pytest.raises(Exception, match="[Ss]tate|[Cc]SRF|[Ss]ecurity|[Mm]ismatch"):
             helper.pkce_flow(
-                team="tgates",
+                team="acme",
                 role="issues",
                 auth_url="https://auth.example.com/authorize",
                 token_url="https://auth.example.com/token",
@@ -267,7 +267,7 @@ class TestPkceFlow:
 
         with pytest.raises(Exception):
             helper.pkce_flow(
-                team="tgates",
+                team="acme",
                 role="issues",
                 auth_url="https://auth.example.com/authorize",
                 token_url="https://auth.example.com/token",
@@ -346,7 +346,7 @@ class TestRefreshToken:
 
         # 먼저 기존 refresh_token 을 금고에 저장
         creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_for_refresh_test")
-        creds_mod.store("tgates", "personal", "docs_refresh_token", "1//old-refresh")
+        creds_mod.store("acme", "personal", "docs_refresh_token", "1//old-refresh")
 
         new_token_resp = {
             "access_token": "ya29.new-access",
@@ -357,7 +357,7 @@ class TestRefreshToken:
         monkeypatch.setattr("urllib.request.urlopen", _make_mock_urlopen(new_token_resp))
 
         result = helper.refresh_token(
-            team="tgates",
+            team="acme",
             role="docs",
             token_url="https://auth.example.com/token",
             client_id="test-client",
@@ -370,20 +370,20 @@ class TestRefreshToken:
         import urllib.request
 
         creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_for_refresh_store_test")
-        creds_mod.store("tgates", "personal", "issues_refresh_token", "1//refresh-old")
-        creds_mod.store("tgates", "personal", "issues_access_token", "ya29.old-access")
+        creds_mod.store("acme", "personal", "issues_refresh_token", "1//refresh-old")
+        creds_mod.store("acme", "personal", "issues_access_token", "ya29.old-access")
 
         new_resp = {"access_token": "ya29.fresh-access", "token_type": "bearer"}
         monkeypatch.setattr("urllib.request.urlopen", _make_mock_urlopen(new_resp))
 
         helper.refresh_token(
-            team="tgates",
+            team="acme",
             role="issues",
             token_url="https://auth.example.com/token",
             client_id="cli",
         )
 
-        refreshed = creds_mod.load("tgates", "personal", "issues_access_token")
+        refreshed = creds_mod.load("acme", "personal", "issues_access_token")
         assert refreshed == "ya29.fresh-access"
 
     def test_refresh_updates_refresh_token_if_rotated(self, helper, monkeypatch):
@@ -391,7 +391,7 @@ class TestRefreshToken:
         import urllib.request
 
         creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_rotation_test")
-        creds_mod.store("tgates", "personal", "chat_refresh_token", "1//old-rt")
+        creds_mod.store("acme", "personal", "chat_refresh_token", "1//old-rt")
 
         rotated_resp = {
             "access_token": "ya29.rotated-access",
@@ -401,20 +401,20 @@ class TestRefreshToken:
         monkeypatch.setattr("urllib.request.urlopen", _make_mock_urlopen(rotated_resp))
 
         helper.refresh_token(
-            team="tgates",
+            team="acme",
             role="chat",
             token_url="https://auth.example.com/token",
             client_id="cli",
         )
 
-        new_rt = creds_mod.load("tgates", "personal", "chat_refresh_token")
+        new_rt = creds_mod.load("acme", "personal", "chat_refresh_token")
         assert new_rt == "1//new-rt"
 
     def test_refresh_no_vault_refresh_token_raises(self, helper):
         """금고에 refresh_token 없을 때 명확한 에러."""
         with pytest.raises(Exception, match="[Rr]efresh|[Tt]oken|[Vv]ault"):
             helper.refresh_token(
-                team="tgates",
+                team="acme",
                 role="nonexistent",
                 token_url="https://auth.example.com/token",
                 client_id="cli",
@@ -425,7 +425,7 @@ class TestRefreshToken:
         import urllib.request, urllib.error
 
         creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_rt_fail_test")
-        creds_mod.store("tgates", "personal", "calendar_refresh_token", "1//rt")
+        creds_mod.store("acme", "personal", "calendar_refresh_token", "1//rt")
 
         def mock_urlopen_fail(req, *args, **kwargs):
             raise urllib.error.HTTPError(
@@ -440,7 +440,7 @@ class TestRefreshToken:
 
         with pytest.raises(Exception):
             helper.refresh_token(
-                team="tgates",
+                team="acme",
                 role="calendar",
                 token_url="https://auth.example.com/token",
                 client_id="cli",
@@ -458,7 +458,7 @@ class TestTokenSecurity:
 
         creds_mod = _load_mod(CREDENTIALS_MOD, "_creds_leak_test")
         secret_token = "super-secret-refresh-token-12345"
-        creds_mod.store("tgates", "personal", "issues_refresh_token", secret_token)
+        creds_mod.store("acme", "personal", "issues_refresh_token", secret_token)
 
         def mock_urlopen_fail(req, *args, **kwargs):
             raise urllib.error.HTTPError(
@@ -473,7 +473,7 @@ class TestTokenSecurity:
 
         try:
             helper.refresh_token(
-                team="tgates",
+                team="acme",
                 role="issues",
                 token_url="https://auth.example.com/token",
                 client_id="cli",

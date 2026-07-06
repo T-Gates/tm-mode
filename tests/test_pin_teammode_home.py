@@ -40,17 +40,17 @@ class TestInjectEnvSettings:
     def test_pins_member_and_home(self, tmp_path):
         settings = tmp_path / "settings.json"
         changed = il.inject_env_settings(settings, {
-            "TEAMMODE_MEMBER": "eunsu",
+            "TEAMMODE_MEMBER": "bob",
             "TEAMMODE_HOME": str(tmp_path / "teamroot"),
         })
         assert changed is True
         data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["env"]["TEAMMODE_MEMBER"] == "eunsu"
+        assert data["env"]["TEAMMODE_MEMBER"] == "bob"
         assert data["env"]["TEAMMODE_HOME"] == str(tmp_path / "teamroot")
 
     def test_idempotent_same_values(self, tmp_path):
         settings = tmp_path / "settings.json"
-        env_map = {"TEAMMODE_MEMBER": "eunsu", "TEAMMODE_HOME": "/team/root"}
+        env_map = {"TEAMMODE_MEMBER": "bob", "TEAMMODE_HOME": "/team/root"}
         il.inject_env_settings(settings, env_map)
         before = settings.read_text(encoding="utf-8")
         assert il.inject_env_settings(settings, env_map) is False
@@ -88,10 +88,10 @@ class TestInjectEnvSettings:
     def test_member_wrapper_backcompat(self, tmp_path):
         """inject_member_env_settings 는 기존 시그니처 그대로 동작(하위호환)."""
         settings = tmp_path / "settings.json"
-        assert il.inject_member_env_settings(settings, "eunsu") is True
+        assert il.inject_member_env_settings(settings, "bob") is True
         data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["env"]["TEAMMODE_MEMBER"] == "eunsu"
-        assert il.inject_member_env_settings(settings, "eunsu") is False
+        assert data["env"]["TEAMMODE_MEMBER"] == "bob"
+        assert il.inject_member_env_settings(settings, "bob") is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -104,7 +104,7 @@ class TestRemoveEnvSettings:
     def test_removes_our_keys_preserves_others(self, tmp_path):
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({
-            "env": {"TEAMMODE_MEMBER": "eunsu", "TEAMMODE_HOME": "/team/root",
+            "env": {"TEAMMODE_MEMBER": "bob", "TEAMMODE_HOME": "/team/root",
                     "OTHER_VAR": "hello"},
             "hooks": {"SessionStart": []},
         }), encoding="utf-8")
@@ -119,7 +119,7 @@ class TestRemoveEnvSettings:
         """우리 키만 있던 env 블록은 흔적 없이 제거(흔적 0 대칭)."""
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({
-            "env": {"TEAMMODE_MEMBER": "eunsu", "TEAMMODE_HOME": "/r"},
+            "env": {"TEAMMODE_MEMBER": "bob", "TEAMMODE_HOME": "/r"},
             "hooks": {},
         }), encoding="utf-8")
         il.remove_env_settings(settings, self.KEYS)
@@ -163,7 +163,7 @@ def test_uninstall_removes_settings_env_keys(tmp_path):
     team_root.mkdir()
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({
-        "env": {"TEAMMODE_MEMBER": "eunsu",
+        "env": {"TEAMMODE_MEMBER": "bob",
                 "TEAMMODE_HOME": str(team_root),
                 "MY_OWN": "keep"},
     }), encoding="utf-8")
@@ -269,10 +269,10 @@ def test_build_command_pins_home_safe_path(tmp_path):
 def test_build_command_member_first_then_home(tmp_path):
     """member 지정 시 기존 형식 유지: env TEAMMODE_MEMBER=<m> 가 앞(파서 하위호환)."""
     e = _make_env(tmp_path)
-    cmd = e.make_adapter(member="leejhy").build_command(_remind_entry())
-    assert cmd.startswith("env TEAMMODE_MEMBER=leejhy "), cmd
+    cmd = e.make_adapter(member="alice").build_command(_remind_entry())
+    assert cmd.startswith("env TEAMMODE_MEMBER=alice "), cmd
     assigns = _env_assignments(cmd)
-    assert assigns.get("TEAMMODE_MEMBER") == "leejhy"
+    assert assigns.get("TEAMMODE_MEMBER") == "alice"
     assert assigns.get("TEAMMODE_HOME") == str(e.root.resolve())
 
 
@@ -285,7 +285,7 @@ def test_build_command_member_first_then_home(tmp_path):
 def test_build_command_quotes_unsafe_home(tmp_path, root_name):
     """공백/따옴표/비ASCII 경로도 shlex.quote 로 셸에 정확히 라운드트립된다."""
     e = _make_env(tmp_path, root_name=root_name)
-    cmd = e.make_adapter(member="leejhy").build_command(_remind_entry())
+    cmd = e.make_adapter(member="alice").build_command(_remind_entry())
     assigns = _env_assignments(cmd)
     assert assigns.get("TEAMMODE_HOME") == str(e.root.resolve()), cmd
 
@@ -293,11 +293,11 @@ def test_build_command_quotes_unsafe_home(tmp_path, root_name):
 def test_build_command_home_with_newline_not_pinned(tmp_path):
     """TOML 한 줄 문자열로 표현 불가한 제어문자 경로는 핀 생략(프로파일 폴백, fail-safe)."""
     e = _make_env(tmp_path)
-    a = e.make_adapter(member="leejhy")
+    a = e.make_adapter(member="alice")
     a.team_root = Path(str(e.root) + "\nX")  # 병리적 경로 강제 주입
     cmd = a.build_command(_remind_entry())
     assert "TEAMMODE_HOME" not in cmd, cmd
-    assert cmd.startswith("env TEAMMODE_MEMBER=leejhy "), cmd  # member 는 유지
+    assert cmd.startswith("env TEAMMODE_MEMBER=alice "), cmd  # member 는 유지
 
 
 def test_sync_pins_home_into_config_toml(tmp_path):
@@ -309,10 +309,10 @@ def test_sync_pins_home_into_config_toml(tmp_path):
         {"event": "UserPromptSubmit", "script": "session-log-remind.py",
          "mode": "on"},
     ])
-    e.make_adapter(member="leejhy").sync(mode="on")
+    e.make_adapter(member="alice").sync(mode="on")
     text = e.config.read_text(encoding="utf-8")
     assert "TEAMMODE_HOME=" in text, text
-    assert "env TEAMMODE_MEMBER=leejhy" in text, text
+    assert "env TEAMMODE_MEMBER=alice" in text, text
 
 
 def test_resync_without_member_keeps_home_and_member(tmp_path):
@@ -322,11 +322,11 @@ def test_resync_without_member_keeps_home_and_member(tmp_path):
         {"event": "PostToolUse", "match": {"action": "file_edit"},
          "script": "auto-commit.py", "fallback": "runtime"},
     ])
-    e.make_adapter(member="leejhy").sync(mode="on")
+    e.make_adapter(member="alice").sync(mode="on")
     e.make_adapter(member=None).sync(mode="on")   # tm on resync
     t = e.config.read_text(encoding="utf-8")
     assert "TEAMMODE_HOME=" in t, t
-    assert "env TEAMMODE_MEMBER=leejhy" in t, t   # 기존 self-healing 도 유지
+    assert "env TEAMMODE_MEMBER=alice" in t, t   # 기존 self-healing 도 유지
     e.make_adapter(member=None).sync(mode="off")  # tm off resync
     t = e.config.read_text(encoding="utf-8")
     assert "TEAMMODE_HOME=" in t, t
@@ -339,9 +339,9 @@ def test_sync_idempotent_rerun(tmp_path):
         {"event": "PostToolUse", "match": {"action": "file_edit"},
          "script": "auto-commit.py", "fallback": "runtime"},
     ])
-    e.make_adapter(member="leejhy").sync(mode="on")
+    e.make_adapter(member="alice").sync(mode="on")
     before = e.config.read_text(encoding="utf-8")
-    changes = e.make_adapter(member="leejhy").sync(mode="on")
+    changes = e.make_adapter(member="alice").sync(mode="on")
     assert e.config.read_text(encoding="utf-8") == before
     assert not any(c.startswith("[sync]") for c in changes), changes
 
@@ -353,7 +353,7 @@ def test_sync_space_path_toml_roundtrip(tmp_path):
         {"event": "PostToolUse", "match": {"action": "file_edit"},
          "script": "auto-commit.py", "fallback": "runtime"},
     ])
-    e.make_adapter(member="leejhy").sync(mode="on")
+    e.make_adapter(member="alice").sync(mode="on")
     text = e.config.read_text(encoding="utf-8")
     # command = ... 라인 추출 후 TOML 문자열 디코드(_toml_str 의 역)
     line = next(ln for ln in text.splitlines() if ln.startswith("command = "))
@@ -383,7 +383,7 @@ def test_uninstall_removes_block_including_home(tmp_path):
         {"event": "PostToolUse", "match": {"action": "file_edit"},
          "script": "auto-commit.py", "fallback": "runtime"},
     ])
-    e.make_adapter(member="leejhy").sync(mode="on")
+    e.make_adapter(member="alice").sync(mode="on")
     assert "TEAMMODE_HOME=" in e.config.read_text(encoding="utf-8")
     e.make_adapter(member=None).uninstall()
     text = e.config.read_text(encoding="utf-8")
@@ -394,7 +394,7 @@ def test_uninstall_removes_block_including_home(tmp_path):
 def test_is_owned_holds_with_home_prefix(tmp_path):
     """home 핀이 붙어도 is_owned(normalize.py 마커) 판정이 깨지지 않는다."""
     e = _make_env(tmp_path, root_name="team root")
-    a = e.make_adapter(member="leejhy")
+    a = e.make_adapter(member="alice")
     cmd = a.build_command(_remind_entry())
     assert a.is_owned(cmd) is True, cmd
 

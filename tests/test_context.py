@@ -68,16 +68,16 @@ def test_context_includes_index_content(tmp_path):
 
 def test_context_collects_member_summary(tmp_path):
     _write_index(tmp_path)
-    _write_log(tmp_path, "eunsu", "2026-06-13", "오늘요약내용")
+    _write_log(tmp_path, "bob", "2026-06-13", "오늘요약내용")
     r = _run(tmp_path, "context")
-    assert "eunsu" in r.stdout
+    assert "bob" in r.stdout
     assert "오늘요약내용" in r.stdout
 
 
 def test_context_picks_most_recent_workday_file(tmp_path):
     _write_index(tmp_path)
-    _write_log(tmp_path, "eunsu", "2026-06-10", "오래된요약")
-    _write_log(tmp_path, "eunsu", "2026-06-13", "최신요약")
+    _write_log(tmp_path, "bob", "2026-06-10", "오래된요약")
+    _write_log(tmp_path, "bob", "2026-06-13", "최신요약")
     r = _run(tmp_path, "context")
     assert "최신요약" in r.stdout
     # 기본 단위 = 최근 1파일 (스펙 §4.1): 오래된 summary 는 안 나온다
@@ -86,11 +86,11 @@ def test_context_picks_most_recent_workday_file(tmp_path):
 
 def test_context_multiple_members(tmp_path):
     _write_index(tmp_path)
-    _write_log(tmp_path, "eunsu", "2026-06-13", "은수작업")
-    _write_log(tmp_path, "junhyung", "2026-06-13", "준형작업")
+    _write_log(tmp_path, "bob", "2026-06-13", "작업메모A")
+    _write_log(tmp_path, "jonathon", "2026-06-13", "협업작업")
     r = _run(tmp_path, "context")
-    assert "eunsu" in r.stdout and "junhyung" in r.stdout
-    assert "은수작업" in r.stdout and "준형작업" in r.stdout
+    assert "bob" in r.stdout and "jonathon" in r.stdout
+    assert "작업메모A" in r.stdout and "협업작업" in r.stdout
 
 
 # ── 상태(.teammode-active) 반영 ──
@@ -107,16 +107,16 @@ def test_context_reports_active_state(tmp_path):
 
 def test_context_json_mode_parses(tmp_path):
     _write_index(tmp_path)
-    _write_log(tmp_path, "eunsu", "2026-06-13", "제이슨요약")
+    _write_log(tmp_path, "bob", "2026-06-13", "제이슨요약")
     r = _run(tmp_path, "context", "--json")
     assert r.returncode == 0
     data = json.loads(r.stdout)
     assert "members" in data
     names = {m["author"] for m in data["members"]}
-    assert "eunsu" in names
-    eunsu = next(m for m in data["members"] if m["author"] == "eunsu")
-    assert eunsu["summary"] == "제이슨요약"
-    assert eunsu["date"] == "2026-06-13"
+    assert "bob" in names
+    bob = next(m for m in data["members"] if m["author"] == "bob")
+    assert bob["summary"] == "제이슨요약"
+    assert bob["date"] == "2026-06-13"
 
 
 # ── 적대: summary 없는 구 로그 (마이그레이션 단서) ──
@@ -150,11 +150,11 @@ def test_context_json_old_log_summary_empty(tmp_path):
 
 def test_context_ignores_non_log_md_files(tmp_path):
     _write_index(tmp_path)
-    d = tmp_path / "memory" / "team" / "sessions" / "eunsu"
+    d = tmp_path / "memory" / "team" / "sessions" / "bob"
     d.mkdir(parents=True, exist_ok=True)
     # YYYY-MM-DD 가 아닌 보조 파일 (스펙 §2.1: 주입 대상 아님)
     (d / "notes.md").write_text("보조파일내용", encoding="utf-8")
-    _write_log(tmp_path, "eunsu", "2026-06-13", "진짜요약")
+    _write_log(tmp_path, "bob", "2026-06-13", "진짜요약")
     r = _run(tmp_path, "context")
     assert "진짜요약" in r.stdout
     assert "보조파일내용" not in r.stdout
@@ -174,7 +174,7 @@ def test_context_does_not_leak_arbitrary_frontmatter_keys(tmp_path):
     # 세션로그가 (심링크 등으로) passwd 류 콜론 라인을 담아도, 엔진은 알려진 3필드
     # (author/date/summary)만 방출한다 — 임의 키 내용 누수 0.
     _write_index(tmp_path)
-    d = tmp_path / "memory" / "team" / "sessions" / "eunsu"
+    d = tmp_path / "memory" / "team" / "sessions" / "bob"
     d.mkdir(parents=True, exist_ok=True)
     (d / "2026-06-13.md").write_text(
         "---\nroot:x:0:0:SECRETLEAK:/root:/bin/bash\nsummary: innocuous\n"
@@ -184,8 +184,8 @@ def test_context_does_not_leak_arbitrary_frontmatter_keys(tmp_path):
     rj = _run(tmp_path, "context", "--json")
     assert "SECRETLEAK" not in rj.stdout
     data = json.loads(rj.stdout)
-    eunsu = next(m for m in data["members"] if m["author"] == "eunsu")
-    assert eunsu["summary"] == "innocuous"
+    bob = next(m for m in data["members"] if m["author"] == "bob")
+    assert bob["summary"] == "innocuous"
 
 
 def test_context_file_in_sessions_not_treated_as_member(tmp_path):

@@ -30,7 +30,7 @@ sys.path.insert(0, str(REPO / "infra"))
 
 import credentials as cred  # noqa: E402
 
-TEAM = "tgates"
+TEAM = "acme"
 
 
 def _sentinel() -> str:

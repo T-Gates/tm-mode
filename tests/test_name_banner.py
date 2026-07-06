@@ -34,7 +34,7 @@ tm = _load_engine()
 # ── render_name_banner ──
 
 def test_render_name_banner_ascii_produces_rectangular_art():
-    art = tm.render_name_banner(REPO, "TGATES")
+    art = tm.render_name_banner(REPO, "ACME")
     assert art is not None
     lines = art.split("\n")
     assert len(lines) == 6  # ansi_shadow height
@@ -49,7 +49,7 @@ def test_render_name_banner_non_ascii_returns_none():
 
 def test_render_name_banner_missing_glyphs_returns_none(tmp_path):
     # 글리프 JSON 없는 루트 → None(폴백)
-    assert tm.render_name_banner(tmp_path, "TGATES") is None
+    assert tm.render_name_banner(tmp_path, "ACME") is None
 
 
 def test_render_name_banner_empty_returns_none():
@@ -59,8 +59,8 @@ def test_render_name_banner_empty_returns_none():
 # ── default_banner_content (단일소스) ──
 
 def test_default_banner_content_uses_name_art():
-    art = tm.render_name_banner(REPO, "TGATES")
-    content = tm.default_banner_content(REPO, "TGATES")
+    art = tm.render_name_banner(REPO, "ACME")
+    content = tm.default_banner_content(REPO, "ACME")
     assert content.startswith(art)
     assert "팀색 입히기" in content
 
@@ -73,8 +73,8 @@ def test_default_banner_content_non_ascii_falls_back_plain(tmp_path):
 # ── --team-name 배선 (parse_args) ──
 
 def test_parse_args_reads_team_name():
-    opts = il.parse_args(["--root", "/x", "--team-name", "TGATES"])
-    assert opts.team_name == "TGATES"
+    opts = il.parse_args(["--root", "/x", "--team-name", "ACME"])
+    assert opts.team_name == "ACME"
 
 
 def test_parse_args_team_name_absent_is_none():
