@@ -120,7 +120,7 @@ memory/                # team memory (created at setup)
 conformance/           # compatibility checks + golden scenarios
 ```
 
-Spec: [docs/spec/](docs/spec/README.md) — the single authoritative SPEC v0.3 (Korean; docs are Korean-first). Contributor map: [ARCHITECTURE.md](ARCHITECTURE.md) (Korean).
+Spec: [docs/spec/](docs/spec/README.md) — the single authoritative SPEC v0.3 (Korean; docs are Korean-first). Contributor map: see the "아키텍처 — 코드 지도" section at the bottom of [README.md](README.md) (Korean).
 
 ## License
 
