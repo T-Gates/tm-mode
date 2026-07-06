@@ -65,13 +65,13 @@ class TestParseArgsAgents:
         opts = il.parse_args([
             "--root", "/tmp/team",
             "--agent", "claude",
-            "--member-name", "jane-doe",
+            "--member-name", "bob",
             "--agent", "codex",
             "--yes",
         ])
         assert opts.agents == ["claude", "codex"]
         assert opts.root == "/tmp/team"
-        assert opts.member_name == "jane-doe"
+        assert opts.member_name == "bob"
         assert opts.yes is True
 
 
@@ -184,7 +184,7 @@ class TestBootstrapAgentFiltering:
 
         import install as inst
         opts = il.parse_args(["--root", str(tmp_path), "--yes",
-                               "--member-name", "jane-doe"] + agent_argv)
+                               "--member-name", "bob"] + agent_argv)
 
         warned = []
         messages = []
@@ -594,7 +594,7 @@ class TestCmdUtilAgentsFromConfig:
              patch.object(tm, "_active_marker") as mock_marker:
             mock_marker.return_value = MagicMock()
             mock_marker.return_value.exists.return_value = True
-            rc = tm.cmd_util(tmp_path, "add", "jane-doe", "test-util",
+            rc = tm.cmd_util(tmp_path, "add", "bob", "test-util",
                              skills_dir=str(tmp_path / "skills"),
                              settings_path=str(settings), install=True)
 
@@ -624,7 +624,7 @@ class TestCmdUtilAgentsFromConfig:
              patch.object(tm, "_active_marker") as mock_marker:
             mock_marker.return_value = MagicMock()
             mock_marker.return_value.exists.return_value = True
-            rc = tm.cmd_util(tmp_path, "remove", "jane-doe", "test-util",
+            rc = tm.cmd_util(tmp_path, "remove", "bob", "test-util",
                              skills_dir=str(tmp_path / "skills"),
                              settings_path=str(settings), install=True)
 

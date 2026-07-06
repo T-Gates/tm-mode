@@ -1,4 +1,4 @@
-"""L2-A2 — 멤버 역할 (config.members 배열 + 각자 upsert, Jane 결정 2026-06-16).
+"""L2-A2 — 멤버 역할 (config.members 배열 + 각자 upsert, 팀 결정 2026-06-16).
 
 - members 스키마 검증: 정상 / name 누락 / 빈 배열 valid / 없음(None) valid / role 자유문자열
 - 각자 upsert: 자기 엔트리만 추가/갱신, 타인 엔트리 무접촉, 멱등
@@ -251,29 +251,29 @@ def _write_log(team_root: Path, author: str, date: str, summary: str):
 
 
 def test_context_text_shows_role(tmp_path):
-    _write_cfg(tmp_path, _valid_member_cfg([{"name": "jane-doe", "role": "developer"}]))
-    _write_log(tmp_path, "jane-doe", "2026-06-13", "작업")
+    _write_cfg(tmp_path, _valid_member_cfg([{"name": "bob", "role": "developer"}]))
+    _write_log(tmp_path, "bob", "2026-06-13", "작업")
     r = _run_engine(tmp_path, "context")
     assert r.returncode == 0
-    assert "jane-doe(developer)" in r.stdout
+    assert "bob(developer)" in r.stdout
 
 
 def test_context_json_has_role(tmp_path):
-    _write_cfg(tmp_path, _valid_member_cfg([{"name": "jane-doe", "role": "developer"}]))
-    _write_log(tmp_path, "jane-doe", "2026-06-13", "작업")
+    _write_cfg(tmp_path, _valid_member_cfg([{"name": "bob", "role": "developer"}]))
+    _write_log(tmp_path, "bob", "2026-06-13", "작업")
     r = _run_engine(tmp_path, "context", "--json")
     data = json.loads(r.stdout)
-    jane-doe = next(m for m in data["members"] if m["author"] == "jane-doe")
-    assert jane-doe["role"] == "developer"
+    bob = next(m for m in data["members"] if m["author"] == "bob")
+    assert bob["role"] == "developer"
 
 
 def test_context_member_without_config_role_shows_plain(tmp_path):
     # config.members 미등재 멤버 → role=None, "이름만" 표기(무회귀).
-    _write_cfg(tmp_path, _valid_member_cfg([{"name": "jane-doe", "role": "developer"}]))
-    _write_log(tmp_path, "jane-doe", "2026-06-13", "작업")
+    _write_cfg(tmp_path, _valid_member_cfg([{"name": "bob", "role": "developer"}]))
+    _write_log(tmp_path, "bob", "2026-06-13", "작업")
     _write_log(tmp_path, "ghost", "2026-06-13", "유령작업")  # config 미등재
     r = _run_engine(tmp_path, "context")
-    assert "jane-doe(developer)" in r.stdout
+    assert "bob(developer)" in r.stdout
     # ghost 는 role 없이 이름만.
     assert "ghost [" in r.stdout
     assert "ghost(" not in r.stdout
@@ -284,7 +284,7 @@ def test_context_member_without_config_role_shows_plain(tmp_path):
 
 def test_context_no_config_no_crash(tmp_path):
     # config 부재 — context 무크래시, role 전부 None.
-    _write_log(tmp_path, "jane-doe", "2026-06-13", "작업")
+    _write_log(tmp_path, "bob", "2026-06-13", "작업")
     r = _run_engine(tmp_path, "context", "--json")
     assert r.returncode == 0
     data = json.loads(r.stdout)
@@ -294,7 +294,7 @@ def test_context_no_config_no_crash(tmp_path):
 def test_context_bad_members_block_no_crash(tmp_path):
     # members 가 손상(list 아님)이어도 context 는 무크래시(role 전부 None).
     _write_cfg(tmp_path, _valid_member_cfg(members="garbage"))
-    _write_log(tmp_path, "jane-doe", "2026-06-13", "작업")
+    _write_log(tmp_path, "bob", "2026-06-13", "작업")
     r = _run_engine(tmp_path, "context", "--json")
     assert r.returncode == 0
     data = json.loads(r.stdout)
@@ -348,23 +348,23 @@ def test_context_text_no_forged_line_injection(tmp_path):
     # 방어 이중화 실증: config.members 에 개행 role 이 (검증 우회로) 박혀 있어도
     # context 텍스트 출력에 가짜 멤버 라인이 안 생긴다(role 한 줄 새니타이즈).
     # 검증을 우회한 상황을 모사하기 위해 config 를 직접 손으로 쓴다.
-    _write_cfg(tmp_path, _valid_member_cfg([{"name": "jane-doe", "role": _FORGED_ROLE}]))
-    _write_log(tmp_path, "jane-doe", "2026-06-13", "작업")
+    _write_cfg(tmp_path, _valid_member_cfg([{"name": "bob", "role": _FORGED_ROLE}]))
+    _write_log(tmp_path, "bob", "2026-06-13", "작업")
     r = _run_engine(tmp_path, "context")
     assert r.returncode == 0
     # 위조 라인(`- FAKE [...] summary: pwned`)이 한 줄로 떨어져 나오지 않는다.
     for line in r.stdout.splitlines():
         assert not line.startswith("- FAKE")
     assert "summary: pwned" not in r.stdout or "\n- FAKE" not in r.stdout
-    # jane-doe 라인은 여전히 하나로 유지(개행이 공백으로 치환됨).
-    jane-doe_lines = [ln for ln in r.stdout.splitlines() if ln.startswith("- jane-doe(")]
-    assert len(jane-doe_lines) == 1
+    # bob 라인은 여전히 하나로 유지(개행이 공백으로 치환됨).
+    bob_lines = [ln for ln in r.stdout.splitlines() if ln.startswith("- bob(")]
+    assert len(bob_lines) == 1
 
 
 def test_context_text_korean_role_with_space_renders(tmp_path):
     # 정상 한글+공백 role 은 context 텍스트에 그대로 표기된다.
-    _write_cfg(tmp_path, _valid_member_cfg([{"name": "jane-doe", "role": "데이터 엔지니어"}]))
-    _write_log(tmp_path, "jane-doe", "2026-06-13", "작업")
+    _write_cfg(tmp_path, _valid_member_cfg([{"name": "bob", "role": "데이터 엔지니어"}]))
+    _write_log(tmp_path, "bob", "2026-06-13", "작업")
     r = _run_engine(tmp_path, "context")
     assert r.returncode == 0
-    assert "jane-doe(데이터 엔지니어)" in r.stdout
+    assert "bob(데이터 엔지니어)" in r.stdout

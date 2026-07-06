@@ -3,7 +3,7 @@
 install→on→context→uninstall 을 **nt 모킹**(sys.platform=win32 + setx/reg runner 주입)
 으로 통과시킨다. 실 setx/reg 미실행(runner 레코더). 호스트 무접촉(fake HOME + 격리/모킹).
 
-파이=Linux → 실 윈도우 동작(레지스트리 반영 등)은 Jane 내일. 여기선 "윈도우 분기를
+파이=Linux → 실 윈도우 동작(레지스트리 반영 등)은 팀 내일. 여기선 "윈도우 분기를
 끝까지 타고, 올바른 명령을 만들고, 라운드트립이 깨지지 않는다"만 단언.
 """
 import json

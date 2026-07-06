@@ -200,10 +200,10 @@ def _fire_remind(tmp_path: Path, *, locale: str | None) -> subprocess.CompletedP
     if locale is not None:
         team["locale"] = locale
     (root / "team.config.json").write_text(
-        json.dumps({"team": team, "members": [{"name": "jane-doe"}]}),
+        json.dumps({"team": team, "members": [{"name": "bob"}]}),
         encoding="utf-8")
     agent = f"claude-i18n-{locale}"
-    state = tmp_path / (f"teammode-remind-state-{agent}-jane-doe-"
+    state = tmp_path / (f"teammode-remind-state-{agent}-bob-"
                         + __import__("hashlib").sha256(
                             str(root).encode()).hexdigest()[:8] + ".json")
     state.write_text(json.dumps({

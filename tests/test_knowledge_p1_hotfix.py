@@ -101,7 +101,7 @@ def test_knowledge_write_rejects_korean_filename(tmp_path):
              "--folder", "team",
              "--filename", "한글주제.md",
              "--content", "테스트.",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 2, (
         f"한글 filename '한글주제.md' 가 거부되지 않았다: rc={r.returncode}, stdout={r.stdout!r}"
@@ -120,8 +120,8 @@ def test_log_rejects_korean_author(tmp_path):
 
 
 def test_ascii_author_still_accepted(tmp_path):
-    """정상 ASCII author('jane-doe', 'alice-dev', 'bob123') 는 여전히 통과."""
-    for author in ("jane-doe", "alice-dev", "bob123"):
+    """정상 ASCII author('bob', 'alice-dev', 'bob123') 는 여전히 통과."""
+    for author in ("bob", "alice-dev", "bob123"):
         r = _run(tmp_path, "memory", "write",
                  "--folder", "team",
                  "--filename", f"{author}-test.md",
@@ -147,7 +147,7 @@ def test_knowledge_write_long_filename_exit2(tmp_path):
              "--folder", "team",
              "--filename", long_name,
              "--content", "테스트.",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     # exit 2: I/O 예외는 입력검증 실패와 같은 코드(친화 메시지 규약)
     assert r.returncode == 2, (
@@ -181,7 +181,7 @@ def test_knowledge_write_permission_error_exit2(tmp_path):
          "--folder", "team",
          "--filename", "seed.md",
          "--content", "시드.",
-         "--author", "jane-doe",
+         "--author", "bob",
          "--weight", "📎")
 
     index_path = root / "memory" / "team" / "INDEX.md"
@@ -201,7 +201,7 @@ def test_knowledge_write_permission_error_exit2(tmp_path):
             "--folder", "team",
             "--filename", "another.md",
             "--content", "또 다른 내용.",
-            "--author", "jane-doe",
+            "--author", "bob",
             "--weight", "📌",
             "--root", str(root)]
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -238,7 +238,7 @@ def test_knowledge_delete_permission_error_exit2(tmp_path):
          "--folder", "team",
          "--filename", "perm-test.md",
          "--content", "삭제 권한 테스트.",
-         "--author", "jane-doe",
+         "--author", "bob",
          "--weight", "📎")
 
     target = root / "memory" / "team" / "perm-test.md"
@@ -251,7 +251,7 @@ def test_knowledge_delete_permission_error_exit2(tmp_path):
     try:
         r = _run(root, "memory", "delete",
                  "--path", "team/perm-test.md",
-                 "--author", "jane-doe")
+                 "--author", "bob")
     finally:
         parent_dir.chmod(
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR |
@@ -284,7 +284,7 @@ def test_knowledge_delete_stat_eacces_not_false_success(tmp_path):
          "--folder", "team",
          "--filename", "stat-test.md",
          "--content", "stat 정직성 테스트.",
-         "--author", "jane-doe",
+         "--author", "bob",
          "--weight", "📎")
 
     target = root / "memory" / "team" / "stat-test.md"
@@ -296,7 +296,7 @@ def test_knowledge_delete_stat_eacces_not_false_success(tmp_path):
     try:
         r = _run(root, "memory", "delete",
                  "--path", "team/stat-test.md",
-                 "--author", "jane-doe")
+                 "--author", "bob")
     finally:
         parent_dir.chmod(
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR |
@@ -329,7 +329,7 @@ def test_knowledge_write_rejects_null_byte_in_content(tmp_path):
         "--folder", "team",
         "--filename", "ctrl-test.md",
         "--content", "정상 텍스트\x00악성 삽입",
-        "--author", "jane-doe",
+        "--author", "bob",
         "--weight", "📎",
     )
     assert rc == 2, (
@@ -343,7 +343,7 @@ def test_knowledge_write_rejects_escape_in_content(tmp_path):
              "--folder", "team",
              "--filename", "esc-test.md",
              "--content", "정상 텍스트\x1b[31mred",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 2, (
         f"ESC 제어문자 content 가 거부되지 않았다: rc={r.returncode}"
@@ -356,7 +356,7 @@ def test_knowledge_write_rejects_bell_in_content(tmp_path):
              "--folder", "team",
              "--filename", "bell-test.md",
              "--content", "정상\x07벨소리",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 2, (
         f"BEL 제어문자 content 가 거부되지 않았다: rc={r.returncode}"
@@ -369,7 +369,7 @@ def test_knowledge_write_allows_newline_and_tab_in_content(tmp_path):
              "--folder", "team",
              "--filename", "newline-tab-test.md",
              "--content", "첫 줄\n둘째 줄\n\t들여쓰기",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 0, (
         f"개행·탭이 거부됐다(허용돼야 함): rc={r.returncode}, stderr={r.stderr!r}"
@@ -382,7 +382,7 @@ def test_knowledge_write_allows_korean_in_content(tmp_path):
              "--folder", "team",
              "--filename", "korean-content.md",
              "--content", "한글 내용이 있는 메모리. 🔥 이모지도 포함.",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 0, (
         f"한글·이모지 content 가 거부됐다(허용돼야 함): rc={r.returncode}, "

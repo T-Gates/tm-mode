@@ -75,7 +75,7 @@ def _write_ok(root: Path, filename: str = "test-file.md",
                 "--folder", folder,
                 "--filename", filename,
                 "--content", content,
-                "--author", "jane-doe",
+                "--author", "bob",
                 "--weight", "📎")
 
 
@@ -94,7 +94,7 @@ def test_content_rejects_c1_nel(tmp_path):
         "--folder", "team",
         "--filename", "c1-nel.md",
         "--content", "정상 텍스트\x85C1 제어",  # U+0085 NEL
-        "--author", "jane-doe",
+        "--author", "bob",
         "--weight", "📎",
     )
     assert rc == 2, (
@@ -113,7 +113,7 @@ def test_content_rejects_c1_csi(tmp_path):
         "--folder", "team",
         "--filename", "c1-csi.md",
         "--content", "정상 텍스트\x9bCSI 삽입",  # U+009B CSI
-        "--author", "jane-doe",
+        "--author", "bob",
         "--weight", "📎",
     )
     assert rc == 2, (
@@ -132,7 +132,7 @@ def test_content_rejects_cf_zwj(tmp_path):
         "--folder", "team",
         "--filename", "cf-zwj.md",
         "--content", "정상 텍스트‍ZWJ 삽입",  # U+200D ZWJ
-        "--author", "jane-doe",
+        "--author", "bob",
         "--weight", "📎",
     )
     assert rc == 2, (
@@ -151,7 +151,7 @@ def test_content_rejects_surrogate(tmp_path):
         "--folder", "team",
         "--filename", "surrogate.md",
         "--content", "정상 텍스트" + "\ud800" + "surrogate",  # 고립 surrogate
-        "--author", "jane-doe",
+        "--author", "bob",
         "--weight", "📎",
     )
     assert rc == 2, (
@@ -168,7 +168,7 @@ def test_content_allows_emoji(tmp_path):
              "--folder", "team",
              "--filename", "emoji-ok.md",
              "--content", "이모지 포함 내용 🔥✅🎉",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 0, (
         f"이모지 content 가 거부됐다(허용돼야 함): rc={r.returncode}, stderr={r.stderr!r}"
@@ -183,7 +183,7 @@ def test_content_allows_newline_tab_cr(tmp_path):
         "--folder", "team",
         "--filename", "allowed-ctrl.md",
         "--content", "첫 줄\n둘째 줄\r\n\t들여쓰기",
-        "--author", "jane-doe",
+        "--author", "bob",
         "--weight", "📎",
     )
     assert rc == 0, (
@@ -205,7 +205,7 @@ def test_delete_rejects_control_char_in_filename(tmp_path):
         tmp_path,
         "memory", "delete",
         "--path", "team/bad\x01file.md",  # 제어문자(SOH)
-        "--author", "jane-doe",
+        "--author", "bob",
     )
     assert rc == 2, (
         f"delete 에서 제어문자 filename 이 거부되지 않았다: rc={rc}, err={err!r}"
@@ -222,7 +222,7 @@ def test_delete_rejects_unicode_filename(tmp_path):
         tmp_path,
         "memory", "delete",
         "--path", "team/Ａ-file.md",  # 전각 A (U+FF21)
-        "--author", "jane-doe",
+        "--author", "bob",
     )
     assert rc == 2, (
         f"delete 에서 전각문자 filename 이 거부되지 않았다: rc={rc}, err={err!r}"
@@ -239,7 +239,7 @@ def test_delete_rejects_nul_in_filename(tmp_path):
         tmp_path,
         "memory", "delete",
         "--path", "team/bad\x00file.md",  # NUL
-        "--author", "jane-doe",
+        "--author", "bob",
     )
     assert rc == 2, (
         f"delete 에서 NUL filename 이 exit 2 를 내지 않았다: rc={rc}, err={err!r}"
@@ -256,7 +256,7 @@ def test_delete_valid_filename_allowed(tmp_path):
         tmp_path,
         "memory", "delete",
         "--path", "team/valid-file.md",
-        "--author", "jane-doe",
+        "--author", "bob",
     )
     # 파일 없으면 멱등(exit 0), 있어도 정상 삭제 후 exit 0
     assert rc == 0, (
@@ -296,7 +296,7 @@ def test_write_atomicity_file_rollback_on_index_failure(tmp_path):
                  "--folder", "team",
                  "--filename", "rollback-new.md",
                  "--content", "정합성 테스트.",
-                 "--author", "jane-doe",
+                 "--author", "bob",
                  "--weight", "📎")
         rc = r.returncode
     finally:
@@ -321,7 +321,7 @@ def test_write_atomicity_existing_file_restored_on_index_failure(tmp_path):
 
     target = folder_dir / "existing-file.md"
     original_content = (
-        "---\nauthor: jane-doe\nweight: 📎\n"
+        "---\nauthor: bob\nweight: 📎\n"
         "created_at: 2026-01-01\nupdated_at: 2026-01-01\n---\n원본 내용."
     )
     target.write_text(original_content, encoding="utf-8")
@@ -336,7 +336,7 @@ def test_write_atomicity_existing_file_restored_on_index_failure(tmp_path):
                  "--folder", "team",
                  "--filename", "existing-file.md",
                  "--content", "수정된 내용.",
-                 "--author", "jane-doe",
+                 "--author", "bob",
                  "--weight", "📎")
         rc = r.returncode
     finally:
@@ -362,7 +362,7 @@ def test_delete_atomicity_index_restored_on_unlink_failure(tmp_path):
     # 파일 생성
     target = folder_dir / "delete-test.md"
     target.write_text(
-        "---\nauthor: jane-doe\nweight: 📎\ncreated_at: 2026-01-01\nupdated_at: 2026-01-01\n---\n삭제 테스트.",
+        "---\nauthor: bob\nweight: 📎\ncreated_at: 2026-01-01\nupdated_at: 2026-01-01\n---\n삭제 테스트.",
         encoding="utf-8"
     )
 
@@ -381,7 +381,7 @@ def test_delete_atomicity_index_restored_on_unlink_failure(tmp_path):
     args = [
         "memory", "delete",
         "--path", "team/delete-test.md",
-        "--author", "jane-doe",
+        "--author", "bob",
         "--root", str(tmp_path),
     ]
 
@@ -428,7 +428,7 @@ def test_folder_segment_rejects_fullwidth_unicode(tmp_path):
              "--folder", "team/Ａsubdir",  # 전각 A (U+FF21)
              "--filename", "test.md",
              "--content", "테스트.",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 2, (
         f"전각문자 folder 세그먼트가 거부되지 않았다: rc={r.returncode}, stderr={r.stderr!r}"
@@ -444,7 +444,7 @@ def test_folder_segment_allows_normal_ascii(tmp_path):
              "--folder", "team",
              "--filename", "ascii-ok.md",
              "--content", "정상 content.",
-             "--author", "jane-doe",
+             "--author", "bob",
              "--weight", "📎")
     assert r.returncode == 0, (
         f"정상 ASCII folder 가 거부됐다: rc={r.returncode}, stderr={r.stderr!r}"

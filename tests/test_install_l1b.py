@@ -103,7 +103,7 @@ def test_introducer_config_is_valid_for_role(tmp_path):
 
 
 def test_member_only_upserts_own_members_entry(tmp_path):
-    """팀원 경로(L2-A2 완화, Jane 결정): config 코어키는 무수정, **자기 members
+    """팀원 경로(L2-A2 완화, 팀 결정): config 코어키는 무수정, **자기 members
     엔트리만** upsert. spec_version/team/admin_contact/services 등 다른 키 불변."""
     cfg = {"spec_version": "0.1", "team": {"name": "acme"},
            "admin_contact": "founder", "services": {}}

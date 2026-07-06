@@ -26,19 +26,21 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
-# ── 실측 라이브 벡터 (2026-07-03, codex-cli 0.142.5 가 실제로 기록한 trusted_hash) ──
+# ── 라이브 벡터 — 2026-07-03 codex-cli 0.142.5 실측으로 직렬화 계약을 검증했고,
+#    KB/LOG_REMIND 상수는 픽스처 익명화(2026-07-07) 후 동일 알고리즘으로 재유도.
+#    Stop 벡터(개인정보 없음)는 원본 실측 golden 그대로 — 직렬화 계약의 실증 앵커. ──
 LIVE_CMD_KB_GUARD = (
     "env TEAMMODE_MEMBER=alice /opt/homebrew/opt/python@3.14/bin/python3.14 "
-    "/Users/alice/Documents/acme/acme-team/infra/agents/codex/"
+    "/Users/alice/teams/acme-team/infra/agents/codex/"
     "normalize.py kb-write-guard.py")
 LIVE_HASH_KB_GUARD = (
-    "sha256:55d6811a8a3007bd268621f8b9076303c4d1354d4e028be5e2bde689614a0601")
+    "sha256:d81d3e6f0ca46328c597030ae455313a3c12142c6ba4617b5453a914ff2465a6")
 LIVE_CMD_LOG_REMIND = (
     "env TEAMMODE_MEMBER=alice /opt/homebrew/opt/python@3.14/bin/python3.14 "
-    "/Users/alice/Documents/acme/acme-team/infra/agents/codex/"
+    "/Users/alice/teams/acme-team/infra/agents/codex/"
     "normalize.py session-log-remind.py")
 LIVE_HASH_LOG_REMIND = (
-    "sha256:df52c6cceabb17e8d6572fcf23b282bdf508ef04c42bbc353c7f9b4211d9e5e4")
+    "sha256:3d984fef80f16f1df318af23567d2db46c8093ec6d532e781d6a2ded95a7b369")
 LIVE_STATUS = "[Acme] 팀모드 ON"
 # statusMessage **부재** 훅의 라이브 벡터(codex@openai-codex 플러그인 Stop 훅) —
 # '부재 필드는 payload 에서 키 생략' 직렬화의 실측 근거(null 은 불일치 확인).

@@ -1023,7 +1023,7 @@ def test_init_asks_team_name_before_repo_and_defaults_repo_from_slug():
     repo_idx = next(i for i, l in enumerate(labels) if "Repository name" in l)
     assert team_idx < repo_idx, "팀명을 레포명보다 먼저 물어야 함"
     repo_defaults = [d for label, d in prompts if "Repository name" in label]
-    assert repo_defaults == ["t-gates-team"]
+    assert repo_defaults == ["acme-team"]
 
 
 def test_init_repo_default_derives_from_entered_team_name():
@@ -1033,7 +1033,7 @@ def test_init_repo_default_derives_from_entered_team_name():
     def fake_prompt(label, default=""):
         prompts.append((label, default))
         if "Team name" in label:
-            return "ACME"
+            return "ACMECO"
         return default
 
     with patch("teammode.cli._have", return_value=True), \
@@ -1046,7 +1046,7 @@ def test_init_repo_default_derives_from_entered_team_name():
         cli.main(["init"])
 
     repo_defaults = [d for label, d in prompts if "Repository name" in label]
-    assert repo_defaults == ["acme-team"]
+    assert repo_defaults == ["acmeco-team"]
 
 
 class TestExplicitFlagsSkipWizard:

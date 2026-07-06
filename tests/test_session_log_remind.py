@@ -109,13 +109,13 @@ def test_non_userprompt_event_is_noop(tmp_path):
 def test_member_single_from_config(tmp_path):
     """멤버 1명이면 config에서 자동 식별."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     # 세션로그 없음 → age=9999 → check_reset 호출 (mtime=0, date 불일치) → count=0, return
     # 첫 호출 시 check_reset 이 return 하므로 발화 안 함
     proc = _run_hook(tmp_path, tmp_path, "claude-single")
     assert proc.returncode == 0
     # 상태파일이 만들어졌다
-    state_f = _state_path(tmp_path, "claude-single", member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, "claude-single", member="bob", root=tmp_path)
     assert state_f.exists(), "상태파일이 생성되어야 한다"
     state = json.loads(state_f.read_text())
     assert state["count"] == 0
@@ -200,8 +200,8 @@ def _today_date_str():
 def test_check_reset_on_file_mtime_change(tmp_path):
     """내 파일 mtime 변화 → count=0 리셋, 리마인드 미발화."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
-    member = "jane-doe"
+    _write_config(tmp_path, [{"name": "bob"}])
+    member = "bob"
     agent = "claude-reset"
 
     date_str = _today_date_str()
@@ -234,11 +234,11 @@ def test_check_reset_on_file_mtime_change(tmp_path):
 def test_check_reset_on_date_change(tmp_path):
     """날짜(date) 바뀌면 count=0 리셋, 리마인드 미발화."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-datechange"
 
     # 상태파일에 다른 날짜로 세팅
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 4, "last_mtime": 0.0, "date": "2000-01-01",
         "last_strong_remind": 0.0,
@@ -258,12 +258,12 @@ def test_check_reset_on_date_change(tmp_path):
 def test_age_based_on_my_file_triggers_at_1800(tmp_path):
     """내 파일 mtime 기준으로 30분(1800s) 초과 시 발화."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-age"
 
     date_str = _today_date_str()
 
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("# 세션로그")
 
@@ -272,7 +272,7 @@ def test_age_based_on_my_file_triggers_at_1800(tmp_path):
     os.utime(log, (old_mtime, old_mtime))
 
     # 상태파일: last_mtime=old_mtime, count=0, date=today → mtime 일치
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 0, "last_mtime": old_mtime, "date": date_str,
         "last_strong_remind": 0.0,
@@ -288,13 +288,13 @@ def test_age_based_on_my_file_triggers_at_1800(tmp_path):
 def test_age_no_file_is_9999(tmp_path):
     """내 파일 없으면 age=9999 → 발화."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-nofile"
 
     # 상태파일: last_mtime=0.0(파일 없음 상태), 현재 날짜, count=0
     date_str = _today_date_str()
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 0, "last_mtime": 0.0, "date": date_str,
         "last_strong_remind": 0.0,
@@ -311,12 +311,12 @@ def test_age_no_file_is_9999(tmp_path):
 def test_count5_triggers_soft_remind(tmp_path):
     """count=5 에서 약한 리마인드 발화, count가 출력에 포함된다."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-count5"
 
     date_str = _today_date_str()
 
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("# 세션로그")
 
@@ -325,7 +325,7 @@ def test_count5_triggers_soft_remind(tmp_path):
     os.utime(log, (recent_mtime, recent_mtime))
 
     # 상태: last_mtime=recent, date=today, count=4 (다음 호출에서 5가 됨)
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 4, "last_mtime": recent_mtime, "date": date_str,
         "last_strong_remind": 0.0,
@@ -342,19 +342,19 @@ def test_count5_triggers_soft_remind(tmp_path):
 def test_count10_triggers_remind(tmp_path):
     """count=10 (count%5==0)에서도 발화."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-count10"
 
     date_str = _today_date_str()
 
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("# 세션로그")
 
     recent_mtime = time.time() - 300
     os.utime(log, (recent_mtime, recent_mtime))
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 9, "last_mtime": recent_mtime, "date": date_str,
         "last_strong_remind": 0.0,
@@ -368,19 +368,19 @@ def test_count10_triggers_remind(tmp_path):
 def test_count_not_multiple5_no_fire(tmp_path):
     """count가 5 배수가 아니면(age도 낮으면) 발화 안 함."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-count3"
 
     date_str = _today_date_str()
 
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("# 세션로그")
 
     recent_mtime = time.time() - 300  # age=5분 < 1800
     os.utime(log, (recent_mtime, recent_mtime))
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 2, "last_mtime": recent_mtime, "date": date_str,
         "last_strong_remind": 0.0,
@@ -396,19 +396,19 @@ def test_count_not_multiple5_no_fire(tmp_path):
 def test_age_trigger_shows_count(tmp_path):
     """age≥1800 발화 시 출력에 count가 표시된다."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-age-count"
 
     date_str = _today_date_str()
 
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("# 세션로그")
 
     old_mtime = time.time() - 7200  # 2시간 전
     os.utime(log, (old_mtime, old_mtime))
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 3, "last_mtime": old_mtime, "date": date_str,
         "last_strong_remind": 0.0,
@@ -482,13 +482,13 @@ def test_system_message_enabled_by_default_when_config_present(tmp_path):
 def test_state_file_format(tmp_path):
     """상태파일이 {count, last_mtime, date, last_strong_remind} JSON 형식이다."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-statef"
 
     proc = _run_hook(tmp_path, tmp_path, agent)
     assert proc.returncode == 0
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     assert state_f.exists(), "상태파일이 생성되어야 한다"
     state = json.loads(state_f.read_text())
     assert "count" in state
@@ -502,7 +502,7 @@ def test_state_file_format(tmp_path):
 def test_log_date_after_6am(tmp_path):
     """06:00 이후면 오늘 날짜 사용 — 상태파일의 date로 확인."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-6am"
 
     # 실제 시각이 06:00 이후인지는 환경에 따라 다름.
@@ -510,7 +510,7 @@ def test_log_date_after_6am(tmp_path):
     proc = _run_hook(tmp_path, tmp_path, agent)
     assert proc.returncode == 0
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     if state_f.exists():
         state = json.loads(state_f.read_text())
         date_str = state.get("date", "")
@@ -573,11 +573,11 @@ def test_no_unix_user_env():
 def test_strong_remind_throttled_on_second_call(tmp_path):
     """no-file/stale 상태에서 2회 연속 호출 시 두 번째는 강발화 스킵된다."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-throttle"
     date_str = _today_date_str()
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
 
     # 1차 호출: 파일 없음 → check_reset(mtime=0, date 불일치) → return (발화 없음)
     proc1 = _run_hook(tmp_path, tmp_path, agent)
@@ -609,11 +609,11 @@ def test_strong_remind_throttled_on_second_call(tmp_path):
 def test_count_accumulates_across_calls_no_file(tmp_path):
     """no-file 상태에서 count가 영원히 1번째가 아니라 누적된다."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-count-accum"
     date_str = _today_date_str()
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
 
     # "이미 인지된 상태" 세팅: mtime=0.0, date=오늘, count=3, last_strong=과거
     state_f.write_text(json.dumps({
@@ -684,11 +684,11 @@ def test_log_date_after_6am_is_today():
 def test_output_present_when_fire_required(tmp_path):
     """발화 조건이 확실한 상태에서 stdout이 비면 실패."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-normalize-check"
     date_str = _today_date_str()
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     # count=4, date=오늘, mtime=0(파일없음), last_strong=오래전
     state_f.write_text(json.dumps({
         "count": 4,
@@ -709,10 +709,10 @@ def test_output_present_when_fire_required(tmp_path):
 def test_state_file_array_does_not_crash(tmp_path):
     """상태파일이 [] (배열)이면 크래시 없이 defaults로 동작."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-corrupt-arr"
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text("[]")
 
     proc = _run_hook(tmp_path, tmp_path, agent)
@@ -722,10 +722,10 @@ def test_state_file_array_does_not_crash(tmp_path):
 def test_state_file_string_does_not_crash(tmp_path):
     """상태파일이 "x" (문자열)이면 크래시 없이 defaults로 동작."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-corrupt-str"
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text('"x"')
 
     proc = _run_hook(tmp_path, tmp_path, agent)
@@ -735,10 +735,10 @@ def test_state_file_string_does_not_crash(tmp_path):
 def test_state_file_wrong_types_does_not_crash(tmp_path):
     """count/last_mtime/date가 잘못된 타입이어도 크래시 없이 동작."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-corrupt-types"
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({"count": "4", "last_mtime": "bad", "date": 12345}))
 
     proc = _run_hook(tmp_path, tmp_path, agent)
@@ -793,11 +793,11 @@ def test_members_list_with_dict_missing_name_falls_back(tmp_path):
 def test_weak_remind_fires_when_strong_throttled_count5(tmp_path):
     """강발화 throttle 중(last_strong=방금)에 count가 5이면 약발화가 뜬다 (MAJOR A 검증)."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-weak-throttle5"
     date_str = _today_date_str()
 
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("# 세션로그")
 
@@ -805,7 +805,7 @@ def test_weak_remind_fires_when_strong_throttled_count5(tmp_path):
     old_mtime = time.time() - 7200
     os.utime(log, (old_mtime, old_mtime))
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     # last_strong_remind = 방금 (강발화 throttle 활성화), count=4 → 다음 호출에서 5
     state_f.write_text(json.dumps({
         "count": 4,
@@ -825,18 +825,18 @@ def test_weak_remind_fires_when_strong_throttled_count5(tmp_path):
 def test_weak_remind_fires_when_strong_throttled_count10(tmp_path):
     """강발화 throttle 중에 count가 10이면 약발화가 뜬다 (MAJOR A 검증)."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-weak-throttle10"
     date_str = _today_date_str()
 
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("# 세션로그")
 
     old_mtime = time.time() - 7200
     os.utime(log, (old_mtime, old_mtime))
 
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 9,
         "last_mtime": old_mtime,
@@ -973,7 +973,7 @@ def _fire_context(proc):
 
 def test_log_kit_new_file_says_write(tmp_path):
     """세션로그 파일이 없으면 Write 안내(offset 명령 아님) — compact 기본."""
-    ctx = _fire_context(_fire_strong_with_log(tmp_path, "jane-doe", 0))
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "bob", 0))
     assert "없음" in ctx
     assert "Write" in ctx
     assert "frontmatter(author/date/summary)" in ctx
@@ -982,7 +982,7 @@ def test_log_kit_new_file_says_write(tmp_path):
 
 def test_log_kit_short_file_offset_one(tmp_path):
     """N≤20 이면 offset=max(1,N-20)=1 (전체)."""
-    ctx = _fire_context(_fire_strong_with_log(tmp_path, "jane-doe", 10))
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "bob", 10))
     assert 'offset=1,' in ctx
     assert "limit=25" in ctx
     assert "Read" in ctx
@@ -990,21 +990,21 @@ def test_log_kit_short_file_offset_one(tmp_path):
 
 def test_log_kit_long_file_offset_tail(tmp_path):
     """N>20 이면 offset=N-20 (끝 20줄만)."""
-    ctx = _fire_context(_fire_strong_with_log(tmp_path, "jane-doe", 25))
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "bob", 25))
     assert 'offset=5,' in ctx  # 25-20=5
     assert "limit=25" in ctx
 
 
 def test_log_kit_boundary_exactly_21(tmp_path):
     """경계 N=21 → offset=1 (21-20=1)."""
-    ctx = _fire_context(_fire_strong_with_log(tmp_path, "jane-doe", 21))
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "bob", 21))
     assert 'offset=1,' in ctx
 
 
 def test_log_kit_absent_in_fallback(tmp_path):
     """폴백(멤버 미특정)이면 offset 키트를 비운다 — 경로를 모르므로 base_guide 만."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}, {"name": "jonathon"}])  # 2명+env無 → degraded
+    _write_config(tmp_path, [{"name": "bob"}, {"name": "jonathon"}])  # 2명+env無 → degraded
     agent = "claude-fallback-kit"
     state_f = _state_path(tmp_path, agent)  # 폴백 경로(멤버 키 없음)
     state_f.write_text(json.dumps({
@@ -1102,16 +1102,16 @@ def test_valid_root_teammode_off_stays_silent(tmp_path):
 def test_count_lines_binary_log_no_crash(tmp_path):
     """깨진 UTF-8/바이너리 세션로그여도 훅이 크래시하지 않고 줄 수를 세어 발화."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-binary"
     date_str = _today_date_str()
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_bytes(b"\xff\xfe\x00\x01 broken \xc3\x28 utf8\n" * 30)  # invalid utf-8, 30줄
     old = time.time() - 2000
     os.utime(log, (old, old))
     mtime = os.path.getmtime(log)
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 4, "last_mtime": mtime, "date": date_str, "last_strong_remind": 0.0}))
     proc = _run_hook(tmp_path, tmp_path, agent)
@@ -1136,14 +1136,14 @@ _FULL_UX = {"session_log_remind": {"context_style": "full"}}
 
 def test_compact_strong_existing_file_is_at_most_3_lines(tmp_path):
     """compact 기본: 강발화(⛔)여도 additionalContext ≤3줄 — 동적 상태만 담는다."""
-    proc = _fire_strong_with_log(tmp_path, "jane-doe", 25)
+    proc = _fire_strong_with_log(tmp_path, "bob", 25)
     obj = json.loads(proc.stdout)
     ctx = obj["hookSpecificOutput"]["additionalContext"]
     assert len(ctx.splitlines()) <= 3, f"compact 인데 3줄 초과: {ctx!r}"
     assert "⛔" in ctx  # severity 마커 유지
     assert "현재 시각" in ctx  # ⛔ variant 는 현재시각 줄 유지
     assert "세션로그 미작성 5번째 프롬프트" in ctx  # {N} 포함
-    log_path = str(_my_log(tmp_path, "jane-doe", _today_date_str()))
+    log_path = str(_my_log(tmp_path, "bob", _today_date_str()))
     assert log_path in ctx  # 파일 경로 포함
     assert "offset=5, limit=25" in ctx  # 25줄 → offset=max(1,25-20)=5
     assert "Edit로 이어쓰기" in ctx
@@ -1152,10 +1152,10 @@ def test_compact_strong_existing_file_is_at_most_3_lines(tmp_path):
 
 def test_compact_strong_missing_file_mentions_frontmatter_write(tmp_path):
     """compact 기본, 파일 없음: frontmatter+Write 생성 안내, offset 없음, ≤3줄."""
-    proc = _fire_strong_with_log(tmp_path, "jane-doe", 0)
+    proc = _fire_strong_with_log(tmp_path, "bob", 0)
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
     assert len(ctx.splitlines()) <= 3
-    log_path = str(_my_log(tmp_path, "jane-doe", _today_date_str()))
+    log_path = str(_my_log(tmp_path, "bob", _today_date_str()))
     assert log_path in ctx
     assert "없음" in ctx
     assert "frontmatter(author/date/summary)" in ctx
@@ -1166,7 +1166,7 @@ def test_compact_strong_missing_file_mentions_frontmatter_write(tmp_path):
 
 def test_compact_drops_long_ruleset(tmp_path):
     """compact 에는 장문 룰셋(06시 컷/log 동사/개인내용 등)이 없어야 한다 — 이동, 숨김 아님."""
-    ctx = _fire_context(_fire_strong_with_log(tmp_path, "jane-doe", 25))
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "bob", 25))
     assert "06시 컷" not in ctx
     assert "OS 사용자명 아님" not in ctx
     assert "개인 내용 제외" not in ctx
@@ -1176,15 +1176,15 @@ def test_compact_drops_long_ruleset(tmp_path):
 def test_compact_weak_remind_is_single_line(tmp_path):
     """compact 약발화(count%5==0, age<1800): 현재시각 줄 없이 한 줄."""
     (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "jane-doe"}])
+    _write_config(tmp_path, [{"name": "bob"}])
     agent = "claude-compact-weak"
     date_str = _today_date_str()
-    log = _my_log(tmp_path, "jane-doe", date_str)
+    log = _my_log(tmp_path, "bob", date_str)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("\n".join(f"l{i}" for i in range(30)) + "\n", encoding="utf-8")
     recent = time.time() - 300  # age < 1800 → 약발화만
     os.utime(log, (recent, recent))
-    state_f = _state_path(tmp_path, agent, member="jane-doe", root=tmp_path)
+    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
     state_f.write_text(json.dumps({
         "count": 4, "last_mtime": os.path.getmtime(log), "date": date_str,
         "last_strong_remind": 0.0,
@@ -1202,7 +1202,7 @@ def test_compact_weak_remind_is_single_line(tmp_path):
 
 def test_full_style_keeps_legacy_long_text(tmp_path):
     """context_style="full" → 종전 장문 안내(06시 컷 등) 그대로 — 옵트백 보존."""
-    proc = _fire_strong_with_log(tmp_path, "jane-doe", 25, ux=_FULL_UX)
+    proc = _fire_strong_with_log(tmp_path, "bob", 25, ux=_FULL_UX)
     obj = json.loads(proc.stdout)
     ctx = obj["hookSpecificOutput"]["additionalContext"]
     assert "06시 컷" in ctx  # 레거시 룰셋 문구
@@ -1215,7 +1215,7 @@ def test_full_style_keeps_legacy_long_text(tmp_path):
 
 def test_full_style_new_file_keeps_legacy_write_kit(tmp_path):
     """context_style="full" + 파일 없음 → 레거시 Write 키트 문구 유지."""
-    ctx = _fire_context(_fire_strong_with_log(tmp_path, "jane-doe", 0, ux=_FULL_UX))
+    ctx = _fire_context(_fire_strong_with_log(tmp_path, "bob", 0, ux=_FULL_UX))
     assert "아직 없습니다" in ctx
     assert "Write(" in ctx
 
@@ -1223,7 +1223,7 @@ def test_full_style_new_file_keeps_legacy_write_kit(tmp_path):
 def test_context_style_invalid_value_falls_back_to_compact(tmp_path):
     """context_style 이 미지의 값이면 compact(기본) 로 동작한다."""
     ctx = _fire_context(_fire_strong_with_log(
-        tmp_path, "jane-doe", 25,
+        tmp_path, "bob", 25,
         ux={"session_log_remind": {"context_style": "banana"}}))
     assert "06시 컷" not in ctx
     assert RULES_REF in ctx
@@ -1232,7 +1232,7 @@ def test_context_style_invalid_value_falls_back_to_compact(tmp_path):
 def test_compact_with_system_message_opt_out(tmp_path):
     """compact + system_message=false: systemMessage 만 생략, compact 컨텍스트는 유지."""
     proc = _fire_strong_with_log(
-        tmp_path, "jane-doe", 25,
+        tmp_path, "bob", 25,
         ux={"session_log_remind": {"system_message": False}})
     obj = json.loads(proc.stdout)
     ctx = obj["hookSpecificOutput"]["additionalContext"]

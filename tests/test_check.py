@@ -207,10 +207,10 @@ def test_fs_delete_missing_file_is_noop(tmp_path):
 
 def test_session_log_single_file_and_contains(tmp_path):
     def write_log(root):
-        d = root / "memory" / "team" / "sessions" / "jane-doe"
+        d = root / "memory" / "team" / "sessions" / "bob"
         d.mkdir(parents=True, exist_ok=True)
         f = d / "2026-06-13.md"
-        prev = f.read_text() if f.exists() else "---\nauthor: jane-doe\n---\n"
+        prev = f.read_text() if f.exists() else "---\nauthor: bob\n---\n"
         f.write_text(prev + "\nentry")
 
     sc = _scenario([
@@ -218,7 +218,7 @@ def test_session_log_single_file_and_contains(tmp_path):
          "expect": [{"kind": "exit_code", "value": 0}]},
         {"name": "log2", "action": {"kind": "command", "argv": ["log"]},
          "expect": [
-             {"kind": "session_log_single_file", "author": "jane-doe"},
+             {"kind": "session_log_single_file", "author": "bob"},
          ]},
     ])
     eng = FakeEngine(tmp_path, responses={"log": (0, "", "")},

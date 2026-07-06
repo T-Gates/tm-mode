@@ -62,52 +62,52 @@ class TestIsOwnSessionLog:
     # ── True 케이스 ─────────────────────────────────────────────────────────
 
     def test_own_file_returns_true(self, monkeypatch, tmp_path):
-        """TEAMMODE_MEMBER=jane-doe + sessions/jane-doe/x.md → True."""
-        _make_sessions_dir(tmp_path, "jane-doe")
-        fn = self._fn(monkeypatch, "jane-doe", tmp_path)
-        fp = str(tmp_path / "memory" / "team" / "sessions" / "jane-doe" / "x.md")
+        """TEAMMODE_MEMBER=bob + sessions/bob/x.md → True."""
+        _make_sessions_dir(tmp_path, "bob")
+        fn = self._fn(monkeypatch, "bob", tmp_path)
+        fp = str(tmp_path / "memory" / "team" / "sessions" / "bob" / "x.md")
         assert fn(fp, str(tmp_path)) is True
 
     # ── False 케이스 ────────────────────────────────────────────────────────
 
     def test_other_member_returns_false(self, monkeypatch, tmp_path):
         """남의 세션로그(sessions/jonathon/x.md) → False."""
-        _make_sessions_dir(tmp_path, "jane-doe")
+        _make_sessions_dir(tmp_path, "bob")
         _make_sessions_dir(tmp_path, "jonathon")
-        fn = self._fn(monkeypatch, "jane-doe", tmp_path)
+        fn = self._fn(monkeypatch, "bob", tmp_path)
         fp = str(tmp_path / "memory" / "team" / "sessions" / "jonathon" / "x.md")
         assert fn(fp, str(tmp_path)) is False
 
     def test_knowledge_path_returns_false(self, monkeypatch, tmp_path):
         """메모리 경로(team/decisions/x.md) → False."""
-        _make_sessions_dir(tmp_path, "jane-doe")
-        fn = self._fn(monkeypatch, "jane-doe", tmp_path)
+        _make_sessions_dir(tmp_path, "bob")
+        fn = self._fn(monkeypatch, "bob", tmp_path)
         fp = str(tmp_path / "memory" / "team" / "decisions" / "x.md")
         assert fn(fp, str(tmp_path)) is False
 
     def test_index_md_returns_false(self, monkeypatch, tmp_path):
         """memory/INDEX.md → False (세션로그 디렉토리 아님)."""
-        _make_sessions_dir(tmp_path, "jane-doe")
-        fn = self._fn(monkeypatch, "jane-doe", tmp_path)
+        _make_sessions_dir(tmp_path, "bob")
+        fn = self._fn(monkeypatch, "bob", tmp_path)
         fp = str(tmp_path / "memory" / "INDEX.md")
         assert fn(fp, str(tmp_path)) is False
 
     def test_no_env_member_returns_false(self, monkeypatch, tmp_path):
         """TEAMMODE_MEMBER 미설정 → False (fail-closed)."""
-        _make_sessions_dir(tmp_path, "jane-doe")
+        _make_sessions_dir(tmp_path, "bob")
         mod = _load_guard_mod("kbg_no_member")
         monkeypatch.delenv("TEAMMODE_MEMBER", raising=False)
-        fp = str(tmp_path / "memory" / "team" / "sessions" / "jane-doe" / "x.md")
+        fp = str(tmp_path / "memory" / "team" / "sessions" / "bob" / "x.md")
         assert mod._is_own_session_log(fp, str(tmp_path)) is False
 
     def test_symlink_sessions_dir_returns_false(self, monkeypatch, tmp_path):
         """sessions/<member> 디렉토리 자체가 symlink(→ decisions) → False (우회 차단)."""
-        member = "jane-doe"
+        member = "bob"
         decisions = tmp_path / "memory" / "team" / "decisions"
         decisions.mkdir(parents=True, exist_ok=True)
         sessions = tmp_path / "memory" / "team" / "sessions"
         sessions.mkdir(parents=True, exist_ok=True)
-        # sessions/jane-doe 를 decisions 디렉토리로 symlink
+        # sessions/bob 를 decisions 디렉토리로 symlink
         own_dir = sessions / member
         own_dir.symlink_to(decisions)
         fn = self._fn(monkeypatch, member, tmp_path)
@@ -115,8 +115,8 @@ class TestIsOwnSessionLog:
         assert fn(fp, str(tmp_path)) is False
 
     def test_unicode_member_name_returns_false(self, monkeypatch, tmp_path):
-        """멤버명 유니코드("Jane") → False (슬러그 화이트리스트 위반)."""
-        member = "Jane"
+        """멤버명 유니코드("하늘") → False (슬러그 화이트리스트 위반)."""
+        member = "하늘"
         _make_sessions_dir(tmp_path, member)
         fn = self._fn(monkeypatch, member, tmp_path)
         fp = str(tmp_path / "memory" / "team" / "sessions" / member / "x.md")
@@ -149,37 +149,37 @@ class TestFindSimilarNames:
 
     def test_close_edit_distance_detected(self):
         """jonathan vs jonathon (편집거리 1) → 유사 목록에 포함."""
-        result = il.find_similar_names("jonathan", ["jonathon", "jane-doe"])
+        result = il.find_similar_names("jonathan", ["jonathon", "bob"])
         assert result == ["jonathon"]
 
     def test_dissimilar_name_not_detected(self):
-        """jonathan vs [jonathon, jane-doe] (편집거리 큼) → 빈 리스트."""
-        result = il.find_similar_names("jonathan", ["jonathon", "jane-doe"])
+        """kim vs [jonathan, alexandra] (편집거리 큼) → 빈 리스트."""
+        result = il.find_similar_names("kim", ["jonathan", "alexandra"])
         assert result == []
 
     def test_identical_name_excluded(self):
-        """동일 이름(jane-doe vs [jane-doe]) → 제외(UNIQUE 처리는 register_member 몫)."""
-        result = il.find_similar_names("jane-doe", ["jane-doe"])
+        """동일 이름(bob vs [bob]) → 제외(UNIQUE 처리는 register_member 몫)."""
+        result = il.find_similar_names("bob", ["bob"])
         assert result == []
 
     def test_prefix_similarity_detected(self):
-        """공통 프리픽스 유사("jun" vs ["jonathon"]) → 유사로 검출.
+        """공통 프리픽스 유사("jon" vs ["jonathon"]) → 유사로 검출.
 
-        "jun" 의 80% = 2.4 → ceil 2. "jonathon" 과의 공통 프리픽스 "jun" = 3 >= 2.
+        "jon" 의 80% = 2.4 → ceil 2. "jonathon" 과의 공통 프리픽스 "jon" = 3 >= 2.
         편집거리 = 5(> max_distance=2)이지만 프리픽스 조건으로 잡힌다.
         """
-        result = il.find_similar_names("jun", ["jonathon"])
+        result = il.find_similar_names("jon", ["jonathon"])
         assert "jonathon" in result
 
     def test_empty_existing_returns_empty(self):
         """기존 이름 목록이 비어있으면 항상 빈 리스트."""
-        result = il.find_similar_names("jane-doe", [])
+        result = il.find_similar_names("bob", [])
         assert result == []
 
     def test_exact_match_among_many_excluded(self):
         """여러 이름 중 동일 이름은 제외, 유사 이름만 반환."""
-        result = il.find_similar_names("jane-doe", ["jane-doe", "alize"])
-        assert "jane-doe" not in result
+        result = il.find_similar_names("alice", ["alice", "alize"])
+        assert "alice" not in result
         assert "alize" in result
 
 
@@ -193,10 +193,10 @@ class TestInjectMemberEnvSettings:
     def test_first_injection_returns_true_and_sets_member(self, tmp_path):
         """첫 주입 → True, settings.json["env"]["TEAMMODE_MEMBER"] == member_name."""
         settings = tmp_path / "settings.json"
-        result = il.inject_member_env_settings(settings, "jane-doe")
+        result = il.inject_member_env_settings(settings, "bob")
         assert result is True
         data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["env"]["TEAMMODE_MEMBER"] == "jane-doe"
+        assert data["env"]["TEAMMODE_MEMBER"] == "bob"
 
     def test_existing_env_keys_preserved(self, tmp_path):
         """기존 env 키(OTHER_VAR)가 보존된다."""
@@ -205,10 +205,10 @@ class TestInjectMemberEnvSettings:
             "env": {"OTHER_VAR": "hello"},
             "hooks": {}
         }, indent=2), encoding="utf-8")
-        il.inject_member_env_settings(settings, "jane-doe")
+        il.inject_member_env_settings(settings, "bob")
         data = json.loads(settings.read_text(encoding="utf-8"))
         assert data["env"]["OTHER_VAR"] == "hello"
-        assert data["env"]["TEAMMODE_MEMBER"] == "jane-doe"
+        assert data["env"]["TEAMMODE_MEMBER"] == "bob"
 
     def test_other_top_level_keys_preserved(self, tmp_path):
         """hooks 등 다른 최상위 키가 보존된다."""
@@ -216,7 +216,7 @@ class TestInjectMemberEnvSettings:
         settings.write_text(json.dumps({
             "hooks": {"SessionStart": []},
         }, indent=2), encoding="utf-8")
-        il.inject_member_env_settings(settings, "jane-doe")
+        il.inject_member_env_settings(settings, "bob")
         data = json.loads(settings.read_text(encoding="utf-8"))
         assert "hooks" in data
         assert data["hooks"]["SessionStart"] == []
@@ -224,14 +224,14 @@ class TestInjectMemberEnvSettings:
     def test_same_value_reinject_returns_false(self, tmp_path):
         """같은 값으로 재호출 → False (멱등)."""
         settings = tmp_path / "settings.json"
-        il.inject_member_env_settings(settings, "jane-doe")
-        result = il.inject_member_env_settings(settings, "jane-doe")
+        il.inject_member_env_settings(settings, "bob")
+        result = il.inject_member_env_settings(settings, "bob")
         assert result is False
 
     def test_different_value_reinject_returns_true(self, tmp_path):
         """다른 멤버명으로 재호출 → True (값 갱신)."""
         settings = tmp_path / "settings.json"
-        il.inject_member_env_settings(settings, "jane-doe")
+        il.inject_member_env_settings(settings, "bob")
         result = il.inject_member_env_settings(settings, "jonathon")
         assert result is True
         data = json.loads(settings.read_text(encoding="utf-8"))
@@ -241,6 +241,6 @@ class TestInjectMemberEnvSettings:
         """settings.json 이 없어도 새로 생성된다."""
         settings = tmp_path / "subdir" / "settings.json"
         assert not settings.exists()
-        result = il.inject_member_env_settings(settings, "jane-doe")
+        result = il.inject_member_env_settings(settings, "bob")
         assert result is True
         assert settings.is_file()

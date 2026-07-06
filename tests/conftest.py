@@ -60,7 +60,7 @@ _OBSIDIAN_CONFIGS = [
 # 무인 빌드 호스트 무오염 전제: L2 어댑터가 실 MCP 등록 파일·실 credentials 금고를
 # 건드리면 즉시 발화하도록 미리 가드를 박는다(과거 dotfile blind spot 동형).
 #
-# ⚠️ 스킬 디렉토리 가드 부활(2026-06-16): install-skills(L2-C)가 v0.1 로 복귀(Jane 결정).
+# ⚠️ 스킬 디렉토리 가드 부활(2026-06-16): install-skills(L2-C)가 v0.1 로 복귀(팀 결정).
 # install-skills 가 스킬 심링크/복사를 거는 실호스트 디렉토리(~/.claude/skills,
 # ~/.codex/skills)를 가드 대상으로 다시 박는다. 테스트는 monkeypatch HOME=tmp +
 # --skills-dir 격리로만 install-skills 를 검증해야 하며, 실 스킬 디렉토리 내부 엔트리

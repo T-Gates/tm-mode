@@ -215,7 +215,7 @@ def test_static_subfolder_segment_delete_rejected(tmp_path):
 # ── extras 하드코딩 제거: 팀 전용 폴더는 정적 목록이 아니라 동적 허용으로 (#51) ──
 
 def test_extras_not_statically_allowed(tmp_path):
-    """extras 는 Acme 팀 전용 — 제품 정적 목록에서 제거됨.
+    """extras 는 과거 특정 팀 전용 폴더 — 제품 정적 목록에서 제거됨.
 
     루트 INDEX 미등재면 write 거부(범용 product/team 과 달리 스캐폴드에도 없음).
     """
@@ -234,7 +234,7 @@ def test_extras_allowed_when_registered(tmp_path):
     root = tmp_path / "team"
     root.mkdir()
     _init_git(root)
-    _root_index_with(root, "| `extras/` | 팀 과정 관련 정보 |")
+    _root_index_with(root, "| `extras/` | (팀 전용 폴더 예) |")
     r = _run(root, "memory", "write", "--folder", "extras",
              "--filename", "schedule.md", "--content", "팀 일정",
              "--author", "test", "--weight", "📎")
@@ -249,13 +249,13 @@ def test_rejection_includes_route_upsert_hint(tmp_path):
     _init_git(root)
     r = _run(root, "memory", "write", "--folder", "extras",
              "--filename", "x.md", "--content", "x",
-             "--author", "jane-doe", "--weight", "📎")
+             "--author", "bob", "--weight", "📎")
     assert r.returncode == 2
     assert "[hint]" in r.stderr, f"거부에 힌트 없음:\n{r.stderr}"
     assert "memory route upsert" in r.stderr
     assert "--path extras/" in r.stderr
     assert "--desc" in r.stderr
-    assert "--author jane-doe" in r.stderr
+    assert "--author bob" in r.stderr
 
 
 def test_delete_rejection_includes_route_upsert_hint(tmp_path):
@@ -266,9 +266,9 @@ def test_delete_rejection_includes_route_upsert_hint(tmp_path):
     target = root / "memory" / "legal" / "x.md"
     target.parent.mkdir(parents=True)
     target.write_text("x", encoding="utf-8")
-    r = _run(root, "memory", "delete", "--path", "legal/x.md", "--author", "jane-doe")
+    r = _run(root, "memory", "delete", "--path", "legal/x.md", "--author", "bob")
     assert r.returncode == 2
     assert "[hint]" in r.stderr, f"delete 거부에 힌트 없음:\n{r.stderr}"
     assert "memory route upsert" in r.stderr
     assert "--path legal/" in r.stderr
-    assert "--author jane-doe" in r.stderr
+    assert "--author bob" in r.stderr

@@ -20,7 +20,7 @@ def _load(team_root: Path) -> dict:
 
 def test_introducer_config_has_greeting_default(tmp_path):
     il.write_introducer_config(tmp_path, team_name="acme",
-                               admin_contact="jane-doe")
+                               admin_contact="alice")
     team = _load(tmp_path)["team"]
     assert "greeting" in team
     assert isinstance(team["greeting"], str) and team["greeting"]
@@ -30,7 +30,7 @@ def test_introducer_config_has_greeting_default(tmp_path):
 
 def test_introducer_config_has_farewell_default(tmp_path):
     il.write_introducer_config(tmp_path, team_name="acme",
-                               admin_contact="jane-doe")
+                               admin_contact="alice")
     team = _load(tmp_path)["team"]
     assert "farewell" in team
     assert isinstance(team["farewell"], str) and team["farewell"]
@@ -40,7 +40,7 @@ def test_introducer_config_has_farewell_default(tmp_path):
 def test_introducer_config_greeting_farewell_roundtrip_with_engine(tmp_path):
     """도입자 config 의 기본값을 엔진이 그대로 읽어 출력 가능해야 한다."""
     il.write_introducer_config(tmp_path, team_name="acme",
-                               admin_contact="jane-doe")
+                               admin_contact="alice")
     sys.path.insert(0, str(REPO / "infra"))
     import teammode as tm  # noqa: E402
     assert tm._read_team_field(tmp_path, "greeting") is not None
@@ -59,7 +59,7 @@ def test_introducer_idempotent_preserves_custom_personality(tmp_path):
     (tmp_path / "team.config.json").write_text(
         json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
     il.write_introducer_config(tmp_path, team_name="acme",
-                               admin_contact="jane-doe")
+                               admin_contact="alice")
     team = _load(tmp_path)["team"]
     assert team["greeting"] == "내 커스텀 인사"
     assert team["farewell"] == "내 커스텀 작별"

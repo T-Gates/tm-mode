@@ -293,7 +293,7 @@ def test_build_command_rejects_unsafe_member(env, bad):
 
 
 @pytest.mark.parametrize("ok", [
-    "alice", "jane-doe", "a", "A1", "user-name", "user_name", "u1-2_3", "X",
+    "alice", "bob", "a", "A1", "user-name", "user_name", "u1-2_3", "X",
 ])
 def test_build_command_accepts_valid_member(env, ok):
     """정상 토큰(영숫자 시작 + 영숫자/-/_)은 prefix 가 붙는다."""
@@ -364,9 +364,9 @@ def test_resync_member_arg_overrides_and_updates_prefix(env):
     env.make_adapter(member="alice").sync(mode="on")
     assert "env TEAMMODE_MEMBER=alice" in env.config.read_text()
     # 다른 member 로 재sync → 새 member 로 갱신(기존 prefix 파싱보다 self.member 우선)
-    env.make_adapter(member="jane-doe").sync(mode="on")
+    env.make_adapter(member="bob").sync(mode="on")
     t = env.config.read_text()
-    assert "env TEAMMODE_MEMBER=jane-doe" in t, t
+    assert "env TEAMMODE_MEMBER=bob" in t, t
     assert "TEAMMODE_MEMBER=alice" not in t, f"옛 member 가 남음: {t!r}"
 
 
@@ -383,7 +383,7 @@ def test_existing_member_prefix_ignores_outside_managed_block(env):
 
 # ── 11. issue #41 R1: legacy/어긋난 마커 블록 자기치유 — resync 는 항상 정확히 1블록 ──
 #
-# 실측 사고(2026-07-03, Acme): 과거 버전이 `# teammode-hooks-start` … `# teammode-mcp-end`
+# 실측 사고(2026-07-03, 도그푸딩): 과거 버전이 `# teammode-hooks-start` … `# teammode-mcp-end`
 # 로 마커가 어긋난 블록을 남겼고, 정상 쌍만 찾는 _write_block 이 인식 실패 → append →
 # 훅 2중 등록(구 블록은 prefix 없음 + stale timeout 3s). 요구: 어떤 잔재(어긋난 쌍·고아
 # start/end·중복 블록·과거 네이밍)가 있어도 resync 후 결과는 '정상 마커의 블록 정확히 1개'.

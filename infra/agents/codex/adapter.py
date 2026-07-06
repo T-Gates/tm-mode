@@ -659,7 +659,7 @@ class Adapter(BaseAdapter):
     def _purge_legacy_markers(self, existing: str) -> str:
         """teammode 마커 잔재를 걷어내 '정상 소유물만 남은' 텍스트를 돌려준다(issue #41 R1).
 
-        실측 사고(2026-07-03, Acme): 과거 버전이 `# teammode-hooks-start` …
+        실측 사고(2026-07-03, 도그푸딩): 과거 버전이 `# teammode-hooks-start` …
         `# teammode-mcp-end` 로 **마커 이름이 어긋난** 블록을 남겼고, 정상 쌍만 찾는
         _write_block 이 인식 실패 → 새 블록 append → 훅 2중 등록(구 블록은 prefix 없음 +
         stale timeout). 이 함수가 resync/uninstall 의 쓰기 전에 항상 돌아, 어떤 잔재가

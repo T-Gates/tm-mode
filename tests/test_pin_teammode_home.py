@@ -40,17 +40,17 @@ class TestInjectEnvSettings:
     def test_pins_member_and_home(self, tmp_path):
         settings = tmp_path / "settings.json"
         changed = il.inject_env_settings(settings, {
-            "TEAMMODE_MEMBER": "jane-doe",
+            "TEAMMODE_MEMBER": "bob",
             "TEAMMODE_HOME": str(tmp_path / "teamroot"),
         })
         assert changed is True
         data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["env"]["TEAMMODE_MEMBER"] == "jane-doe"
+        assert data["env"]["TEAMMODE_MEMBER"] == "bob"
         assert data["env"]["TEAMMODE_HOME"] == str(tmp_path / "teamroot")
 
     def test_idempotent_same_values(self, tmp_path):
         settings = tmp_path / "settings.json"
-        env_map = {"TEAMMODE_MEMBER": "jane-doe", "TEAMMODE_HOME": "/team/root"}
+        env_map = {"TEAMMODE_MEMBER": "bob", "TEAMMODE_HOME": "/team/root"}
         il.inject_env_settings(settings, env_map)
         before = settings.read_text(encoding="utf-8")
         assert il.inject_env_settings(settings, env_map) is False
@@ -88,10 +88,10 @@ class TestInjectEnvSettings:
     def test_member_wrapper_backcompat(self, tmp_path):
         """inject_member_env_settings 는 기존 시그니처 그대로 동작(하위호환)."""
         settings = tmp_path / "settings.json"
-        assert il.inject_member_env_settings(settings, "jane-doe") is True
+        assert il.inject_member_env_settings(settings, "bob") is True
         data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["env"]["TEAMMODE_MEMBER"] == "jane-doe"
-        assert il.inject_member_env_settings(settings, "jane-doe") is False
+        assert data["env"]["TEAMMODE_MEMBER"] == "bob"
+        assert il.inject_member_env_settings(settings, "bob") is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -104,7 +104,7 @@ class TestRemoveEnvSettings:
     def test_removes_our_keys_preserves_others(self, tmp_path):
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({
-            "env": {"TEAMMODE_MEMBER": "jane-doe", "TEAMMODE_HOME": "/team/root",
+            "env": {"TEAMMODE_MEMBER": "bob", "TEAMMODE_HOME": "/team/root",
                     "OTHER_VAR": "hello"},
             "hooks": {"SessionStart": []},
         }), encoding="utf-8")
@@ -119,7 +119,7 @@ class TestRemoveEnvSettings:
         """우리 키만 있던 env 블록은 흔적 없이 제거(흔적 0 대칭)."""
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({
-            "env": {"TEAMMODE_MEMBER": "jane-doe", "TEAMMODE_HOME": "/r"},
+            "env": {"TEAMMODE_MEMBER": "bob", "TEAMMODE_HOME": "/r"},
             "hooks": {},
         }), encoding="utf-8")
         il.remove_env_settings(settings, self.KEYS)
@@ -163,7 +163,7 @@ def test_uninstall_removes_settings_env_keys(tmp_path):
     team_root.mkdir()
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({
-        "env": {"TEAMMODE_MEMBER": "jane-doe",
+        "env": {"TEAMMODE_MEMBER": "bob",
                 "TEAMMODE_HOME": str(team_root),
                 "MY_OWN": "keep"},
     }), encoding="utf-8")

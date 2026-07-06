@@ -42,10 +42,10 @@ def test_write_appends_session_backlink(tmp_path):
     """write(신규): 세션로그에 [[<rel>]] 백링크 줄이 추가된다."""
     r = _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", "그라운드룰.", "--author", "jane-doe",
+             "--content", "그라운드룰.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
     assert r.returncode == 0, r.stderr
-    sp = _session_path(tmp_path, "jane-doe", DATE)
+    sp = _session_path(tmp_path, "bob", DATE)
     assert sp.is_file(), "세션로그가 생성되지 않았다"
     text = sp.read_text(encoding="utf-8")
     # 위키링크는 vault 루트(memory/) 기준 상대경로여야 클릭이 작동한다 (#21).
@@ -74,12 +74,12 @@ def test_write_adds_session_field_to_doc(tmp_path):
     """write: 문서 frontmatter 에 session 필드가 추가된다."""
     _run(tmp_path, "memory", "write",
          "--folder", "team", "--filename", "rule.md",
-         "--content", "그라운드룰.", "--author", "jane-doe",
+         "--content", "그라운드룰.", "--author", "bob",
          "--weight", "📌", "--date", DATE)
     doc = _doc_path(tmp_path, "team", "rule.md").read_text(encoding="utf-8")
-    assert f"session: team/sessions/jane-doe/{DATE}.md" in doc
+    assert f"session: team/sessions/bob/{DATE}.md" in doc
     # 4 known 필드도 보존
-    assert "author: jane-doe" in doc
+    assert "author: bob" in doc
     assert "weight: 📌" in doc
 
 
@@ -90,9 +90,9 @@ def test_session_backlink_idempotent(tmp_path):
     for content in ("v1.", "v2.", "v3."):
         _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", content, "--author", "jane-doe",
+             "--content", content, "--author", "bob",
              "--weight", "📌", "--date", DATE)
-    sp = _session_path(tmp_path, "jane-doe", DATE)
+    sp = _session_path(tmp_path, "bob", DATE)
     text = sp.read_text(encoding="utf-8")
     # 같은 (수정, 경로) 줄은 1개만 (신규 1줄, 이후 수정은 동일 줄이라 중복 방지)
     n_links = text.count("[[team/rule.md]]")
@@ -104,7 +104,7 @@ def test_doc_session_field_idempotent(tmp_path):
     for content in ("v1.", "v2."):
         _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", content, "--author", "jane-doe",
+             "--content", content, "--author", "bob",
              "--weight", "📌", "--date", DATE)
     doc = _doc_path(tmp_path, "team", "rule.md").read_text(encoding="utf-8")
     assert doc.count("session:") == 1, "session 필드가 중복됨"
@@ -116,13 +116,13 @@ def test_delete_appends_session_backlink(tmp_path):
     """delete: 세션로그에 삭제 백링크 줄이 추가된다."""
     _run(tmp_path, "memory", "write",
          "--folder", "team", "--filename", "gone.md",
-         "--content", "삭제 대상.", "--author", "jane-doe",
+         "--content", "삭제 대상.", "--author", "bob",
          "--weight", "📎", "--date", DATE)
     r = _run(tmp_path, "memory", "delete",
-             "--path", "memory/team/gone.md", "--author", "jane-doe")
+             "--path", "memory/team/gone.md", "--author", "bob")
     assert r.returncode == 0, r.stderr
     # delete 는 now_kst 기준 workday 라 DATE 와 다를 수 있다 — author 디렉토리에서 탐색
-    sdir = tmp_path / "memory" / "team" / "sessions" / "jane-doe"
+    sdir = tmp_path / "memory" / "team" / "sessions" / "bob"
     texts = "".join(p.read_text(encoding="utf-8") for p in sdir.glob("*.md"))
     assert "🗑️ 삭제" in texts
     # delete 백링크도 vault 루트 기준이어야 한다 (#21).
@@ -136,7 +136,7 @@ def test_backlink_nonblocking_core_write_succeeds(tmp_path):
     """백링크는 advisory — 본작업(파일+INDEX)은 정상 완료된다."""
     r = _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", "내용.", "--author", "jane-doe",
+             "--content", "내용.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
     assert r.returncode == 0
     assert _doc_path(tmp_path, "team", "rule.md").is_file()
@@ -149,24 +149,24 @@ def test_chat_notify_summary_on_write(tmp_path):
     """write: stdout 에 chat 통지 재료 한 줄(추가/경로/weight/author)이 나온다."""
     r = _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", "첫줄 요약.", "--author", "jane-doe",
+             "--content", "첫줄 요약.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
     assert "[chat-notify]" in r.stdout
     assert "추가" in r.stdout
     assert "memory/team/rule.md" in r.stdout
     assert "📌" in r.stdout
-    assert "jane-doe" in r.stdout
+    assert "bob" in r.stdout
 
 
 def test_chat_notify_summary_on_update(tmp_path):
     """수정 시 통지 재료가 '수정' 동작으로 나온다."""
     _run(tmp_path, "memory", "write",
          "--folder", "team", "--filename", "rule.md",
-         "--content", "v1.", "--author", "jane-doe",
+         "--content", "v1.", "--author", "bob",
          "--weight", "📌", "--date", DATE)
     r = _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", "v2.", "--author", "jane-doe",
+             "--content", "v2.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
     assert "[chat-notify]" in r.stdout
     assert "수정" in r.stdout
@@ -176,10 +176,10 @@ def test_chat_notify_summary_on_delete(tmp_path):
     """delete 시 통지 재료가 '삭제' 동작으로 나온다."""
     _run(tmp_path, "memory", "write",
          "--folder", "team", "--filename", "gone.md",
-         "--content", "x.", "--author", "jane-doe",
+         "--content", "x.", "--author", "bob",
          "--weight", "📎", "--date", DATE)
     r = _run(tmp_path, "memory", "delete",
-             "--path", "memory/team/gone.md", "--author", "jane-doe")
+             "--path", "memory/team/gone.md", "--author", "bob")
     assert "[chat-notify]" in r.stdout
     assert "삭제" in r.stdout
     assert "memory/team/gone.md" in r.stdout
@@ -215,7 +215,7 @@ def test_write_backlinks_included_in_head_commit(tmp_path):
     _init_git(tmp_path)
     r = _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", "그라운드룰.", "--author", "jane-doe",
+             "--content", "그라운드룰.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
     assert r.returncode == 0, r.stderr
 
@@ -223,12 +223,12 @@ def test_write_backlinks_included_in_head_commit(tmp_path):
     show = _git_out(tmp_path, "show", "--stat", "--name-only", "HEAD")
     assert "memory/team/rule.md" in show, f"문서가 커밋에 없음:\n{show}"
     assert "memory/team/INDEX.md" in show, f"INDEX 가 커밋에 없음:\n{show}"
-    assert f"memory/team/sessions/jane-doe/{DATE}.md" in show, \
+    assert f"memory/team/sessions/bob/{DATE}.md" in show, \
         f"세션로그가 커밋에 없음:\n{show}"
 
     # 문서 frontmatter 의 session 필드도 커밋된 내용에 들어가 있어야 한다
     doc = _doc_path(tmp_path, "team", "rule.md").read_text(encoding="utf-8")
-    assert f"session: team/sessions/jane-doe/{DATE}.md" in doc
+    assert f"session: team/sessions/bob/{DATE}.md" in doc
 
     # 미커밋 잔류 0 (status clean)
     status = _git_out(tmp_path, "status", "--short")
@@ -240,17 +240,17 @@ def test_delete_backlink_included_in_head_commit(tmp_path):
     _init_git(tmp_path)
     _run(tmp_path, "memory", "write",
          "--folder", "team", "--filename", "gone.md",
-         "--content", "삭제 대상.", "--author", "jane-doe",
+         "--content", "삭제 대상.", "--author", "bob",
          "--weight", "📎", "--date", DATE)
     r = _run(tmp_path, "memory", "delete",
-             "--path", "memory/team/gone.md", "--author", "jane-doe")
+             "--path", "memory/team/gone.md", "--author", "bob")
     assert r.returncode == 0, r.stderr
 
     # 삭제 커밋(HEAD)에 세션로그가 포함돼야 한다(삭제 백링크 줄 추가분)
     show = _git_out(tmp_path, "show", "--stat", "--name-only", "HEAD")
-    sdir = tmp_path / "memory" / "team" / "sessions" / "jane-doe"
+    sdir = tmp_path / "memory" / "team" / "sessions" / "bob"
     sess_names = [p.name for p in sdir.glob("*.md")]
-    assert any(f"sessions/jane-doe/{n}" in show for n in sess_names), \
+    assert any(f"sessions/bob/{n}" in show for n in sess_names), \
         f"세션로그가 삭제 커밋에 없음:\n{show}"
 
     # 미커밋 잔류 0
@@ -267,7 +267,7 @@ def test_write_push_failure_nonblocking(tmp_path):
     _init_git(tmp_path)
     r = _run(tmp_path, "memory", "write",
              "--folder", "team", "--filename", "rule.md",
-             "--content", "내용.", "--author", "jane-doe",
+             "--content", "내용.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
     # push 실패에도 RC=0 (비차단)
     assert r.returncode == 0, r.stderr

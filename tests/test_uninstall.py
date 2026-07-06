@@ -215,8 +215,8 @@ def test_uninstall_idempotent(tmp_path):
 
 def test_uninstall_does_not_delete_memory(tmp_path):
     team_root = tmp_path / "teamroot"
-    (team_root / "memory" / "team" / "sessions" / "jane-doe").mkdir(parents=True)
-    payload = team_root / "memory" / "team" / "sessions" / "jane-doe" / "2026-06-15.md"
+    (team_root / "memory" / "team" / "sessions" / "alice").mkdir(parents=True)
+    payload = team_root / "memory" / "team" / "sessions" / "alice" / "2026-06-15.md"
     payload.write_text("팀 데이터 — 절대 삭제 금지\n", encoding="utf-8")
     settings = tmp_path / "settings.json"
     _on(team_root, settings)

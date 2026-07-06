@@ -6,19 +6,19 @@
   "steps": [
     {
       "name": "첫 세션로그 기록",
-      "action": { "kind": "command", "argv": ["log", "--author", "jane-doe", "--text", "첫 항목"] },
+      "action": { "kind": "command", "argv": ["log", "--author", "bob", "--text", "첫 항목"] },
       "expect": [
         { "kind": "exit_code", "value": 0 }
       ]
     },
     {
       "name": "같은 작업일에 두 번째 기록 — 새 파일이 아니라 같은 파일에 append",
-      "action": { "kind": "command", "argv": ["log", "--author", "jane-doe", "--text", "둘째 항목"] },
+      "action": { "kind": "command", "argv": ["log", "--author", "bob", "--text", "둘째 항목"] },
       "expect": [
         { "kind": "exit_code", "value": 0 },
-        { "kind": "session_log_single_file", "author": "jane-doe" },
-        { "kind": "session_log_contains", "author": "jane-doe", "value": "첫 항목" },
-        { "kind": "session_log_contains", "author": "jane-doe", "value": "둘째 항목" }
+        { "kind": "session_log_single_file", "author": "bob" },
+        { "kind": "session_log_contains", "author": "bob", "value": "첫 항목" },
+        { "kind": "session_log_contains", "author": "bob", "value": "둘째 항목" }
       ]
     }
   ]

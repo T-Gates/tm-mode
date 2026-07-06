@@ -150,7 +150,7 @@ def test_is_owned_rejects_foreign(env):
 # → command not found). 수정: 커맨드 생성 시 백슬래시를 전부 forward slash 로 정규화.
 
 # 백슬래시 윈도우 경로 — sys.executable·normalize.py 둘 다 모킹
-WIN_PY_BS = r"C:\Users\bob\AppData\Local\Programs\Python\Python312\python.exe"
+WIN_PY_BS = r"C:\Users\alice\AppData\Local\Programs\Python\Python312\python.exe"
 
 
 def _bash_escape(s: str) -> str:
@@ -171,12 +171,12 @@ def test_build_command_no_backslash_in_windows_path(env, monkeypatch):
     ad = _make(env, python=WIN_PY_BS)
     # normalize_path 를 윈도우 백슬래시 경로로 모킹(스크립트 경로도 정규화 대상)
     ad.normalize_path = type(ad.normalize_path)(
-        r"C:\Users\bob\team\infra\agents\claude\normalize.py")
+        r"C:\Users\alice\team\infra\agents\claude\normalize.py")
     cmd = ad.build_command({"script": "auto-commit.py"})
     assert "\\" not in cmd, f"커맨드에 백슬래시 노출(bash escape 깨짐): {cmd!r}"
     # slash 경로가 들어있어야
-    assert "C:/Users/bob/AppData/Local/Programs/Python/Python312/python.exe" in cmd
-    assert "C:/Users/bob/team/infra/agents/claude/normalize.py" in cmd
+    assert "C:/Users/alice/AppData/Local/Programs/Python/Python312/python.exe" in cmd
+    assert "C:/Users/alice/team/infra/agents/claude/normalize.py" in cmd
 
 
 def test_windows_command_survives_bash_escape(env):
@@ -187,14 +187,14 @@ def test_windows_command_survives_bash_escape(env):
     # slash 경로엔 백슬래시가 없으므로 escape 가 아무것도 소실시키지 않음
     assert escaped == cmd
     # 실측 깨짐 문자열이 나오면 안 됨
-    assert "C:UsersbobAppData" not in escaped
+    assert "C:UsersaliceAppData" not in escaped
 
 
 def test_is_owned_recognizes_slash_normalized_command(env):
     """is_owned 가 slash 경로 커맨드를 소유 인식(빌드 결과와 일관)."""
     ad = _make(env, python=WIN_PY_BS)
     ad.normalize_path = type(ad.normalize_path)(
-        r"C:\Users\bob\team\infra\agents\claude\normalize.py")
+        r"C:\Users\alice\team\infra\agents\claude\normalize.py")
     cmd = ad.build_command({"script": "auto-commit.py"})
     assert ad.is_owned(cmd) is True
 
@@ -203,9 +203,9 @@ def test_is_owned_migrates_legacy_backslash_command(env):
     """기존 백슬래시로 등록된 훅도 소유 인식(재sync 시 slash 로 갱신되도록)."""
     ad = _make(env, python=WIN_PY_BS)
     ad.normalize_path = type(ad.normalize_path)(
-        r"C:\Users\bob\team\infra\agents\claude\normalize.py")
-    legacy = (r'C:\Users\bob\AppData\python.exe '
-              r'C:\Users\bob\team\infra\agents\claude\normalize.py auto-commit.py')
+        r"C:\Users\alice\team\infra\agents\claude\normalize.py")
+    legacy = (r'C:\Users\alice\AppData\python.exe '
+              r'C:\Users\alice\team\infra\agents\claude\normalize.py auto-commit.py')
     assert ad.is_owned(legacy) is True
 
 
@@ -259,7 +259,7 @@ def test_codex_inherits_slash_normalization(env, tmp_path):
         team_root=str(REPO),
     )
     ad.normalize_path = type(ad.normalize_path)(
-        r"C:\Users\bob\team\infra\agents\codex\normalize.py")
+        r"C:\Users\alice\team\infra\agents\codex\normalize.py")
     cmd = ad.build_command({"script": "auto-commit.py"})
     assert "\\" not in cmd, f"codex 커맨드 백슬래시 노출: {cmd!r}"
     assert ad.is_owned(cmd) is True

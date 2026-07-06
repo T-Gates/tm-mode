@@ -372,7 +372,7 @@ ENGINE = INFRA / "teammode.py"
 # 가 이 remote 를 fetch 한 뒤 엔진 경로(infra/)만 파일 동기화(git checkout)로 덮어쓴다.
 # merge 가 아니다 — template 로 만든 레포는 teammode 와 unrelated histories(공통 조상 0)라
 # merge 가 막히기 때문. origin=자기 레포(출처는 GitHub API 에만)이므로 셋업 때 upstream 을 박아준다.
-# A안(상수 하드코딩) — 초기 단계라 config 필드 대신 고정(Jane 결정 2026-06-17).
+# A안(상수 하드코딩) — 초기 단계라 config 필드 대신 고정(팀 결정 2026-06-17).
 UPSTREAM_URL = "https://github.com/T-Gates/tm-mode.git"
 UPSTREAM_REMOTE = "upstream"
 
@@ -702,7 +702,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     if _similar:
         err(f"[error] member name '{member_name}' is too similar to existing {_similar} "
             f"(AI confusion risk — jonathan↔jonathon case). Use a more distinct slug "
-            f"(e.g. jonathan→jonathan). If truly intended, add it to members.md manually.")
+            f"(e.g. jonh→john). If truly intended, add it to members.md manually.")
         return 3
 
     # ④ scaffold (§4④·§5·§6, M1·M2·M4) — 멱등. 첫 세션로그 안 씀(M2).
@@ -827,7 +827,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
                 n=len(ctx.get("members", []))))
 
     # scaffold·members·config 자동 커밋+push — onboarding 은 "자기 등재가 바로 팀 레포에"가 맞다
-    # (Jane 결정 2026-06-23, "푸시는 사람" 철학 폐기). 실설치(--yes, 격리 아님)에서만 수행.
+    # (팀 결정 2026-06-23, "푸시는 사람" 철학 폐기). 실설치(--yes, 격리 아님)에서만 수행.
     # do_commit 은 push 실패(원격/오프라인/권한)해도 커밋을 보존한다(비치명, 예외 전파 안 함).
     if opts.yes and not opts.settings:
         _autocommit_scaffold(team_root, member_name, out)

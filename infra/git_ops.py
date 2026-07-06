@@ -968,7 +968,7 @@ def fetch_upstream(team_root: str, remote: str = "upstream",
                    timeout: int = NET_TIMEOUT) -> FetchResult:
     """upstream(템플릿 원본)을 **fetch 만** 한다. 절대 예외 전파 없음(철칙).
 
-    **merge 하지 않는다** — 적용은 명시적 update 동사 몫(Jane 합의: fetch 만 자동).
+    **merge 하지 않는다** — 적용은 명시적 update 동사 몫(팀 합의: fetch 만 자동).
     upstream remote 미설정·오프라인·git 아님 → ok=False (우아한 축소, on 막지 않음).
     """
     if not is_git_worktree(team_root):
@@ -1602,7 +1602,7 @@ def detect_default_branch(team_root: str, remote: str = "upstream",
       1. `git symbolic-ref refs/remotes/<remote>/HEAD` → `refs/remotes/<remote>/main`
          (clone/fetch 가 설정해두는 origin/HEAD 류). 끝 세그먼트가 브랜치명.
       2. 그래도 모르면 `refs/remotes/<remote>/main` 이 존재하면 'main'.
-      3. 둘 다 실패 → 'main' 폴백(Jane 결정: main 가정하되 가능하면 감지).
+      3. 둘 다 실패 → 'main' 폴백(팀 결정: main 가정하되 가능하면 감지).
     `git remote show`(네트워크·hang 위험)는 쓰지 않는다.
     """
     # 1) symbolic-ref (로컬, clone 이 설정)

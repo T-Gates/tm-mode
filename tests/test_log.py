@@ -41,41 +41,41 @@ def _log_files(root: Path, author: str):
 # ── 기본 동작 ──
 
 def test_log_creates_file_with_frontmatter(tmp_path):
-    r = _run(tmp_path, "log", "--author", "jane-doe", "--text", "첫 항목",
+    r = _run(tmp_path, "log", "--author", "bob", "--text", "첫 항목",
              "--now", "2026-06-13T14:00:00+09:00")
     assert r.returncode == 0, r.stderr
-    files = _log_files(tmp_path, "jane-doe")
+    files = _log_files(tmp_path, "bob")
     assert len(files) == 1
     assert files[0].name == "2026-06-13.md"
     content = files[0].read_text(encoding="utf-8")
     assert content.startswith("---\n")
-    assert "author: jane-doe" in content
+    assert "author: bob" in content
     assert "date: 2026-06-13" in content
     assert "summary:" in content
     assert "첫 항목" in content
 
 
 def test_log_appends_same_day_single_file(tmp_path):
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "첫 항목",
+    _run(tmp_path, "log", "--author", "bob", "--text", "첫 항목",
          "--now", "2026-06-13T10:00:00+09:00")
-    r = _run(tmp_path, "log", "--author", "jane-doe", "--text", "둘째 항목",
+    r = _run(tmp_path, "log", "--author", "bob", "--text", "둘째 항목",
              "--now", "2026-06-13T15:00:00+09:00")
     assert r.returncode == 0, r.stderr
-    files = _log_files(tmp_path, "jane-doe")
+    files = _log_files(tmp_path, "bob")
     assert len(files) == 1, f"하루 1파일 위반: {[f.name for f in files]}"
     content = files[0].read_text(encoding="utf-8")
     assert "첫 항목" in content and "둘째 항목" in content
     # frontmatter 는 한 번만
     assert content.count("\n---\n") == 1 or content.startswith("---\n")
-    assert content.count("author: jane-doe") == 1
+    assert content.count("author: bob") == 1
 
 
 def test_log_different_day_new_file(tmp_path):
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "어제",
+    _run(tmp_path, "log", "--author", "bob", "--text", "어제",
          "--now", "2026-06-12T10:00:00+09:00")
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "오늘",
+    _run(tmp_path, "log", "--author", "bob", "--text", "오늘",
          "--now", "2026-06-13T10:00:00+09:00")
-    files = _log_files(tmp_path, "jane-doe")
+    files = _log_files(tmp_path, "bob")
     assert {f.name for f in files} == {"2026-06-12.md", "2026-06-13.md"}
 
 
@@ -83,28 +83,28 @@ def test_log_different_day_new_file(tmp_path):
 
 def test_log_before_six_writes_previous_day_file(tmp_path):
     # 06-13 05:59 시작 → 06-12 파일
-    r = _run(tmp_path, "log", "--author", "jane-doe", "--text", "새벽작업",
+    r = _run(tmp_path, "log", "--author", "bob", "--text", "새벽작업",
              "--now", "2026-06-13T05:59:00+09:00")
     assert r.returncode == 0
-    files = _log_files(tmp_path, "jane-doe")
+    files = _log_files(tmp_path, "bob")
     assert files[0].name == "2026-06-12.md"
     assert "date: 2026-06-12" in files[0].read_text(encoding="utf-8")
 
 
 def test_log_six_oclock_writes_same_day(tmp_path):
-    r = _run(tmp_path, "log", "--author", "jane-doe", "--text", "아침작업",
+    r = _run(tmp_path, "log", "--author", "bob", "--text", "아침작업",
              "--now", "2026-06-13T06:00:00+09:00")
-    files = _log_files(tmp_path, "jane-doe")
+    files = _log_files(tmp_path, "bob")
     assert files[0].name == "2026-06-13.md"
 
 
 def test_log_dawn_appends_to_previous_day(tmp_path):
     # 23:00 작성 후 다음날 02:00 작성 → 같은(전날) 파일에 append, 안 찢음
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "밤작업",
+    _run(tmp_path, "log", "--author", "bob", "--text", "밤작업",
          "--now", "2026-06-12T23:00:00+09:00")
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "새벽이어서",
+    _run(tmp_path, "log", "--author", "bob", "--text", "새벽이어서",
          "--now", "2026-06-13T02:00:00+09:00")
-    files = _log_files(tmp_path, "jane-doe")
+    files = _log_files(tmp_path, "bob")
     assert len(files) == 1
     assert files[0].name == "2026-06-12.md"
 
@@ -166,9 +166,9 @@ def test_log_rejects_null_byte_author():
 
 def test_log_text_with_newlines_summary_is_first_line_only(tmp_path):
     # summary 는 한 줄(첫 줄)만 — 여러 줄 본문이 frontmatter 로 새지 않는다(스펙 §3.3).
-    _run(tmp_path, "log", "--author", "jane-doe",
+    _run(tmp_path, "log", "--author", "bob",
          "--text", "첫줄요약\n둘째줄상세\n셋째줄", "--now", "2026-06-13T10:00:00+09:00")
-    content = _log_files(tmp_path, "jane-doe")[0].read_text(encoding="utf-8")
+    content = _log_files(tmp_path, "bob")[0].read_text(encoding="utf-8")
     fm = content.split("---\n")[1]   # frontmatter 블록
     assert "summary: 첫줄요약" in fm
     assert "둘째줄상세" not in fm     # 본문은 frontmatter 밖
@@ -179,9 +179,9 @@ def test_log_text_with_newlines_summary_is_first_line_only(tmp_path):
 def test_log_summary_skips_markdown_header(tmp_path):
     # #3: text 첫 줄이 마크다운 헤더(`## 작업 내역`)면 summary 로 박지 않고
     # 첫 의미있는 본문 줄을 쓴다 — 헤더가 summary 로 새면 웰컴·맥락주입 품질 저하.
-    _run(tmp_path, "log", "--author", "jane-doe",
+    _run(tmp_path, "log", "--author", "bob",
          "--text", "## 작업 내역\n- 실제 한 일", "--now", "2026-06-13T10:00:00+09:00")
-    content = _log_files(tmp_path, "jane-doe")[0].read_text(encoding="utf-8")
+    content = _log_files(tmp_path, "bob")[0].read_text(encoding="utf-8")
     fm = content.split("---\n")[1]   # frontmatter 블록
     assert "summary: - 실제 한 일" in fm
     assert "## 작업 내역" not in fm   # 헤더는 frontmatter(summary)에 안 들어감
@@ -194,7 +194,7 @@ def test_log_summary_skips_markdown_header(tmp_path):
 def test_log_requires_root(tmp_path):
     # --root 없이 직접 호출 → 에러 종료(P1 정책 A), cwd 무접촉
     r = subprocess.run(
-        [sys.executable, str(ENGINE), "log", "--author", "jane-doe", "--text", "x"],
+        [sys.executable, str(ENGINE), "log", "--author", "bob", "--text", "x"],
         capture_output=True, text=True, cwd=str(tmp_path))
     assert r.returncode != 0
     assert not (tmp_path / "memory").exists()
@@ -206,19 +206,19 @@ def test_log_requires_author(tmp_path):
 
 
 def test_log_requires_text(tmp_path):
-    r = _run(tmp_path, "log", "--author", "jane-doe", "--now", "2026-06-13T10:00:00+09:00")
+    r = _run(tmp_path, "log", "--author", "bob", "--now", "2026-06-13T10:00:00+09:00")
     assert r.returncode != 0
 
 
 # ── append 손상 방지: 기존 내용 보존 ──
 
 def test_log_append_preserves_existing_content(tmp_path):
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "MARKER_ONE",
+    _run(tmp_path, "log", "--author", "bob", "--text", "MARKER_ONE",
          "--now", "2026-06-13T10:00:00+09:00")
-    before = _log_files(tmp_path, "jane-doe")[0].read_text(encoding="utf-8")
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "MARKER_TWO",
+    before = _log_files(tmp_path, "bob")[0].read_text(encoding="utf-8")
+    _run(tmp_path, "log", "--author", "bob", "--text", "MARKER_TWO",
          "--now", "2026-06-13T11:00:00+09:00")
-    after = _log_files(tmp_path, "jane-doe")[0].read_text(encoding="utf-8")
+    after = _log_files(tmp_path, "bob")[0].read_text(encoding="utf-8")
     # 기존 본문이 그대로 남아있다 (덮어쓰기 아님)
     assert "MARKER_ONE" in after
     assert after.index("MARKER_ONE") < after.index("MARKER_TWO")
@@ -228,19 +228,19 @@ def test_log_append_preserves_existing_content(tmp_path):
 # ── default now (실시각) 도 동작은 한다 ──
 
 def test_log_without_now_uses_real_time(tmp_path):
-    r = _run(tmp_path, "log", "--author", "jane-doe", "--text", "지금")
+    r = _run(tmp_path, "log", "--author", "bob", "--text", "지금")
     assert r.returncode == 0
-    assert len(_log_files(tmp_path, "jane-doe")) == 1
+    assert len(_log_files(tmp_path, "bob")) == 1
 
 
 # ── 멀티 author 격리 ──
 
 def test_log_separate_authors_separate_dirs(tmp_path):
-    _run(tmp_path, "log", "--author", "jane-doe", "--text", "A",
+    _run(tmp_path, "log", "--author", "bob", "--text", "A",
          "--now", "2026-06-13T10:00:00+09:00")
     _run(tmp_path, "log", "--author", "jonathon", "--text", "B",
          "--now", "2026-06-13T10:00:00+09:00")
-    assert len(_log_files(tmp_path, "jane-doe")) == 1
+    assert len(_log_files(tmp_path, "bob")) == 1
     assert len(_log_files(tmp_path, "jonathon")) == 1
-    assert "A" in _log_files(tmp_path, "jane-doe")[0].read_text(encoding="utf-8")
+    assert "A" in _log_files(tmp_path, "bob")[0].read_text(encoding="utf-8")
     assert "B" in _log_files(tmp_path, "jonathon")[0].read_text(encoding="utf-8")
