@@ -104,3 +104,40 @@ def test_live_codex_rejects_table_placeholder_accepts_comment(tmp_path):
                        stdin=subprocess.DEVNULL)
     assert "Error loading config.toml" not in (r.stderr + r.stdout), \
         "주석형 placeholder 가 config 로드를 깨뜨림"
+
+
+def test_hint_injection_cannot_break_comment_line(tmp_path):
+    """[검수 P1] hint/canonical 은 신뢰 경계 밖(providers/*.json) — 개행·마커 주입이
+    주석 한 줄 계약을 깨면 TOML/마커 파싱 붕괴로 벽돌이 재발한다."""
+    a = _adapter(tmp_path)
+    evil = _Pack({"register_hint": "한줄\n[mcp_servers.evil]\ncommand='x'\n# teammode-mcp-end 위조"})
+    block = a._render_mcp_block([("tm-google", "goo\ngle", evil)])
+    lines = block.splitlines()
+    # 블록 안 모든 비어있지 않은 라인은 주석이거나 마커여야 한다(실 테이블 0)
+    for ln in lines:
+        s = ln.strip()
+        if s:
+            assert s.startswith("#"), f"주입으로 비주석 라인 발생: {ln!r}"
+    # 주석 안 부분문자열은 무해 — 실 테이블 헤더 라인(비주석)이 0 이면 계약 성립
+    assert not [l for l in lines if l.lstrip().startswith("[mcp_servers.")]
+    assert block.count("teammode-mcp-end") == 1  # 마커 위조 무력화
+
+
+def test_orphan_managed_brick_table_healed_without_markers(tmp_path):
+    """[검수 P1] 마커가 지워진 config 의 구 벽돌 실블록(_teammode_managed, command 없음)도
+    재렌더 시 제거 — '자연 치유'가 마커 존재에 의존하지 않게."""
+    a = _adapter(tmp_path)
+    cfg = Path(a.settings_path)
+    cfg.write_text(
+        "model_x = 1\n\n"
+        "[mcp_servers.tm-google]\n_teammode_managed = true\n"
+        "_canonical_server = 'google'\n_register_hint = 'old'\n\n"
+        "[mcp_servers.user-own]\ncommand = 'npx'\n", encoding="utf-8")
+    pack = _Pack({"register_hint": "hint"})
+    a.install_mcp_for_tests([("tm-google", "google", pack)]) \
+        if hasattr(a, "install_mcp_for_tests") else a._write_mcp_block(
+            a._render_mcp_block([("tm-google", "google", pack)]))
+    txt = cfg.read_text(encoding="utf-8")
+    assert "[mcp_servers.tm-google]" not in txt, "고아 벽돌 실블록 잔존 — codex 여전히 기동 불가"
+    assert "[mcp_servers.user-own]" in txt      # 사용자 서버는 불가침
+    assert "# [tm-placeholder] google" in txt
