@@ -171,8 +171,11 @@ def _rail(text: str = "") -> None:
 
 
 def _rail_done(label: str, value: str) -> None:
-    """완료 단계 접힘 줄: ◇(초록) label ─ value(볼드) — Vivid 팔레트."""
-    print(_g("◇  ") + label + _dim("  ─  ") + _bold(value))
+    """완료 단계 접힘 줄: ◇(초록) label ─ value(볼드) — Vivid 팔레트.
+
+    value 는 _fit 로 가시폭 truncate — 긴 URL/경로도 물리 1줄 보장(◇답장+빈줄 산술 불변).
+    raw-menu collapse 는 이미 _fit 을 거쳐 오므로 idempotent(중복 _fit 무해)."""
+    print(_g("◇  ") + label + _dim("  ─  ") + _bold(_fit(value)))
 
 
 def _rail_end(text: str) -> None:
@@ -1113,11 +1116,16 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         if role_pick == 0:
             role = ""
         elif role_pick == len(role_choices) - 1:      # Other… → 자유입력
-            # picker 가 이미 ◇ Your role ─ Other… 를 찍었으므로 collapse 생략(이중 ◇ 방지).
+            # picker 가 찍은 `◇ Your role ─ Other…` 한 줄을 지우고(1물리줄, _fit 보장),
+            # 자유입력 답을 collapse 로 실제값 ◇ 로 마감 — 이중 ◇·"Other…" 잔존·구분줄 누락 동시 해소(codex P2).
+            if sys.stdout.isatty():
+                sys.stdout.write("\x1b[1A\x1b[2K")
+                sys.stdout.flush()
             role = _ask_field(
                 "Your role",
                 "Type the role that fits you — shown next to your name.",
-                hint="Press Enter to leave it blank.").strip()
+                hint="Press Enter to leave it blank.",
+                collapse="Your role").strip()
         else:
             role = ROLES[role_pick - 1]
         _rail()
