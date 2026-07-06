@@ -11,30 +11,46 @@
 **팀원이 각자 AI로 일해도, 누구도 "지금 뭐 했는지" 정리하거나 묻지 않는다.**
 에이전트가 세션마다 팀 맥락을 자동으로 *읽고*, 한 일을 자동으로 *남긴다*. 사람이 하는 건 `git push`뿐.
 
-## 도입 — 두 가지 길
+## 설치 — 복붙하면 됩니다
 
-**① clone-and-go (팀 레포가 이미 있으면 — CLI 설치 불필요):**
+공통 요구사항: **`python3`(3.9+) · `git`**. 그 외 필요한 건 아래 각 상황에만.
+
+### ⓐ 팀에 합류 (팀원 — 팀 레포가 이미 있을 때)
+
+가장 흔한 경우. `git` 만 있으면 된다.
 
 ```bash
-git clone <팀레포 clone-url> && cd <팀레포>
-# Claude Code / Codex 를 열고: "셋업해줘"
+pip install "git+https://github.com/T-Gates/tm-mode"   # 런처 (PyPI 발행 후: pipx install tm-mode)
+tm-mode join <팀레포-clone-url>                          # 클론 → 셋업 → remote 연결까지 한 번에
 ```
 
-→ 에이전트가 설치 계획(dry-run — 내 컴퓨터에 뭘 쓰는지 전부)을 보여주고, 채팅 승인을 받은 뒤 셋업합니다. 레포 안에 엔진이 통째로 들어 있어 클론이 곧 설치 준비 완료.
+또는 **에이전트한테 맡기기** — 클론만 해두고 열어서 시키면 된다:
 
-**② CLI wizard (새 팀 생성부터, 또는 클론까지 맡기려면):**
+```bash
+git clone <팀레포-clone-url> && cd <레포명>
+```
+```text
+Claude Code / Codex 를 열고 →  "셋업해줘"
+   → 설치 계획(dry-run, 내 컴퓨터에 뭘 쓰는지 전부)을 보여주고, 승인받은 뒤 설치.
+```
+
+### ⓑ 새 팀 시작 (도입자 — 팀에 처음 들이는 사람)
+
+**레포를 미리 만들 필요 없다.** `gh`(GitHub CLI)가 이 템플릿에서 *당신의 새 팀 레포*를 자동 생성한다.
 
 ```bash
 pip install "git+https://github.com/T-Gates/tm-mode"
-tm-mode init                      # 새 팀 (도입자) — 레포 생성 → 곧바로 셋업
-tm-mode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
+gh auth login          # GitHub 로그인 (아직 안 했다면, 한 번만)
+tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → 셋업 → remote 연결
 ```
 
-→ CLI wizard가 org·팀명·이름·에이전트·설치 위치를 묻고 **레포 생성/clone·훅·스킬·env까지 한 번에.** (curl도 동일 — `... | sh -s -- init|join`. PyPI 발행 후에는 `uv tool install tm-mode` / `pipx install tm-mode` 권장.)
+### ⓒ gh 없이 새 팀 만들기 (폴백)
 
-어느 길이든 설치가 끝나면 에이전트에서 `tm-onboard` — 검증·가치 브리핑이 자동입니다.
+1. GitHub 에서 [tm-mode](https://github.com/T-Gates/tm-mode) → **"Use this template"** 버튼으로 레포 생성
+2. 위 ⓐ 의 `tm-mode join <새 레포 clone-url>` 실행
 
-**요구사항**: `python3`(3.9+) · `git` — 이 둘뿐. (`tm-mode init`의 레포 자동 생성만 `gh` 선택 사용.)
+> **`pip` 없이 (curl):** `curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.0/install.sh | sh -s -- join <url>` (`init` 도 동일).
+> 설치가 끝나면 에이전트에서 `tm-onboard` — 검증·가치 브리핑이 자동. 활성화·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
 
 > 상태: **v0.1 — L1(팀 메모리·맥락 자동주입·세션로그·Obsidian 뷰) 동작·실사용 검증 완료.** L2(서비스 연동)는 일부 provider(linear·notion 등 MCP 실행정보 보유분)가 동작하고, 나머지(slack·google 등)는 placeholder — provider 팩 확장 중.
 
@@ -104,10 +120,6 @@ tm-mode join <팀레포 clone-url>    # 기존 팀 합류 (팀원)
 ```
 팀 셋업 (도입자 1회)  →  개인 셋업 (각 멤버)  →  서비스 연결 (L2)
 ```
-
-## 설치
-
-**팀 레포가 있으면 clone-and-go(클론 → "셋업해줘"), 새 팀 생성부터면 `tm-mode init` 한 줄**(위 [도입 — 두 가지 길](#도입--두-가지-길)). 요구사항·**활성화**(`tm on`)·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
 
 ## 아키텍처 — 코드 지도 (기여자용)
 
