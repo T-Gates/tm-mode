@@ -848,3 +848,23 @@ def test_invalid_fallback_no_mismatch_warning(env, capsys):
     capsys.readouterr()
     env.make_adapter(member=None, member_fallback="b b; rm").sync(mode="on")
     assert "[warn]" not in capsys.readouterr().out
+
+
+def test_sync_notices_hooks_json_coexistence(tmp_path, capsys):
+    """[2026-07-06 공존 계약] hooks.json 병용 감지 시 [info] 1줄 — 무해 경고 설명."""
+    Adapter = _load_codex_adapter()
+    import json as _json
+    agent_dir = tmp_path / "agent"; agent_dir.mkdir()
+    import shutil as _sh
+    _sh.copy(REPO / "infra" / "agents" / "codex" / "events.json", agent_dir / "events.json")
+    hooks_dir = tmp_path / "hooks"; hooks_dir.mkdir()
+    (hooks_dir / "manifest.json").write_text(_json.dumps(
+        [{"event": "SessionStart", "script": "session-start.py", "mode": "on"}]))
+    (hooks_dir / "session-start.py").write_text("# stub")
+    cfg = tmp_path / "config.toml"
+    (tmp_path / "hooks.json").write_text("{}")  # 타 도구 소유 가정
+    a = Adapter(agent_dir=str(agent_dir), manifest_path=str(hooks_dir / "manifest.json"),
+                settings_path=str(cfg), python="python3", team_root=str(tmp_path), member=None)
+    a.sync(mode="on")
+    printed = capsys.readouterr().out
+    assert "hooks.json coexists" in printed, printed

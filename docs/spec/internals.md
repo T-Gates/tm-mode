@@ -390,6 +390,14 @@ Codex 구현(`~/.codex/config.toml` shape):
 6. (구 한계 조항 대체) placeholder 는 3의 주석형으로만 존재하므로 Codex 런타임 기동 에러 자체가 불가능하다. alias 슬롯 보장은 실 등록 provider 에만 성립한다.
 7. 한계: Codex 구현은 TOML 전체를 파싱하지 않으므로 teammode 블록 밖의 사용자 `[mcp_servers.<same>]`와의 중복 collision을 검사하지 않는다. teammode가 관리하는 것은 marker 블록뿐이다. 단 **기존 서버 감지(#3, Claude 구현 10과 동일 계약)**를 위해 블록 밖 `[mcp_servers.*]` 섹션 헤더와 한 줄 `url`/`command`/`args`는 감지용으로 라인 스캔한다(placeholder 대상 provider 한정, 등록/수정은 하지 않음).
 
+### 2.8.1 hooks.json 공존 계약 (2026-07-06 결정)
+
+Codex 는 `hooks.json` 과 `config.toml` inline `[hooks]` 를 **병합 로드**하며 같은 레이어에 둘 다 있으면 무해한 경고를 낸다(공식 문서 "Prefer one representation per layer" — canonical 미지정·deprecation 없음). teammode 의 계약:
+
+- teammode 는 **`config.toml` 의 `# teammode-hooks-*`/`# teammode-mcp-*` 마커 블록만 소유**한다. `hooks.json` 은 쓰지 않는다(타 도구—cmux 등—가 생성·재생성하는 파일: 외부 항목 보존이 보장되지 않아 훅 증발 위험 + Trust 상태 키가 config.toml 경로 기반이라 이주 시 전원 재승인 유발).
+- sync 가 `hooks.json` 병용을 감지하면 `[info]` 1줄로 경고의 원인·무해함을 안내한다.
+- **재평가 게이트**: Codex 가 hooks.json 을 canonical/deprecation 으로 공식화하거나, cmux 가 외부 항목 보존 merge 를 문서화하면 이주를 재설계한다.
+
 ### 2.9 폴백 정책
 
 manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이전트로 표현 못 할 때 동작.

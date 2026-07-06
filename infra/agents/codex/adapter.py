@@ -328,6 +328,18 @@ class Adapter(BaseAdapter):
 
         block = self._render_block(toml_entries, mode=mode)
         changed = self._write_block(block)
+        # hooks.json 병용 감지(2026-07-06 결정): Codex 는 두 표현을 병합 로드하며
+        # 경고를 낸다 — 무해하지만 원인을 설명해 혼란을 줄인다. teammode 는
+        # config.toml 마커 블록만 소유하고 hooks.json(타 도구 소유 가능)은 쓰지 않는다.
+        try:
+            _hj = self.settings_path.parent / "hooks.json"
+            if _hj.is_file():
+                infos.append(
+                    "[info] hooks.json coexists with config.toml hooks — Codex "
+                    "merges both and prints a harmless warning. teammode manages "
+                    "only its config.toml blocks; hooks.json belongs to other tools.")
+        except OSError:
+            pass
         if changed:
             changes.append(f"[sync] Codex 훅 {len(toml_entries)}개 등록")
 
