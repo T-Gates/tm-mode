@@ -537,22 +537,32 @@ def _field_head(header: str, context: "str | tuple" = "", *,
 
 def _ask_field(header: str, context: "str | tuple" = "", *,
                default: str | None = None, hint: str | None = None,
-               example: str | None = None, required: bool = False) -> str:
+               example: str | None = None, required: bool = False,
+               collapse: str | None = None) -> str:
     """_field_head(안내) + _ask_text(입력) + required 재질문. 텍스트 단계 통일 진입점.
 
     비-TTY 는 default(없으면 "") 를 즉시 반환 — required 라도 루프하지 않는다(행업 방지).
+    collapse: 확정 후 `◇ collapse ─ 값` 답장 줄 + 빈 레일로 마감한다(위젯의 접힘과 대칭).
+      텍스트 입력은 덮어쓰지 않고 '덧붙이는' 방식 — 입력값 wrap 과 무관해 안전(§7.x).
     """
     _field_head(header, context, hint=hint, example=example)
     tty = sys.stdin.isatty()
+    val = ""
     while True:
         val = (_ask_text("│  ›", default) or "").strip()
         if val:
-            return val
+            break
         if default:
-            return default
+            val = default
+            break
         if not required or not tty:
-            return ""
+            val = ""
+            break
         _rail(_warn("Required — please enter a value."))
+    if collapse is not None and tty:
+        _rail_done(collapse, val or _dim("(none)"))
+        _rail()
+    return val
 
 
 def _confirm(title: str, *, default: bool = True,
@@ -770,6 +780,8 @@ def cmd_init(args) -> int:
         if not owner:
             _err("Could not determine an account or org — specify it as `tm-mode init OWNER/REPO`.")
             return 2
+        if sys.stdin.isatty():
+            _rail()  # owner 답장(◇ Owner) 뒤 단계 구분
         # 팀명을 레포명보다 **먼저** 묻는다 — 배너·상태줄 배지·인사말·레포명기본의 단일 소스.
         # team.config.json 은 팀 레포에 커밋(공유)되므로 창립자가 여기서 한 번 정하면
         # 모든 팀원에게 같은 정체성이 퍼진다.
@@ -779,11 +791,15 @@ def cmd_init(args) -> int:
                 "Shown in the banner, the status-line badge, and the greeting.",
                 hint="Press Enter to accept, or type a name.")
             args.team_name = _prompt("  Team name  ›", owner) or owner
+            if sys.stdin.isatty():
+                _rail_done("Team name", args.team_name); _rail()
         _field_head(
             "Repository name",
             "The GitHub repo your team will live in.",
             hint="Press Enter to accept, or type a name.")
         repo = target or _prompt("  Repository name  ›", f"{_slugify(args.team_name)}-team")
+        if sys.stdin.isatty():
+            _rail_done("Repository name", repo); _rail()
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
     # 팀명 미정(OWNER/REPO 직접지정 등 비대화 경로) 폴백 = owner.
@@ -916,7 +932,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                 "Step 1 of 5 · Where to install",
                 "The folder that will hold your team repo.",
                 default=str(default_dest),
-                hint="Press Enter to accept, or type another path.")
+                hint="Press Enter to accept, or type another path.",
+                collapse="Where to install")
             dest = Path(raw).expanduser().resolve()
             if dest.exists() and any(dest.iterdir()):
                 print(f"  {_warn(str(dest))} already exists and is not empty.")
@@ -936,7 +953,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             else:
                 clone_skip = False
                 break
-        _rail()  # 텍스트 입력은 접지 않는다(입력값이 wrap 될 수 있어 collapse 산술 불안정) — 레일만 잇는다
+        # _ask_field(collapse=) 가 ◇ 답장 + 빈 레일로 이미 마감 — 여기서 추가 레일 금지(중복 방지).
 
         # ── 2단계: 에이전트 선택 ──────────────────────────────────────────
         installed = _detect_agents_from_install_lib(home)
@@ -1019,6 +1036,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             context="New to this team, or already a member?",
             fallback=_member_kind_fallback, collapse="You")
         is_new = kind != 1
+        _rail()
 
         # ── 4단계: 이름 (3단계 안에서 처리) ─────────────────────────────
         if is_new:
@@ -1029,13 +1047,14 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                     "Your name",
                     "How you'll show up on the team — in members.md, session logs, and the greeting.",
                     hint="Lowercase letters, digits, - or _.  Required.",
-                    required=True)
+                    required=True, collapse="Your name")
             else:
                 member = _ask_field(
                     "Your name",
                     "How you'll show up on the team — in members.md, session logs, and the greeting.",
                     default=slug,
-                    hint="Lowercase letters, digits, - or _.  Enter to accept.") or slug
+                    hint="Lowercase letters, digits, - or _.  Enter to accept.",
+                    collapse="Your name") or slug
 
         else:
             if existing_members:
@@ -1057,6 +1076,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                     collapse="Your name")
                 member = existing_members[pick] if 0 <= pick < len(existing_members) \
                     else existing_members[0]
+                _rail()
             else:
                 guess = _git_user_name()
                 slug = _slugify(guess) if guess else ""
@@ -1064,13 +1084,13 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                     "Your name",
                     "No members.md yet — you'll be the first entry (members.md, session logs, greeting).",
                     default=slug or None,
-                    hint="Lowercase letters, digits, - or _.") or None
+                    hint="Lowercase letters, digits, - or _.",
+                    collapse="Your name") or None
 
         # ── 5단계(구 5): 역할 — picker(기본 Skip) + Other 자유입력 ──
         # §7.2 H1(위젯화 금지)을 뒤집는다(사용자 결정 2026-07-07): 다른 단계처럼
         # 화살표 선택으로 통일하되, 목록에 없는 역할은 "Other…"로 여전히 자유입력한다
         # (H1 의도인 커스텀 역할 보존). Skip 이 기본 하이라이트.
-        _rail()
         role_choices = ["Skip (no role)"] + list(ROLES) + ["Other… (type your own)"]
 
         def _role_fallback() -> int:
@@ -1093,6 +1113,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         if role_pick == 0:
             role = ""
         elif role_pick == len(role_choices) - 1:      # Other… → 자유입력
+            # picker 가 이미 ◇ Your role ─ Other… 를 찍었으므로 collapse 생략(이중 ◇ 방지).
             role = _ask_field(
                 "Your role",
                 "Type the role that fits you — shown next to your name.",
@@ -1170,7 +1191,7 @@ def cmd_join(args, *, created: bool = False) -> int:
             "Paste the repository your team lead shared with you.",
             example="https://github.com/acme/acme-team",
             hint="Required — the wizard reads members and settings from it.",
-            required=True)
+            required=True, collapse="Team repo URL")
     # 명시 플래그(--dir/--member-name/--agent/--role/--obsidian)가 하나라도 있으면
     # TTY 여도 wizard 를 건너뛴다(플래그 = 비대화 의도, CLI 관례). /dev/tty 재연결(#6)로
     # 터미널의 curl 사용자가 플래그를 줬는데 wizard 가 무시하는 회귀 방지(codex P2).
