@@ -66,16 +66,41 @@ except ImportError:
 
 # 규칙 참조 문구 단일 소스 — 시블링 모듈(스크립트 실행 시 hooks/ 가 sys.path[0]).
 # 부재 시 동일 문구 폴백(짧은 참조 한 조각이라 드리프트 표면 최소 — 규칙 본문은
-# session-start 가 _slog_rules.SESSION_LOG_RULES 를 주입한다).
+# session-start 가 _slog_rules.session_log_rules(lang) 를 주입한다).
 try:
-    from _slog_rules import RULES_REF as _RULES_REF  # type: ignore
+    import _slog_rules as _slog_rules_mod  # type: ignore
     _HAS_RULES_MODULE = True
 except ImportError:
     # 규칙 모듈 부재 = session-start 가 규칙을 주입하지 못하는 배포 상태일 수 있음
     # (부분 배포·복사 누락). 이때 compact 의 "규칙 참조"는 허공을 가리키므로
     # 리마인더를 레거시 장문으로 강등한다(codex P2 — fail-to-verbose).
-    _RULES_REF = "(규칙: 세션 시작 주입 참조)"
+    _slog_rules_mod = None
     _HAS_RULES_MODULE = False
+
+# i18n(PR-i1) — 팀 locale 에 따라 리마인더 문구 ko/en 선택. io_encoding 과 동일한
+# infra/ sys.path 재사용 패턴(위에서 이미 삽입됨). 부재(부분 배포) 시 ko 강등(무해).
+try:
+    import i18n as _i18n  # type: ignore
+except ImportError:
+    _i18n = None
+
+
+def _t(key: str, lang: str, ko: str, **fmt) -> str:
+    """주입 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화 계약),
+    en 은 i18n 카탈로그(hook_* 키). i18n 부재 시 ko 폴백."""
+    if lang == "en" and _i18n is not None:
+        return _i18n.t(key, "en", **fmt)
+    return ko.format(**fmt) if fmt else ko
+
+
+def _rules_ref(lang: str) -> str:
+    """compact 의 규칙 참조 문구 — _slog_rules 단일 소스(lang 분기). 부재 시 ko."""
+    if _slog_rules_mod is not None:
+        fn = getattr(_slog_rules_mod, "rules_ref", None)
+        if callable(fn):
+            return fn(lang)
+        return getattr(_slog_rules_mod, "RULES_REF", "(규칙: 세션 시작 주입 참조)")
+    return "(규칙: 세션 시작 주입 참조)"
 
 
 def _team_root() -> str:
@@ -137,27 +162,34 @@ def _log_date(now: datetime) -> str:
     return now.strftime("%Y-%m-%d")
 
 
-def _load_team_config(root: str) -> dict:
-    """팀 루트의 team.config.json 로드. 없거나 파싱 실패 시 빈 dict."""
+def _load_team_config(root: str) -> dict | None:
+    """팀 루트의 team.config.json 로드.
+
+    (PR-i1) 반환 구분: 정상 dict → 그대로 / **없음·파싱 실패·루트 비dict → None**.
+    구분이 필요한 이유: locale 폴백 계약이 "config 읽힘+locale 없음 → ko" 와
+    "config 없음/깨짐 → en" 을 다르게 취급한다. 호출부는 dict 가 필요하면
+    `config or {}` 로 쓴다. main() 에서 1회만 로드해 내려보낸다(중복 read 금지).
+    """
     try:
         path = os.path.join(root, "team.config.json")
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             return data
-        return {}
+        return None
     except (OSError, json.JSONDecodeError):
-        return {}
+        return None
 
 
-def _system_message_enabled(root: str) -> bool:
-    """화면용 systemMessage 방출 여부 — team.config.json ux.session_log_remind.system_message (기본 True).
+def _system_message_enabled(config) -> bool:
+    """화면용 systemMessage 방출 여부 — ux.session_log_remind.system_message (기본 True).
 
     False 면 모델 컨텍스트(additionalContext)는 유지한 채 사용자 화면 한 줄(systemMessage)만
     생략해 화면 noise 를 줄인다. team.config.json 은 엔진 sync(SYNC_PATHS=infra/) 대상이
     아니므로 이 옵션은 `tm-mode update` 에도 보존된다. 누락·타입 불일치 시 True(현행 동작 보존).
+    config = main() 이 1회 로드한 dict(또는 None — 부재/깨짐).
     """
-    ux = _load_team_config(root).get("ux")
+    ux = config.get("ux") if isinstance(config, dict) else None
     if not isinstance(ux, dict):
         return True
     slr = ux.get("session_log_remind")
@@ -167,14 +199,15 @@ def _system_message_enabled(root: str) -> bool:
     return val if isinstance(val, bool) else True
 
 
-def _context_style(root: str) -> str:
+def _context_style(config) -> str:
     """additionalContext 스타일 — ux.session_log_remind.context_style (기본 "compact").
 
     _system_message_enabled 와 동일한 읽기 규약(같은 ux.session_log_remind 블록).
     "full" 만 레거시 장문(옵트백)으로 인정하고, 누락·타입 불일치·미지의 값은 전부
     "compact" — 화면 도배 문제의 기본 해법이 compact 이기 때문(fail-to-quiet).
+    config = main() 이 1회 로드한 dict(또는 None) — 비dict 는 config 부재와 동일 취급.
     """
-    ux = _load_team_config(root).get("ux")
+    ux = config.get("ux") if isinstance(config, dict) else None
     if not isinstance(ux, dict):
         return "compact" if _HAS_RULES_MODULE else "full"
     slr = ux.get("session_log_remind")
@@ -207,8 +240,8 @@ def _valid_member_name(name: str) -> bool:
     return all(c.isalnum() or c in "-_" for c in name)
 
 
-def _resolve_member(root: str) -> str | None:
-    """멤버 이름 결정.
+def _resolve_member(config) -> str | None:
+    """멤버 이름 결정. config = main() 이 1회 로드한 dict(또는 None).
 
     1. env TEAMMODE_MEMBER (단일 소스 — install 이 settings.json 에 박음)
     2. fallback: team.config.json members 가 1명 → members[0]["name"]
@@ -220,7 +253,7 @@ def _resolve_member(root: str) -> str | None:
     if env_name and _valid_member_name(env_name):
         return env_name
     # 2. fallback: config members 1명
-    config = _load_team_config(root)
+    config = config if isinstance(config, dict) else {}
     members = config.get("members", [])
     if not isinstance(members, list):
         return None
@@ -251,7 +284,7 @@ def _count_lines(path: str) -> int:
         return 0
 
 
-def _log_kit(log_path: str) -> str:
+def _log_kit(log_path: str, lang: str = "ko") -> str:
     """세션로그를 Read(끝 offset)+Edit 로 이어쓰는 구체 명령을 만든다.
 
     파일이 있으면 끝 ~20줄만 읽는 offset 명령을, 없으면 새로 Write 안내를 준다.
@@ -263,15 +296,18 @@ def _log_kit(log_path: str) -> str:
     # 문자열 리터럴로 이스케이프해 박는다. (ensure_ascii=False: 한글 폴더 경로 보존)
     p = json.dumps(log_path, ensure_ascii=False)
     if n == 0:
-        return (f' 세션로그 파일이 아직 없습니다 — Read 없이 '
-                f'frontmatter(author/date/summary)+첫 항목을 Write({p}, ...) 로 새로 만드세요.')
+        return _t("hook_rm_kit_new", lang,
+                  ' 세션로그 파일이 아직 없습니다 — Read 없이 '
+                  'frontmatter(author/date/summary)+첫 항목을 Write({p}, ...) 로 '
+                  '새로 만드세요.', p=p)
     off = max(1, n - 20)
-    return (f' 이어쓰기: Read({p}, offset={off}, limit=25) 로 끝부분만 읽고 Edit 로 추가. '
-            f'summary(frontmatter) 갱신이 필요하면 Read({p}, offset=1, limit=6) 도. '
-            f'log 동사·전체 Read 금지 — 끝 20줄만.')
+    return _t("hook_rm_kit_append", lang,
+              ' 이어쓰기: Read({p}, offset={off}, limit=25) 로 끝부분만 읽고 Edit 로 추가. '
+              'summary(frontmatter) 갱신이 필요하면 Read({p}, offset=1, limit=6) 도. '
+              'log 동사·전체 Read 금지 — 끝 20줄만.', p=p, off=off)
 
 
-def _compact_action(log_path: str) -> str:
+def _compact_action(log_path: str, lang: str = "ko") -> str:
     """compact 스타일의 동적 행동 조각 — 경로+offset(파일 있음) 또는 Write 생성(없음).
 
     _log_kit 의 압축판: 규칙 설명 없이 지금 할 일만. 경로는 _log_kit 와 동일하게
@@ -280,9 +316,13 @@ def _compact_action(log_path: str) -> str:
     n = _count_lines(log_path)
     p = json.dumps(log_path, ensure_ascii=False)
     if n == 0:
-        return f"{p} 없음: frontmatter(author/date/summary)+첫 항목으로 Write 생성"
+        return _t("hook_rm_compact_new", lang,
+                  "{p} 없음: frontmatter(author/date/summary)+첫 항목으로 Write 생성",
+                  p=p)
     off = max(1, n - 20)
-    return f"{p} 끝부분(Read offset={off}, limit=25)만 읽고 Edit로 이어쓰기"
+    return _t("hook_rm_compact_append", lang,
+              "{p} 끝부분(Read offset={off}, limit=25)만 읽고 Edit로 이어쓰기",
+              p=p, off=off)
 
 
 def _root_tag(root: str) -> str:
@@ -449,12 +489,29 @@ def main() -> int:
 
     # (레포 최신화는 여기서 하지 않는다 — SessionStart 훅이 세션당 1회 담당.)
 
-    now = _kst_now()
-    weekday = "월화수목금토일"[now.weekday()]
-    time_line = (f"[teammode] 현재 시각: {now.strftime('%Y-%m-%d')}"
-                 f"({weekday}) {now.strftime('%H:%M')} KST")
+    # config 는 여기서 **1회만** 로드해 아래로 내려보낸다(PR-i1 — 중복 read 금지).
+    # None = 부재/파싱 실패(→ locale 폴백 en), dict = 정상(locale 없으면 ko).
+    config = _load_team_config(root)
+    if _i18n is not None:
+        try:
+            lang = _i18n.team_lang_from_config(config)
+        except Exception:  # noqa: BLE001 — locale 해석 실패가 리마인더를 막지 않는다
+            lang = "ko"
+    else:
+        lang = "ko"  # i18n 부재(부분 배포) → 종전 한국어 유지
 
-    base_guide = (
+    now = _kst_now()
+    if lang == "en":
+        weekday = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[now.weekday()]
+    else:
+        weekday = "월화수목금토일"[now.weekday()]
+    time_line = _t("hook_rm_time_line", lang,
+                   "[teammode] 현재 시각: {date}({weekday}) {time} KST",
+                   date=now.strftime("%Y-%m-%d"), weekday=weekday,
+                   time=now.strftime("%H:%M"))
+
+    base_guide = _t(
+        "hook_rm_base_guide", lang,
         " 세션 로그를 팀 루트의 memory/team/sessions/<이름>/ 에 Read(끝부분 offset)+Edit 로 "
         "직접 관리하세요(log 동사 쓰지 말 것 — 컨텍스트 절약·충실도). "
         "본인 세션로그는 가드 예외라 append뿐 아니라 직접 수정·재구성·요약 갱신이 됩니다. "
@@ -468,10 +525,10 @@ def main() -> int:
         "개인 내용 제외, 팀 작업만.")
 
     # additionalContext 스타일 — compact(기본, 동적 상태 1~3줄) | full(레거시 장문 옵트백)
-    style = _context_style(root)
+    style = _context_style(config)
 
     # 멤버 식별
-    member = _resolve_member(root)
+    member = _resolve_member(config)
     agent = data.get("agent", "unknown")
 
     if member is not None:
@@ -480,11 +537,11 @@ def main() -> int:
         date_str = _log_date(now)
         log_path = _my_log_path(root, member, date_str)
         if style == "full":
-            log_kit = _log_kit(log_path)  # offset 명령(끝 20줄 Read+Edit)을 코드로 깔아준다
+            log_kit = _log_kit(log_path, lang)  # offset 명령(끝 20줄 Read+Edit)을 코드로 깔아준다
             action = ""
         else:
             log_kit = ""
-            action = _compact_action(log_path)  # 경로+offset(또는 Write 생성)만 압축
+            action = _compact_action(log_path, lang)  # 경로+offset(또는 Write 생성)만 압축
         mtime = _current_mtime(log_path)
         age = int(time.time() - mtime) if mtime > 0 else 9999
 
@@ -514,8 +571,9 @@ def main() -> int:
         # 멤버를 못 정해 경로를 특정할 수 없으므로 offset 키트는 비운다(base_guide 일반 안내만).
         log_kit = ""
         # compact 도 경로·offset 을 특정 못 한다 — 폴더 규약만 한 줄로(주입 표면 없음).
-        action = ("memory/team/sessions/<이름>/ 의 오늘 파일에 끝부분만 Read 후 "
-                  "Edit로 기록(<이름>은 members.md의 영문 이름)")
+        action = _t("hook_rm_fallback_action", lang,
+                    "memory/team/sessions/<이름>/ 의 오늘 파일에 끝부분만 Read 후 "
+                    "Edit로 기록(<이름>은 members.md의 영문 이름)")
         state_file = _state_path(agent)
         age = _global_sessions_age(root)
         g_mtime = _global_sessions_mtime(root)
@@ -557,22 +615,29 @@ def main() -> int:
     weak_ok = (count >= 5) and (count % 5 == 0)
 
     # compact 본문 — 동적 상태(N/경로/offset)만. 규칙은 세션 시작 1회 주입 참조.
-    compact_body = f"세션로그 미작성 {count}번째 프롬프트 — {action}. {_RULES_REF}"
+    compact_body = _t("hook_rm_compact_body", lang,
+                      "세션로그 미작성 {count}번째 프롬프트 — {action}. {ref}",
+                      count=count, action=action, ref=_rules_ref(lang))
 
     if strong_ok:
         if style == "full":
             context = (
-                f"{time_line}\n"
-                f"⛔ 세션 로그 30분 이상 미갱신 ({count}번째 프롬프트째 세션로그 미작성). "
-                f"첫 행동으로{base_guide}{log_kit}"
+                time_line + "\n"
+                + _t("hook_rm_strong_full_head", lang,
+                     "⛔ 세션 로그 30분 이상 미갱신 ({count}번째 프롬프트째 "
+                     "세션로그 미작성). 첫 행동으로", count=count)
+                + f"{base_guide}{log_kit}"
             )
         else:
             # ⛔ variant 는 현재시각·30분 미갱신 severity 를 유지하되 총 ≤3줄.
             context = (
-                f"{time_line}\n"
-                f"⛔ 세션 로그 30분 이상 미갱신 — {compact_body}"
+                time_line + "\n"
+                + _t("hook_rm_strong_compact", lang,
+                     "⛔ 세션 로그 30분 이상 미갱신 — {body}", body=compact_body)
             )
-        system_msg = f"⛔ 세션로그 미작성 — {count}번째 프롬프트째. 첫 행동으로 기록하세요"
+        system_msg = _t("hook_rm_sys_strong", lang,
+                        "⛔ 세션로그 미작성 — {count}번째 프롬프트째. "
+                        "첫 행동으로 기록하세요", count=count)
         # 강발화 시각 기록 (멤버·폴백 둘 다 상태파일에 저장)
         if member is not None:
             _write_state(state_file, {
@@ -593,12 +658,15 @@ def main() -> int:
     elif weak_ok:
         if style == "full":
             context = (
-                f"{time_line}\n"
-                f"{count}번째 프롬프트째 세션로그 미작성.{base_guide}{log_kit}"
+                time_line + "\n"
+                + _t("hook_rm_weak_full_head", lang,
+                     "{count}번째 프롬프트째 세션로그 미작성.", count=count)
+                + f"{base_guide}{log_kit}"
             )
         else:
             context = f"[teammode] {compact_body}"
-        system_msg = f"📝 세션로그 미작성 — {count}번째 프롬프트째"
+        system_msg = _t("hook_rm_sys_weak", lang,
+                        "📝 세션로그 미작성 — {count}번째 프롬프트째", count=count)
 
     if context:
         out = {
@@ -609,7 +677,7 @@ def main() -> int:
         }
         # 화면용 systemMessage 는 옵트아웃 가능(기본 on). config 가 false 면 모델
         # 컨텍스트(additionalContext)만 내고 화면 한 줄은 생략해 noise 를 줄인다.
-        if _system_message_enabled(root):
+        if _system_message_enabled(config):
             out["systemMessage"] = system_msg
         print(json.dumps(out, ensure_ascii=False))
     return 0

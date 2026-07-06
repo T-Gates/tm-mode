@@ -293,7 +293,11 @@ def test_remind_still_reminds_when_team_active(tmp_path):
     (team / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    # team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
+    # PR-i1: 한국어 리마인더를 단정하므로 ko 팀으로 고정(locale=ko_KR). members 는
+    # 그대로 비워 폴백(degraded) 경로 유지 — 종전 "config 없음" 픽스처의 의도 보존.
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"locale": "ko_KR"}}), encoding="utf-8")
+    # (구)team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
     # check_reset 한다 — 첫 호출은 date=""→오늘로 바뀌어 warm-up 리셋(미발화)되므로,
     # 상태파일을 date=오늘로 선시드해 warm-up 을 건너뛰고 age≥1800 발화를 검증한다.
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td

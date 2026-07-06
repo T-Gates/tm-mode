@@ -217,7 +217,11 @@ def test_common_hook_consumes_canonical_only(env, tmp_path):
     hook = REPO / "infra" / "hooks" / "session-log-remind.py"
     root = env.root
     (root / ".teammode-active").write_text("")
-    # team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
+    # PR-i1: 한국어 리마인더("세션 로그")를 단정하므로 ko 팀으로 고정(locale=ko_KR).
+    # members 는 비워 폴백(degraded) 경로 유지 — 종전 "config 없음" 픽스처 의도 보존.
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"locale": "ko_KR"}}), encoding="utf-8")
+    # (구)team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
     # check_reset(전역 sessions mtime/날짜 변화 시 count=0+return) 한다. 첫 호출은 date=""→
     # 오늘로 바뀌어 warm-up 리셋(미발화)되므로, 상태파일을 date=오늘로 선시드해 warm-up 을
     # 건너뛰고 age≥1800 발화를 검증한다.
