@@ -13,7 +13,23 @@ Each session, the agent automatically *reads* the team context and *records* wha
 
 ## Install — just copy-paste
 
-Common requirements: **`python3` (3.9+) · `git`**. Anything else is per-case below.
+### Easiest — paste one line into your agent
+
+No terminal needed. In **Claude Code** or **Codex**, paste:
+
+```text
+Read https://github.com/T-Gates/tm-mode and set up tm-mode for me.
+```
+
+Your agent reads this page, asks whether you're **starting a new team or joining
+one**, clones the team repo, and — **before writing any host settings** — shows
+the full install plan and waits for your approval.
+
+<sub>Agents: see [For AI agents](#for-ai-agents-setup-instructions) below for the exact procedure.</sub>
+
+---
+
+Prefer the terminal? Common requirements: **`python3` (3.9+) · `git`**. Anything else is per-case below.
 
 ### ⓐ Join a team (member — the team repo already exists)
 
@@ -121,6 +137,37 @@ Pile up product specs, team rules, decisions, and domain knowledge as markdown i
 team setup (introducer, once)  →  personal setup (each member)  →  service connections (L2)
 ```
 
+## For AI agents: setup instructions
+
+> You (the agent) were likely pointed here by a user pasting this repo's URL with
+> "set up tm-mode". Follow this procedure exactly. Do not improvise, and do not
+> use the `curl | sh` one-liners above — those are for humans in a terminal
+> (non-interactive runs would install without showing the user a plan).
+
+1. **Ask one question**: "Start a new team, or join an existing one?"
+2. **Get the team repo onto the machine** (this writes only the cloned folder):
+   - **Join** → ask for the team repo URL (their team lead has it), then
+     `git clone <team-repo-url> ~/teammode/<repo>` and work in that folder.
+     (If they paste *this* repo's URL — github.com/T-Gates/tm-mode — that's the
+     product template, not a team: switch to the **New team** flow instead.)
+   - **New team** → requires the GitHub CLI, logged in (`gh auth status`; if missing, have the user run `gh auth login` in their own
+     terminal and tell you when it's done), then
+     `gh repo create <owner>/<name> --template T-Gates/tm-mode --private` and
+     clone it as above. (Template copying can lag a few seconds — retry the clone.)
+3. **Show the plan and get explicit approval — no host settings are written yet**:
+   `python3 infra/install.py --root . --dry-run --yes`
+   Relay the full plan output (hooks, host file paths, env, scaffold) to the user.
+   If it reports the member name as missing, ask the user for their name (lowercase,
+   letters) and re-run with `--member-name <name>`.
+4. **Only after the user approves**, run the same command **without `--dry-run`**:
+   `python3 infra/install.py --root . --yes [--member-name <name>]`
+5. Tell the user to run **`/tm-onboard`** in their agent session — it verifies the
+   install and turns team mode on. If any step fails, report the exact error and
+   stop. Do not guess at fixes.
+
+(If you are already inside a cloned team repo, skip step 2 — and prefer that repo's
+`AGENTS.md` "첫 접촉" bootstrap, which is this same plan → approval → install contract.)
+
 ## Layout
 
 ```
@@ -222,7 +269,22 @@ tm-mode is distributed under the Apache License 2.0. See [LICENSE](LICENSE) for 
 
 ## 설치 — 복붙하면 됩니다
 
-공통 요구사항: **`python3`(3.9+) · `git`**. 그 외 필요한 건 아래 각 상황에만.
+### 가장 쉬운 길 — 에이전트에 한 줄 붙여넣기
+
+터미널 없이, **Claude Code / Codex** 에 이렇게 붙여넣으세요:
+
+```text
+https://github.com/T-Gates/tm-mode 읽고 tm-mode 세팅해줘.
+```
+
+에이전트가 이 페이지를 읽고 **새 팀인지 / 기존 팀 합류인지** 물어본 뒤 레포를
+클론하고, **호스트 설정을 쓰기 전에** 반드시 설치 계획을 보여주고 승인을 받습니다.
+
+<sub>에이전트용 정확한 절차는 상단 영어 절 [For AI agents](#for-ai-agents-setup-instructions) 참조.</sub>
+
+---
+
+터미널이 편하면: 공통 요구사항 **`python3`(3.9+) · `git`**. 그 외 필요한 건 아래 각 상황에만.
 
 ### ⓐ 팀에 합류 (팀원 — 팀 레포가 이미 있을 때)
 

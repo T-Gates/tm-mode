@@ -1,6 +1,6 @@
 # 설치 — tm-mode
 
-tm-mode 설치의 **단일 소스**다. 진입은 둘: **clone-and-go**(팀 레포 클론 → 에이전트에서 "셋업해줘") 또는 **`tm-mode` CLI**(레포 생성/clone·scaffold·훅 배선·스킬 배포·env 주입까지 wizard가 전부 처리).
+tm-mode 설치의 **단일 소스**다. 진입은 셋: **에이전트 URL 한 줄**(제품 README 를 에이전트에 주며 "세팅해줘" — README 의 For AI agents 절차, 승인 게이트 동일) · **clone-and-go**(팀 레포 클론 → 에이전트에서 "셋업해줘") 또는 **`tm-mode` CLI**(레포 생성/clone·scaffold·훅 배선·스킬 배포·env 주입까지 wizard가 전부 처리).
 
 ## 0. clone-and-go — 팀 레포가 이미 있으면 (CLI 설치 불필요)
 
