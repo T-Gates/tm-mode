@@ -1,0 +1,12 @@
+{
+  "name": "tm-mode",
+  "version": "0.1.0",
+  "description": "Turn your team mode on — cross-agent team memory bootstrapper for AI coding agents. (thin launcher: downloads the tag-pinned Python CLI and runs it)",
+  "bin": { "tm-mode": "bin/tm-mode.js" },
+  "files": ["bin/"],
+  "engines": { "node": ">=16" },
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/T-Gates/tm-mode.git" },
+  "homepage": "https://github.com/T-Gates/tm-mode#readme",
+  "keywords": ["ai", "agent", "claude", "codex", "team", "memory", "git"]
+}
