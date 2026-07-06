@@ -65,7 +65,7 @@ tm-mode init           # create repo from template → clone → setup → wire 
 1. On GitHub, [tm-mode](https://github.com/T-Gates/tm-mode) → **"Use this template"** button to create the repo
 2. Run `tm-mode join <new-repo-clone-url>` from ⓐ above
 
-> **Without `pip` (curl):** `curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.0/install.sh | sh -s -- join <url>` (`init` too).
+> **Without `pip` (curl):** `curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.1/install.sh | sh -s -- join <url>` (`init` too).
 > Once installed, run `tm-onboard` in your agent for auto verification & briefing. For activation, flags, and engine verbs, see **→ [INSTALL.md](INSTALL.md)** (Korean).
 
 > Status: **v0.1 — L1 (team memory, automatic context injection, session logs, Obsidian view) works and is validated in daily use.** For L2 (service connections), some providers work today (linear, notion — those with MCP launch info); others (slack, google) are placeholders while the provider pack grows.
@@ -320,7 +320,7 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
 1. GitHub 에서 [tm-mode](https://github.com/T-Gates/tm-mode) → **"Use this template"** 버튼으로 레포 생성
 2. 위 ⓐ 의 `tm-mode join <새 레포 clone-url>` 실행
 
-> **`pip` 없이 (curl):** `curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.0/install.sh | sh -s -- join <url>` (`init` 도 동일).
+> **`pip` 없이 (curl):** `curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.1/install.sh | sh -s -- join <url>` (`init` 도 동일).
 > 설치가 끝나면 에이전트에서 `tm-onboard` — 검증·가치 브리핑이 자동. 활성화·플래그·엔진 동사 등 상세는 **→ [INSTALL.md](INSTALL.md)**.
 
 > 상태: **v0.1 — L1(팀 메모리·맥락 자동주입·세션로그·Obsidian 뷰) 동작·실사용 검증 완료.** L2(서비스 연동)는 일부 provider(linear·notion 등 MCP 실행정보 보유분)가 동작하고, 나머지(slack·google 등)는 placeholder — provider 팩 확장 중.
