@@ -713,12 +713,8 @@ def cmd_init(args) -> int:
         if not getattr(args, "team_name", None):
             print(_hi("◆  Team name") + _dim("   — used in the team banner, status-line badge, and greeting"))
             args.team_name = _prompt("  Team name  ›", owner) or owner
-            if sys.stdout.isatty() and _raw_capable():
-                _collapse_lines(2, "Team name", args.team_name)
         print(_hi("◆  Repository name") + _dim("   — the GitHub repo your team will live in"))
         repo = target or _prompt("  Repository name  ›", f"{_slugify(args.team_name)}-team")
-        if sys.stdout.isatty() and _raw_capable():
-            _collapse_lines(2, "Repository name", repo)
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
     # 팀명 미정(OWNER/REPO 직접지정 등 비대화 경로) 폴백 = owner.
@@ -743,7 +739,11 @@ def cmd_init(args) -> int:
     rc = subprocess.run(["gh", "repo", "create", full,
                         "--template", template, vis]).returncode
     if rc != 0:
-        _err("Repository creation failed — check permissions and name conflicts.")
+        msg = "Repository creation failed — check permissions and name conflicts."
+        if sys.stdin.isatty():
+            _rail_end(_paint(msg, "err"))  # 열린 레일을 └ 로 닫는다
+        else:
+            _err(msg)
         return rc
 
     url = f"https://github.com/{full}.git"
