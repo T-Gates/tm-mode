@@ -380,16 +380,14 @@ Codex 구현(`~/.codex/config.toml` shape):
 
 1. MCP 등록은 `--config` 파일 안의 `# teammode-mcp-start` / `# teammode-mcp-end` 블록으로만 관리한다. 별도 `--mcp-config`는 없다.
 2. `_read_mcp_servers()`는 이 블록 안의 `[mcp_servers.<name>]` header만 regex로 읽어 `{name: {"_teammode_managed": True}}`처럼 반환한다.
-3. 등록 블록 entry는 다음 TOML placeholder다. 섹션 키는 별칭(`tm-<provider>`)이고 `_canonical_server`에는 정규 서버명을 담는다.
+3. 실 기동 데이터(호스티드 `url` 또는 `command`/`args`)가 있는 provider 만 실 `[mcp_servers.tm-<provider>]` 테이블로 등록한다(섹션 키=별칭, `_canonical_server`=정규 서버명). **기동 데이터 없는 provider(placeholder)는 실 테이블 금지 — 마커 블록 안 주석 한 줄로만 남긴다**:
    ```toml
-   [mcp_servers.tm-<provider>]
-   _teammode_managed = true
-   _canonical_server = '<provider>'
-   _register_hint = '<provider pack mcp.register_hint>'
+   # [tm-placeholder] <provider> — <provider pack mcp.register_hint>
    ```
+   근거(P1, 2026-07-06 실기 확정): command/url 없는 실 테이블은 Codex CLI 가 config 로드 전체를 fatal 거부("invalid transport") → 세션 기동 불가·훅 전멸. 주석형은 재렌더 관리·stale 제거(#3 경로) 계약을 그대로 유지하되, alias 보장(`_read_mcp_servers`)에는 잡히지 않는다 — sync 는 `[warn] MCP 별칭 미보장` 으로 정직하게 생략(비동작 placeholder 를 보장으로 위장하지 않음).
 4. provider가 하나 이상 있으면 전체 teammode MCP 블록을 렌더해 기존 블록을 교체하거나 파일 끝에 append한다. write가 일어나면 `[mcp] <alias> 등록`을 alias마다 반환하고, 바이트 동일이면 `[ok] 변경 없음 (<n>개 provider 등록됨)`을 반환한다.
 5. provider가 하나도 없으면 기존 teammode MCP 블록만 제거한다. 블록이 없으면 파일을 touch하지 않고 `[info] 연결된 MCP provider 없음 (빈 슬롯)`을 반환한다.
-6. 한계: 이 placeholder에는 `command`/`args`가 없다. Codex 런타임이 실제 MCP 서버로 기동하려 하면 에러가 날 수 있다. 현 계약은 sync가 참조할 alias 슬롯 보장까지다.
+6. (구 한계 조항 대체) placeholder 는 3의 주석형으로만 존재하므로 Codex 런타임 기동 에러 자체가 불가능하다. alias 슬롯 보장은 실 등록 provider 에만 성립한다.
 7. 한계: Codex 구현은 TOML 전체를 파싱하지 않으므로 teammode 블록 밖의 사용자 `[mcp_servers.<same>]`와의 중복 collision을 검사하지 않는다. teammode가 관리하는 것은 marker 블록뿐이다. 단 **기존 서버 감지(#3, Claude 구현 10과 동일 계약)**를 위해 블록 밖 `[mcp_servers.*]` 섹션 헤더와 한 줄 `url`/`command`/`args`는 감지용으로 라인 스캔한다(placeholder 대상 provider 한정, 등록/수정은 하지 않음).
 
 ### 2.9 폴백 정책

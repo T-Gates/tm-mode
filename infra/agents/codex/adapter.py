@@ -991,12 +991,22 @@ class Adapter(BaseAdapter):
         if canonical is None:
             canonical = alias
         hint = pack.mcp.get("register_hint", "") if pack else ""
+        src = (pack.mcp.get("source") if pack else None)
+        url = self._mcp_http_url(pack)  # 부모(claude) 상속 — 호스티드 판정 공유
+        launch_probe = self._mcp_launch_command(pack)
+        if url is None and launch_probe is None:
+            # P1(2026-07-06 실기 확정): command/url 없는 실 [mcp_servers.*] 테이블은
+            # codex CLI 가 config 로드 전체를 fatal 거부("invalid transport") —
+            # 세션 기동 불가·훅 전멸. placeholder 는 **주석으로만** 남긴다(마커 블록
+            # 안이라 재렌더 관리·stale 제거 계약은 그대로, alias 보장은 정직하게 false).
+            comment = f"# [tm-placeholder] {canonical}"
+            if hint:
+                comment += f" — {hint}"
+            return [comment]
         lines = [f"[mcp_servers.{alias}]"]
         lines.append("_teammode_managed = true")
         lines.append(f"_canonical_server = {self._toml_str(canonical)}")
         lines.append(f"_register_hint = {self._toml_str(hint)}")
-        src = (pack.mcp.get("source") if pack else None)
-        url = self._mcp_http_url(pack)  # 부모(claude) 상속 — 호스티드 판정 공유
         if url is not None:
             # Codex streamable HTTP 서버: `url` + (OAuth 는 최초 사용 시 인터랙티브).
             lines.append(f"url = {self._toml_str(url)}")
