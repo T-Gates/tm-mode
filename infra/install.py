@@ -109,8 +109,8 @@ def cmd_uninstall(opts, *, platform=None) -> int:
     """
     root = opts.get("root")
     if root is None:
-        print("[error] --uninstall: --root <팀루트> 가 필수입니다. 엔진은 작업 폴더를 "
-              "추측하지 않습니다.", file=sys.stderr)
+        print("[error] --uninstall: --root <team-root> is required. The engine does "
+              "not guess the working folder.", file=sys.stderr)
         return 2
     team_root = Path(root).resolve()
     if platform is None:
@@ -120,9 +120,9 @@ def cmd_uninstall(opts, *, platform=None) -> int:
     yes = opts.get("yes")
     # 실호스트 게이트(install 과 동일): --settings(격리) 또는 --yes 없으면 거부.
     if settings is None and not yes:
-        print("[error] --uninstall: --settings <경로> (격리 모드) 또는 --yes (실설치 "
-              "되돌리기 확인) 중 하나가 필요합니다. 명시 없이 실 ~/.claude 를 건드리지 "
-              "않습니다.", file=sys.stderr)
+        print("[error] --uninstall: either --settings <path> (isolated mode) or --yes "
+              "(confirm real-install rollback) is required. Real ~/.claude is not "
+              "touched without an explicit flag.", file=sys.stderr)
         return 2
     settings_path = settings or os.path.expanduser("~/.claude/settings.json")
 
@@ -135,9 +135,9 @@ def cmd_uninstall(opts, *, platform=None) -> int:
     try:
         tm["cmd_off"](team_root, settings_path)
     except Exception as e:  # noqa: BLE001 — 되돌리기는 비치명. 다음 단계 계속.
-        print(f"[warn] off 단계 건너뜀(비치명): {e}", file=sys.stderr)
+        print(f"[warn] skipped off step (non-fatal): {e}", file=sys.stderr)
     if had_marker and not marker.exists():
-        removed.append(".teammode-active 마커")
+        removed.append(".teammode-active marker")
 
     # 2. 어댑터 uninstall — claude·codex 양쪽 teammode 훅·스킬 제거 (#4: 흔적 0 대칭).
     #    install 은 claude+codex 둘 다 배선하므로 uninstall 도 양쪽을 지워야 한다.
@@ -171,17 +171,17 @@ def cmd_uninstall(opts, *, platform=None) -> int:
             )
             changes = adapter.uninstall()
             if any(c.startswith("[remove]") for c in changes):
-                removed.append(f"{_agent} settings teammode 훅")
+                removed.append(f"{_agent} settings teammode hooks")
             # 스킬(정션/심링크/복사) 제거 — install 의 install_skills 역(대칭). 안 하면 정션이
             # 고아로 남아 dangling(윈도우 도그푸딩서 uninstall 후 tm-* 정션 잔존 실측).
             try:
                 skill_changes = adapter.uninstall_skills()
                 if any(c.startswith("[remove-skill]") for c in skill_changes):
-                    removed.append(f"{_agent} 스킬 심링크/정션")
+                    removed.append(f"{_agent} skill symlinks/junctions")
             except Exception as e:  # noqa: BLE001 — 비치명, 다음 단계 계속.
-                print(f"[warn] {_agent} 스킬 제거 건너뜀(비치명): {e}", file=sys.stderr)
+                print(f"[warn] skipped {_agent} skill removal (non-fatal): {e}", file=sys.stderr)
         except Exception as e:  # noqa: BLE001
-            print(f"[warn] {_agent} 어댑터 uninstall 건너뜀(비치명): {e}", file=sys.stderr)
+            print(f"[warn] skipped {_agent} adapter uninstall (non-fatal): {e}", file=sys.stderr)
 
     # 2.5 settings.json env 우리 키 제거 — inject_env_settings 의 역함수(대칭, issue #9b).
     #     install 이 박은 TEAMMODE_MEMBER·TEAMMODE_HOME 만 제거, 남의 env 키 무접촉.
@@ -191,7 +191,7 @@ def cmd_uninstall(opts, *, platform=None) -> int:
                                   ("TEAMMODE_MEMBER", "TEAMMODE_HOME")):
             removed.append("settings.json env (TEAMMODE_MEMBER·TEAMMODE_HOME)")
     except Exception as e:  # noqa: BLE001
-        print(f"[warn] settings.json env 제거 건너뜀(비치명): {e}", file=sys.stderr)
+        print(f"[warn] skipped settings.json env removal (non-fatal): {e}", file=sys.stderr)
 
     # 3. env 제거 — install_lib.remove_injected_env (우리 표식만)
     #    Windows: reg delete HKCU\Environment(레지스트리). POSIX: 셸 프로파일 우리 줄.
@@ -199,18 +199,18 @@ def cmd_uninstall(opts, *, platform=None) -> int:
     #       uninstall 도 실 호스트 env(셸 프로파일/레지스트리)를 건드리지 않는다(대칭·I4b).
     #       단 --profile 명시는 격리에서도 그 경로(테스트용)만 정리 — 실 호스트 무관.
     if settings is not None and not opts.get("profile"):
-        print("[env] 건너뜀 — 격리 모드(--settings): 실 호스트 env 무접촉.")
+        print("[env] skipped — isolated mode (--settings): real host env untouched.")
     else:
         profile = (Path(opts["profile"]) if opts.get("profile")
                    else _default_profile(platform=platform))
         try:
             if il.remove_injected_env(profile, platform=platform):
                 if il.is_windows(platform):
-                    removed.append(f"env 영구 user env ({il.ENV_VAR}, HKCU\\Environment)")
+                    removed.append(f"persistent user env ({il.ENV_VAR}, HKCU\\Environment)")
                 else:
-                    removed.append(f"env 주입 줄 ({profile})")
+                    removed.append(f"env injection line ({profile})")
         except Exception as e:  # noqa: BLE001
-            print(f"[warn] env 제거 건너뜀(비치명): {e}", file=sys.stderr)
+            print(f"[warn] skipped env removal (non-fatal): {e}", file=sys.stderr)
 
     # 4. obsidian 등록 해제 — install_lib.unregister_obsidian_vault (해당 볼트만)
     obs_cfg = (Path(opts["obsidian-config"]) if opts.get("obsidian-config")
@@ -218,17 +218,17 @@ def cmd_uninstall(opts, *, platform=None) -> int:
     vault_path = team_root / "memory"
     try:
         if il.unregister_obsidian_vault(obs_cfg, str(vault_path)):
-            removed.append(f"obsidian 볼트 등록 ({vault_path})")
+            removed.append(f"obsidian vault registration ({vault_path})")
     except Exception as e:  # noqa: BLE001
-        print(f"[warn] obsidian 해제 건너뜀(비치명): {e}", file=sys.stderr)
+        print(f"[warn] skipped obsidian unregister (non-fatal): {e}", file=sys.stderr)
 
     if removed:
-        print("teammode uninstall — 제거됨:")
+        print("teammode uninstall — removed:")
         for r in removed:
             print(f"  - {r}")
     else:
-        print("teammode uninstall — 되돌릴 호스트 변경 없음(이미 정리됨).")
-    print("  (memory/ 팀 데이터는 보존됩니다.)")
+        print("teammode uninstall — no host changes to revert (already clean).")
+    print("  (memory/ team data is preserved.)")
     return 0
 
 
@@ -297,13 +297,13 @@ def _translate_dispatch_args(rest):
         out.append(a)
         i += 1
     if root_seen and root_val is None:
-        return None, "[error] --root 에 팀 루트 경로 값이 필요합니다."
+        return None, "[error] --root requires a team-root path value."
     if root_val is not None:
         if team_root_val is not None:
             if Path(root_val).resolve() != Path(team_root_val).resolve():
-                return None, ("[error] --root 와 --team-root 값이 서로 다릅니다 "
+                return None, ("[error] --root and --team-root values differ "
                               f"(--root={root_val}, --team-root={team_root_val}). "
-                              "디스패치에선 --team-root 하나만 쓰세요.")
+                              "In dispatch mode use only --team-root.")
             # 같은 값 — --team-root 가 이미 전달되므로 번역 불필요(중복 무해).
         else:
             out = ["--team-root", root_val] + out
@@ -314,7 +314,7 @@ def _dispatch(agent, rest) -> int:
     """--<agent> → agents/<name>/adapter.py 위임 (분기 로직 0)."""
     adapter_path = AGENTS / agent / "adapter.py"
     if not adapter_path.is_file():
-        print(f"[error] {agent} 어댑터 없음: {adapter_path}", file=sys.stderr)
+        print(f"[error] {agent} adapter not found: {adapter_path}", file=sys.stderr)
         return 2
 
     # L1-0 P2 가드(엔진 _resolve_settings 계승): 어댑터의 설정 기본값이 실 호스트
@@ -329,12 +329,13 @@ def _dispatch(agent, rest) -> int:
     iso_flag = spec["flag"] if spec else "--settings"
     present, value_ok = _flag_value_state(rest, iso_flag)
     if not present and "--install" not in rest:
-        print(f"[error] {iso_flag} <경로> (격리) 또는 --install (실설치) 중 하나가 "
-              "필요합니다. 명시 없이 실 호스트 설정에 쓰지 않습니다.", file=sys.stderr)
+        print(f"[error] either {iso_flag} <path> (isolated) or --install (real install) "
+              "is required. Real host settings are not written without an explicit flag.",
+              file=sys.stderr)
         return 2
     if present and not value_ok:
-        print(f"[error] {iso_flag} 에 경로 값이 필요합니다. "
-              f"예) install.py --{agent} {iso_flag} <경로> sync", file=sys.stderr)
+        print(f"[error] {iso_flag} requires a path value. "
+              f"e.g. install.py --{agent} {iso_flag} <path> sync", file=sys.stderr)
         return 2
     rest, _err = _translate_dispatch_args(rest)
     if _err:
@@ -463,15 +464,15 @@ def _autocommit_scaffold(team_root: Path, member_name: str, out) -> None:
     """
     _cr = _git_ops.do_commit(
         str(team_root),
-        message=f"팀 셋업: {member_name} 등록 + memory scaffold [auto]",
+        message=f"team setup: register {member_name} + memory scaffold [auto]",
         push=True, paths=["memory", "team.config.json"])
     if getattr(_cr, "pushed", False):
         _git_ops.clear_sync_warning(str(team_root))
-        out("[push] memory·members 를 팀 레포에 올렸습니다.")
+        out("[push] pushed memory/members to the team repo.")
     elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
-        _detail = getattr(_cr, "detail", "") or "push 실패"
+        _detail = getattr(_cr, "detail", "") or "push failed"
         _git_ops.write_sync_warning(str(team_root), _detail)
-        out(f"[push] 커밋 완료 — push 실패({_detail}). 확인 후 `git push` 하세요.")
+        out(f"[push] committed — push failed ({_detail}). Run `git push` after checking.")
 
 
 def _email_is_push_safe(email) -> bool:
@@ -499,12 +500,12 @@ def _warn_if_email_not_push_safe(det: dict, team_root: Path, err) -> None:
         return
     if _email_is_push_safe(email):
         return
-    shown = email or "(설정 안 됨)"
-    err(f"[warn] git user.email='{shown}' 이 GitHub noreply 형식이 아닙니다. "
-        f"GitHub 에서 '이메일 비공개(Keep my email addresses private)' 가 켜져 있으면 "
-        f"push 가 GH007(private email)로 거부돼 자동 커밋이 로컬에만 쌓일 수 있습니다.")
-    err(f"       해결: GitHub → Settings → Emails 에서 본인 noreply 주소"
-        f"(<ID>+<username>@users.noreply.github.com)를 확인한 뒤 이 레포에 설정하세요:")
+    shown = email or "(not set)"
+    err(f"[warn] git user.email='{shown}' is not a GitHub noreply address. "
+        f"If 'Keep my email addresses private' is enabled on GitHub, "
+        f"push may be rejected with GH007 (private email) and auto-commits pile up locally.")
+    err(f"       fix: on GitHub → Settings → Emails, find your noreply address"
+        f" (<ID>+<username>@users.noreply.github.com), then set it on this repo:")
     err(f"         git -C {team_root} config user.email "
         f"'<ID>+<username>@users.noreply.github.com'")
 
@@ -523,7 +524,7 @@ def _make_run_adapter():
     def run_adapter(agent, verb, flag, path, extra_args=None) -> int:
         adapter_path = AGENTS / agent / "adapter.py"
         if not adapter_path.is_file():
-            raise FileNotFoundError(f"{agent} 어댑터 없음: {adapter_path}")
+            raise FileNotFoundError(f"{agent} adapter not found: {adapter_path}")
         extra_args = list(extra_args or [])
         # 어댑터의 settings 부모 디렉토리 보장(어댑터는 부모 mkdir 하지만 방어적으로).
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -564,8 +565,8 @@ def register_obsidian(opts: il.Options, *, home: Path, platform: str,
 
     team_root = _resolve_root(opts.root)
     if team_root is None:
-        err("[error] --root <팀루트> 가 필요합니다(또는 팀 표식 있는 폴더에서 실행). "
-            "환경변수(TEAMMODE_HOME)는 읽지 않습니다.")
+        err("[error] --root <team-root> is required (or run inside a folder with a team "
+            "marker). Environment variables (TEAMMODE_HOME) are not read.")
         return 2
 
     memory_dir = team_root / "memory"
@@ -586,10 +587,10 @@ def register_obsidian(opts: il.Options, *, home: Path, platform: str,
         memory_dir, config_path=config_path, vault_id=vault_id, ts=now_ms)
 
     if res["registered"]:
-        out(f"[obsidian] 볼트 등록 완료 → {config_path} ({res['reason']}).")
-        out(f"[obsidian] memory/ 를 Obsidian 으로 열면 팀 메모리를 그대로 볼 수 있습니다.")
+        out(f"[obsidian] vault registered → {config_path} ({res['reason']}).")
+        out(f"[obsidian] open memory/ in Obsidian to browse team memory as-is.")
     else:
-        out(f"[obsidian] 등록 건너뜀 — {res['reason']} (비치명, install 계속).")
+        out(f"[obsidian] registration skipped — {res['reason']} (non-fatal, install continues).")
     return 0  # 비치명 — 항상 0
 
 
@@ -620,8 +621,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     # 팀 루트 (§10, P1 — env 불신뢰·추측 금지)
     team_root = _resolve_root(opts.root)
     if team_root is None:
-        err("[error] --root <팀루트> 가 필요합니다(또는 팀 표식 있는 폴더에서 실행). "
-            "환경변수(TEAMMODE_HOME)는 읽지 않습니다.")
+        err("[error] --root <team-root> is required (or run inside a folder with a team "
+            "marker). Environment variables (TEAMMODE_HOME) are not read.")
         return 2
 
     # ① preflight — 값 주입(호스트 직접 읽기 최소화)
@@ -629,7 +630,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     remote_authed = True  # detect 전 잠정. detect 후 실제 값으로 갱신·경고.
     pre = il.preflight(team_root, python_version, git_present, remote_authed)
     if not pre.ok:
-        err(f"[error] preflight 실패: {pre.message}")
+        err(f"[error] preflight failed: {pre.message}")
         return pre.exit_code
 
     # ② detect ③ role
@@ -637,7 +638,7 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     for w in pre.warnings:
         err(f"[warn] {w}")
     if not det["remote_authed"]:
-        err("[warn] git 원격 인증 미확인 — 로컬 L1 은 진행(협업 시 push/pull 막힘).")
+        err("[warn] git remote auth unverified — local L1 proceeds (push/pull will be blocked for collaboration).")
     # push-safe 이메일 점검(이슈 #23) — GH007 사전 경고(자동 변경 없음, 안내만).
     _warn_if_email_not_push_safe(det, team_root, err)
 
@@ -655,15 +656,15 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         _wire_agents = [a for a in opts.agents if a in _detected]
         _missing = [a for a in opts.agents if a not in _detected]
         for _ag in _missing:
-            err(f"[warn] --agent {_ag} 는 홈 디렉토리에서 감지되지 않아 제외합니다.")
+            err(f"[warn] --agent {_ag} not detected in the home directory — excluding it.")
     else:
         _wire_agents = _detected  # auto: 감지 전부
 
     # 계획 출력
     out(f"[plan] team_root={team_root}")
-    out(f"[plan] role={role} (team.name 기본='{team_name_default}')")
-    out(f"[plan] agents={_wire_agents or '(없음)'}")
-    out(f"[plan] member_name={member_name or '(미정)'}")
+    out(f"[plan] role={role} (team.name default='{team_name_default}')")
+    out(f"[plan] agents={_wire_agents or '(none)'}")
+    out(f"[plan] member_name={member_name or '(unset)'}")
 
     if opts.dry_run:
         # clone-and-go: dry-run 을 **동의 게이트**로 — 실호스트에 무엇을 쓸지
@@ -686,12 +687,12 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
             real_host_install=(bool(opts.yes) and opts.settings is None))
         for _line in il.render_install_plan(_plan, home=home):
             out(_line)
-        out("[dry-run] 변경 없음 — 계획만 출력했습니다(settings·memory·env 무접촉).")
+        out("[dry-run] no changes — plan only (settings/memory/env untouched).")
         return 0
 
     if not member_name:
-        err("[error] 멤버 이름을 정할 수 없습니다. --member-name <영문이름> 으로 "
-            "지정하세요(git user.name 도 없어 추측하지 않습니다).")
+        err("[error] cannot determine a member name. Set it with --member-name <name> "
+            "(git user.name is also absent, so no guessing).")
         return 3
 
     # 유사성 가드(시안 사태 방지): 기존 이름과 혼동될 만큼 비슷하면 거부.
@@ -699,9 +700,9 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     _members_file = team_root / "memory" / "team" / "members.md"
     _similar = il.find_similar_names(member_name, il._member_names(_members_file))
     if _similar:
-        err(f"[error] 멤버 이름 '{member_name}' 가 기존 {_similar} 와(과) 너무 비슷합니다 "
-            f"(AI 혼동 위험 — jonathan↔jonathon 사례). 더 구별되는 슬러그를 쓰세요 "
-            f"(예: Jonathan→jonathan). 정말 의도했다면 members.md 에 수동 등재하세요.")
+        err(f"[error] member name '{member_name}' is too similar to existing {_similar} "
+            f"(AI confusion risk — jonathan↔jonathon case). Use a more distinct slug "
+            f"(e.g. jonathan→jonathan). If truly intended, add it to members.md manually.")
         return 3
 
     # ④ scaffold (§4④·§5·§6, M1·M2·M4) — 멱등. 첫 세션로그 안 씀(M2).
@@ -713,22 +714,22 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
                            identity=det.get("git_user_email"),
                            member_role=opts.role)
     except il.InvalidNameError as e:
-        err(f"[error] 멤버 이름 거부: {e}")
+        err(f"[error] member name rejected: {e}")
         return 3
     except il.ConflictError as e:
-        err(f"[error] 이름 충돌(사람이 해소 필요): {e}")
+        err(f"[error] name conflict (needs human resolution): {e}")
         return 3
-    out(f"[scaffold] memory/ 구조·members.md 등재 완료 (role={role}).")
+    out(f"[scaffold] memory/ structure and members.md registration done (role={role}).")
     # 템플릿 추적: upstream remote 등록(없을 때만). tm-mode update 가 이걸 fetch 후 infra/ 동기화.
     # 레포 내 git 변경(scaffold 류)이라 --yes 게이트 무관 — dry-run 은 위에서 이미 return.
     if _ensure_upstream(team_root):
-        out(f"[upstream] 템플릿 추적 등록 — {UPSTREAM_REMOTE} → {UPSTREAM_URL}")
+        out(f"[upstream] template tracking registered — {UPSTREAM_REMOTE} → {UPSTREAM_URL}")
     # config.members 스키마 비치명 점검 (A2.1) — 위반은 [warn] 만, role 판정 무영향.
     _cfg_after = il.load_config(team_root)
     if isinstance(_cfg_after, dict) and not il.members_are_valid(
             _cfg_after.get("members")):
-        err("[warn] team.config.json 의 members 블록 형식이 스펙과 다릅니다 "
-            "(엔트리는 {name, role?} object). 설치는 진행 — role 판정엔 영향 없습니다.")
+        err("[warn] the members block in team.config.json does not match the spec "
+            "(each entry is a {name, role?} object). Install proceeds — no effect on role detection.")
 
     # ⑤ wire (§4⑤·§8, M5) — 감지된 에이전트마다 어댑터 install-mcp→sync→install-skills.
     # settings_override: --settings 지정 시 격리 경로. 미지정+실설치 의도면 실호스트.
@@ -736,8 +737,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     if settings_override is None and not opts.yes:
         # 실호스트 쓰기는 명시 의도(--settings 격리 또는 --yes 실설치)에서만(§10, P2 정신).
         # 무인 안전: --yes 없이 실 ~/.claude 에 쓰지 않는다.
-        out("[wire] 건너뜀 — 실호스트 배선은 --yes(실설치) 또는 --settings(격리) 필요. "
-            "스캐폴드는 완료(메모리는 준비됨).")
+        out("[wire] skipped — real-host wiring needs --yes (real install) or --settings "
+            "(isolated). Scaffold is done (memory is ready).")
         return 0
     wire = il.wire_agents(
         _wire_agents, home=home, settings_override=settings_override,
@@ -747,16 +748,16 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         out(m)
     if not wire.ok:
         for agent, why in wire.failed:
-            err(f"[error] wire 실패: {agent} — {why}")
+            err(f"[error] wire failed: {agent} — {why}")
         return wire.exit_code  # 부분 실패 exit 3, 성공분은 롤백 안 함(M5)
 
     # wire 성공한 에이전트 집합을 team.config.json 에 기록 → on/off 가 재감지 없이 읽는다.
     if wire.wired:
         try:
             if il.write_agents_to_config(team_root, wire.wired):
-                out(f"[config] agents={wire.wired} → team.config.json 기록")
+                out(f"[config] agents={wire.wired} → recorded in team.config.json")
         except Exception as _e:
-            err(f"[warn] agents config 기록 실패(비치명): {_e}")
+            err(f"[warn] failed to record agents config (non-fatal): {_e}")
 
     # settings.json env 에 TEAMMODE_MEMBER·TEAMMODE_HOME 주입 — 가드훅(kb-write-guard)
     # 의 본인 판정 단일 소스 + 훅 팀루트(issue #9b). 셸 프로파일과 달리 settings.json
@@ -775,8 +776,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
                 out(f"[env] settings.json: TEAMMODE_MEMBER={member_name}, "
                     f"TEAMMODE_HOME={team_root}")
         except Exception as e:
-            err(f"[warn] settings.json env(TEAMMODE_MEMBER·TEAMMODE_HOME) "
-                f"주입 실패(비치명): {e}")
+            err(f"[warn] failed to inject settings.json env "
+                f"(TEAMMODE_MEMBER/TEAMMODE_HOME) (non-fatal): {e}")
 
     # ⑥ env 주입 (§9, m2) — 런타임 훅용 TEAMMODE_HOME 을 셸 프로파일에 멱등 1줄.
     # 셸은 $SHELL 에서(주입). 미지원/미감지 셸은 경고만(비치명 — L1 핵심은 메모리+훅).
@@ -784,29 +785,29 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     #   --settings 가 env 격리의 권위: --yes 와 같이 와도 격리 우선(실 프로파일 미접촉).
     #   실 env 주입은 --settings 없는 실설치(--yes)에서만(훅이 TEAMMODE_HOME 찾으려면 필요).
     if settings_override is not None:
-        out("[env] 건너뜀 — 격리 모드(--settings): 실 호스트 env(셸 프로파일/레지스트리) "
-            f"무접촉. 필요시 수동 설정: {il.ENV_VAR}={team_root}")
+        out("[env] skipped — isolated mode (--settings): real host env (shell profile/registry) "
+            f"untouched. Set manually if needed: {il.ENV_VAR}={team_root}")
     elif il.is_windows(platform):
         # Windows: 셸 프로파일이 아니라 setx 로 영구 user env(HKCU\Environment).
         env_res = il.inject_env(shell, home, team_root, platform=platform)
         if env_res["injected"]:
-            out(f"[env] {il.ENV_VAR} 영구 user env 주입(setx, {env_res['profile']}). "
-                "새 터미널/세션부터 반영됩니다.")
+            out(f"[env] {il.ENV_VAR} injected into persistent user env (setx, {env_res['profile']}). "
+                "Takes effect from new terminals/sessions.")
         else:
-            out(f"[env] 건너뜀 — {env_res['reason']}. 런타임 훅이 팀루트를 "
-                f"못 찾을 수 있으니 수동 설정 권장: setx {il.ENV_VAR} \"{team_root}\"")
+            out(f"[env] skipped — {env_res['reason']}. Runtime hooks may not find the team "
+                f"root, so setting it manually is recommended: setx {il.ENV_VAR} \"{team_root}\"")
     elif shell:
         env_res = il.inject_env(shell, home, team_root, platform=platform)
         if env_res["injected"]:
-            out(f"[env] {env_res['profile']} 에 {il.ENV_VAR} 주입 "
+            out(f"[env] injected {il.ENV_VAR} into {env_res['profile']} "
                 f"({env_res['reason']}).")
         elif env_res["profile"]:
-            out(f"[env] {il.ENV_VAR} 이미 설정됨({env_res['reason']}).")
+            out(f"[env] {il.ENV_VAR} already set ({env_res['reason']}).")
         else:
-            out(f"[env] 건너뜀 — {env_res['reason']}. 런타임 훅이 팀루트를 "
-                f"못 찾을 수 있으니 수동 설정 권장: {il.ENV_VAR}={team_root}")
+            out(f"[env] skipped — {env_res['reason']}. Runtime hooks may not find the team "
+                f"root, so setting it manually is recommended: {il.ENV_VAR}={team_root}")
     else:
-        out(f"[env] 셸 미감지 — 수동 설정 권장: {il.ENV_VAR}={team_root}")
+        out(f"[env] no shell detected — set manually if needed: {il.ENV_VAR}={team_root}")
 
     # ⑦ verify (§4⑦·B1) — 설치가 정상인지 context --json 으로 확인한다. **팀모드는 켜지
     # 않는다**(on 미호출, 설치 ≠ 활성화). 활성화는 사용자 몫이고, verify 의 on 은
@@ -815,12 +816,12 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
     # (state=off 가 정상). ※ 실제 맥락 *주입*은 다음 세션 SessionStart 훅이 한다(여기 아님).
     res_ctx = _engine_capture(["context", "--root", str(team_root), "--json"])
     if res_ctx.returncode != 0:
-        err(f"[error] verify: tm-mode context 실패(rc={res_ctx.returncode}).")
+        err(f"[error] verify: tm-mode context failed (rc={res_ctx.returncode}).")
         return 3
     try:
         ctx = json.loads(res_ctx.stdout)
     except (ValueError, json.JSONDecodeError):
-        err("[error] verify: context --json 출력이 JSON 이 아닙니다.")
+        err("[error] verify: context --json output is not JSON.")
         return 3
     out(_i18n.t("verify_ok", _i18n.resolve_lang(det.get("locale")),
                 n=len(ctx.get("members", []))))
@@ -844,27 +845,27 @@ usage: install.py [--root PATH] [--member-name NAME] [--role TEXT]
                   [--uninstall]
                   [--<agent> sync|uninstall [--settings PATH] [--install]]
 
-teammode 결정적 부트스트랩 + 어댑터 디스패처.
+teammode deterministic bootstrap + adapter dispatcher.
 
-주요 플래그:
-  --root PATH          팀 루트 경로 (필수; env 무신뢰)
-  --member-name NAME   세션로그 author 영문 이름
-  --team-name NAME     init 위저드 팀명 (team.name·배너·배지 소스)
-  --role-intent ROLE   도입자/멤버 확정 (introducer|member; init/join 이 자동 지정)
-  --role TEXT          직책/직군 (예: 팀장/개발)
-  --yes                실 ~/.claude/settings.json 배선 허용 (실설치)
-  --settings PATH      격리 settings 경로 (테스트·CI)
-  --dry-run            변경 없이 계획만 출력
-  --update             infra/ 파일을 upstream(tm-mode)으로 동기화
-  --register-obsidian  memory/ 를 Obsidian 볼트로 등록 (opt-in)
-  --uninstall          install 이 호스트에 더한 것을 역순 제거
+Main flags:
+  --root PATH          team-root path (required; env not trusted)
+  --member-name NAME   session-log author name
+  --team-name NAME     init wizard team name (source of team.name/banner/badge)
+  --role-intent ROLE   introducer/member decision (introducer|member; set by init/join)
+  --role TEXT          role/title (e.g. lead/dev)
+  --yes                allow wiring into real ~/.claude/settings.json (real install)
+  --settings PATH      isolated settings path (test/CI)
+  --dry-run            print the plan only, no changes
+  --update             sync infra/ files from upstream (tm-mode)
+  --register-obsidian  register memory/ as an Obsidian vault (opt-in)
+  --uninstall          reverse what install added to the host
 
-에이전트 디스패치 (예: --claude sync):
-  --<agent> sync [--on|--off]   에이전트 훅 on/off
-  --<agent> uninstall           에이전트 훅 제거
-  플래그로 --settings <격리경로> 또는 --install(실설치) 중 하나 필요.
+Agent dispatch (e.g. --claude sync):
+  --<agent> sync [--on|--off]   turn agent hooks on/off
+  --<agent> uninstall           remove agent hooks
+  Requires either --settings <isolated-path> or --install (real install) as a flag.
 
-자세한 내용: docs/spec/ 참조.
+Details: see docs/spec/.
 """
 
 
@@ -893,7 +894,7 @@ def main(argv=None) -> int:
     # sync/uninstall 동사가 있으면 디스패치 의도였으나 에이전트 미지정 → 안내.
     if any(a in ("sync", "uninstall") for a in argv):
         avail = sorted(p.name for p in AGENTS.iterdir() if p.is_dir())
-        print(f"[error] 에이전트를 지정하세요: --<agent>. 사용 가능: {avail}",
+        print(f"[error] specify an agent: --<agent>. Available: {avail}",
               file=sys.stderr)
         return 2
 

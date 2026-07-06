@@ -171,7 +171,7 @@ def test_dry_run_cli_prints_plan_and_touches_nothing(tmp_path, monkeypatch):
     # 기존 계약: 무접촉
     assert not (team / "memory").exists()
     assert not (team / "team.config.json").exists()
-    assert "[dry-run] 변경 없음" in text
+    assert "[dry-run] no changes" in text
 
 
 # ── codex 적대검수 반영 (P2·P3×3) ───────────────────────────────────
@@ -267,5 +267,5 @@ def test_dry_run_without_yes_is_honest_about_skips(tmp_path, monkeypatch):
                            "--member-name", "alice"]),
             home=home, python_version=(3, 12))
     assert rc == 0
-    assert "미주입" in buf.getvalue(), (
+    assert "not injected" in buf.getvalue(), (
         "--yes 없는 dry-run 이 실호스트 env 주입처럼 렌더됨(정직성 위반)")

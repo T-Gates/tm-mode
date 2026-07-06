@@ -145,21 +145,21 @@ def preflight(team_root: Path, python_version, git_present: bool,
     if tuple(python_version) < tuple(MIN_PYTHON):
         return PreflightResult(
             ok=False, exit_code=2,
-            message=f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ 필요 "
-                    f"(현재 {python_version[0]}.{python_version[1]}).")
+            message=f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ required "
+                    f"(current {python_version[0]}.{python_version[1]}).")
     if not git_present:
         return PreflightResult(
             ok=False, exit_code=2,
-            message="git 바이너리가 필요합니다(메모리가 git 기반).")
+            message="the git binary is required (memory is git-based).")
     if not has_team_marker(team_root):
         return PreflightResult(
             ok=False, exit_code=2,
-            message=f"팀 레포 표식(.git/team.config.json/memory)을 {team_root} 에서 "
-                    f"찾지 못했습니다. install.py 는 팀 레포 안에서 실행돼야 합니다.")
+            message=f"no team-repo marker (.git/team.config.json/memory) found "
+                    f"at {team_root}. install.py must run inside a team repo.")
     warnings = []
     if not remote_authed:
-        warnings.append("git 원격 인증이 없습니다 — 로컬 L1 은 진행하나 "
-                        "push/pull 시점에 막힙니다(협업 시 인증 필요).")
+        warnings.append("no git remote authentication — local L1 proceeds but "
+                        "push/pull will be blocked (auth needed to collaborate).")
     return PreflightResult(ok=True, exit_code=0, warnings=warnings)
 
 
@@ -331,7 +331,7 @@ def upsert_member_role(team_root: Path, name: str, role=None) -> dict:
     validate_name(name)  # traversal/선두dash 즉시 거부(타 키와 동일 footgun 가드)
     if role is not None and isinstance(role, str) and _role_has_control_char(role):
         # role 개행·제어문자 거부(P2-1) — context 줄 위조를 config 진입에서 차단.
-        raise InvalidNameError(f"role 에 개행·제어문자가 포함될 수 없습니다: {role!r}")
+        raise InvalidNameError(f"role must not contain newline/control characters: {role!r}")
     cfg_path = team_root / "team.config.json"
     cfg = load_config(team_root)
     if not isinstance(cfg, dict):
@@ -615,9 +615,9 @@ def register_member(members_file: Path, name: str, identity=None) -> bool:
         # 둘 다 식별자가 있고 서로 다르면 = 다른 사람이 같은 이름 점유(I8).
         if identity and existing_id and identity != existing_id:
             raise ConflictError(
-                f"members.md 의 '{name}' 는 다른 식별자({existing_id})로 등재돼 "
-                f"있습니다. 당신({identity})과 충돌 — --member-name 으로 다른 이름을 "
-                f"쓰거나 사람이 해소하세요.")
+                f"'{name}' in members.md is already registered under a different "
+                f"identity ({existing_id}). Conflicts with you ({identity}) — use "
+                f"--member-name with a different name, or resolve it manually.")
         return False  # 멱등 — 동일인 재설치/다른 머신(M4)
     suffix = f"  <!-- id: {identity} -->" if identity else ""
     with members_file.open("a", encoding="utf-8") as f:
@@ -974,17 +974,17 @@ def wire_agents(agents, *, home: Path, settings_override=None,
     어느 어댑터에도 넘기지 않는다(하위호환).
     """
     if run_adapter is None:
-        raise ValueError("run_adapter 콜러블이 필요합니다(부작용 추상화).")
+        raise ValueError("a run_adapter callable is required (abstracts side effects).")
     # 명시 team_root 가 빈 문자열/공백이면 조용히 "." 로 변질되지 않도록 거부.
     if team_root is not None and str(team_root).strip() == "":
         raise ValueError(
-            "wire_agents: team_root 에 빈 문자열/공백을 지정할 수 없습니다. "
-            "생략하거나 유효한 절대경로를 전달하세요."
+            "wire_agents: team_root cannot be an empty/whitespace string. "
+            "Omit it or pass a valid absolute path."
         )
     res = WireResult(ok=True, exit_code=0)
     for agent in agents:
         if agent not in _AGENT_WIRE:
-            res.failed.append((agent, "지원하지 않는 에이전트"))
+            res.failed.append((agent, "unsupported agent"))
             res.ok = False
             continue
         spec = _AGENT_WIRE[agent]
@@ -1012,9 +1012,9 @@ def wire_agents(agents, *, home: Path, settings_override=None,
                 res.ok = False
                 res.failed.append((agent, f"install-mcp rc={rc_mcp}"))
                 res.messages.append(
-                    f"[wire] {agent} install-mcp 실패(rc={rc_mcp}) — sync 생략, 다른 배선은 계속")
+                    f"[wire] {agent} install-mcp failed (rc={rc_mcp}) — skipping sync, other wiring continues")
                 continue
-            res.messages.append(f"[wire] {agent} MCP 등록 동기화 완료")
+            res.messages.append(f"[wire] {agent} MCP registration synced")
             # ② sync --on (§2.7) — 훅 등록. MCP 매처는 install-mcp 선행 상태로 별칭 보장.
             #    sync 도 빈 슬롯 우선 규칙(§2.9)·install-mcp 선행 판정에 services 가 필요 →
             #    같은 팀 config 경로 전달. 단 MCP 별칭 보장 판정은 sync 가 ~/.claude.json(claude)
@@ -1023,9 +1023,9 @@ def wire_agents(agents, *, home: Path, settings_override=None,
             if rc != 0:
                 res.ok = False
                 res.failed.append((agent, f"sync rc={rc}"))
-                res.messages.append(f"[wire] {agent} 실패(rc={rc}) — 다른 배선은 계속")
+                res.messages.append(f"[wire] {agent} failed (rc={rc}) — other wiring continues")
                 continue
-            res.messages.append(f"[wire] {agent} 훅 동기화 완료 → {path}")
+            res.messages.append(f"[wire] {agent} hooks synced → {path}")
             # ③ install-skills (§2.7 L2-C) — 스킬 디렉토리에 심링크(폴백 복사). 동사별
             #    게이트(--skills-dir <격리/실 경로>)를 cfg_extra 와 함께 전달 — sync 의 settings
             #    경로 암묵 재활용 금지. 각 어댑터가 자기 스킬경로(claude=~/.claude/skills,
@@ -1036,16 +1036,16 @@ def wire_agents(agents, *, home: Path, settings_override=None,
             rc_sk = run_adapter(agent, "install-skills", spec["flag"], path, skills_extra)
             if rc_sk == 0:
                 res.wired.append(agent)
-                res.messages.append(f"[wire] {agent} 스킬 심링크 완료 → {skills[1]}")
+                res.messages.append(f"[wire] {agent} skills symlinked → {skills[1]}")
             else:
                 res.ok = False
                 res.failed.append((agent, f"install-skills rc={rc_sk}"))
                 res.messages.append(
-                    f"[wire] {agent} install-skills 실패(rc={rc_sk}) — 다른 배선은 계속")
+                    f"[wire] {agent} install-skills failed (rc={rc_sk}) — other wiring continues")
         except Exception as e:  # noqa: BLE001 — 한 에이전트 실패가 전체를 막지 않게(M5)
             res.ok = False
             res.failed.append((agent, str(e)))
-            res.messages.append(f"[wire] {agent} 예외: {e} — 다른 배선은 계속")
+            res.messages.append(f"[wire] {agent} exception: {e} — other wiring continues")
     if not res.ok:
         res.exit_code = 3  # 부분 실패 → exit 3(어느 에이전트가 막혔는지 호출부가 출력)
     return res
@@ -1104,13 +1104,13 @@ def inject_env_windows(team_root: Path, *, runner=None) -> dict:
                   capture_output=True, text=True,
                   encoding="utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001 — setx 부재 등은 비치명(L1 핵심은 메모리+훅)
-        return {"injected": False, "reason": f"setx 실행 실패: {e}",
+        return {"injected": False, "reason": f"setx failed to run: {e}",
                 "profile": None}
     if getattr(res, "returncode", 1) != 0:
         return {"injected": False,
-                "reason": f"setx 비정상 종료(rc={getattr(res, 'returncode', '?')})",
+                "reason": f"setx exited abnormally (rc={getattr(res, 'returncode', '?')})",
                 "profile": None}
-    return {"injected": True, "reason": "setx 영구 user env 주입(HKCU\\Environment)",
+    return {"injected": True, "reason": "setx wrote a persistent user env (HKCU\\Environment)",
             "profile": f"HKCU\\Environment\\{ENV_VAR}"}
 
 
@@ -1176,7 +1176,7 @@ def inject_env(shell: str, home: Path, team_root: Path,
         return inject_env_windows(team_root, runner=runner)
     profile = profile_path_for(shell, home)
     if profile is None:
-        return {"injected": False, "reason": f"미지원 셸: {shell}",
+        return {"injected": False, "reason": f"unsupported shell: {shell}",
                 "profile": None}
     new_line = _env_line(shell, team_root)
     profile.parent.mkdir(parents=True, exist_ok=True)
@@ -1190,19 +1190,19 @@ def inject_env(shell: str, home: Path, team_root: Path,
         idx = marker_idx[0]
         # 마커 라인이 2개 이상이면 첫 줄만 남기고 정리(과거 버그 방어).
         if lines[idx] == new_line and len(marker_idx) == 1:
-            return {"injected": False, "reason": "이미 최신(멱등)",
+            return {"injected": False, "reason": "already up to date (idempotent)",
                     "profile": str(profile)}
         # 모든 마커 라인 제거 후 새 라인 1개만
         lines = [ln for i, ln in enumerate(lines) if i not in marker_idx]
         lines.append(new_line)
         profile.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return {"injected": True, "reason": "갱신(팀루트 변경)",
+        return {"injected": True, "reason": "updated (team root changed)",
                 "profile": str(profile)}
 
     # 신규 주입 — 끝에 1줄 append(기존 내용 보존)
     body = existing if existing.endswith("\n") or existing == "" else existing + "\n"
     profile.write_text(body + new_line + "\n", encoding="utf-8")
-    return {"injected": True, "reason": "신규 주입", "profile": str(profile)}
+    return {"injected": True, "reason": "newly injected", "profile": str(profile)}
 
 
 # ─────────────────────────── Obsidian 볼트 등록 (spec/05, opt-in) ───────────────────────────
@@ -1313,7 +1313,7 @@ def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
         # 미설치 판정: obsidian.json 부모 디렉토리 부재 → skip(생성 안 함).
         if not config_path.parent.is_dir():
             return {"registered": False,
-                    "reason": "Obsidian 미설치(설정 디렉토리 부재) — skip"}
+                    "reason": "Obsidian not installed (config directory absent) — skip"}
 
         # 볼트화(.obsidian/) — 부수효과지만 등록의 일부.
         ensure_obsidian_vault(memory_dir)
@@ -1328,30 +1328,30 @@ def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
             except (ValueError, OSError):
                 # 깨진 설정 — 우리가 덮어쓰면 사용자 데이터 손실 위험. 비치명 skip.
                 return {"registered": False,
-                        "reason": "obsidian.json 파싱 실패 — 안전을 위해 skip"}
+                        "reason": "failed to parse obsidian.json — skipping to be safe"}
             # 유효 JSON 이나 object 가 아님(최상위 배열 등) → broken 과 동일 skip.
             # 폐기·덮어쓰기(clobber) 금지 — data-loss 비대칭 제거.
             if not isinstance(loaded, dict):
                 return {"registered": False,
-                        "reason": "obsidian.json 이 object 가 아님 — 안전을 위해 skip"}
+                        "reason": "obsidian.json is not an object — skipping to be safe"}
             data = loaded
 
         vaults = data.get("vaults", {})
         # vaults 가 dict 가 아니면(예: list) 사용자 데이터일 수 있음 → broken 과 동일 skip.
         if not isinstance(vaults, dict):
             return {"registered": False,
-                    "reason": "obsidian.json 의 vaults 가 dict 가 아님 — 안전을 위해 skip"}
+                    "reason": "vaults in obsidian.json is not a dict — skipping to be safe"}
 
         # 멱등: 같은 path 이미 등록 → skip(중복 0, clobber 0).
         for v in vaults.values():
             if isinstance(v, dict) and v.get("path") == target_path:
-                return {"registered": False, "reason": "이미 등록됨(멱등) — skip"}
+                return {"registered": False, "reason": "already registered (idempotent) — skip"}
 
         # clobber 방어: 주입된 vault_id 가 *다른 path* 의 기존 항목과 충돌하면
         # 그 볼트를 덮어쓰지 않는다(랜덤 16hex 라 실질 0확률이지만 방어). skip.
         if vault_id in vaults:
             return {"registered": False,
-                    "reason": "vault_id 충돌(기존 다른 볼트) — clobber 방지 skip"}
+                    "reason": "vault_id collision (existing different vault) — skip to avoid clobber"}
 
         # 신규 항목 merge(기존 전부 보존).
         vaults[vault_id] = {"path": target_path, "ts": ts, "open": False}
@@ -1360,10 +1360,10 @@ def register_obsidian_vault(memory_dir: Path, *, config_path: Path,
         _atomic_write_text(
             config_path,
             json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        return {"registered": True, "reason": "등록 완료(merge)",
+        return {"registered": True, "reason": "registered (merge)",
                 "vault_id": vault_id, "path": target_path}
     except Exception as e:  # noqa: BLE001 — 어떤 경우도 install 흐름 안 막음(비치명)
-        return {"registered": False, "reason": f"비치명 오류 — skip: {e}"}
+        return {"registered": False, "reason": f"non-fatal error — skip: {e}"}
 
 
 # ─────────────────────────── 호스트 되돌리기 (install.py --uninstall, 신규) ───────────────────────────
@@ -1499,10 +1499,10 @@ def plan_install(*, team_root, agents, member_name, role, team_name_default,
 
     member_disp = member_name or "<member>"
     plan.repo_writes = [
-        f"memory/ scaffold — INDEX.md · team/members.md 등재 · "
-        f"team/sessions/{member_disp}/ · banner.txt (멱등)",
-        "team.config.json 생성/멤버 upsert",
-        "git remote 'upstream' 등록 — 템플릿 추적(tm-mode update 용, 없을 때만)",
+        f"memory/ scaffold — INDEX.md · register in team/members.md · "
+        f"team/sessions/{member_disp}/ · banner.txt (idempotent)",
+        "create team.config.json / upsert member",
+        "register git remote 'upstream' — template tracking (for tm-mode update, only if absent)",
     ]
 
     for agent in agents:
@@ -1539,7 +1539,7 @@ def plan_install(*, team_root, agents, member_name, role, team_name_default,
                 item["matcher"] = entry["match"]
             plan.hooks.append(item)
     except (OSError, ValueError):
-        plan.hooks = [{"event": "(manifest 읽기 실패)", "script": "(알 수 없음)"}]
+        plan.hooks = [{"event": "(failed to read manifest)", "script": "(unknown)"}]
 
     profile = profile_path_for(shell, home) if shell else None
     plan.env = {
@@ -1554,19 +1554,19 @@ def plan_install(*, team_root, agents, member_name, role, team_name_default,
 
     plan.autopush = {
         "enabled_on_yes": bool(real_host_install),
-        "condition": "--yes(실설치)이고 --settings 격리가 아닐 때",
-        "note": "scaffold 변경 자동 커밋 + push 시도 — push 실패는 비치명"
-                "(sync-warning 가시화)",
+        "condition": "when --yes (real install) and not --settings isolation",
+        "note": "auto-commit scaffold changes + attempt push — push failure is non-fatal"
+                " (surfaced as a sync-warning)",
     }
 
     if "codex" in agents:
-        plan.trust_note = ("Codex 훅 배선 후 TUI 를 한 번 열어 Trust 필요"
-                           "(trusted hash 직접 주입 없음 — 사람 결정)")
+        plan.trust_note = ("after Codex hooks are wired, open the TUI once to grant Trust"
+                           " (no direct trusted-hash injection — human decision)")
 
     if not member_name:
-        plan.member_blocker = ("member_name 미정 — 실설치(--yes) 전 "
-                               "--member-name <영문이름> 지정 필요"
-                               "(git user.name 부재 시 추측하지 않음)")
+        plan.member_blocker = ("member_name unset — set --member-name <name> "
+                               "before a real install (--yes) "
+                               "(no guessing when git user.name is absent)")
     return plan
 
 
@@ -1581,27 +1581,27 @@ def render_install_plan(plan: InstallPlan, *, home) -> list:
             return str(p)
 
     lines = []
-    lines.append("[plan/repo] 레포 안 쓰기(팀 자산):")
+    lines.append("[plan/repo] writes inside the repo (team assets):")
     for w in plan.repo_writes:
         lines.append(f"  - {w}")
-    lines.append("[plan/host] 실호스트 파일(에이전트 배선 대상):")
+    lines.append("[plan/host] real host files (agent wiring targets):")
     for h in plan.host_paths:
         lines.append(f"  - {h['agent']}: settings={_abbr(h['settings'])} · "
                      f"mcp={_abbr(h['mcp'])} · skills={_abbr(h['skills'])}")
     for w in plan.wire_steps:
         lines.append(f"[plan/wire] {w['agent']}: {' → '.join(w['steps'])}")
-    lines.append("[plan/hooks] 배선될 훅(이 레포의 infra/hooks/):")
+    lines.append("[plan/hooks] hooks to be wired (from this repo's infra/hooks/):")
     for hk in plan.hooks:
         lines.append(f"  - {hk.get('event','')}: {hk.get('script','')}")
     env = plan.env
-    skip = " (격리/비실설치 — 실호스트 env 미주입)" if env.get(
+    skip = " (isolated/non-real-install — real host env not injected)" if env.get(
         "real_host_env_skipped") else ""
     lines.append(f"[plan/env] TEAMMODE_HOME={_abbr(env.get('TEAMMODE_HOME',''))} · "
                  f"TEAMMODE_MEMBER={env.get('TEAMMODE_MEMBER','')} · "
-                 f"profile={_abbr(env['profile']) if env.get('profile') else '(셸 미감지)'}"
+                 f"profile={_abbr(env['profile']) if env.get('profile') else '(no shell detected)'}"
                  f"{skip}")
     ap = plan.autopush
-    lines.append(f"[plan/autopush] {ap.get('note','')} — 조건: {ap.get('condition','')}")
+    lines.append(f"[plan/autopush] {ap.get('note','')} — condition: {ap.get('condition','')}")
     if plan.trust_note:
         lines.append(f"[plan/trust] {plan.trust_note}")
     if plan.member_blocker:

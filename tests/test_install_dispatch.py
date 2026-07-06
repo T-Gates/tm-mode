@@ -26,7 +26,7 @@ def _run_dispatch(argv):
 def test_dispatch_unknown_agent_errors(capsys):
     rc = _run_dispatch(["sync", "--on"])  # 에이전트 플래그 없음
     assert rc == 2
-    assert "에이전트를 지정" in capsys.readouterr().err
+    assert "specify an agent" in capsys.readouterr().err
 
 
 def test_dispatch_claude_sync_writes_settings(tmp_path):
