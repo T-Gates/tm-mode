@@ -8,7 +8,7 @@
 
 ### 입력 형태 판정 — URL 로 왔는가, 레포 안인가
 
-- **tm-mode 제품 URL**(github.com/T-Gates/tm-mode)과 함께 "세팅해줘"로 왔고 현재 폴더가 팀 레포가 아니면 → 제품 README 의 **"For AI agents: setup instructions"** 절차를 따른다(새 팀 vs 합류 한 번 묻기 → 해당 install.sh 명령 실행 → 승인 게이트 준수).
+- **tm-mode 제품 URL**(github.com/T-Gates/tm-mode)과 함께 "세팅해줘"로 왔고 현재 폴더가 팀 레포가 아니면 → 제품 README 의 **"For AI agents: setup instructions"** 절차를 따른다(새 팀 vs 합류 한 번 묻기 → 레포 확보(clone / gh template) → `python3 infra/install.py --root . --dry-run --yes` 계획 → 승인 후 `--dry-run`만 뗀 실설치). ⚠️ `curl | sh` 원라이너는 **사람 터미널용** — 에이전트는 사용 금지(비대화 실행은 계획·승인 게이트 없이 설치된다, README 동일 경고).
 - **팀 레포 URL**(tm-mode 파생 팀)과 함께 왔으면 → `git clone <url> ~/teammode/<repo>` 후(이미 있으면 사용자 확인) 그 폴더에서 아래 "설치 상태 판정 → bootstrap"을 그대로 수행한다. clone 실패(권한/URL)는 그대로 알리고 멈춘다 — bootstrap 의 dry-run 승인 게이트가 유일한 쓰기 관문이다.
 - URL 없이 팀 레포 **안에서** 요청받았으면(클론된 상태) → 바로 아래 판정.
 
