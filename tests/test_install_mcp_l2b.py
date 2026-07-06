@@ -471,14 +471,14 @@ def test_codex_install_mcp_reflects_official_command(tmp_path):
 
 
 def test_codex_install_mcp_no_launch_data_is_placeholder(tmp_path):
-    """codex: command/path 없음 → command 행 없이 placeholder TOML 블록."""
+    """codex: command/path 없음 → 실 TOML 블록 금지, 주석 placeholder(P1 벽돌화 방지)."""
     pd = _providers_dir_with(tmp_path, "linear", {"source": "official"})
     root = _scaffold(tmp_path, LINEAR_CONNECTED)
     out = _codex_pd(root, tmp_path, pd).install_mcp()
     txt = Path(tmp_path / "codex.config.toml").read_text()
-    assert "[mcp_servers.tm-linear]" in txt
+    assert "[mcp_servers.tm-linear]" not in txt      # 실블록 금지 — codex 벽돌화(P1)
+    assert "# [tm-placeholder] linear — 테스트 팩" in txt
     assert "command =" not in txt                        # 추측 커맨드 없음
-    assert "_register_hint = '테스트 팩'" in txt
     assert any("연결되지 않" in c for c in out)  # placeholder 비동작 정직 표면화(P2-a)
 
 

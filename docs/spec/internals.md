@@ -333,7 +333,7 @@ adapter.py [global-options] install-skills      # infra/skills/base/* 설치
 
 `install-mcp`는 L2 등록기의 배선 동사다 — 팀이 고른 **공식(없으면 자작) 벤더 MCP를 마련하고 그 정규 서버명 alias를 에이전트 설정에 등록**한다. tm-mode는 여기서 끝이고, 동작(이슈 생성·일정 추가)은 AI가 등록된 `mcp__<alias>__<벤더도구>`를 직접 호출한다 — install-mcp가 동작을 래핑하거나 `role_server`로 중계하지 않는다.
 
-현 구현의 `install-mcp`는 실제 MCP 서버 실행 command를 placeholder에만 담고 직접 제작하지는 않는다(0.2 한계). 계약은 **연결된 provider의 정규 서버명 alias가 에이전트 설정에 teammode 관리 항목으로 존재하도록 보장**하는 데 있다. 실행 가능한 MCP 서버 정의는 provider 팩의 `mcp.register_hint`가 안내하며, 그 보강(공식 MCP를 본 레포로 가져와 두거나 자작)은 L2 등록기/connect 계층(§5.4)이 채운다.
+현 구현의 `install-mcp`는 MCP 서버를 직접 제작하지 않는다(0.2 한계). 계약은 **실 기동 데이터(url/command)가 있는 provider 의 alias 를 에이전트 설정에 teammode 관리 항목으로 보장**하는 데 있다. 기동 데이터 없는 provider 는 alias 를 보장하지 않는다 — Codex 는 주석 placeholder(§2.8-3), Claude 는 비동작 표식 entry 로 기록하고 '연결되지 않음'을 정직하게 안내한다. 실행 가능한 MCP 서버 정의는 provider 팩의 `mcp.register_hint`가 안내하며, 그 보강(공식 MCP를 본 레포로 가져와 두거나 자작)은 L2 등록기/connect 계층(§5.4)이 채운다.
 
 **공식/자작 분기.** install-mcp는 등록만 책임지고 **마련**(공식 가져오기 / 자작)은 connect 계층(§skills 5.4)에서 일어난다 — 단 install-mcp는 두 경로의 산출물을 **동일하게** 다룬다. 공식 MCP든 자작 MCP든 본 레포 `infra/mcp/<provider>/`에 코드+실행 메타로 놓이고, 정규 서버명(`resolve_server_alias(provider)`)으로 같은 alias 등록을 받는다. install-mcp에 "자작이라 다르게" 처리하는 분기는 없다.
 
@@ -380,16 +380,14 @@ Codex 구현(`~/.codex/config.toml` shape):
 
 1. MCP 등록은 `--config` 파일 안의 `# teammode-mcp-start` / `# teammode-mcp-end` 블록으로만 관리한다. 별도 `--mcp-config`는 없다.
 2. `_read_mcp_servers()`는 이 블록 안의 `[mcp_servers.<name>]` header만 regex로 읽어 `{name: {"_teammode_managed": True}}`처럼 반환한다.
-3. 등록 블록 entry는 다음 TOML placeholder다. 섹션 키는 별칭(`tm-<provider>`)이고 `_canonical_server`에는 정규 서버명을 담는다.
+3. 실 기동 데이터(호스티드 `url` 또는 `command`/`args`)가 있는 provider 만 실 `[mcp_servers.tm-<provider>]` 테이블로 등록한다(섹션 키=별칭, `_canonical_server`=정규 서버명). **기동 데이터 없는 provider(placeholder)는 실 테이블 금지 — 마커 블록 안 주석 한 줄로만 남긴다**:
    ```toml
-   [mcp_servers.tm-<provider>]
-   _teammode_managed = true
-   _canonical_server = '<provider>'
-   _register_hint = '<provider pack mcp.register_hint>'
+   # [tm-placeholder] <provider> — <provider pack mcp.register_hint>
    ```
-4. provider가 하나 이상 있으면 전체 teammode MCP 블록을 렌더해 기존 블록을 교체하거나 파일 끝에 append한다. write가 일어나면 `[mcp] <alias> 등록`을 alias마다 반환하고, 바이트 동일이면 `[ok] 변경 없음 (<n>개 provider 등록됨)`을 반환한다.
+   근거(P1, 2026-07-06 실기 확정): command/url 없는 실 테이블은 Codex CLI 가 config 로드 전체를 fatal 거부("invalid transport") → 세션 기동 불가·훅 전멸. 주석형은 재렌더 관리·stale 제거(#3 경로) 계약을 그대로 유지하되, alias 보장(`_read_mcp_servers`)에는 잡히지 않는다 — sync 는 `[warn] MCP 별칭 미보장` 으로 정직하게 생략(비동작 placeholder 를 보장으로 위장하지 않음).
+4. provider가 하나 이상 있으면 전체 teammode MCP 블록을 렌더해 기존 블록을 교체하거나 파일 끝에 append한다. write가 일어나면 `[mcp] <alias> 등록`(실등록) / `[mcp] <alias> placeholder 기록(주석 …)`을 alias마다 반환하고, 바이트 동일이면 `[ok] 변경 없음 (실등록 n개[, placeholder n개 — 연결되지 않음])`을 반환한다.
 5. provider가 하나도 없으면 기존 teammode MCP 블록만 제거한다. 블록이 없으면 파일을 touch하지 않고 `[info] 연결된 MCP provider 없음 (빈 슬롯)`을 반환한다.
-6. 한계: 이 placeholder에는 `command`/`args`가 없다. Codex 런타임이 실제 MCP 서버로 기동하려 하면 에러가 날 수 있다. 현 계약은 sync가 참조할 alias 슬롯 보장까지다.
+6. (구 한계 조항 대체) placeholder 는 3의 주석형으로만 존재하므로 Codex 런타임 기동 에러 자체가 불가능하다. alias 슬롯 보장은 실 등록 provider 에만 성립한다.
 7. 한계: Codex 구현은 TOML 전체를 파싱하지 않으므로 teammode 블록 밖의 사용자 `[mcp_servers.<same>]`와의 중복 collision을 검사하지 않는다. teammode가 관리하는 것은 marker 블록뿐이다. 단 **기존 서버 감지(#3, Claude 구현 10과 동일 계약)**를 위해 블록 밖 `[mcp_servers.*]` 섹션 헤더와 한 줄 `url`/`command`/`args`는 감지용으로 라인 스캔한다(placeholder 대상 provider 한정, 등록/수정은 하지 않음).
 
 ### 2.9 폴백 정책
@@ -473,7 +471,7 @@ manifest 엔트리의 `fallback` — 어댑터가 그 엔트리를 자기 에이
 - **Codex PreToolUse 지원**: Codex는 events.json에서 `PreToolUse: "PreToolUse"`로 4종 이벤트를 모두 지원한다. `confirm-action.py`·`kb-write-guard.py` 같은 `enforcement: block` 차단 훅도 `config.toml`의 `[[hooks.PreToolUse]]`로 등록되어 exit-2 차단이 발효한다. Codex 실 훅 입력은 `tool_name`/`tool_input`(또는 top-level `name`/`input`) 형태이며, apply_patch는 `tool_input.command`에 patch 문자열을 담는다(2026-06-21 캡처) — normalize가 파일 헤더를 정규 `files[]`로 변환한다.
 - **Codex PreToolUse 차단 시맨틱(실검증, 2026-07-03, codex-cli 0.142.5)**: Codex는 Claude 호환 PreToolUse wire를 구현한다 — `PreToolUsePermissionDecisionWire`가 훅 stdout JSON의 `hookEventName`/`permissionDecision`/`permissionDecisionReason`을 파싱한다. **exit 2 = 차단**이고 stderr가 차단 사유 채널이다. `permissionDecision`은 `"deny"`만 지원(`allow`/`ask` 미지원). 통과는 exit 0 + 무출력. reference 차단 훅의 출력(deny JSON stdout + 비어있지 않은 stderr + exit 2)은 이 계약을 그대로 충족하므로 Claude·Codex 공통이다.
 - 독립 구현은 `agents/` 디렉토리 구조나 Python을 그대로 쓸 필요 없다. 보존 대상은 **선언 포맷(manifest.json·events.json)과 의미**이지 구현 언어·파일 배치가 아니다(§6 C2).
-- Codex MCP 등록 한계는 정직하게 표면화한다. `install-mcp`는 `config.toml`에 command 없는 placeholder 블록만 쓰며, 실제 기동 가능한 MCP 서버 정의는 사용자가 보강해야 할 수 있다.
+- Codex MCP 등록 한계는 정직하게 표면화한다. `install-mcp`는 `config.toml`에 주석 placeholder(§2.8-3 — 실블록 금지)만 쓰며, 실제 기동 가능한 MCP 서버 정의는 사용자가 보강해야 할 수 있다.
 - Codex `sync()`는 `PreToolUse`를 지원하므로 `confirm-action.py`를 `[[hooks.PreToolUse]]`로 등록한다. `install-mcp`로 등록한 MCP 도구 호출도 normalize → confirm 게이트 경로로 차단 가능하다.
 
 ### 2.12 스킬 해석 — 단일 소스 + 오버라이드

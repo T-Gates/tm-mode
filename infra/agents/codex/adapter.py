@@ -879,6 +879,7 @@ class Adapter(BaseAdapter):
         # issue #41 R1: 정상 쌍 탐색 전에 legacy 잔재(어긋난 쌍·고아 마커·중복 블록)를
         # 먼저 걷어낸다 — 어떤 잔재가 있어도 결과는 항상 '정상 블록 1개'(append 금지).
         existing = self._purge_legacy_markers(original)
+        existing = self._purge_orphan_managed_tables(existing)
         pattern = re.compile(
             r"\n*" + re.escape(BLOCK_START) + r".*?" + re.escape(BLOCK_END) + r"\n*",
             re.S)
@@ -982,21 +983,34 @@ class Adapter(BaseAdapter):
             (`url = "..."`). notion/linear 등 공식 호스티드 MCP. 기동 커맨드/추측 불필요.
           - 팩 mcp 에 실 기동 데이터(command/args 또는 path)가 있으면 → command·args 를
             실제로 적어 Codex 가 기동 가능한 등록을 한다.
-          - 없으면(P2 미기재) → 소유 마커 + register_hint placeholder 만(자리만 + 안내).
-            추측 패키지명/repo 금지.
+          - 없으면(P2 미기재) → **주석 placeholder 한 줄만**(`# [tm-placeholder] …`,
+            실 테이블 금지 — P1 벽돌화). 추측 패키지명/repo 금지.
         섹션 키는 별칭 `tm-<provider>`(resolve_server_alias, §2.8-2), `_canonical_server`
         는 정규 서버명을 담는다(별칭이 아님 — 역추적·소유 식별용). canonical 미지정 시
-        하위 호환으로 alias 를 그대로 쓴다. 소유 마커는 어느 경우든 유지.
+        하위 호환으로 alias 를 그대로 쓴다. 소유 마커는 실 등록 테이블에만 존재
+        (주석 placeholder 는 마커 블록 소속으로만 관리).
         """
         if canonical is None:
             canonical = alias
         hint = pack.mcp.get("register_hint", "") if pack else ""
+        src = (pack.mcp.get("source") if pack else None)
+        url = self._mcp_http_url(pack)  # 부모(claude) 상속 — 호스티드 판정 공유
+        launch_probe = self._mcp_launch_command(pack)
+        if url is None and launch_probe is None:
+            # P1(2026-07-06 실기 확정): command/url 없는 실 [mcp_servers.*] 테이블은
+            # codex CLI 가 config 로드 전체를 fatal 거부("invalid transport") —
+            # 세션 기동 불가·훅 전멸. placeholder 는 **주석으로만** 남긴다(마커 블록
+            # 안이라 재렌더 관리·stale 제거 계약은 그대로, alias 보장은 정직하게 false).
+            # hint/canonical 은 providers/*.json 유래 = 신뢰 경계 밖(검수 P1) —
+            # 개행·마커 문자열을 무해화해 "주석 한 줄" 계약을 코드로 보증한다.
+            comment = f"# [tm-placeholder] {self._comment_safe(canonical)}"
+            if hint:
+                comment += f" — {self._comment_safe(hint)}"
+            return [comment]
         lines = [f"[mcp_servers.{alias}]"]
         lines.append("_teammode_managed = true")
         lines.append(f"_canonical_server = {self._toml_str(canonical)}")
         lines.append(f"_register_hint = {self._toml_str(hint)}")
-        src = (pack.mcp.get("source") if pack else None)
-        url = self._mcp_http_url(pack)  # 부모(claude) 상속 — 호스티드 판정 공유
         if url is not None:
             # Codex streamable HTTP 서버: `url` + (OAuth 는 최초 사용 시 인터랙티브).
             lines.append(f"url = {self._toml_str(url)}")
@@ -1031,11 +1045,78 @@ class Adapter(BaseAdapter):
         lines.append(self.MCP_BLOCK_END)
         return "\n".join(lines)
 
+    @staticmethod
+    def _comment_safe(text) -> str:
+        """주석 한 줄 계약 보증: 개행류 제거·마커 문자열 무해화·길이 상한(검수 P1)."""
+        s = " ".join(str(text).split())          # \n·\r·연속 공백 → 단일 공백
+        s = s.replace("teammode-mcp", "teammode…mcp")  # 마커 위조 무력화
+        return s[:300]
+
+    def _purge_orphan_managed_tables(self, existing: str) -> str:
+        """마커 밖에 남은 **소유(_teammode_managed) 벽돌 실블록** 제거(검수 P1).
+
+        마커가 지워진 구 config 에선 _write_mcp_block 의 블록 교체가 못 미쳐
+        command/url 없는 옛 placeholder 실블록이 잔존 → codex 여전히 기동 불가.
+        _teammode_managed=true 는 우리 소유 마커이므로 제거해도 사용자 설정
+        불가침 계약과 충돌하지 않는다(사용자 서버엔 이 키가 없음). 보수적으로
+        [mcp_servers.*] 섹션 단위로만 지운다.
+
+        멀티라인 문자열 추적은 _purge_legacy_markers 와 동일 계약(하우스 표준) —
+        문자열 '안'의 [mcp_servers.*] 모양 텍스트는 사용자 데이터라 건드리지 않는다.
+        오인 방향은 항상 '못 지워 잔재가 남는' 쪽(fail-safe).
+        """
+        lines = existing.split("\n")
+        out = []
+        i = 0
+        in_ml = None  # None=문자열 밖, 아니면 열린 구분자(''' 또는 three-dquote)
+        in_markers = False  # 정상 mcp-start↔end 쌍 안 = 고아 아님(mcp writer 관할) — 불가침
+        _delims = ("'" * 3, '"' * 3)
+        while i < len(lines):
+            if in_ml is not None:
+                if in_ml in lines[i]:
+                    in_ml = None
+                out.append(lines[i])
+                i += 1
+                continue
+            _opens = [d for d in _delims if lines[i].count(d) % 2 == 1]
+            if _opens:
+                in_ml = _opens[0]
+                out.append(lines[i])
+                i += 1
+                continue
+            if self.MCP_BLOCK_START in lines[i]:
+                in_markers = True
+            elif self.MCP_BLOCK_END in lines[i]:
+                in_markers = False
+            if in_markers:
+                out.append(lines[i])
+                i += 1
+                continue
+            m = re.match(r"\s*\[mcp_servers\.[^\]]+\]\s*$", lines[i])
+            if m:
+                j = i + 1
+                while j < len(lines) and not re.match(r"\s*\[", lines[j]) \
+                        and "teammode-mcp" not in lines[j]:
+                    j += 1
+                section = lines[i:j]
+                body = "\n".join(section)
+                managed = re.search(
+                    r"^\s*_teammode_managed\s*=\s*true\b", body, re.M)
+                has_exec = re.search(r"^\s*(command|url)\s*=", body, re.M)
+                if managed and not has_exec:
+                    i = j  # 소유 벽돌 블록 — 통째 제거
+                    continue
+            out.append(lines[i])
+            i += 1
+        return "\n".join(out)
+
     def _write_mcp_block(self, block: str) -> bool:
         original = self._read_config()
         # issue #41 R1: 훅 블록과 동일 파일이므로 MCP 쓰기 경로도 legacy 잔재를 치유
         # (install-mcp 가 sync 보다 선행 — §2.7 — 하므로 어느 쪽이 먼저 돌아도 수렴).
         existing = self._purge_legacy_markers(original)
+        # 검수 P1: 마커 없는 config 의 고아 소유 벽돌 실블록도 치유(훅 writer 와 동일)
+        existing = self._purge_orphan_managed_tables(existing)
         pattern = re.compile(
             r"\n*" + re.escape(self.MCP_BLOCK_START) + r".*?"
             + re.escape(self.MCP_BLOCK_END) + r"\n*", re.S)
@@ -1129,13 +1210,22 @@ class Adapter(BaseAdapter):
                         # 잡히고 **연결되지 않는다**. 안내도 관리 별칭 기준으로 정직하게
                         # (codex review P2-a): claude 와 일관되게 같은 별칭으로 직접 붙이도록.
                         changes.append(
-                            f"[mcp] {alias} placeholder 등록(공식 호스티드 MCP 부재 → "
+                            f"[mcp] {alias} placeholder 기록(주석 — 공식 호스티드 MCP 부재 → "
                             f"teammode 자동 등록 불가, 이 placeholder 는 연결되지 않음). "
                             f"직접 쓰려면 같은 관리 별칭으로 수동 연결: "
                             f"`codex mcp add {alias} -- <MCP 서버 기동 커맨드>` "
                             f"(register_hint 참고)")
             else:
-                changes.append(f"[ok] 변경 없음 ({len(aliases)}개 provider 등록됨)")
+                # 검수 P3: placeholder 를 '등록됨' 으로 합산하면 alias 정직-false 계약이
+                # 흐려진다 — 실등록(url/command)과 placeholder(비연결)를 분리 보고.
+                n_real = sum(1 for _a, _c, pk in providers_with_packs
+                             if self._mcp_http_url(pk) is not None
+                             or self._mcp_launch_command(pk) is not None)
+                n_ph = len(providers_with_packs) - n_real
+                msg = f"[ok] 변경 없음 (실등록 {n_real}개"
+                if n_ph:
+                    msg += f", placeholder {n_ph}개 — 연결되지 않음"
+                changes.append(msg + ")")
         else:
             # 연결 provider 없음 → 기존 teammode-mcp 블록 제거(멱등 빈상태).
             # 안전(P1-1): 블록이 없으면(부재 config 포함) 파일 무접촉 — pattern.search 가
