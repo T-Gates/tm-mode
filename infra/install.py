@@ -466,7 +466,7 @@ def _autocommit_scaffold(team_root: Path, member_name: str, out) -> None:
         message=f"팀 셋업: {member_name} 등록 + memory scaffold [auto]",
         push=True, paths=["memory", "team.config.json"])
     if getattr(_cr, "pushed", False):
-        _git_ops.clear_sync_warning()
+        _git_ops.clear_sync_warning(str(team_root))
         out("[push] memory·members 를 팀 레포에 올렸습니다.")
     elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
         _detail = getattr(_cr, "detail", "") or "push 실패"
