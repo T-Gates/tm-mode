@@ -269,7 +269,7 @@ def _pick_one(title: str, hint: str, choices: list[str],
             return fallback()
         for i, c in enumerate(choices, 1):
             print(f"  {i}) {c}")
-        sel = _prompt("  번호 선택  ›", str(default_index + 1))
+        sel = _prompt("  Select a number  ›", str(default_index + 1))
         try:
             idx = int(sel) - 1
         except ValueError:
@@ -332,7 +332,7 @@ def _pick_many(title: str, hint: str, choices: list[str],
             lines = []
             for i, c in enumerate(choices):
                 mark = "◉ " if i in sel else "◯ "
-                label = c if i not in disabled else _dim(c + "  (미설치)")
+                label = c if i not in disabled else _dim(c + "  (not installed)")
                 lines.append(mark + label)
             _render_menu(title, hint, lines, cursor, first=first)
             first = False
@@ -414,8 +414,8 @@ def _confirm(title: str, *, default: bool = True,
         return raw.strip().lower() in ("y", "yes")
     # raw 메뉴 — 예/아니오 두 항목 라디오
     yes_idx = 0 if default else 1
-    idx = _pick_one(title, "(↑↓ 이동 · Enter 확정)",
-                    ["예", "아니오"], default_index=yes_idx)
+    idx = _pick_one(title, "(↑↓ move · Enter to confirm)",
+                    ["Yes", "No"], default_index=yes_idx)
     return idx == 0
 
 
@@ -428,10 +428,10 @@ def _resolve_member(opt_member: str | None) -> str | None:
         # TTY: 빈 슬러그면 반복 입력 강제
         if not slug:
             while True:
-                val = _prompt("멤버 이름(영문, 필수)").strip()
+                val = _prompt("Member name (letters only, required)").strip()
                 if val:
                     return val
-        return _prompt("멤버 이름(영문)", slug) or None
+        return _prompt("Member name (letters only)", slug) or None
     # 비-TTY: 빈 슬러그면 git email local-part fallback
     if not slug:
         slug = _git_user_email_local_part()
@@ -452,10 +452,10 @@ def _pick_owner() -> str | None:
     choices = [c for c in ([me] + orgs.splitlines()) if c]
     if not choices:
         return None
-    print("레포를 어디에 만들까요?  (계정 또는 org를 선택하세요)")
+    print("Where should the team repo be created?  (pick an account or org)")
     for i, c in enumerate(choices, 1):
-        print(f"  {i}) {c}{' (개인 계정)' if i == 1 else ' (org)'}")
-    sel = _prompt("선택", "1")
+        print(f"  {i}) {c}{' (personal account)' if i == 1 else ' (org)'}")
+    sel = _prompt("Select", "1")
     try:
         idx = int(sel) - 1
     except ValueError:
@@ -471,7 +471,7 @@ def _delegate_install(repo_dir: Path, member: str | None, extra: list[str]) -> i
     """
     install_py = repo_dir / "infra" / "install.py"
     if not install_py.is_file():
-        _err(f"팀 레포에 infra/install.py 가 없습니다: {install_py}")
+        _err(f"The team repo has no infra/install.py: {install_py}")
         return 3
     argv = [sys.executable, str(install_py), "--root", str(repo_dir), "--yes"]
     if member:
@@ -499,7 +499,7 @@ def _wait_template_ready(full: str, *, attempts: int = 30, interval: float = 1.0
     생성 직후 clone 하면 빈 레포가 잡힌다(E2E 로 확인). infra/ 가 보일 때까지 대기.
     True=준비됨, False=시간 초과(호출부가 안내·보류).
     """
-    print("레포 내용 복사를 기다리는 중입니다...")
+    print("Waiting for the repository contents to finish copying...")
     for _ in range(attempts):
         if subprocess.run(["gh", "api", f"repos/{full}/contents/infra"],
                           capture_output=True).returncode == 0:
@@ -531,27 +531,28 @@ def _done(repo_dir: Path, *, created: bool = False, url: str | None = None) -> N
     team_name = _read_team_name(repo_dir) or repo_dir.name
     print()
     print()
-    print(_ok(f"🎉 {team_name} 팀 {'생성' if created else '합류'} 완료") + f"  {repo_dir}")
+    print(_ok(f"✓ {'Created' if created else 'Joined'} {team_name}.") + f"   {repo_dir}")
     print()
-    print(f"당신의 에이전트에 {_hi('팀 모드')}가 생겼어요 — 켜는 동안 팀원 전체가")
-    print("맥락을 공유하고, 팀 메모리를 함께 관리해요.")
+    print(f"Your agents now have {_hi('team mode')} — while it is on, the whole")
+    print("team shares context and maintains team memory together.")
 
     bar = "─" * 58
     # ① 팀 모드 켜기 — 지금 할 행동이라 맨 위.
     print()
     print(bar)
-    print("  " + _hi("① 팀 모드 켜기"))
-    print("     " + _ok("설치가 끝났습니다!") + "  아직 팀 모드는 꺼져 있어요.")
-    print("     에이전트를 열고 " + _hi("/tm-onboard") + " 를 실행하세요.")
-    print("     설치 검증과 팀 모드 활성화가 자동으로 진행됩니다.")
+    print("  " + _hi("1. Turn team mode on"))
+    print("     " + _ok("Installation complete.") + "  Team mode is not on yet.")
+    print("     Open your agent and run " + _hi("/tm-onboard") + ".")
+    print("     It verifies the install and turns team mode on automatically.")
     print(bar)
 
     # ② 팀원 초대 (url 있을 때만) — 명령이 길어 시선 분산되니 맨 아래.
     if url:
         print()
         print(bar)
-        print("  ② 팀원 초대 — 아래 명령 중 하나를 공유하세요")
-        print("     (둘 다 터미널에선 설치 위저드, 파이프/CI 는 기본값 설치 + tm-onboard 마무리):")
+        print("  2. Invite teammates — share one of the commands below")
+        print("     (in a terminal both launch the setup wizard; piped/CI installs "
+              "defaults + finishes with tm-onboard):")
         print()
         for line in _invite_lines(url):
             print("  " + line)
@@ -565,19 +566,19 @@ def cmd_init(args) -> int:
     template = getattr(args, "template", None) or TEMPLATE_REPO
     if template != DEFAULT_TEMPLATE_REPO and not getattr(args, "template", None) \
             and not sys.stdin.isatty():
-        _err(f"TM_TEMPLATE_REPO({template})는 비대화 실행에서 무시됩니다 — "
-             f"의도했다면 `--template {template}` 로 명시하세요.")
+        _err(f"TM_TEMPLATE_REPO({template}) is ignored in non-interactive runs — "
+             f"if intended, pass it explicitly with `--template {template}`.")
         return 1
 
     if not _have("git"):
-        _err("git 이 필요합니다.")
+        _err("git is required.")
         return 2
     if not _have("gh"):
-        _err("새 팀 레포 생성에는 GitHub CLI(gh)가 필요합니다 — https://cli.github.com "
-             "(이미 만든 레포면 `tm-mode join <url>`).")
+        _err("Creating a new team repo requires the GitHub CLI (gh) — https://cli.github.com "
+             "(if the repo already exists, use `tm-mode join <url>`).")
         return 2
     if subprocess.run(["gh", "auth", "status"], capture_output=True).returncode != 0:
-        _err("GitHub 인증이 필요합니다 — `gh auth login` 후 다시 실행하세요.")
+        _err("GitHub authentication required — run `gh auth login` and try again.")
         return 2
 
     # OWNER/REPO 결정 (org 자동선택 금지)
@@ -587,15 +588,17 @@ def cmd_init(args) -> int:
     else:
         owner = _pick_owner()
         if not owner:
-            _err("org/계정을 정할 수 없습니다 — `tm-mode init OWNER/REPO` 형태로 지정하세요.")
+            _err("Could not determine an account or org — specify it as `tm-mode init OWNER/REPO`.")
             return 2
         # 팀명을 레포명보다 **먼저** 묻는다 — 배너·상태줄 배지·인사말·레포명기본의 단일 소스.
         # team.config.json 은 팀 레포에 커밋(공유)되므로 창립자가 여기서 한 번 정하면
         # 모든 팀원에게 같은 정체성이 퍼진다.
         if not getattr(args, "team_name", None):
             args.team_name = _prompt(
-                "팀명이 뭐예요?  (팀 배너·상태줄 배지·인사말에 쓰여요)", owner) or owner
-        repo = target or _prompt("레포 이름 (팀 레포)", f"{_slugify(args.team_name)}-team")
+                "Team name  (used in the team banner, status-line badge, and greeting)",
+                owner) or owner
+        repo = target or _prompt("Repository name (team repo)",
+                                 f"{_slugify(args.team_name)}-team")
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
     # 팀명 미정(OWNER/REPO 직접지정 등 비대화 경로) 폴백 = owner.
@@ -607,15 +610,15 @@ def cmd_init(args) -> int:
     # 비-TTY(인자로 OWNER/REPO 받은 경우 등)는 자동 진행.
     if sys.stdin.isatty():
         _tpl = f" (template: {template})" if template != DEFAULT_TEMPLATE_REPO else ""
-        if _prompt(f"📦 새 팀 레포를 '{full}' 에 만듭니다{_tpl}. 맞나요? [Y/n]",
+        if _prompt(f"Create the team repo at '{full}'{_tpl}?  [Y/n]",
                    "Y").strip().lower() == "n":
-            _err(f"취소됨 — 위치를 직접 지정하려면 `tm-mode init <OWNER>/{repo}` 로 다시 실행하세요.")
+            _err(f"Cancelled — to choose the location yourself, run `tm-mode init <OWNER>/{repo}` again.")
             return 1
-    print(f"{full} 레포를 생성합니다 (template: {template})")
+    print(f"Creating repository {full} (template: {template})")
     rc = subprocess.run(["gh", "repo", "create", full,
                         "--template", template, vis]).returncode
     if rc != 0:
-        _err("레포 생성 실패 — 권한·이름 중복을 확인하세요.")
+        _err("Repository creation failed — check permissions and name conflicts.")
         return rc
 
     url = f"https://github.com/{full}.git"
@@ -624,14 +627,14 @@ def cmd_init(args) -> int:
     # 곧바로 clone 하면 infra/ 가 없어 join 이 실패한다(E2E 로 확인). infra/ 가 채워질
     # 때까지 폴링 대기한 뒤 join 으로 넘어간다.
     if not _wait_template_ready(full):
-        _err(f"template 반영이 지연됩니다(레포는 생성됨). 잠시 후 "
-             f"`tm-mode join {url}` 로 셋업을 마치세요.")
+        _err(f"Template contents are still syncing (the repo was created). In a moment, "
+             f"finish setup with `tm-mode join {url}`.")
         return 1
 
     # ② 곧바로 join 으로 — 방금 만든 레포를 본인 머신에 clone+셋업(생성 → 참여, 단일 경로).
     # 팀원 초대 안내는 끝 블록(_done)에서 join 합류자와 통일해 한 번만 출력한다(D6).
     print()
-    print("레포가 준비됐습니다. 이어서 본인 머신에 설치(join)합니다.")
+    print("Repository is ready. Now installing it on your machine (join).")
     args.url = url
     # init 파서엔 없는, cmd_join(특히 비-TTY 경로)이 참조하는 속성 보강.
     # 셋업 정보는 TTY 면 wizard 가 묻고, 비-TTY 면 이 기본값으로 진행.
@@ -700,7 +703,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
     """
     home = Path.home()
 
-    print("팀 레포를 설정합니다 (5단계 + 확인)\n")
+    print("Setting up your team — 5 quick steps, then a summary to confirm.\n"
+          "Nothing is written until you approve.\n")
 
     while True:  # 7단계에서 n → 전체 재시작
         # ── 1단계: 설치 위치 ──────────────────────────────────────────────
@@ -709,20 +713,20 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             repo_name = repo_name[:-4]
         default_dest = home / "teammode" / repo_name
 
-        print(_hi("[1/5] 설치 위치") + "  (팀 레포를 받을 폴더)")
+        print(_hi("Step 1 of 5 · Where to install") + "   — the folder that will hold your team repo")
         while True:
             # 경로 = _ask_text(prefill). raw 불가(테스트 포함)면 _prompt 로 폴백 → 동일 1입력.
             raw = _ask_text("  ›", str(default_dest))
             dest = Path(raw).expanduser().resolve()
             if dest.exists() and any(dest.iterdir()):
-                print(f"  {_warn(str(dest))} 가 이미 있고 비어있지 않습니다.")
+                print(f"  {_warn(str(dest))} already exists and is not empty.")
                 # 다른위치/재설치 = _pick_one. fallback 은 기존 번호 1입력 그대로.
                 def _dir_fallback() -> int:
-                    c = _prompt("  1) 다른 위치 입력   2) 기존 폴더에 재설치 [1/2]", "1")
+                    c = _prompt("  1) Choose another location   2) Reinstall into this folder [1/2]", "1")
                     return 1 if c.strip() == "2" else 0
                 pick = _pick_one(
-                    "", "(↑↓ 이동 · Enter 확정)",
-                    ["다른 위치 입력", "기존 폴더에 재설치 (clone 건너뜀)"],
+                    "", "(↑↓ move · Enter to confirm)",
+                    ["Choose another location", "Reinstall into this folder (skip clone)"],
                     default_index=0, fallback=_dir_fallback)
                 if pick == 1:
                     clone_skip = True
@@ -736,10 +740,10 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         installed = _detect_agents_from_install_lib(home)
         all_agents = ["claude", "codex"]
         if not installed:
-            print("  설치된 에이전트를 감지할 수 없습니다. 계속 진행합니다.")
+            print("  No coding agents detected. Continuing anyway.")
         selected_agents: list[str] = list(installed) if installed else []
 
-        print("\n" + _hi("[2/5] 에이전트 선택"))
+        print("\n" + _hi("Step 2 of 5 · Your agents") + "   — which AI coding agents to wire up")
 
         def _agents_fallback() -> list[int]:
             """raw 불가 시(테스트 포함) 기존 번호 토글 루프 그대로(§7.4 H3, cli:337-360 1:1).
@@ -749,11 +753,11 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             selected_agents(클로저)를 갱신하고 인덱스 리스트를 반환한다.
             마크는 raw 메뉴(_pick_many)와 동일한 ◉/◯ — `[x]`는 '제외'로 오독(1c).
             """
-            print("  (번호=켜고끄기, Enter=확정 — ◉ 켜짐 / ◯ 꺼짐)")
+            print("  (number = toggle, Enter = confirm — ◉ on / ◯ off)")
             while True:
                 for i, ag in enumerate(all_agents, 1):
                     mark = "◉ " if ag in selected_agents else "◯ "
-                    note = "" if ag in installed else "  (미설치)"
+                    note = "" if ag in installed else "  (not installed)"
                     print(f"  {mark}{i}) {ag}{note}")
                 raw = _prompt("  ›", "")
                 if not raw.strip():
@@ -766,7 +770,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                     if 0 <= idx < len(all_agents):
                         ag = all_agents[idx]
                         if ag not in installed:
-                            print(f"  '{ag}'은(는) 미설치라 선택할 수 없습니다.")
+                            print(f"  '{ag}' is not installed and cannot be selected.")
                             continue
                         if ag in selected_agents:
                             selected_agents.remove(ag)
@@ -778,8 +782,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         disabled_idx = {i for i, ag in enumerate(all_agents) if ag not in installed}
         sel_idx = _pick_many(
             "",
-            "(↑↓ 이동 · 스페이스 토글 · Enter 확정 · 미설치=선택 불가"
-            + (" · 최소 1개)" if installed else ")"),
+            "(↑↓ move · Space to toggle · Enter to confirm · not installed = unavailable"
+            + (" · at least 1)" if installed else ")"),
             all_agents,
             selected=[i for i, ag in enumerate(all_agents) if ag in selected_agents],
             disabled=disabled_idx, min_select=(1 if installed else 0),
@@ -789,10 +793,10 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         # ── clone (단계 2.5): members.md 읽기 전에 실행 → 기존멤버 목록 정확하게 읽힘 ──
         # clone_skip 이거나 clone_fn 이 없으면 건너뜀(테스트·재사용 경로).
         if not clone_skip and clone_fn is not None:
-            print(f"clone 중...  {url} → {dest}")
+            print(f"Cloning...  {url} → {dest}")
             ok = clone_fn(url, dest)
             if not ok:
-                _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
+                _err("Clone failed — check repo access (SSH key / `gh auth login`).")
                 raise SystemExit(1)
 
         # ── 3단계: 새/기존 멤버 ───────────────────────────────────────────
@@ -800,14 +804,14 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         members_file = dest / "memory" / "team" / "members.md"
         existing_members = _parse_members_md(members_file)
 
-        print("\n" + _hi("[3/5] 멤버") + "  (처음 합류하시나요?)")
+        print("\n" + _hi("Step 3 of 5 · You") + "   — new to this team, or already a member?")
 
         def _member_kind_fallback() -> int:
-            c = _prompt("  1) 새로 합류   2) 기존 팀원  ›", "1")
+            c = _prompt("  1) New member   2) Existing member  ›", "1")
             return 1 if c.strip() == "2" else 0
         kind = _pick_one(
-            "", "(↑↓ 이동 · Enter 확정)",
-            ["새로 합류", "기존 팀원"], default_index=0,
+            "", "(↑↓ move · Enter to confirm)",
+            ["New member", "Existing member"], default_index=0,
             fallback=_member_kind_fallback)
         is_new = kind != 1
 
@@ -818,69 +822,70 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             if not slug:
                 # 빈 슬러그: 반복 강제 (default 없음 → _ask_text 가 _prompt 로 폴백, 1입력 유지)
                 while True:
-                    val = _ask_text("  이름(영문, 필수)  ›").strip()
+                    val = _ask_text("  Your name (lowercase, letters only, required)  ›").strip()
                     if val:
                         member = val
                         break
             else:
-                member = _ask_text("  이름(영문)  ›", slug) or slug
+                member = _ask_text("  Your name (lowercase, letters only)  ›", slug) or slug
         else:
             if existing_members:
                 # 기존팀원 = _pick_one(번호 1입력). "직접입력" 항목 금지(§7.5 H4).
                 def _existing_fallback() -> int:
-                    print("  기존 팀원 목록:")
+                    print("  Existing members:")
                     for i, n in enumerate(existing_members, 1):
                         print(f"    {i}) {n}")
-                    sel = _prompt("  번호 선택  ›", "1")
+                    sel = _prompt("  Select a number  ›", "1")
                     try:
                         idx = int(sel) - 1
                     except ValueError:
                         return 0
                     return idx if 0 <= idx < len(existing_members) else 0
                 pick = _pick_one(
-                    "", "(↑↓ 이동 · Enter 확정)",
+                    "", "(↑↓ move · Enter to confirm)",
                     existing_members, default_index=0, fallback=_existing_fallback)
                 member = existing_members[pick] if 0 <= pick < len(existing_members) \
                     else existing_members[0]
             else:
-                print("  (members.md 없음 — 이름을 직접 입력하세요)")
+                print("  (no members.md — enter your name)")
                 guess = _git_user_name()
                 slug = _slugify(guess) if guess else ""
-                member = _ask_text("  이름(영문)  ›", slug or None) or None
+                member = _ask_text("  Your name (lowercase, letters only)  ›", slug or None) or None
 
         # ── 5단계(구 5): 역할 — 자유텍스트 1입력 유지(§7.2 H1, 위젯화 금지) ──
         # ROLES 는 권장목록 표시용 데이터로만 쓴다(_pick_one 금지).
-        print("\n" + _hi("[4/5] 역할") + "  (권장: " + _dim(" / ".join(ROLES)) + ")")
-        role = _ask_text("  › (Enter=생략)", "")  # default 없음 → _prompt 폴백, 1입력
+        print("\n" + _hi("Step 4 of 5 · Your role") + "   — optional (" + _dim(" / ".join(ROLES)) + ")")
+        role = _ask_text("  › (Enter to skip)", "")  # default 없음 → _prompt 폴백, 1입력
 
         # ── 6단계(구 6): Obsidian — _confirm(§7.3: default=True, n/no 만 부정) ──
-        print("\n" + _hi("[5/5] Obsidian") + "  (볼트에 팀 레포를 연결할까요?)")
+        print("\n" + _hi("Step 5 of 5 · Obsidian") + "   — open your team memory as an Obsidian vault?")
 
         def _obsidian_fallback() -> bool:
             obsidian_raw = _prompt("  › [Y/n]", "Y")
             return obsidian_raw.strip().lower() != "n"
         register_obsidian = _confirm(
-            "Obsidian 볼트에 연결", default=True, fallback=_obsidian_fallback)
+            "Open your team memory as an Obsidian vault", default=True,
+            fallback=_obsidian_fallback)
 
         # ── 요약 확인 ─────────────────────────────────────────────────────
         print()
-        print("── 설치 요약 ─────────────────────────────────────")
-        print(f"  팀        : {url}")
-        print(f"  위치      : {dest}")
-        print(f"  에이전트  : {', '.join(selected_agents) if selected_agents else '(없음)'}")
-        print(f"  이름      : {member or '(미지정)'}")
-        print(f"  역할      : {role or '(생략)'}")
-        print(f"  Obsidian  : {'등록' if register_obsidian else '건너뜀'}")
-        print(f"  clone     : {'skip — 기존 폴더 재사용' if clone_skip else '새로 clone'}")
+        print("── Review ─────────────────────────────────────────")
+        print(f"  Team      : {url}")
+        print(f"  Location  : {dest}")
+        print(f"  Agents    : {', '.join(selected_agents) if selected_agents else '(none)'}")
+        print(f"  Name      : {member or '(unset)'}")
+        print(f"  Role      : {role or '(skipped)'}")
+        print(f"  Obsidian  : {'link' if register_obsidian else 'skip'}")
+        print(f"  Clone     : {'skip — reuse existing folder' if clone_skip else 'fresh clone'}")
         print("──────────────────────────────────────────────────")
 
         def _confirm_fallback() -> bool:
-            confirm = _prompt("이대로 진행할까요? [Y/n]", "Y")
+            confirm = _prompt("Proceed with this setup? [Y/n]", "Y")
             return confirm.strip().lower() != "n"
-        proceed = _confirm("이대로 진행할까요?", default=True,
+        proceed = _confirm("Proceed with this setup?", default=True,
                            fallback=_confirm_fallback)
         if not proceed:
-            print("  처음부터 다시 시작합니다.\n")
+            print("  Starting over.\n")
             continue  # while True 재시작
         break  # 확인 완료
 
@@ -898,7 +903,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
 
 def cmd_join(args, *, created: bool = False) -> int:
     if not _have("git"):
-        _err("git 이 필요합니다.")
+        _err("git is required.")
         return 2
 
     is_tty = sys.stdin.isatty()
@@ -923,17 +928,17 @@ def cmd_join(args, *, created: bool = False) -> int:
             return int(_se.code) if _se.code is not None else 1
 
         if clone_skip:
-            print(f"기존 폴더를 재사용합니다: {dest}")
+            print(f"Reusing the existing folder: {dest}")
     else:
         # ── 비-TTY: 인자 경로 (input 절대 호출 안 함) ────────────────────
         # --dir 없으면 cwd 가 아니라 wizard 와 같은 ~/teammode/<repo> 가 기본(#6).
         dest = Path(args.dir).resolve() if args.dir else _default_dest_from_url(args.url)
-        print(_warn(f"비대화 모드 — 기본값으로 설치합니다 (위치: {dest}). "
-                    "세부 설정(역할·Obsidian)은 에이전트에서 tm-onboard 로 마무리하세요."))
+        print(_warn(f"Non-interactive mode — installing with defaults (location: {dest}). "
+                    "Finish detailed setup (role, Obsidian) with tm-onboard in your agent."))
         cmd = ["git", "clone", args.url, str(dest)]
-        print(f"clone 중...  {args.url}")
+        print(f"Cloning...  {args.url}")
         if subprocess.run(cmd).returncode != 0:
-            _err("clone 실패 — 레포 접근 권한(SSH 키 / `gh auth login`)을 확인하세요.")
+            _err("Clone failed — check repo access (SSH key / `gh auth login`).")
             return 1
 
         member = _resolve_member(args.member_name)
@@ -947,7 +952,7 @@ def cmd_join(args, *, created: bool = False) -> int:
             extra += ["--register-obsidian"]
 
     if not (dest / "infra").is_dir():
-        _err(f"clone 된 레포에 infra/ 가 없습니다: {dest}")
+        _err(f"The cloned repo has no infra/: {dest}")
         return 3
 
     # init → join 경유 시 팀명 전달(join 자체 파서엔 --team-name 없음; init 만 줌).
@@ -963,26 +968,26 @@ def cmd_join(args, *, created: bool = False) -> int:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="tm-mode", description="팀모드 부트스트랩 런처")
+    p = argparse.ArgumentParser(prog="tm-mode", description="team mode bootstrap launcher")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pi = sub.add_parser("init", help="새 팀 레포 생성(template) → 곧바로 join(clone+셋업)")
-    pi.add_argument("repo", nargs="?", help="OWNER/REPO 또는 REPO (생략 시 대화형)")
-    pi.add_argument("--team-name", help="팀 이름(미지정 시 레포명 기본)")
-    pi.add_argument("--public", action="store_true", help="공개 레포(기본 private)")
+    pi = sub.add_parser("init", help="Create a new team repo (template) → then join (clone + setup)")
+    pi.add_argument("repo", nargs="?", help="OWNER/REPO or REPO (interactive if omitted)")
+    pi.add_argument("--team-name", help="Team name (defaults to the repo name)")
+    pi.add_argument("--public", action="store_true", help="Public repo (private by default)")
     pi.add_argument("--template", default=None,
-                    help=f"template 레포(OWNER/REPO, 기본 {DEFAULT_TEMPLATE_REPO} — 포크 배포용)")
+                    help=f"Template repo (OWNER/REPO, default {DEFAULT_TEMPLATE_REPO} — for fork distribution)")
     # 셋업 정보(설치위치·에이전트·멤버·역할·obsidian)는 join wizard 가 대화로 묻는다.
     pi.set_defaults(func=cmd_init)
 
-    pj = sub.add_parser("join", help="기존 팀 레포 clone + 셋업")
-    pj.add_argument("url", help="팀 레포 clone URL")
+    pj = sub.add_parser("join", help="Clone an existing team repo + setup")
+    pj.add_argument("url", help="Team repo clone URL")
     pj.add_argument("--member-name")
-    pj.add_argument("--dir", help="clone 위치")
+    pj.add_argument("--dir", help="Clone location")
     pj.add_argument("--agent", action="append", metavar="AGENT",
-                    help="에이전트 (claude/codex). 비-TTY용; 반복 가능")
-    pj.add_argument("--role", help="역할 (비-TTY용)")
-    pj.add_argument("--obsidian", action="store_true", help="Obsidian 볼트 등록 (비-TTY용)")
+                    help="Agent (claude/codex). For non-TTY; repeatable")
+    pj.add_argument("--role", help="Role (for non-TTY)")
+    pj.add_argument("--obsidian", action="store_true", help="Register Obsidian vault (for non-TTY)")
     pj.set_defaults(func=cmd_join)
 
     args = p.parse_args(argv)
@@ -990,7 +995,7 @@ def main(argv=None) -> int:
         return args.func(args)
     except KeyboardInterrupt:
         print()
-        print(_warn("취소됐습니다."))
+        print(_warn("Cancelled."))
         return 130
 
 
