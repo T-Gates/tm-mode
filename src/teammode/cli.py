@@ -92,7 +92,9 @@ def _prompt(label: str, default: str | None = None) -> str:
     if not sys.stdin.isatty():
         return default or ""
     suffix = f" [{default}]" if default else ""
-    return input(f"{label}{suffix}: ").strip() or (default or "")
+    # 라벨이 입력 캐럿(›)으로 끝나면 콜론을 붙이지 않는다("  › " 가 "  › : " 보다 깔끔).
+    sep = " " if label.rstrip().endswith("›") else ": "
+    return input(f"{label}{suffix}{sep}").strip() or (default or "")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -485,14 +487,55 @@ def _ask_text(label: str, default: str | None = None) -> str:
                 readline.redisplay()
 
             readline.set_pre_input_hook(_hook)
+            _sep = " " if label.rstrip().endswith("›") else ": "
             try:
-                val = input(f"{label}: ").strip()
+                val = input(f"{label}{_sep}").strip()
             except EOFError:
                 val = ""
             finally:
                 readline.set_pre_input_hook(None)
             return val or default
     return _prompt(label, default)
+
+
+def _field_head(header: str, context: "str | tuple" = "", *,
+                hint: str | None = None, example: str | None = None) -> None:
+    """텍스트 입력줄 '위'에 까는 clack 안내 블록:
+        ◆ header / │ context… / │ (e.g. …) / │ hint / │(빈줄).
+    입력 프리미티브(_ask_text·_prompt) 앞에서 호출한다. readline prefill 이든
+    libedit `[default]` 표기든, '무엇을 입력·무엇을 누르면 되는지'가 항상 먼저
+    보이게 해서 빈 프롬프트의 비직관성을 없앤다. 비-TTY 는 아무것도 찍지 않는다."""
+    if not sys.stdin.isatty():
+        return
+    print(_hi("◆  " + header))
+    for line in ((context,) if isinstance(context, str) else context):
+        if line:
+            _rail(line)
+    if example:
+        _rail(_dim("e.g.  " + example))
+    if hint:
+        _rail(_dim(hint))
+    _rail()
+
+
+def _ask_field(header: str, context: "str | tuple" = "", *,
+               default: str | None = None, hint: str | None = None,
+               example: str | None = None, required: bool = False) -> str:
+    """_field_head(안내) + _ask_text(입력) + required 재질문. 텍스트 단계 통일 진입점.
+
+    비-TTY 는 default(없으면 "") 를 즉시 반환 — required 라도 루프하지 않는다(행업 방지).
+    """
+    _field_head(header, context, hint=hint, example=example)
+    tty = sys.stdin.isatty()
+    while True:
+        val = (_ask_text("│  ›", default) or "").strip()
+        if val:
+            return val
+        if default:
+            return default
+        if not required or not tty:
+            return ""
+        _rail(_warn("Required — please enter a value."))
 
 
 def _confirm(title: str, *, default: bool = True,
@@ -711,9 +754,15 @@ def cmd_init(args) -> int:
         # team.config.json 은 팀 레포에 커밋(공유)되므로 창립자가 여기서 한 번 정하면
         # 모든 팀원에게 같은 정체성이 퍼진다.
         if not getattr(args, "team_name", None):
-            print(_hi("◆  Team name") + _dim("   — used in the team banner, status-line badge, and greeting"))
+            _field_head(
+                "Team name",
+                "Shown in the banner, the status-line badge, and the greeting.",
+                hint="Press Enter to accept, or type a name.")
             args.team_name = _prompt("  Team name  ›", owner) or owner
-        print(_hi("◆  Repository name") + _dim("   — the GitHub repo your team will live in"))
+        _field_head(
+            "Repository name",
+            "The GitHub repo your team will live in.",
+            hint="Press Enter to accept, or type a name.")
         repo = target or _prompt("  Repository name  ›", f"{_slugify(args.team_name)}-team")
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
@@ -839,11 +888,14 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             repo_name = repo_name[:-4]
         default_dest = home / "teammode" / repo_name
 
-        print(_hi("◆  Step 1 of 5 · Where to install   — the folder that will hold your team repo"))
         _step1_clean = True  # 충돌 안내가 찍히면 접지 않는다(정보 보존)
         while True:
-            # 경로 = _ask_text(prefill). raw 불가(테스트 포함)면 _prompt 로 폴백 → 동일 1입력.
-            raw = _ask_text("  ›", str(default_dest))
+            # 경로 = _ask_field(안내블록 + prefill). raw 불가면 _prompt 로 폴백 → 동일 1입력.
+            raw = _ask_field(
+                "Step 1 of 5 · Where to install",
+                "The folder that will hold your team repo.",
+                default=str(default_dest),
+                hint="Press Enter to accept, or type another path.")
             dest = Path(raw).expanduser().resolve()
             if dest.exists() and any(dest.iterdir()):
                 print(f"  {_warn(str(dest))} already exists and is not empty.")
@@ -950,14 +1002,17 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             guess = _git_user_name()
             slug = _slugify(guess) if guess else ""
             if not slug:
-                # 빈 슬러그: 반복 강제 (default 없음 → _ask_text 가 _prompt 로 폴백, 1입력 유지)
-                while True:
-                    val = _ask_text("  Your name (lowercase letters, digits, - or _; required)  ›").strip()
-                    if val:
-                        member = val
-                        break
+                member = _ask_field(
+                    "Your name",
+                    "How you'll show up on the team — in members.md, session logs, and the greeting.",
+                    hint="Lowercase letters, digits, - or _.  Required.",
+                    required=True)
             else:
-                member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug) or slug
+                member = _ask_field(
+                    "Your name",
+                    "How you'll show up on the team — in members.md, session logs, and the greeting.",
+                    default=slug,
+                    hint="Lowercase letters, digits, - or _.  Enter to accept.") or slug
 
         else:
             if existing_members:
@@ -979,10 +1034,13 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                 member = existing_members[pick] if 0 <= pick < len(existing_members) \
                     else existing_members[0]
             else:
-                print("  (no members.md — enter your name)")
                 guess = _git_user_name()
                 slug = _slugify(guess) if guess else ""
-                member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug or None) or None
+                member = _ask_field(
+                    "Your name",
+                    "No members.md yet — you'll be the first entry (members.md, session logs, greeting).",
+                    default=slug or None,
+                    hint="Lowercase letters, digits, - or _.") or None
 
         # ── 5단계(구 5): 역할 — picker(기본 Skip) + Other 자유입력 ──
         # §7.2 H1(위젯화 금지)을 뒤집는다(사용자 결정 2026-07-07): 다른 단계처럼
@@ -1010,7 +1068,10 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         if role_pick == 0:
             role = ""
         elif role_pick == len(role_choices) - 1:      # Other… → 자유입력
-            role = _ask_text("  Your role  ›", "").strip()
+            role = _ask_field(
+                "Your role",
+                "Type the role that fits you — shown next to your name.",
+                hint="Press Enter to leave it blank.").strip()
         else:
             role = ROLES[role_pick - 1]
         _rail()
@@ -1071,17 +1132,15 @@ def cmd_join(args, *, created: bool = False) -> int:
             _err("team repo URL is required in non-interactive mode: "
                  "`tm-mode join <url>`")
             return 2
-        # Step 0: 위저드가 URL 부터 묻는다(레일 시작) — 빈 입력은 재질문.
+        # Step 0: 위저드가 URL 부터 묻는다(레일 시작). required 재질문은 _ask_field 가 처리.
+        # 텍스트 입력은 접지 않는다(입력값 wrap 시 collapse 산술 불안정) — 레일만 잇는다.
         _rail_top(_hi("tm-mode") + _dim(" · set up your team"))
-        print(_hi("◆  Team repo URL   — paste the repo your team lead shared"))
-        while True:
-            candidate = _ask_text("  ›", None).strip()
-            if candidate:
-                args.url = candidate
-                break
-            print(_dim("  A URL is required — e.g. git@github.com:org/team.git"))
-        if sys.stdout.isatty() and _raw_capable():
-            _collapse_lines(2, "Team repo URL", args.url)
+        args.url = _ask_field(
+            "Team repo URL",
+            "Paste the repository your team lead shared with you.",
+            example="https://github.com/acme/acme-team",
+            hint="Required — the wizard reads members and settings from it.",
+            required=True)
     # 명시 플래그(--dir/--member-name/--agent/--role/--obsidian)가 하나라도 있으면
     # TTY 여도 wizard 를 건너뛴다(플래그 = 비대화 의도, CLI 관례). /dev/tty 재연결(#6)로
     # 터미널의 curl 사용자가 플래그를 줬는데 wizard 가 무시하는 회귀 방지(codex P2).
