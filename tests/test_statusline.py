@@ -112,7 +112,7 @@ def claude_env(tmp_path):
     (agent_dir / "normalize.py").write_text("# stub\n")
 
     settings = tmp_path / "settings.json"
-    _write_team_config(root, "T-Gates")
+    _write_team_config(root, "Acme")
 
     def write_manifest(entries):
         (hooks_dir / "manifest.json").write_text(json.dumps(entries))
@@ -152,7 +152,7 @@ def codex_env(tmp_path):
     (agent_dir / "events.json").write_text(json.dumps(_codex_events_json()))
     (agent_dir / "normalize.py").write_text("# stub\n")
     config = tmp_path / "config.toml"
-    _write_team_config(root, "T-Gates")
+    _write_team_config(root, "Acme")
 
     Adapter = _load_codex_adapter()
 
@@ -200,8 +200,8 @@ class TestCodexStatusMessage:
         """statusMessage 값에 team.config.json의 team.name이 포함된다."""
         codex_env.make_adapter().sync(mode="on")
         text = codex_env.config.read_text()
-        # "[T-Gates] 팀모드 ON" 형태
-        assert "T-Gates" in text
+        # "[Acme] 팀모드 ON" 형태
+        assert "Acme" in text
         assert "팀모드 ON" in text
 
     def test_A3_statusmessage_falls_back_to_team_on_parse_failure(self, codex_env):
@@ -339,7 +339,7 @@ def statusline_env(tmp_path):
     root = tmp_path / "teamroot"
     agent_dir = root / "infra" / "agents" / "claude"
     agent_dir.mkdir(parents=True)
-    _write_team_config(root, "T-Gates")
+    _write_team_config(root, "Acme")
 
     class Env:
         pass
@@ -385,9 +385,9 @@ class TestStatuslineScript:
         (statusline_env.root / ".teammode-active").write_text("")
         stdout, rc = _run_statusline(statusline_env.agent_dir)
         assert rc == 0
-        assert "T-Gates" in stdout
+        assert "Acme" in stdout
         # ANSI cyan escape 포함
-        assert "«T-Gates»" in stdout, f"길러멧 배지 «T-Gates» 형식이어야 함: {stdout!r}"
+        assert "«Acme»" in stdout, f"길러멧 배지 «Acme» 형식이어야 함: {stdout!r}"
         assert "\033[1;36m" in stdout, f"시안 ANSI escape 포함이어야 함: {stdout!r}"
 
     def test_C2_no_output_when_inactive(self, statusline_env):
@@ -717,7 +717,7 @@ class TestWrapperMode:
         """wrapper 모드 — stdin 데이터가 subprocess(원본 명령)에 전달된다."""
         # stdin 으로 JSON 전달 → 그대로 출력하는 명령으로 확인
         (statusline_env.root / ".teammode-active").write_text("")
-        _write_team_config(statusline_env.root, "T-Gates")
+        _write_team_config(statusline_env.root, "Acme")
 
         # echo_stdin 스크립트: stdin을 그대로 stdout으로 출력
         echo_script = statusline_env.root / "echo_stdin.py"
@@ -731,7 +731,7 @@ class TestWrapperMode:
             statusline_env.agent_dir,
             wrapped_cmd=wrapped_cmd,
             active=True,
-            team_name="T-Gates",
+            team_name="Acme",
             root=statusline_env.root,
             stdin_text=stdin_payload,
         )
@@ -741,7 +741,7 @@ class TestWrapperMode:
 
     def test_F2_wrapper_active_combines_original_and_team_name(self, statusline_env):
         """wrapper 모드 활성 — 원본 출력 + [팀명] 조합."""
-        _write_team_config(statusline_env.root, "T-Gates")
+        _write_team_config(statusline_env.root, "Acme")
 
         # 고정 문자열 출력 스크립트
         hello_script = statusline_env.root / "hello.py"
@@ -752,16 +752,16 @@ class TestWrapperMode:
             statusline_env.agent_dir,
             wrapped_cmd=wrapped_cmd,
             active=True,
-            team_name="T-Gates",
+            team_name="Acme",
             root=statusline_env.root,
         )
         assert rc == 0
         assert "ORIGINAL_OUTPUT" in stdout, f"원본 출력 포함 필요: {stdout!r}"
-        assert "T-Gates" in stdout, f"팀명 포함 필요: {stdout!r}"
+        assert "Acme" in stdout, f"팀명 포함 필요: {stdout!r}"
 
     def test_F3_wrapper_inactive_only_original_output(self, statusline_env):
         """wrapper 모드 비활성 — 원본 출력만, [팀명] 없음."""
-        _write_team_config(statusline_env.root, "T-Gates")
+        _write_team_config(statusline_env.root, "Acme")
 
         hello_script = statusline_env.root / "hello2.py"
         hello_script.write_text("print('ONLY_ORIGINAL', end='')\n", encoding="utf-8")
@@ -771,16 +771,16 @@ class TestWrapperMode:
             statusline_env.agent_dir,
             wrapped_cmd=wrapped_cmd,
             active=False,
-            team_name="T-Gates",
+            team_name="Acme",
             root=statusline_env.root,
         )
         assert rc == 0
         assert "ONLY_ORIGINAL" in stdout, f"원본 출력 포함 필요: {stdout!r}"
-        assert "T-Gates" not in stdout, f"비활성 시 팀명 없어야 함: {stdout!r}"
+        assert "Acme" not in stdout, f"비활성 시 팀명 없어야 함: {stdout!r}"
 
     def test_F4_wrapper_failure_nonfatal(self, statusline_env):
         """wrapper 모드 — 원본 명령 실패 시 비치명적 (exit 0, 활성이면 팀명 단독)."""
-        _write_team_config(statusline_env.root, "T-Gates")
+        _write_team_config(statusline_env.root, "Acme")
 
         # 실패 명령
         wrapped_cmd = f"{sys.executable} -c 'import sys; sys.exit(1)'"
@@ -789,17 +789,17 @@ class TestWrapperMode:
             statusline_env.agent_dir,
             wrapped_cmd=wrapped_cmd,
             active=True,
-            team_name="T-Gates",
+            team_name="Acme",
             root=statusline_env.root,
         )
         # 항상 exit 0 (비치명적)
         assert rc == 0
         # 활성이므로 팀명만이라도 출력
-        assert "T-Gates" in stdout, f"실패 시에도 활성이면 팀명 출력 필요: {stdout!r}"
+        assert "Acme" in stdout, f"실패 시에도 활성이면 팀명 출력 필요: {stdout!r}"
 
     def test_F4b_wrapper_failure_inactive_no_output(self, statusline_env):
         """wrapper 모드 — 원본 명령 실패 + 비활성 → 무출력."""
-        _write_team_config(statusline_env.root, "T-Gates")
+        _write_team_config(statusline_env.root, "Acme")
 
         wrapped_cmd = f"{sys.executable} -c 'import sys; sys.exit(1)'"
 
@@ -807,7 +807,7 @@ class TestWrapperMode:
             statusline_env.agent_dir,
             wrapped_cmd=wrapped_cmd,
             active=False,
-            team_name="T-Gates",
+            team_name="Acme",
             root=statusline_env.root,
         )
         assert rc == 0
@@ -965,15 +965,15 @@ class TestWrapperBadgePlacement:
     """wrapper 활성 시 배지가 원본 출력 **앞**(prepend)에 온다."""
 
     def test_badge_prepended_before_original(self, statusline_env):
-        _write_team_config(statusline_env.root, "T-Gates")
+        _write_team_config(statusline_env.root, "Acme")
         hello = statusline_env.root / "hello_prepend.py"
         hello.write_text("print('ORIGINAL_OUTPUT', end='')\n", encoding="utf-8")
         stdout, rc = _run_statusline_wrapped(
             statusline_env.agent_dir,
             wrapped_cmd=f"{sys.executable} {hello}",
-            active=True, team_name="T-Gates", root=statusline_env.root)
+            active=True, team_name="Acme", root=statusline_env.root)
         assert rc == 0
-        assert stdout.index("T-Gates") < stdout.index("ORIGINAL_OUTPUT"), \
+        assert stdout.index("Acme") < stdout.index("ORIGINAL_OUTPUT"), \
             f"배지가 원본 앞에 와야 함(prepend): {stdout!r}"
 
 
@@ -1188,7 +1188,7 @@ class TestCrossOsShellExecution:
         if bash_path is None:
             pytest.skip("bash를 찾을 수 없어 skip")
 
-        _write_team_config(statusline_env.root, "T-Gates")
+        _write_team_config(statusline_env.root, "Acme")
         (statusline_env.root / ".teammode-active").write_text("")
 
         # bash 명시 실행 확인용: bash가 실행하는 서브스크립트
@@ -1200,7 +1200,7 @@ class TestCrossOsShellExecution:
             statusline_env.agent_dir,
             wrapped_cmd=str(hello_script),
             active=True,
-            team_name="T-Gates",
+            team_name="Acme",
             root=statusline_env.root,
         )
         assert rc == 0

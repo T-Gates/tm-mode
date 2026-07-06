@@ -38,7 +38,7 @@ description: Use when adding, updating, or deleting memory in the team memory ba
 ---
 created_at: 2026-06-18
 updated_at: 2026-06-18
-author: eunsu
+author: bob
 weight: 🔥          # 🔥 핵심 / 📌 중요 / 📎 참고
 ---
 ```

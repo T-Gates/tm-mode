@@ -22,9 +22,9 @@ def _plan(tmp_path, **over):
     kw = dict(
         team_root=tmp_path / "team",
         agents=["claude", "codex"],
-        member_name="leejhy",
+        member_name="alice",
         role="member",
-        team_name_default="tgates",
+        team_name_default="acme",
         home=tmp_path / "home",
         settings_override=None,
         shell="zsh",
@@ -67,7 +67,7 @@ def test_env_includes_teammode_vars(tmp_path):
     """env 는 ENV_VAR(TEAMMODE_HOME)+TEAMMODE_MEMBER+shell profile 대상."""
     plan = _plan(tmp_path)
     assert plan.env.get("TEAMMODE_HOME")
-    assert plan.env.get("TEAMMODE_MEMBER") == "leejhy"
+    assert plan.env.get("TEAMMODE_MEMBER") == "alice"
     assert ".zshrc" in plan.env.get("profile", "")
 
 
@@ -154,7 +154,7 @@ def test_dry_run_cli_prints_plan_and_touches_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     mod = runpy.run_path(str(REPO / "infra" / "install.py"),
                          run_name="__dry_run_test__")
-    argv = ["--root", str(team), "--dry-run", "--member-name", "leejhy"]
+    argv = ["--root", str(team), "--dry-run", "--member-name", "alice"]
     opts = mod["parse_args"](argv) if "parse_args" in mod else None
     buf_out, buf_err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
@@ -191,7 +191,7 @@ def test_wire_step_names_match_wire_agents_implementation(tmp_path):
     il.wire_agents(["claude"], home=tmp_path / "home",
                    settings_override=tmp_path / "iso",
                    run_adapter=spy, team_root=tmp_path / "team",
-                   member_name="leejhy")
+                   member_name="alice")
     expected = [s.split()[0] for s in il.WIRE_STEP_NAMES]
     assert calls == expected, (
         f"wire_agents 실호출 {calls} ≠ WIRE_STEP_NAMES {expected} — 계획 드리프트")
@@ -209,7 +209,7 @@ def test_wire_failure_skips_downstream_steps(tmp_path):
     res = il.wire_agents(["claude"], home=tmp_path / "home",
                          settings_override=tmp_path / "iso",
                          run_adapter=failing, team_root=tmp_path / "team",
-                         member_name="leejhy")
+                         member_name="alice")
     assert calls == ["install-mcp"], (
         f"install-mcp 실패 후 후속 단계가 실행됨: {calls}")
     assert res.ok is False
@@ -264,7 +264,7 @@ def test_dry_run_without_yes_is_honest_about_skips(tmp_path, monkeypatch):
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
         rc = mod["bootstrap"](
             il.parse_args(["--root", str(team), "--dry-run",
-                           "--member-name", "leejhy"]),
+                           "--member-name", "alice"]),
             home=home, python_version=(3, 12))
     assert rc == 0
     assert "not injected" in buf.getvalue(), (

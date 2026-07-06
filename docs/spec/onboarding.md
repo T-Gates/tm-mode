@@ -16,7 +16,7 @@ tm-mode SPEC v0.3 — 설치·부트스트랩
 |---|---|
 | **코어 ≠ 스킨** | install.py는 설치 코어. 진입 스킨("셋업해줘"·pipx·npx·플러그인)은 결국 install.py를 호출하는 얇은 층. |
 | **결정적** | 일반 bootstrap 경로는 같은 입력과 같은 파일 상태 → 같은 결과를 목표로 한다. 이름·identity·role·settings·root는 명시 인자 또는 git/local 파일에서 읽고, 애매하면 멈춘다. 예외: `--register-obsidian`의 신규 등록은 `ts`/`vault_id` 기본값이 실행마다 달라질 수 있다(§4.9). |
-| **env 불신뢰** | 팀 루트는 `--root` 또는 팀 표식 있는 cwd로만 결정한다. ambient `TEAMMODE_HOME`/`TGATES_HOME`은 install 경로에서 신뢰하지 않는다. verify subprocess도 env 화이트리스트만 넘긴다. |
+| **env 불신뢰** | 팀 루트는 `--root` 또는 팀 표식 있는 cwd로만 결정한다. ambient `TEAMMODE_HOME`/`LEGACY_TOOL_HOME`은 install 경로에서 신뢰하지 않는다. verify subprocess도 env 화이트리스트만 넘긴다. |
 | **L1 자력 도달** | 서비스 연결(L2) 없이도 memory 구조, members, 훅 배선, active marker, context 수집까지 간다. 빈 `services` 슬롯은 정상이다. |
 | **크로스에이전트** | wire 단계는 home의 `.claude`·`.codex` 디렉토리 존재로 감지한 에이전트를 각 어댑터 CLI에 위임한다. 단 bootstrap verify는 `context`만 호출하므로(`on` 미사용) 어댑터 로드와 무관하다(§4.4·§4.7). |
 | **호스트 쓰기 게이트** | 실 에이전트 설정·실 env는 `--yes` 또는 격리 `--settings` 의도가 있을 때만 처리한다. `--settings`가 있으면 env는 실호스트에 쓰지 않는다. |
@@ -141,7 +141,7 @@ detect 함수 `_detect(team_root, home)`는 읽기만 한다.
 - `shell="__env__"` 기본값은 `os.environ["SHELL"]`에서 bash/zsh/fish 감지에만 쓰인다. 팀 root 결정에는 env를 쓰지 않는다.
 - `platform=None`이면 `sys.platform`으로 Windows/POSIX env 분기를 결정한다.
 - verify는 `_engine_capture(["context", "--root", team_root, "--json"])`만 호출한다(**`on` 미사용** — `cmd_on`의 `auto_update_on_start`가 팀 레포에 자동 커밋을 남기는 부작용 회피). `context` rc 비zero·stdout JSON 파싱 실패는 exit 3이다. settings·active 마커를 만들지 않으며 팀모드를 켜지 않는다(설치 ≠ 활성화).
-- `_engine_capture()`는 subprocess env를 `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `TZ`, `PYTHONPATH`, `TERM`, `XDG_STATE_HOME`로 제한한다. ambient `TEAMMODE_HOME`/`TGATES_HOME`은 넘기지 않는다.
+- `_engine_capture()`는 subprocess env를 `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `TZ`, `PYTHONPATH`, `TERM`, `XDG_STATE_HOME`로 제한한다. ambient `TEAMMODE_HOME`/`LEGACY_TOOL_HOME`은 넘기지 않는다.
 
 ### 4.5 도입자/팀원 role 분기
 

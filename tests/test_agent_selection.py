@@ -65,13 +65,13 @@ class TestParseArgsAgents:
         opts = il.parse_args([
             "--root", "/tmp/team",
             "--agent", "claude",
-            "--member-name", "eunsu",
+            "--member-name", "bob",
             "--agent", "codex",
             "--yes",
         ])
         assert opts.agents == ["claude", "codex"]
         assert opts.root == "/tmp/team"
-        assert opts.member_name == "eunsu"
+        assert opts.member_name == "bob"
         assert opts.yes is True
 
 
@@ -184,7 +184,7 @@ class TestBootstrapAgentFiltering:
 
         import install as inst
         opts = il.parse_args(["--root", str(tmp_path), "--yes",
-                               "--member-name", "eunsu"] + agent_argv)
+                               "--member-name", "bob"] + agent_argv)
 
         warned = []
         messages = []
@@ -393,10 +393,10 @@ class TestCmdOnAgentsFromConfig:
              patch.object(tm, "_active_marker") as mock_marker:
             mock_marker.return_value = MagicMock()
             mock_marker.return_value.write_text = MagicMock()
-            rc = tm.cmd_on(tmp_path, str(settings), member="leejhy", install=True)
+            rc = tm.cmd_on(tmp_path, str(settings), member="alice", install=True)
 
         assert rc == 0
-        assert seen.get("codex") == "leejhy", f"codex 에 member 미전파: {seen}"
+        assert seen.get("codex") == "alice", f"codex 에 member 미전파: {seen}"
         # claude 는 member 미전파(positional 만, member kwarg 없음 → None)
         assert seen.get("claude") is None, f"claude 에 member 가 샘: {seen}"
 
@@ -512,10 +512,10 @@ class TestCmdOffAgentsFromConfig:
              patch.object(tm, "_active_marker") as mock_marker:
             mock_marker.return_value = MagicMock()
             mock_marker.return_value.exists.return_value = True
-            rc = tm.cmd_off(tmp_path, str(settings), member="leejhy", install=True)
+            rc = tm.cmd_off(tmp_path, str(settings), member="alice", install=True)
 
         assert rc == 0
-        assert seen.get("codex") == "leejhy", f"codex 에 member 미전파: {seen}"
+        assert seen.get("codex") == "alice", f"codex 에 member 미전파: {seen}"
         assert seen.get("claude") is None, f"claude 에 member 가 샘: {seen}"
 
     def test_cmd_off_no_config_fallback_detect(self, tmp_path):
@@ -594,7 +594,7 @@ class TestCmdUtilAgentsFromConfig:
              patch.object(tm, "_active_marker") as mock_marker:
             mock_marker.return_value = MagicMock()
             mock_marker.return_value.exists.return_value = True
-            rc = tm.cmd_util(tmp_path, "add", "eunsu", "test-util",
+            rc = tm.cmd_util(tmp_path, "add", "bob", "test-util",
                              skills_dir=str(tmp_path / "skills"),
                              settings_path=str(settings), install=True)
 
@@ -624,7 +624,7 @@ class TestCmdUtilAgentsFromConfig:
              patch.object(tm, "_active_marker") as mock_marker:
             mock_marker.return_value = MagicMock()
             mock_marker.return_value.exists.return_value = True
-            rc = tm.cmd_util(tmp_path, "remove", "eunsu", "test-util",
+            rc = tm.cmd_util(tmp_path, "remove", "bob", "test-util",
                              skills_dir=str(tmp_path / "skills"),
                              settings_path=str(settings), install=True)
 

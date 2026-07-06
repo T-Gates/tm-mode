@@ -41,7 +41,7 @@ def _profile_with_ours(tmp_path):
     p.write_text(
         "export PATH=/usr/local/bin:$PATH  # 남의 줄, 보존돼야 함\n"
         "alias ll='ls -al'  # 또 다른 남의 줄\n"
-        f'export TEAMMODE_TEAM_NAME=tgates  {ENV_MARKER} v0.1)\n'
+        f'export TEAMMODE_TEAM_NAME=acme  {ENV_MARKER} v0.1)\n'
         "export EDITOR=vim  # 남의 줄\n",
         encoding="utf-8",
     )
@@ -215,8 +215,8 @@ def test_uninstall_idempotent(tmp_path):
 
 def test_uninstall_does_not_delete_memory(tmp_path):
     team_root = tmp_path / "teamroot"
-    (team_root / "memory" / "team" / "sessions" / "euns").mkdir(parents=True)
-    payload = team_root / "memory" / "team" / "sessions" / "euns" / "2026-06-15.md"
+    (team_root / "memory" / "team" / "sessions" / "alice").mkdir(parents=True)
+    payload = team_root / "memory" / "team" / "sessions" / "alice" / "2026-06-15.md"
     payload.write_text("팀 데이터 — 절대 삭제 금지\n", encoding="utf-8")
     settings = tmp_path / "settings.json"
     _on(team_root, settings)

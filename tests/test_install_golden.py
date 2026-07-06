@@ -86,7 +86,7 @@ def test_I1_introducer_full_run(tmp_path):
 # ─────────────────────────── I2 — 유효 config 레포 (팀원) ───────────────────────────
 
 def test_I2_member_only_upserts_own_config_entry(tmp_path):
-    """L2-A2 완화(은수 결정): 팀원 install 은 config **코어 키 무수정** + **자기
+    """L2-A2 완화(팀 결정): 팀원 install 은 config **코어 키 무수정** + **자기
     members 엔트리만** upsert. spec_version/team/admin_contact/services 불변,
     타인 members 엔트리 무접촉."""
     team = tmp_path / "team"
@@ -184,7 +184,7 @@ def test_I4_ambient_teammode_home_ignored(tmp_path):
     iso = tmp_path / "iso"
     proc = _run_install(team, home, ["--settings", str(iso)],
                         extra_env={"TEAMMODE_HOME": str(victim),
-                                   "TGATES_HOME": str(victim)})
+                                   "LEGACY_TOOL_HOME": str(victim)})
     assert proc.returncode == 0
     # victim 무접촉: memory·marker 미생성
     assert not (victim / "memory").exists()

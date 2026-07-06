@@ -385,7 +385,7 @@ def test_role_not_demoted_when_provider_pack_missing(tmp_path):
     """
     member_cfg = {
         "spec_version": "0.1",
-        "team": {"name": "tgates", "greeting": "hi", "farewell": "bye"},
+        "team": {"name": "acme", "greeting": "hi", "farewell": "bye"},
         "admin_contact": "alice",
         "services": {"docs": {"provider": "notion", "scope": "team",
                               "database_id": "realdb"}},
@@ -423,7 +423,7 @@ def test_example_config_copied_team_judged_member(tmp_path):
     """
     ex = json.loads((_REPO_ROOT / "team.config.example.json").read_text(
         encoding="utf-8"))
-    ex["team"]["name"] = "tgates"  # placeholder → 실 이름
+    ex["team"]["name"] = "acme"  # placeholder → 실 이름
     cfg_path = tmp_path / "team.config.json"
     cfg_path.write_text(json.dumps(ex), encoding="utf-8")
 

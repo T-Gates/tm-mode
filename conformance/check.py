@@ -812,7 +812,7 @@ class SubprocessEngine:
         self.root = Path(cwd)
 
     # 격리에 필요한 최소 ambient 변수만 통과시킨다. 그 외(특히 TEAMMODE_HOME·
-    # TGATES_HOME 같은 팀 루트 지시 변수)는 절대 상속하지 않는다 — `env -i` 정신.
+    # LEGACY_TOOL_HOME 같은 팀 루트 지시 변수)는 절대 상속하지 않는다 — `env -i` 정신.
     # ※ 엔진은 더 이상 env 로 팀 루트를 받지 않는다(P1) — 팀 루트는 `--root` 로 명시
     #   전달한다. env 화이트리스트는 2차 방어선(혹 다른 구현이 env 를 읽어도 누수 0).
     _PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
@@ -824,7 +824,7 @@ class SubprocessEngine:
 
     def run(self, argv) -> Result:
         # 엔진을 run root(=검사 대상 팀 루트)에 고정한다. 팀 루트는 `--root` 명시 인자로
-        # 전달하고(P1: env 비신뢰), env 화이트리스트로 ambient TEAMMODE_HOME/TGATES_HOME
+        # 전달하고(P1: env 비신뢰), env 화이트리스트로 ambient TEAMMODE_HOME/LEGACY_TOOL_HOME
         # 누수도 차단한다(이중 방어, docs/spec/internals.md §1.2). 첫 토큰(동사) 뒤에 --root 를 끼운다.
         argv = list(argv)
         if argv:

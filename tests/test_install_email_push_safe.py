@@ -31,7 +31,7 @@ def test_push_safe_email_predicate():
 def test_warns_for_private_email_on_github_remote(tmp_path):
     msgs, err = _collect_err()
     det = {"git_user_email": "me@gmail.com",
-           "remote_url": "https://github.com/T-Gates/tgates-team.git"}
+           "remote_url": "https://github.com/acme/acme-team.git"}
     install._warn_if_email_not_push_safe(det, tmp_path, err)
     joined = "\n".join(msgs)
     assert "GH007" in joined
@@ -42,7 +42,7 @@ def test_warns_for_private_email_on_github_remote(tmp_path):
 def test_no_warn_for_noreply_email(tmp_path):
     msgs, err = _collect_err()
     det = {"git_user_email": "123+me@users.noreply.github.com",
-           "remote_url": "https://github.com/T-Gates/tgates-team.git"}
+           "remote_url": "https://github.com/acme/acme-team.git"}
     install._warn_if_email_not_push_safe(det, tmp_path, err)
     assert msgs == []
 
@@ -59,6 +59,6 @@ def test_no_warn_for_non_github_remote(tmp_path):
 def test_warns_when_email_unset_on_github(tmp_path):
     msgs, err = _collect_err()
     det = {"git_user_email": None,
-           "remote_url": "git@github.com:T-Gates/tgates-team.git"}
+           "remote_url": "git@github.com:acme/acme-team.git"}
     install._warn_if_email_not_push_safe(det, tmp_path, err)
     assert any("GH007" in m for m in msgs)

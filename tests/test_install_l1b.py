@@ -20,7 +20,7 @@ import install_lib as il  # noqa: E402
 
 def test_scaffold_creates_memory_structure(tmp_path):
     il.scaffold_memory(tmp_path, member_name="alice", role="introducer",
-                       team_name="tgates")
+                       team_name="acme")
     assert (tmp_path / "memory" / "INDEX.md").is_file()
     assert (tmp_path / "memory" / "team" / "members.md").is_file()
     # 엔진 단일소스 경로 (teammode.py:191): memory/team/sessions/<author>/
@@ -83,11 +83,11 @@ def test_write_banner_real_ansi_shadow(tmp_path):
 
 def test_introducer_writes_minimal_config(tmp_path):
     il.scaffold_memory(tmp_path, member_name="alice", role="introducer",
-                       team_name="tgates", timezone="Asia/Seoul",
+                       team_name="acme", timezone="Asia/Seoul",
                        locale="ko_KR")
     cfg = json.loads((tmp_path / "team.config.json").read_text())
     assert cfg["spec_version"]
-    assert cfg["team"]["name"] == "tgates"
+    assert cfg["team"]["name"] == "acme"
     assert cfg["team"]["timezone"] == "Asia/Seoul"
     assert cfg["admin_contact"] == "alice"
     assert cfg["members_file"]
@@ -98,22 +98,22 @@ def test_introducer_writes_minimal_config(tmp_path):
 def test_introducer_config_is_valid_for_role(tmp_path):
     """도입자가 쓴 config 는 그 뒤 role 판정에서 member 로 유효해야 한다(자기일관)."""
     il.scaffold_memory(tmp_path, member_name="alice", role="introducer",
-                       team_name="tgates")
+                       team_name="acme")
     assert il.detect_role(tmp_path) == "member"
 
 
 def test_member_only_upserts_own_members_entry(tmp_path):
-    """팀원 경로(L2-A2 완화, 은수 결정): config 코어키는 무수정, **자기 members
+    """팀원 경로(L2-A2 완화, 팀 결정): config 코어키는 무수정, **자기 members
     엔트리만** upsert. spec_version/team/admin_contact/services 등 다른 키 불변."""
-    cfg = {"spec_version": "0.1", "team": {"name": "tgates"},
+    cfg = {"spec_version": "0.1", "team": {"name": "acme"},
            "admin_contact": "founder", "services": {}}
     (tmp_path / "team.config.json").write_text(json.dumps(cfg))
     il.scaffold_memory(tmp_path, member_name="bob", role="member",
-                       team_name="tgates", member_role="developer")
+                       team_name="acme", member_role="developer")
     after = json.loads((tmp_path / "team.config.json").read_text())
     # 코어 키 무수정.
     assert after["spec_version"] == "0.1"
-    assert after["team"] == {"name": "tgates"}
+    assert after["team"] == {"name": "acme"}
     assert after["admin_contact"] == "founder"
     assert after["services"] == {}
     # 자기 members 엔트리만 추가.
@@ -122,12 +122,12 @@ def test_member_only_upserts_own_members_entry(tmp_path):
 
 def test_member_does_not_touch_other_members_entries(tmp_path):
     """팀원 install 이 타인 members 엔트리를 절대 안 건드림(각자 upsert 정합)."""
-    cfg = {"spec_version": "0.1", "team": {"name": "tgates"},
+    cfg = {"spec_version": "0.1", "team": {"name": "acme"},
            "admin_contact": "founder", "services": {},
            "members": [{"name": "founder", "role": "pm"}]}
     (tmp_path / "team.config.json").write_text(json.dumps(cfg))
     il.scaffold_memory(tmp_path, member_name="bob", role="member",
-                       team_name="tgates", member_role="developer")
+                       team_name="acme", member_role="developer")
     members = json.loads((tmp_path / "team.config.json").read_text())["members"]
     assert {"name": "founder", "role": "pm"} in members  # 타인 무접촉
     assert {"name": "bob", "role": "developer"} in members
@@ -214,10 +214,10 @@ def test_scaffold_rejects_invalid_member_name(tmp_path):
 def test_scaffold_idempotent(tmp_path):
     """재실행 안전 — 디렉토리·config·members 중복 생성 0(I3)."""
     il.scaffold_memory(tmp_path, member_name="alice", role="introducer",
-                       team_name="tgates")
+                       team_name="acme")
     index_before = (tmp_path / "memory" / "INDEX.md").read_text()
     il.scaffold_memory(tmp_path, member_name="alice", role="introducer",
-                       team_name="tgates")
+                       team_name="acme")
     index_after = (tmp_path / "memory" / "INDEX.md").read_text()
     assert index_before == index_after
     members = (tmp_path / "memory" / "team" / "members.md").read_text()

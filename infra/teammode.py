@@ -380,7 +380,7 @@ def auto_update_on_start(team_root: Path) -> None:
             print(f"[auto-update] 자동 커밋 실패(staged 잔존) — "
                   f"검토 후 직접 커밋하세요: {commit_res.detail}")
         else:
-            # 적용 성공 — NOTICE 첫 불릿 표시(은수 원래 의도: 켤 때 소식 보여주기)
+            # 적용 성공 — NOTICE 첫 불릿 표시(팀 원래 의도: 켤 때 소식 보여주기)
             local_notice = _read_local_notice(team_root)
             first_bullet = ""
             for line in local_notice.splitlines():

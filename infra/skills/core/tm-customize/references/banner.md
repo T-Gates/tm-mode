@@ -22,7 +22,7 @@ cp infra/banners/slant.txt memory/banner.txt
 **⚠️ 에이전트 필수 행동**: 배너 커스텀 요청이 오면, 프리셋만 보여주고 끝내지 말고 **다음 두 갈래를 명시적으로 안내**한다:
 
 > **(A) 프리셋 6종** — "TEAMMODE" 글자의 기성 ASCII 아트 중 폰트를 고르는 방법  
-> **(B) 팀명 ASCII** — 예: "TGATES" 같은 실제 팀명으로 커스텀 아트를 직접 생성하는 방법
+> **(B) 팀명 ASCII** — 예: "ACME" 같은 실제 팀명으로 커스텀 아트를 직접 생성하는 방법
 
 둘 다 가능하다는 걸 사용자에게 **먼저** 알리고, 어느 쪽으로 갈지 물어보거나 양쪽 샘플을 보여준 뒤 고르게 한다.
 
@@ -66,7 +66,7 @@ cat memory/banner.txt
 
 ```bash
 command -v figlet || echo "figlet 없음"                    # 먼저 가용 확인
-figlet -f slant "TGATES" > /tmp/b.txt && cat /tmp/b.txt    # 미리보기
+figlet -f slant "ACME" > /tmp/b.txt && cat /tmp/b.txt    # 미리보기
 cp /tmp/b.txt memory/banner.txt                            # 마음에 들면 적용
 ```
 
@@ -78,13 +78,13 @@ figlet이 없으면 먼저 pyfiglet을 확인한다. 시스템 python3에 이미
 
 ```bash
 python3 -c "import pyfiglet; print(pyfiglet.__version__)"                          # 가용 확인
-python3 -c "import pyfiglet; print(pyfiglet.figlet_format('TGATES', font='slant'))"  # 미리보기
+python3 -c "import pyfiglet; print(pyfiglet.figlet_format('ACME', font='slant'))"  # 미리보기
 ```
 
 pyfiglet로 생성해서 적용:
 
 ```bash
-python3 -c "import pyfiglet; print(pyfiglet.figlet_format('TGATES', font='ansi_shadow'))" > /tmp/b.txt
+python3 -c "import pyfiglet; print(pyfiglet.figlet_format('ACME', font='ansi_shadow'))" > /tmp/b.txt
 cat /tmp/b.txt          # 확인 후
 cp /tmp/b.txt memory/banner.txt   # 적용
 ```

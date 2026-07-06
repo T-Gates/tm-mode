@@ -96,7 +96,7 @@ def test_route_upsert_inserts_new_row(tmp_path):
     r = _run(root, "memory", "route", "upsert",
              "--path", "product/marketing/",
              "--desc", "마케팅·GTM·광고",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0, f"upsert 실패: rc={r.returncode}, err={r.stderr!r}"
 
     text = _read(index_path)
@@ -118,7 +118,7 @@ def test_route_upsert_updates_existing_row(tmp_path):
     r = _run(root, "memory", "route", "upsert",
              "--path", "team/members.md",
              "--desc", "멤버 명부 — 갱신된 설명",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0, f"upsert 갱신 실패: {r.stderr!r}"
 
     text = _read(index_path)
@@ -140,7 +140,7 @@ def test_route_upsert_idempotent_no_second_commit(tmp_path):
     r1 = _run(root, "memory", "route", "upsert",
               "--path", "product/marketing/",
               "--desc", "마케팅",
-              "--author", "eunsu")
+              "--author", "bob")
     assert r1.returncode == 0
     count_after_first = _commit_count(root)
 
@@ -148,7 +148,7 @@ def test_route_upsert_idempotent_no_second_commit(tmp_path):
     r2 = _run(root, "memory", "route", "upsert",
               "--path", "product/marketing/",
               "--desc", "마케팅",
-              "--author", "eunsu")
+              "--author", "bob")
     assert r2.returncode == 0, f"멱등 호출이 0 이 아님: {r2.stderr!r}"
     count_after_second = _commit_count(root)
     assert count_after_second == count_after_first, (
@@ -167,7 +167,7 @@ def test_route_remove_present_row(tmp_path):
 
     r = _run(root, "memory", "route", "remove",
              "--path", "team/members.md",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0, f"remove 실패: {r.stderr!r}"
 
     text = _read(index_path)
@@ -188,7 +188,7 @@ def test_route_remove_absent_is_idempotent(tmp_path):
 
     r = _run(root, "memory", "route", "remove",
              "--path", "product/does-not-exist/",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0, f"부재 remove 가 0 이 아님: rc={r.returncode}, {r.stderr!r}"
     count_after = _commit_count(root)
     assert count_after == count_before, "부재 remove 가 새 커밋을 만들었다"
@@ -206,7 +206,7 @@ def test_route_upsert_preserves_prose_above_table(tmp_path):
     r = _run(root, "memory", "route", "upsert",
              "--path", "product/marketing/",
              "--desc", "마케팅",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0
 
     text = _read(index_path)
@@ -227,7 +227,7 @@ def test_route_folder_row_and_file_row_no_cross_match_remove(tmp_path):
     # 파일행만 제거 → 폴더행은 유지돼야 한다
     r = _run(root, "memory", "route", "remove",
              "--path", "product/brand/philosophy.md",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0, f"파일행 remove 실패: {r.stderr!r}"
 
     text = _read(index_path)
@@ -244,7 +244,7 @@ def test_route_folder_row_update_does_not_touch_file_row(tmp_path):
     r = _run(root, "memory", "route", "upsert",
              "--path", "product/brand/",
              "--desc", "폴더행 갱신",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0, f"폴더행 upsert 실패: {r.stderr!r}"
 
     text = _read(index_path)
@@ -266,7 +266,7 @@ def test_route_upsert_rejects_traversal(tmp_path):
     r = _run(root, "memory", "route", "upsert",
              "--path", "../escape.md",
              "--desc", "탈출 시도",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 2, (
         f"traversal '../escape.md' 가 거부되지 않았다: rc={r.returncode}, {r.stdout!r}"
     )
@@ -280,7 +280,7 @@ def test_route_upsert_rejects_absolute_path(tmp_path):
     r = _run(root, "memory", "route", "upsert",
              "--path", "/etc/passwd",
              "--desc", "절대경로 시도",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 2, (
         f"절대경로 '/etc/passwd' 가 거부되지 않았다: rc={r.returncode}"
     )
@@ -297,7 +297,7 @@ def test_route_upsert_missing_desc_exit2(tmp_path):
 
     r = _run(root, "memory", "route", "upsert",
              "--path", "product/marketing/",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 2, (
         f"--desc 누락이 exit 2 를 내지 않았다: rc={r.returncode}, {r.stdout!r}"
     )
@@ -310,7 +310,7 @@ def test_route_unknown_sub_action_exit2(tmp_path):
 
     r = _run(root, "memory", "route", "frobnicate",
              "--path", "product/marketing/",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 2, (
         f"알 수 없는 서브액션이 exit 2 를 내지 않았다: rc={r.returncode}"
     )
@@ -330,7 +330,7 @@ def test_route_upsert_creates_table_when_absent(tmp_path):
     r = _run(root, "memory", "route", "upsert",
              "--path", "product/marketing/",
              "--desc", "마케팅",
-             "--author", "eunsu")
+             "--author", "bob")
     assert r.returncode == 0, f"표 생성 upsert 실패: {r.stderr!r}"
 
     text = _read(index_path)

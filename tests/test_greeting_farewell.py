@@ -23,7 +23,7 @@ def _run(root: Path, verb: str, *argv):
 
 def _write_config(root: Path, **team_extra):
     """유효 team.config.json 작성(team.name 비-placeholder). team_extra 로 team.* 추가."""
-    team = {"name": "tgates", "timezone": "Asia/Seoul", "locale": "ko_KR"}
+    team = {"name": "acme", "timezone": "Asia/Seoul", "locale": "ko_KR"}
     team.update(team_extra)
     cfg = {"spec_version": "0.1", "team": team, "services": {}}
     (root / "team.config.json").write_text(
@@ -72,10 +72,10 @@ def test_on_greeting_without_banner_in_stdout(tmp_path):
 # ── off: farewell ──
 
 def test_off_prints_farewell_when_configured(tmp_path):
-    _write_config(tmp_path, farewell="수고하셨습니다 — tgates")
+    _write_config(tmp_path, farewell="수고하셨습니다 — acme")
     r = _run(tmp_path, "off")
     assert r.returncode == 0, r.stderr
-    assert "수고하셨습니다 — tgates" in r.stdout
+    assert "수고하셨습니다 — acme" in r.stdout
 
 
 def test_off_fallback_when_no_farewell(tmp_path):

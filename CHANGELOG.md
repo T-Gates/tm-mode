@@ -34,7 +34,7 @@
 
 ### Removed
 
-- `soma/` 내장 정적 허용 제거 — 특정 팀 도메인의 제품 하드코딩(오염). 팀 전용 최상위 memory 폴더는 이제 `memory route upsert` 로 루트 INDEX 에 등재해야 `memory write/delete` 가 허용된다(#51). 거부 시 등록 명령 힌트를 stderr 로 안내.
+- 내장 정적 허용 폴더(`soma/`) 제거 — 특정 팀 전용 값의 제품 하드코딩(오염). 팀 전용 최상위 memory 폴더는 이제 `memory route upsert` 로 루트 INDEX 에 등재해야 `memory write/delete` 가 허용된다(#51). 거부 시 등록 명령 힌트를 stderr 로 안내.
 
 ### Changed
 

@@ -94,7 +94,7 @@ def test_role_introducer_when_config_absent(tmp_path):
 
 
 def test_role_member_when_config_valid(tmp_path):
-    cfg = {"spec_version": "0.1", "team": {"name": "tgates"}}
+    cfg = {"spec_version": "0.1", "team": {"name": "acme"}}
     (tmp_path / "team.config.json").write_text(json.dumps(cfg))
     assert il.detect_role(tmp_path) == "member"
 
@@ -109,14 +109,14 @@ def test_role_introducer_when_team_name_placeholder(tmp_path):
 
 def test_role_introducer_when_required_keys_missing(tmp_path):
     # spec_version 누락 → 유효하지 않음 → 도입자
-    cfg = {"team": {"name": "tgates"}}
+    cfg = {"team": {"name": "acme"}}
     (tmp_path / "team.config.json").write_text(json.dumps(cfg))
     assert il.detect_role(tmp_path) == "introducer"
 
 
 def test_role_does_not_depend_on_services(tmp_path):
     # M3: services 채움 여부로 가르지 않는다 — 빈 슬롯이어도 member
-    cfg = {"spec_version": "0.1", "team": {"name": "tgates"}, "services": {}}
+    cfg = {"spec_version": "0.1", "team": {"name": "acme"}, "services": {}}
     (tmp_path / "team.config.json").write_text(json.dumps(cfg))
     assert il.detect_role(tmp_path) == "member"
 
@@ -197,7 +197,7 @@ def test_bootstrap_ignores_ambient_teammode_home(tmp_path, monkeypatch, capsys):
     victim = tmp_path / "victim"
     victim.mkdir()
     monkeypatch.setenv("TEAMMODE_HOME", str(victim))
-    monkeypatch.setenv("TGATES_HOME", str(victim))
+    monkeypatch.setenv("LEGACY_TOOL_HOME", str(victim))
     mod = _load_install()
     opts = il.parse_args([])
     empty = tmp_path / "empty"

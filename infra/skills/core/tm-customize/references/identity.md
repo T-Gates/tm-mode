@@ -23,9 +23,9 @@
 1. `team.config.json`을 열어 `team.name` / `team.greeting` / `team.farewell`을 고친다. **유효한 JSON 유지**(쉼표·따옴표).
    ```jsonc
    "team": {
-     "name": "tgates",
-     "greeting": "tgates 팀모드 켜짐 🐳",
-     "farewell": "오늘도 고생했어요 — tgates"
+     "name": "acme",
+     "greeting": "acme 팀모드 켜짐 🐳",
+     "farewell": "오늘도 고생했어요 — acme"
    }
    ```
 2. greeting/farewell을 기본 공식과 다르게 두면 `personality_customized`가 `true`가 된다(엔진이 런타임에 기본 공식과 비교해 판정 — 배너의 그 플래그와 동일).
