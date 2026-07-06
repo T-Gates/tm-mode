@@ -322,7 +322,7 @@ def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
     cur = _ANSI["curbg"] if _use_color() else ""
     rst = _ANSI["reset"] if _use_color() else ""
     if show_title:
-        sys.stdout.write("\x1b[2K" + _fit(_hi("◆  ") + title) + "\n")
+        sys.stdout.write("\x1b[2K" + _fit(_hi("◆  " + title)) + "\n")
     rail = _dim("│  ")
     sys.stdout.write("\x1b[2K" + _fit(rail + _dim(hint)) + "\n")
     for i, ln in enumerate(lines):
@@ -815,7 +815,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             repo_name = repo_name[:-4]
         default_dest = home / "teammode" / repo_name
 
-        print(_hi("◆  Step 1 of 5 · Where to install") + _dim("   — the folder that will hold your team repo"))
+        print(_hi("◆  Step 1 of 5 · Where to install   — the folder that will hold your team repo"))
         _step1_clean = True  # 충돌 안내가 찍히면 접지 않는다(정보 보존)
         while True:
             # 경로 = _ask_text(prefill). raw 불가(테스트 포함)면 _prompt 로 폴백 → 동일 1입력.
@@ -857,8 +857,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             selected_agents(클로저)를 갱신하고 인덱스 리스트를 반환한다.
             마크는 raw 메뉴(_pick_many)와 동일한 ◉/◯ — `[x]`는 '제외'로 오독(1c).
             """
-            print(_hi("◆  Step 2 of 5 · Your agents")
-                  + _dim("   — which AI coding agents to wire up"))
+            print(_hi("◆  Step 2 of 5 · Your agents   — which AI coding agents to wire up"))
             print("  (number = toggle, Enter = confirm — ◉ on / ◯ off)")
             while True:
                 for i, ag in enumerate(all_agents, 1):
@@ -912,7 +911,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         existing_members = _parse_members_md(members_file)
 
         def _member_kind_fallback() -> int:
-            print(_hi("◆  Step 3 of 5 · You") + _dim("   — new to this team, or already a member?"))
+            print(_hi("◆  Step 3 of 5 · You   — new to this team, or already a member?"))
             c = _prompt("  1) New member   2) Existing member  ›", "1")
             return 1 if c.strip() == "2" else 0
         kind = _pick_one(
@@ -964,13 +963,13 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         # ── 5단계(구 5): 역할 — 자유텍스트 1입력 유지(§7.2 H1, 위젯화 금지) ──
         # ROLES 는 권장목록 표시용 데이터로만 쓴다(_pick_one 금지).
         _rail()
-        print(_hi("◆  Step 4 of 5 · Your role") + _dim("   — optional (" + " / ".join(ROLES) + ")"))
+        print(_hi("◆  Step 4 of 5 · Your role   — optional (" + " / ".join(ROLES) + ")"))
         role = _ask_text("  › (Enter to skip)", "")  # default 없음 → _prompt 폴백, 1입력
         _rail()
 
         # ── 6단계(구 6): Obsidian — _confirm(§7.3: default=True, n/no 만 부정) ──
         def _obsidian_fallback() -> bool:
-            print(_hi("◆  Step 5 of 5 · Obsidian") + _dim("   — link your team memory as an Obsidian vault?"))
+            print(_hi("◆  Step 5 of 5 · Obsidian   — link your team memory as an Obsidian vault?"))
             obsidian_raw = _prompt("  › [Y/n]", "Y")
             return obsidian_raw.strip().lower() not in ("n", "no")
         register_obsidian = _confirm(
