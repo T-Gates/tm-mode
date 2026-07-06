@@ -92,7 +92,14 @@ def _prompt(label: str, default: str | None = None) -> str:
     if not sys.stdin.isatty():
         return default or ""
     suffix = f" [{default}]" if default else ""
-    return input(f"{label}{suffix}: ").strip() or (default or "")
+    # 라벨이 입력 캐럿(›)으로 끝나면 콜론을 붙이지 않는다("  › " 가 "  › : " 보다 깔끔).
+    sep = " " if label.rstrip().endswith("›") else ": "
+    try:
+        return input(f"{label}{suffix}{sep}").strip() or (default or "")
+    except EOFError:
+        # Ctrl-D = 취소로 통일(위젯의 eof 처리와 동일) — required 재질문 루프가
+        # 닫힌 stdin 에서 무한 회전하는 것도 이 경로가 차단한다. main 이 130 종료.
+        raise KeyboardInterrupt
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -101,10 +108,15 @@ def _prompt(label: str, default: str | None = None) -> str:
 
 _ANSI = {
     "reset": "\x1b[0m",
-    "ok": "\x1b[32m",      # 초록 — 성공·완료
-    "warn": "\x1b[33m",    # 노랑 — 주의
-    "hi": "\x1b[36m",      # 시안 — 강조·명령
-    "dim": "\x1b[2m",      # 흐림 — 부가·비활성
+    "ok": "\x1b[32m",      # 초록 — 성공·완료·완료 심볼 ◇
+    "warn": "\x1b[33m",    # 노랑 — 주의·경고(미설치/재설치)
+    "hi": "\x1b[36m",      # 시안 — 진행 심볼 ◆·강조·명령
+    "dim": "\x1b[2m",      # 흐림 — 레일 │·힌트·부가
+    "inv": "\x1b[7m",      # 반전 — 커서줄 폴백(256색 미지원 시)
+    "err": "\x1b[31m",     # 빨강 — 에러·중단
+    "bold": "\x1b[1m",     # 볼드 — 값 강조(내가 고른 것)
+    # 커서줄 배경 하이라이트(Vivid): 어두운 청록 배경 + 밝은 전경. 256색 터미널.
+    "curbg": "\x1b[48;5;24m\x1b[97m",
 }
 
 
@@ -136,6 +148,51 @@ def _warn(text: str) -> str:
 
 def _hi(text: str) -> str:
     return _paint(text, "hi")
+
+
+def _g(text: str) -> str:
+    return _paint(text, "ok")
+
+
+def _bold(text: str) -> str:
+    return _paint(text, "bold")
+
+
+# ── clack 풍 세로 레일(2026-07-06 리스킨) — 순수 문자+ANSI, 외부 의존 0 ──
+# 위저드 전체가 ┌…│…└ 한 덩어리로 이어지고, 끝난 단계는 ◇ 한 줄로 접힌다.
+# 비-TTY/raw-불가에선 같은 문자가 정적으로 찍힐 뿐(폴백 계약 §7.1 불변).
+
+def _rail_top(text: str) -> None:
+    print(_dim("┌  ") + text)
+
+
+def _rail(text: str = "") -> None:
+    print(_dim("│") + (("  " + text) if text else ""))
+
+
+def _rail_done(label: str, value: str) -> None:
+    """완료 단계 접힘 줄: ◇(초록) label ─ value(볼드) — Vivid 팔레트.
+
+    value 는 _fit 로 가시폭 truncate — 긴 URL/경로도 물리 1줄 보장(◇답장+빈줄 산술 불변).
+    raw-menu collapse 는 이미 _fit 을 거쳐 오므로 idempotent(중복 _fit 무해)."""
+    print(_g("◇  ") + label + _dim("  ─  ") + _bold(_fit(value)))
+
+
+def _rail_end(text: str) -> None:
+    print(_dim("└  ") + text)
+
+
+def _collapse_lines(n: int, label: str, value: str) -> None:
+    """직전 n 줄(위젯 렌더)을 지우고 ◇ 접힘 한 줄로 대체(raw/tty 전용)."""
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write(f"\x1b[{n}A")
+    for _ in range(n):
+        sys.stdout.write("\x1b[2K\x1b[1B")
+    sys.stdout.write(f"\x1b[{n}A")
+    sys.stdout.write("\x1b[2K")
+    sys.stdout.flush()
+    _rail_done(label, _fit(value))
 
 
 def _dim(text: str) -> str:
@@ -224,25 +281,76 @@ def _read_key() -> str:
             pass
 
 
+import re as _re
+_SGR = _re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _vis_len(s: str) -> int:
+    """ANSI SGR 제외 가시 길이."""
+    return len(_SGR.sub("", s))
+
+
+def _fit(s: str, width: int | None = None) -> str:
+    """터미널 폭으로 자른다(wrap 방지 — collapse 커서 산술이 물리=논리 줄수 전제).
+
+    ANSI 코드는 길이에서 제외하고, 자르면 … 를 붙인다. width 미지정 시 현재 폭.
+    """
+    if width is None:
+        import shutil
+        width = shutil.get_terminal_size((80, 24)).columns
+    width = max(8, width)
+    if _vis_len(s) <= width:
+        return s
+    # SGR 보존하며 가시문자만 세어 자르기
+    out, vis = [], 0
+    for tok in _re.split(r"(\x1b\[[0-9;]*m)", s):
+        if tok.startswith("\x1b["):
+            out.append(tok); continue
+        for ch in tok:
+            if vis >= width - 1:
+                break
+            out.append(ch); vis += 1
+        if vis >= width - 1:
+            break
+    tail = _ANSI["reset"] if _use_color() else ""  # NO_COLOR 누출 방지(잘린 SGR 복구는 색 켤 때만)
+    return "".join(out) + "…" + tail
+
+
+def _menu_height(title: str, context: str, n_choices: int) -> int:
+    """_render_menu 가 실제로 그리는 물리 줄 수 — collapse 산술과의 단일 소스.
+
+    구성: (title 1) + (context 1 + 빈레일 1) + 항목 n + hint 1."""
+    return n_choices + (1 if title else 0) + (2 if context else 0) + 1
+
+
 def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
-                 *, first: bool) -> None:
+                 *, first: bool, context: str = "") -> None:
     """메뉴를 in-place 로 다시 그린다. first=False 면 직전 출력 줄 수만큼 위로 올려 덮어쓴다.
 
     lines: 항목 텍스트(커서/마크 제외). cursor: 현재 커서 인덱스.
+    배치(아티팩트 after 계약): ◆title / │context / │ / │항목들 / │hint(하단).
     """
     # title 이 빈 문자열이면 title 줄을 출력하지 않는다(헤더 중복 방지).
-    # 그 경우 redraw 줄 수(total)도 hint + 항목만큼만 잡아야 raw 가 어긋나지 않는다.
-    show_title = title != ""
-    total = len(lines) + (2 if show_title else 1)  # (title +) hint + 항목
+    # 그 경우 redraw 줄 수(total)도 그만큼 줄여야 raw 가 어긋나지 않는다.
+    total = _menu_height(title, context, len(lines))
     if not first:
         # 커서를 위로 total 줄 올리고 각 줄을 지운다.
         sys.stdout.write(f"\x1b[{total}A")
-    if show_title:
-        sys.stdout.write("\x1b[2K" + _hi(title) + "\n")
-    sys.stdout.write("\x1b[2K" + _dim(hint) + "\n")
+    cur = _ANSI["curbg"] if _use_color() else ""
+    rst = _ANSI["reset"] if _use_color() else ""
+    rail = _dim("│  ")
+    if title:
+        sys.stdout.write("\x1b[2K" + _fit(_hi("◆  " + title)) + "\n")
+    if context:
+        sys.stdout.write("\x1b[2K" + _fit(rail + context) + "\n")
+        sys.stdout.write("\x1b[2K" + _dim("│") + "\n")
     for i, ln in enumerate(lines):
-        prefix = _hi("❯ ") if i == cursor else "  "
-        sys.stdout.write(f"\x1b[2K{prefix}{ln}\n")
+        if i == cursor:
+            # clack 풍: 현재 줄 반전 하이라이트(❯ 유지 — 스크린리더/무색 터미널 겸용)
+            sys.stdout.write("\x1b[2K" + _fit(rail + _hi("❯ ") + cur + ln + rst) + "\n")
+        else:
+            sys.stdout.write("\x1b[2K" + _fit(f"{rail}  {ln}") + "\n")
+    sys.stdout.write("\x1b[2K" + _fit(rail + _dim(hint)) + "\n")
     sys.stdout.flush()
 
 
@@ -256,7 +364,9 @@ def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
 
 def _pick_one(title: str, hint: str, choices: list[str],
               *, default_index: int = 0,
-              fallback: "callable | None" = None) -> int:
+              fallback: "callable | None" = None,
+              collapse: str | None = None,
+              context: str = "") -> int:
     """단일 선택(라디오). 선택된 인덱스 반환.
 
     fallback: raw 불가 시 호출할 번호입력 콜백 `() -> int`. None 이면 내장 번호입력
@@ -283,7 +393,7 @@ def _pick_one(title: str, hint: str, choices: list[str],
         while True:
             lines = [("◉ " if i == cursor else "◯ ") + c
                      for i, c in enumerate(choices)]
-            _render_menu(title, hint, lines, cursor, first=first)
+            _render_menu(title, hint, lines, cursor, first=first, context=context)
             first = False
             key = _read_key()
             if key in ("up", "k"):
@@ -291,6 +401,9 @@ def _pick_one(title: str, hint: str, choices: list[str],
             elif key in ("down", "j"):
                 cursor = (cursor + 1) % len(choices)
             elif key == "enter":
+                if collapse is not None:
+                    _collapse_lines(_menu_height(title, context, len(choices)),
+                                    collapse, choices[cursor])
                 return cursor
             elif key in ("abort", "eof"):
                 raise KeyboardInterrupt  # Ctrl-C/D = 취소 → main 이 130 종료(승인으로 둔갑 방지)
@@ -306,7 +419,9 @@ def _pick_many(title: str, hint: str, choices: list[str],
                *, selected: list[int] | None = None,
                disabled: set[int] | None = None,
                min_select: int = 0,
-               fallback: "callable | None" = None) -> list[int]:
+               fallback: "callable | None" = None,
+               collapse: str | None = None,
+               context: str = "") -> list[int]:
     """복수 선택(체크박스 ◉/◯ 토글). 선택된 인덱스 리스트 반환.
 
     disabled: 비활성(미설치) 인덱스 — raw 커서는 skip, toggle 무시.
@@ -323,6 +438,8 @@ def _pick_many(title: str, hint: str, choices: list[str],
     # raw 메뉴 — 첫 커서는 활성 항목으로.
     enabled = [i for i in range(len(choices)) if i not in disabled]
     if not enabled:
+        if collapse is not None:  # 레일 연속성: 전부 비활성이어도 ◇ 줄은 남긴다
+            _rail_done(collapse, _dim("(none)"))
         return sorted(sel)
     cursor = enabled[0]
     first = True
@@ -334,7 +451,7 @@ def _pick_many(title: str, hint: str, choices: list[str],
                 mark = "◉ " if i in sel else "◯ "
                 label = c if i not in disabled else _dim(c + "  (not installed)")
                 lines.append(mark + label)
-            _render_menu(title, hint, lines, cursor, first=first)
+            _render_menu(title, hint, lines, cursor, first=first, context=context)
             first = False
             key = _read_key()
             if key in ("up", "k"):
@@ -352,6 +469,11 @@ def _pick_many(title: str, hint: str, choices: list[str],
                         sel.add(cursor)
             elif key == "enter":
                 if len(sel) >= min_select:
+                    if collapse is not None:
+                        _collapse_lines(_menu_height(title, context, len(choices)),
+                                        collapse,
+                                        ", ".join(choices[i] for i in sorted(sel))
+                                        or _dim("(none)"))
                     return sorted(sel)
                 # min_select 미달 → Enter 무시(최소 선택 강제). 메뉴 유지.
             elif key in ("abort", "eof"):
@@ -385,8 +507,9 @@ def _ask_text(label: str, default: str | None = None) -> str:
                 readline.redisplay()
 
             readline.set_pre_input_hook(_hook)
+            _sep = " " if label.rstrip().endswith("›") else ": "
             try:
-                val = input(f"{label}: ").strip()
+                val = input(f"{label}{_sep}").strip()
             except EOFError:
                 val = ""
             finally:
@@ -395,8 +518,60 @@ def _ask_text(label: str, default: str | None = None) -> str:
     return _prompt(label, default)
 
 
+def _field_head(header: str, context: "str | tuple" = "", *,
+                hint: str | None = None, example: str | None = None) -> None:
+    """텍스트 입력줄 '위'에 까는 clack 안내 블록:
+        ◆ header / │ context… / │ (e.g. …) / │ hint / │(빈줄).
+    입력 프리미티브(_ask_text·_prompt) 앞에서 호출한다. readline prefill 이든
+    libedit `[default]` 표기든, '무엇을 입력·무엇을 누르면 되는지'가 항상 먼저
+    보이게 해서 빈 프롬프트의 비직관성을 없앤다. 비-TTY 는 아무것도 찍지 않는다."""
+    if not sys.stdin.isatty():
+        return
+    print(_hi("◆  " + header))
+    for line in ((context,) if isinstance(context, str) else context):
+        if line:
+            _rail(line)
+    if example:
+        _rail(_dim("e.g.  " + example))
+    if hint:
+        _rail(_dim(hint))
+    _rail()
+
+
+def _ask_field(header: str, context: "str | tuple" = "", *,
+               default: str | None = None, hint: str | None = None,
+               example: str | None = None, required: bool = False,
+               collapse: str | None = None) -> str:
+    """_field_head(안내) + _ask_text(입력) + required 재질문. 텍스트 단계 통일 진입점.
+
+    비-TTY 는 default(없으면 "") 를 즉시 반환 — required 라도 루프하지 않는다(행업 방지).
+    collapse: 확정 후 `◇ collapse ─ 값` 답장 줄 + 빈 레일로 마감한다(위젯의 접힘과 대칭).
+      텍스트 입력은 덮어쓰지 않고 '덧붙이는' 방식 — 입력값 wrap 과 무관해 안전(§7.x).
+    """
+    _field_head(header, context, hint=hint, example=example)
+    tty = sys.stdin.isatty()
+    val = ""
+    while True:
+        val = (_ask_text("│  ›", default) or "").strip()
+        if val:
+            break
+        if default:
+            val = default
+            break
+        if not required or not tty:
+            val = ""
+            break
+        _rail(_warn("Required — please enter a value."))
+    if collapse is not None and tty:
+        _rail_done(collapse, val or _dim("(none)"))
+        _rail()
+    return val
+
+
 def _confirm(title: str, *, default: bool = True,
-             fallback: "callable | None" = None) -> bool:
+             fallback: "callable | None" = None,
+             collapse: str | None = None,
+             context: str = "") -> bool:
     """예/아니오 확인. §7.3 의미론: default=True, 부정은 n/no 만, 빈입력=default.
 
     fallback: raw 불가 시 콜백 `() -> bool`. None 이면 내장 Y/n 입력
@@ -414,8 +589,9 @@ def _confirm(title: str, *, default: bool = True,
         return raw.strip().lower() in ("y", "yes")
     # raw 메뉴 — 예/아니오 두 항목 라디오
     yes_idx = 0 if default else 1
-    idx = _pick_one(title, "(↑↓ move · Enter to confirm)",
-                    ["Yes", "No"], default_index=yes_idx)
+    idx = _pick_one(title, "↑↓ move · Enter to confirm",
+                    ["Yes", "No"], default_index=yes_idx, collapse=collapse,
+                    context=context)
     return idx == 0
 
 
@@ -452,14 +628,26 @@ def _pick_owner() -> str | None:
     choices = [c for c in ([me] + orgs.splitlines()) if c]
     if not choices:
         return None
-    print("Where should the team repo be created?  (pick an account or org)")
-    for i, c in enumerate(choices, 1):
-        print(f"  {i}) {c}{' (personal account)' if i == 1 else ' (org)'}")
-    sel = _prompt("Select a number", "1")
-    try:
-        idx = int(sel) - 1
-    except ValueError:
-        idx = 0
+    labeled = [f"{c}{' (personal account)' if i == 0 else ' (org)'}"
+               for i, c in enumerate(choices)]
+
+    def _owner_fallback() -> int:
+        print(_hi("◆  Where should the team repo be created?")
+              + _dim("   — pick an account or org"))
+        for i, c in enumerate(labeled, 1):
+            print(f"  {i}) {c}")
+        sel = _prompt("  Select a number  ›", "1")
+        try:
+            i = int(sel) - 1
+        except ValueError:
+            return 0
+        return i if 0 <= i < len(choices) else 0
+
+    idx = _pick_one(
+        "Where should the team repo live?",
+        "↑↓ move · Enter to confirm", labeled,
+        default_index=0, context="Pick the account or org that will own it.",
+        fallback=_owner_fallback, collapse="Owner")
     return choices[idx] if 0 <= idx < len(choices) else choices[0]
 
 
@@ -581,6 +769,11 @@ def cmd_init(args) -> int:
         _err("GitHub authentication required — run `gh auth login` and try again.")
         return 2
 
+    if sys.stdin.isatty():
+        _rail_top(_hi("tm-mode") + _dim(" · create a new team"))
+        _rail(_dim("Nothing is created until you confirm."))
+        _rail()
+
     # OWNER/REPO 결정 (org 자동선택 금지)
     target = args.repo
     if target and "/" in target:
@@ -590,15 +783,26 @@ def cmd_init(args) -> int:
         if not owner:
             _err("Could not determine an account or org — specify it as `tm-mode init OWNER/REPO`.")
             return 2
+        if sys.stdin.isatty():
+            _rail()  # owner 답장(◇ Owner) 뒤 단계 구분
         # 팀명을 레포명보다 **먼저** 묻는다 — 배너·상태줄 배지·인사말·레포명기본의 단일 소스.
         # team.config.json 은 팀 레포에 커밋(공유)되므로 창립자가 여기서 한 번 정하면
         # 모든 팀원에게 같은 정체성이 퍼진다.
         if not getattr(args, "team_name", None):
-            args.team_name = _prompt(
-                "Team name  (used in the team banner, status-line badge, and greeting)",
-                owner) or owner
-        repo = target or _prompt("Repository name (team repo)",
-                                 f"{_slugify(args.team_name)}-team")
+            _field_head(
+                "Team name",
+                "Shown in the banner, the status-line badge, and the greeting.",
+                hint="Press Enter to accept, or type a name.")
+            args.team_name = _prompt("  Team name  ›", owner) or owner
+            if sys.stdin.isatty():
+                _rail_done("Team name", args.team_name); _rail()
+        _field_head(
+            "Repository name",
+            "The GitHub repo your team will live in.",
+            hint="Press Enter to accept, or type a name.")
+        repo = target or _prompt("  Repository name  ›", f"{_slugify(args.team_name)}-team")
+        if sys.stdin.isatty():
+            _rail_done("Repository name", repo); _rail()
     full = f"{owner}/{repo}"
     vis = "--public" if args.public else "--private"
     # 팀명 미정(OWNER/REPO 직접지정 등 비대화 경로) 폴백 = owner.
@@ -610,15 +814,24 @@ def cmd_init(args) -> int:
     # 비-TTY(인자로 OWNER/REPO 받은 경우 등)는 자동 진행.
     if sys.stdin.isatty():
         _tpl = f" (template: {template})" if template != DEFAULT_TEMPLATE_REPO else ""
-        if _prompt(f"Create the team repo at '{full}'{_tpl}?  [Y/n]",
-                   "Y").strip().lower() in ("n", "no"):
-            _err(f"Cancelled — to choose the location yourself, re-run as `tm-mode init <OWNER>/{repo}`.")
+
+        def _create_fallback() -> bool:
+            raw = _prompt(f"Create the team repo at '{full}'{_tpl}?  [Y/n]", "Y")
+            return raw.strip().lower() not in ("n", "no")
+        if not _confirm(f"Create the team repo at '{full}'{_tpl}?", default=True,
+                        fallback=_create_fallback, collapse="Create repo"):
+            _rail_end(f"Cancelled — to choose the location yourself, re-run as `tm-mode init <OWNER>/{repo}`.")
             return 1
-    print(f"Creating repository {full} (template: {template})")
+    _rail(_dim(f"creating repository {full} (template: {template})")) \
+        if sys.stdin.isatty() else print(f"Creating repository {full} (template: {template})")
     rc = subprocess.run(["gh", "repo", "create", full,
                         "--template", template, vis]).returncode
     if rc != 0:
-        _err("Repository creation failed — check permissions and name conflicts.")
+        msg = "Repository creation failed — check permissions and name conflicts."
+        if sys.stdin.isatty():
+            _rail_end(_paint(msg, "err"))  # 열린 레일을 └ 로 닫는다
+        else:
+            _err(msg)
         return rc
 
     url = f"https://github.com/{full}.git"
@@ -703,8 +916,10 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
     """
     home = Path.home()
 
-    print("Setting up your team — 5 quick steps, then a summary to confirm.\n"
-          "No host settings are written until you approve.\n")
+    if not getattr(args, "_rail_open", False):  # Step 0(URL 질문)가 이미 열었으면 재오픈 금지
+        _rail_top(_hi("tm-mode") + " · Setting up your team — 5 quick steps, then a summary to confirm.")
+        _rail(_dim("No host settings are written until you approve."))
+        _rail()
 
     while True:  # 7단계에서 n → 전체 재시작
         # ── 1단계: 설치 위치 ──────────────────────────────────────────────
@@ -713,10 +928,15 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             repo_name = repo_name[:-4]
         default_dest = home / "teammode" / repo_name
 
-        print(_hi("Step 1 of 5 · Where to install") + "   — the folder that will hold your team repo")
+        _step1_clean = True  # 충돌 안내가 찍히면 접지 않는다(정보 보존)
         while True:
-            # 경로 = _ask_text(prefill). raw 불가(테스트 포함)면 _prompt 로 폴백 → 동일 1입력.
-            raw = _ask_text("  ›", str(default_dest))
+            # 경로 = _ask_field(안내블록 + prefill). raw 불가면 _prompt 로 폴백 → 동일 1입력.
+            raw = _ask_field(
+                "Step 1 of 5 · Where to install",
+                "The folder that will hold your team repo.",
+                default=str(default_dest),
+                hint="Press Enter to accept, or type another path.",
+                collapse="Where to install")
             dest = Path(raw).expanduser().resolve()
             if dest.exists() and any(dest.iterdir()):
                 print(f"  {_warn(str(dest))} already exists and is not empty.")
@@ -725,9 +945,10 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                     c = _prompt("  1) Choose another location   2) Reinstall into this folder [1/2]", "1")
                     return 1 if c.strip() == "2" else 0
                 pick = _pick_one(
-                    "", "(↑↓ move · Enter to confirm)",
+                    "", "↑↓ move · Enter to confirm",
                     ["Choose another location", "Reinstall into this folder (skip clone)"],
                     default_index=0, fallback=_dir_fallback)
+                _step1_clean = False
                 if pick == 1:
                     clone_skip = True
                     break
@@ -735,6 +956,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             else:
                 clone_skip = False
                 break
+        # _ask_field(collapse=) 가 ◇ 답장 + 빈 레일로 이미 마감 — 여기서 추가 레일 금지(중복 방지).
 
         # ── 2단계: 에이전트 선택 ──────────────────────────────────────────
         installed = _detect_agents_from_install_lib(home)
@@ -743,7 +965,6 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             print("  No coding agents detected. Continuing anyway.")
         selected_agents: list[str] = list(installed) if installed else []
 
-        print("\n" + _hi("Step 2 of 5 · Your agents") + "   — which AI coding agents to wire up")
 
         def _agents_fallback() -> list[int]:
             """raw 불가 시(테스트 포함) 기존 번호 토글 루프 그대로(§7.4 H3, cli:337-360 1:1).
@@ -753,6 +974,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             selected_agents(클로저)를 갱신하고 인덱스 리스트를 반환한다.
             마크는 raw 메뉴(_pick_many)와 동일한 ◉/◯ — `[x]`는 '제외'로 오독(1c).
             """
+            print(_hi("◆  Step 2 of 5 · Your agents   — which AI coding agents to wire up"))
             print("  (number = toggle, Enter = confirm — ◉ on / ◯ off)")
             while True:
                 for i, ag in enumerate(all_agents, 1):
@@ -781,19 +1003,21 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
 
         disabled_idx = {i for i, ag in enumerate(all_agents) if ag not in installed}
         sel_idx = _pick_many(
-            "",
-            "(↑↓ move · Space to toggle · Enter to confirm · not installed = unavailable"
-            + (" · at least 1)" if installed else ")"),
+            "Step 2 of 5 · Your agents",
+            "↑↓ move · Space to toggle · Enter to confirm"
+            + (" · at least 1" if installed else ""),
             all_agents,
+            context="Which agents should we set up? Detected ones are pre-checked.",
             selected=[i for i, ag in enumerate(all_agents) if ag in selected_agents],
             disabled=disabled_idx, min_select=(1 if installed else 0),
-            fallback=_agents_fallback)
+            fallback=_agents_fallback, collapse="Your agents")
         selected_agents = [all_agents[i] for i in sel_idx]
+        _rail()
 
         # ── clone (단계 2.5): members.md 읽기 전에 실행 → 기존멤버 목록 정확하게 읽힘 ──
         # clone_skip 이거나 clone_fn 이 없으면 건너뜀(테스트·재사용 경로).
         if not clone_skip and clone_fn is not None:
-            print(f"Cloning...  {url} → {dest}")
+            _rail(_dim(f"cloning  {url} → {dest}"))
             ok = clone_fn(url, dest)
             if not ok:
                 _err("Clone failed — check repo access (SSH key / `gh auth login`).")
@@ -804,30 +1028,37 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         members_file = dest / "memory" / "team" / "members.md"
         existing_members = _parse_members_md(members_file)
 
-        print("\n" + _hi("Step 3 of 5 · You") + "   — new to this team, or already a member?")
-
         def _member_kind_fallback() -> int:
+            print(_hi("◆  Step 3 of 5 · You   — new to this team, or already a member?"))
             c = _prompt("  1) New member   2) Existing member  ›", "1")
             return 1 if c.strip() == "2" else 0
         kind = _pick_one(
-            "", "(↑↓ move · Enter to confirm)",
+            "Step 3 of 5 · You",
+            "↑↓ move · Enter to confirm",
             ["New member", "Existing member"], default_index=0,
-            fallback=_member_kind_fallback)
+            context="New to this team, or already a member?",
+            fallback=_member_kind_fallback, collapse="You")
         is_new = kind != 1
+        _rail()
 
         # ── 4단계: 이름 (3단계 안에서 처리) ─────────────────────────────
         if is_new:
             guess = _git_user_name()
             slug = _slugify(guess) if guess else ""
             if not slug:
-                # 빈 슬러그: 반복 강제 (default 없음 → _ask_text 가 _prompt 로 폴백, 1입력 유지)
-                while True:
-                    val = _ask_text("  Your name (lowercase letters, digits, - or _; required)  ›").strip()
-                    if val:
-                        member = val
-                        break
+                member = _ask_field(
+                    "Your name",
+                    "How you'll show up on the team — in members.md, session logs, and the greeting.",
+                    hint="Lowercase letters, digits, - or _.  Required.",
+                    required=True, collapse="Your name")
             else:
-                member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug) or slug
+                member = _ask_field(
+                    "Your name",
+                    "How you'll show up on the team — in members.md, session logs, and the greeting.",
+                    default=slug,
+                    hint="Lowercase letters, digits, - or _.  Enter to accept.",
+                    collapse="Your name") or slug
+
         else:
             if existing_members:
                 # 기존팀원 = _pick_one(번호 1입력). "직접입력" 항목 금지(§7.5 H4).
@@ -842,51 +1073,95 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                         return 0
                     return idx if 0 <= idx < len(existing_members) else 0
                 pick = _pick_one(
-                    "", "(↑↓ move · Enter to confirm)",
-                    existing_members, default_index=0, fallback=_existing_fallback)
+                    "Pick your name", "↑↓ move · Enter to confirm",
+                    existing_members, default_index=0, fallback=_existing_fallback,
+                    context="Select yourself from members.md.",
+                    collapse="Your name")
                 member = existing_members[pick] if 0 <= pick < len(existing_members) \
                     else existing_members[0]
+                _rail()
             else:
-                print("  (no members.md — enter your name)")
                 guess = _git_user_name()
                 slug = _slugify(guess) if guess else ""
-                member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug or None) or None
+                member = _ask_field(
+                    "Your name",
+                    "No members.md yet — you'll be the first entry (members.md, session logs, greeting).",
+                    default=slug or None,
+                    hint="Lowercase letters, digits, - or _.",
+                    collapse="Your name") or None
 
-        # ── 5단계(구 5): 역할 — 자유텍스트 1입력 유지(§7.2 H1, 위젯화 금지) ──
-        # ROLES 는 권장목록 표시용 데이터로만 쓴다(_pick_one 금지).
-        print("\n" + _hi("Step 4 of 5 · Your role") + "   — optional (" + _dim(" / ".join(ROLES)) + ")")
-        role = _ask_text("  › (Enter to skip)", "")  # default 없음 → _prompt 폴백, 1입력
+        # ── 5단계(구 5): 역할 — picker(기본 Skip) + Other 자유입력 ──
+        # §7.2 H1(위젯화 금지)을 뒤집는다(사용자 결정 2026-07-07): 다른 단계처럼
+        # 화살표 선택으로 통일하되, 목록에 없는 역할은 "Other…"로 여전히 자유입력한다
+        # (H1 의도인 커스텀 역할 보존). Skip 이 기본 하이라이트.
+        role_choices = ["Skip (no role)"] + list(ROLES) + ["Other… (type your own)"]
+
+        def _role_fallback() -> int:
+            print(_hi("◆  Step 4 of 5 · Your role") + _dim("   — optional"))
+            for i, c in enumerate(role_choices, 1):
+                print(f"  {i}) {c}")
+            sel = _prompt("  Select a number (Enter to skip)  ›", "1")
+            try:
+                idx = int(sel) - 1
+            except ValueError:
+                return 0
+            return idx if 0 <= idx < len(role_choices) else 0
+
+        role_pick = _pick_one(
+            "Step 4 of 5 · Your role  (optional)",
+            "↑↓ move · Enter to confirm · default Skip",
+            role_choices, default_index=0,
+            context="What you do on the team — shown next to your name.",
+            fallback=_role_fallback, collapse="Your role")
+        if role_pick == 0:
+            role = ""
+        elif role_pick == len(role_choices) - 1:      # Other… → 자유입력
+            # picker 가 찍은 `◇ Your role ─ Other…` 한 줄을 지우고(1물리줄, _fit 보장),
+            # 자유입력 답을 collapse 로 실제값 ◇ 로 마감 — 이중 ◇·"Other…" 잔존·구분줄 누락 동시 해소(codex P2).
+            if sys.stdout.isatty():
+                sys.stdout.write("\x1b[1A\x1b[2K")
+                sys.stdout.flush()
+            role = _ask_field(
+                "Your role",
+                "Type the role that fits you — shown next to your name.",
+                hint="Press Enter to leave it blank.",
+                collapse="Your role").strip()
+        else:
+            role = ROLES[role_pick - 1]
+        _rail()
 
         # ── 6단계(구 6): Obsidian — _confirm(§7.3: default=True, n/no 만 부정) ──
-        print("\n" + _hi("Step 5 of 5 · Obsidian") + "   — link your team memory as an Obsidian vault?")
-
         def _obsidian_fallback() -> bool:
+            print(_hi("◆  Step 5 of 5 · Obsidian   — link your team memory as an Obsidian vault?"))
             obsidian_raw = _prompt("  › [Y/n]", "Y")
             return obsidian_raw.strip().lower() not in ("n", "no")
         register_obsidian = _confirm(
-            "Link your team memory as an Obsidian vault?", default=True,
-            fallback=_obsidian_fallback)
+            "Step 5 of 5 · Obsidian  (optional)",
+            context="Link your team memory as an Obsidian vault, so you can browse it?",
+            default=True, fallback=_obsidian_fallback, collapse="Obsidian")
 
         # ── 요약 확인 ─────────────────────────────────────────────────────
-        print()
-        print("── Review ─────────────────────────────────────────")
-        print(f"  Team      : {url}")
-        print(f"  Location  : {dest}")
-        print(f"  Agents    : {', '.join(selected_agents) if selected_agents else '(none)'}")
-        print(f"  Name      : {member or '(unset)'}")
-        print(f"  Role      : {role or '(skipped)'}")
-        print(f"  Obsidian  : {'link' if register_obsidian else 'skip'}")
-        print(f"  Clone     : {'skip — reuse existing folder' if clone_skip else 'fresh clone'}")
-        print("──────────────────────────────────────────────────")
+        _rail()
+        print(_hi("◆  Review"))
+        _rail(f"Team      : {url}")
+        _rail(f"Location  : {dest}")
+        _rail(f"Agents    : {', '.join(selected_agents) if selected_agents else '(none)'}")
+        _rail(f"Name      : {member or '(unset)'}")
+        _rail(f"Role      : {role or '(skipped)'}")
+        _rail(f"Obsidian  : {'link' if register_obsidian else 'skip'}")
+        _rail(f"Clone     : {'skip — reuse existing folder' if clone_skip else 'fresh clone'}")
+        _rail()
 
         def _confirm_fallback() -> bool:
             confirm = _prompt("Proceed with this setup? [Y/n]", "Y")
             return confirm.strip().lower() not in ("n", "no")
         proceed = _confirm("Proceed with this setup?", default=True,
-                           fallback=_confirm_fallback)
+                           fallback=_confirm_fallback, collapse="Proceed")
         if not proceed:
-            print("  Starting over.\n")
+            _rail_end("Starting over.")
+            print()
             continue  # while True 재시작
+        _rail_end(_ok("Approved — running the install you just reviewed."))
         break  # 확인 완료
 
     # ── 8단계: extra 인자 조립 ────────────────────────────────────────────
@@ -907,6 +1182,24 @@ def cmd_join(args, *, created: bool = False) -> int:
         return 2
 
     is_tty = sys.stdin.isatty()
+    if not args.url:
+        if not is_tty:
+            _err("team repo URL is required in non-interactive mode: "
+                 "`tm-mode join <url>`")
+            return 2
+        # Step 0: 위저드가 URL 부터 묻는다(레일 시작). required 재질문은 _ask_field 가 처리.
+        # 텍스트 입력은 접지 않는다(입력값 wrap 시 collapse 산술 불안정) — 레일만 잇는다.
+        # 레일 오프닝은 여기서 한 번만 — _wizard_join 은 rail_open=True 로 재오픈 금지(codex P3).
+        _rail_top(_hi("tm-mode") + " · Setting up your team — 5 quick steps, then a summary to confirm.")
+        _rail(_dim("No host settings are written until you approve."))
+        _rail()
+        args._rail_open = True
+        args.url = _ask_field(
+            "Team repo URL",
+            "Paste the repository your team lead shared with you.",
+            example="https://github.com/acme/acme-team",
+            hint="Required — the wizard reads members and settings from it.",
+            required=True, collapse="Team repo URL")
     # 명시 플래그(--dir/--member-name/--agent/--role/--obsidian)가 하나라도 있으면
     # TTY 여도 wizard 를 건너뛴다(플래그 = 비대화 의도, CLI 관례). /dev/tty 재연결(#6)로
     # 터미널의 curl 사용자가 플래그를 줬는데 wizard 가 무시하는 회귀 방지(codex P2).
@@ -981,7 +1274,8 @@ def main(argv=None) -> int:
     pi.set_defaults(func=cmd_init)
 
     pj = sub.add_parser("join", help="Clone an existing team repo + setup")
-    pj.add_argument("url", help="Team repo clone URL")
+    pj.add_argument("url", nargs="?", default=None,
+                    help="Team repo clone URL (omit in a terminal to be asked)")
     pj.add_argument("--member-name")
     pj.add_argument("--dir", help="Clone location")
     pj.add_argument("--agent", action="append", metavar="AGENT",
