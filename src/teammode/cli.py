@@ -704,7 +704,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
     home = Path.home()
 
     print("Setting up your team — 5 quick steps, then a summary to confirm.\n"
-          "Nothing is written until you approve.\n")
+          "No host settings are written until you approve.\n")
 
     while True:  # 7단계에서 n → 전체 재시작
         # ── 1단계: 설치 위치 ──────────────────────────────────────────────

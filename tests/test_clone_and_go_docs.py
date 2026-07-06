@@ -88,3 +88,31 @@ def test_no_stale_cli_only_stop_contract():
                     "init" in line and "join" in line):
                 assert "AGENTS" in line or "bootstrap" in line, (
                     f"{rel} 옛 CLI-only 멈춤 계약 잔존: {line!r}")
+
+
+def test_readme_agent_oneliner_entrypoint():
+    """URL 한 줄 진입점(2026-07-06 사용자 요구): 복붙 문구 + For-AI-agents 절차 존재."""
+    text = _read("README.md")
+    # 복붙 한 줄(에이전트에게 이 레포 URL 주며 세팅 요청) — en/ko 양쪽
+    assert "Read https://github.com/T-Gates/tm-mode and set up tm-mode" in text
+    assert "읽고 tm-mode 세팅해줘" in text
+    # 에이전트용 결정적 절차 절 — 승인 게이트가 핵심 계약
+    assert "## For AI agents" in text
+    agent_sec = text[text.index("## For AI agents"):text.index("## Layout")]
+    # [codex P1 회귀락] 에이전트 절차에 curl|sh **실행 명령** 금지(비-TTY = 무승인 설치).
+    # ("curl 쓰지 마라" 금지 문구의 단어 언급은 허용) — bootstrap 동일 계약: clone → dry-run 승인 → --yes
+    assert "curl -fsSL" not in agent_sec
+    assert "--dry-run --yes" in agent_sec
+    assert "without `--dry-run`" in agent_sec
+    assert "--member-name" in agent_sec  # 비대화 멤버명 계약(P2)
+    # 사람용 curl 원라이너는 상단 설치 절에 유지(join 리터럴 + init 언급)
+    human_sec = text[:text.index("## For AI agents")]
+    assert "sh -s -- join" in human_sec and "init" in human_sec
+
+
+def test_agents_md_url_entry_routing():
+    """AGENTS.md 입력 형태 판정: 제품 URL/팀 URL/레포 안 3분기 존재."""
+    text = _read("AGENTS.md")
+    assert "입력 형태 판정" in text
+    assert "For AI agents" in text          # 제품 URL → README 절차 위임
+    assert "git clone" in text              # 팀 URL → clone 후 bootstrap
