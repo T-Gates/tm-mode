@@ -37,11 +37,11 @@ def test_tm_onboard_keeps_no_install_contract_with_routing():
 
 
 def test_install_docs_offer_clone_and_go_path():
-    # 영어 기본 전환(2026-07-06): README.md=en("set up this repo"), ko 는 README.ko.md
-    for rel, phrase in (("README.md", "set up this repo"),
-                        ("README.ko.md", "셋업해줘"), ("INSTALL.md", "셋업해줘")):
-        text = _read(rel)
-        assert "clone" in text.lower() and phrase in text, f"{rel} clone-and-go 경로 부재"
+    # 단일 이중언어 README(2026-07-06): en 본문 + 하단 한국어 절(홈 앵커 점프)
+    text = _read("README.md")
+    assert "clone" in text.lower()
+    assert "set up this repo" in text and "셋업해줘" in text, "양어 clone-and-go 경로 부재"
+    assert "셋업해줘" in _read("INSTALL.md")
 
 
 def test_spec_entry_contract_updated():
@@ -71,10 +71,10 @@ def test_readme_no_stale_anchor():
     # 남아있는 self 앵커 링크(있다면) 는 실제 헤딩 slug 로 해석돼야 한다
     heading_slugs = set()
     for line in text.splitlines():
-        m = re.match(r'#{2,6}\s+(.*)', line)
+        m = re.match(r'#{1,6}\s+(.*)', line)
         if m:
             slug = re.sub(r'[^\w가-힣\s-]', '', m.group(1).lower()).strip()
-            heading_slugs.add(re.sub(r'\s+', '-', slug))
+            heading_slugs.add(re.sub(r'\s', '-', slug))
     for anchor in re.findall(r'\]\(#([^)]+)\)', text):
         assert anchor in heading_slugs, f"깨진 self 앵커: #{anchor}"
 
