@@ -3,6 +3,20 @@
 이 파일은 tm-mode의 주요 변경 사항을 기록합니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
 
+## [0.1.1] - 2026-07-06
+
+### Added
+- Agent one-liner entry point: paste the repo URL into Claude Code/Codex — README "For AI agents" gives agents a deterministic, approval-gated setup procedure (entry contract is now three-way: URL one-liner / clone-and-go / CLI).
+- npm shim `npx tm-mode` (tag-pinned cli.py runner, zero deps) + npm OIDC publish job.
+
+### Changed
+- Setup wizard copy rewritten in English (calm, consistent tone); README is English-first with the Korean edition inline (home-anchor toggle).
+- Codex placeholder MCP entries are now comments — a command-less real table bricked codex config loading (fatal "invalid transport"); existing brick tables self-heal on next sync.
+
+### Fixed
+- validation sync v2: safe deletion of upstream-removed files (blob-history + terminal-removal judgement, raw-copy backups).
+- `[Y/n]` prompts now treat "no" as no.
+
 ## [Unreleased]
 
 ### Added
