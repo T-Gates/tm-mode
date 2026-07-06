@@ -141,3 +141,19 @@ def test_orphan_managed_brick_table_healed_without_markers(tmp_path):
     assert "[mcp_servers.tm-google]" not in txt, "고아 벽돌 실블록 잔존 — codex 여전히 기동 불가"
     assert "[mcp_servers.user-own]" in txt      # 사용자 서버는 불가침
     assert "# [tm-placeholder] google" in txt
+
+
+def test_orphan_purge_spares_marker_shaped_text_in_multiline_string(tmp_path):
+    """[하우스 표준] 멀티라인 TOML 문자열 안 [mcp_servers.*] 모양 텍스트는 사용자
+    데이터 — 고아 purge 가 오인 삭제하면 안 된다(_purge_legacy_markers 와 동일 계약)."""
+    a = _adapter(tmp_path)
+    cfg = Path(a.settings_path)
+    user = ("doc = '''\n"
+            "[mcp_servers.tm-fake]\n_teammode_managed = true\n"
+            "'''\n")
+    cfg.write_text(user, encoding="utf-8")
+    pack = _Pack({"register_hint": "h"})
+    a._write_mcp_block(a._render_mcp_block([("tm-google", "google", pack)]))
+    txt = cfg.read_text(encoding="utf-8")
+    assert "[mcp_servers.tm-fake]" in txt, "멀티라인 문자열 안 사용자 데이터가 삭제됨"
+    assert "# [tm-placeholder] google" in txt

@@ -983,11 +983,12 @@ class Adapter(BaseAdapter):
             (`url = "..."`). notion/linear 등 공식 호스티드 MCP. 기동 커맨드/추측 불필요.
           - 팩 mcp 에 실 기동 데이터(command/args 또는 path)가 있으면 → command·args 를
             실제로 적어 Codex 가 기동 가능한 등록을 한다.
-          - 없으면(P2 미기재) → 소유 마커 + register_hint placeholder 만(자리만 + 안내).
-            추측 패키지명/repo 금지.
+          - 없으면(P2 미기재) → **주석 placeholder 한 줄만**(`# [tm-placeholder] …`,
+            실 테이블 금지 — P1 벽돌화). 추측 패키지명/repo 금지.
         섹션 키는 별칭 `tm-<provider>`(resolve_server_alias, §2.8-2), `_canonical_server`
         는 정규 서버명을 담는다(별칭이 아님 — 역추적·소유 식별용). canonical 미지정 시
-        하위 호환으로 alias 를 그대로 쓴다. 소유 마커는 어느 경우든 유지.
+        하위 호환으로 alias 를 그대로 쓴다. 소유 마커는 실 등록 테이블에만 존재
+        (주석 placeholder 는 마커 블록 소속으로만 관리).
         """
         if canonical is None:
             canonical = alias
@@ -1059,11 +1060,38 @@ class Adapter(BaseAdapter):
         _teammode_managed=true 는 우리 소유 마커이므로 제거해도 사용자 설정
         불가침 계약과 충돌하지 않는다(사용자 서버엔 이 키가 없음). 보수적으로
         [mcp_servers.*] 섹션 단위로만 지운다.
+
+        멀티라인 문자열 추적은 _purge_legacy_markers 와 동일 계약(하우스 표준) —
+        문자열 '안'의 [mcp_servers.*] 모양 텍스트는 사용자 데이터라 건드리지 않는다.
+        오인 방향은 항상 '못 지워 잔재가 남는' 쪽(fail-safe).
         """
         lines = existing.split("\n")
         out = []
         i = 0
+        in_ml = None  # None=문자열 밖, 아니면 열린 구분자(''' 또는 three-dquote)
+        in_markers = False  # 정상 mcp-start↔end 쌍 안 = 고아 아님(mcp writer 관할) — 불가침
+        _delims = ("'" * 3, '"' * 3)
         while i < len(lines):
+            if in_ml is not None:
+                if in_ml in lines[i]:
+                    in_ml = None
+                out.append(lines[i])
+                i += 1
+                continue
+            _opens = [d for d in _delims if lines[i].count(d) % 2 == 1]
+            if _opens:
+                in_ml = _opens[0]
+                out.append(lines[i])
+                i += 1
+                continue
+            if self.MCP_BLOCK_START in lines[i]:
+                in_markers = True
+            elif self.MCP_BLOCK_END in lines[i]:
+                in_markers = False
+            if in_markers:
+                out.append(lines[i])
+                i += 1
+                continue
             m = re.match(r"\s*\[mcp_servers\.[^\]]+\]\s*$", lines[i])
             if m:
                 j = i + 1
@@ -1072,7 +1100,8 @@ class Adapter(BaseAdapter):
                     j += 1
                 section = lines[i:j]
                 body = "\n".join(section)
-                managed = "_teammode_managed" in body and "true" in body
+                managed = re.search(
+                    r"^\s*_teammode_managed\s*=\s*true\b", body, re.M)
                 has_exec = re.search(r"^\s*(command|url)\s*=", body, re.M)
                 if managed and not has_exec:
                     i = j  # 소유 벽돌 블록 — 통째 제거
@@ -1181,7 +1210,7 @@ class Adapter(BaseAdapter):
                         # 잡히고 **연결되지 않는다**. 안내도 관리 별칭 기준으로 정직하게
                         # (codex review P2-a): claude 와 일관되게 같은 별칭으로 직접 붙이도록.
                         changes.append(
-                            f"[mcp] {alias} placeholder 등록(공식 호스티드 MCP 부재 → "
+                            f"[mcp] {alias} placeholder 기록(주석 — 공식 호스티드 MCP 부재 → "
                             f"teammode 자동 등록 불가, 이 placeholder 는 연결되지 않음). "
                             f"직접 쓰려면 같은 관리 별칭으로 수동 연결: "
                             f"`codex mcp add {alias} -- <MCP 서버 기동 커맨드>` "
