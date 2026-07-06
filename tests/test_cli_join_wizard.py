@@ -709,7 +709,7 @@ def test_done_with_url_shows_invite_and_onboard(capsys):
     out = capsys.readouterr().out
     # ① 초대 명령에 url 이 박혀 있다(pip·curl 둘 다).
     assert "https://github.com/org/team.git" in out
-    assert "pip install" in out and "join https://github.com/org/team.git" in out
+    assert "pipx install tm-mode" in out and "join https://github.com/org/team.git" in out
     assert "curl" in out
     # ② tm-onboard 안내.
     assert "tm-onboard" in out
@@ -720,7 +720,7 @@ def test_done_without_url_skips_invite_but_keeps_onboard(capsys):
     cli._done(Path("/x/team"), created=False, url=None)
     out = capsys.readouterr().out
     assert "tm-onboard" in out
-    assert "pip install" not in out  # 초대 명령은 url 없으면 생략
+    assert "pipx install" not in out  # 초대 명령은 url 없으면 생략
 
 
 # ─── _raw_capable 게이트 (각 조건) ──────────────────────────────────────────

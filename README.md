@@ -36,7 +36,7 @@ Prefer the terminal? Common requirements: **`python3` (3.9+) · `git`**. Anythin
 The common case — nothing beyond the common requirements (python3·git); **no `gh` needed**.
 
 ```bash
-pip install "git+https://github.com/T-Gates/tm-mode"   # launcher (after PyPI: pipx install tm-mode)
+pipx install tm-mode          # or: pip install tm-mode
 tm-mode join <team-repo-clone-url>                      # clone → setup → remote wiring, all at once
 ```
 
@@ -55,7 +55,7 @@ Open Claude Code / Codex →  "set up this repo"
 **No need to create a repo first.** `gh` (GitHub CLI) generates *your own team repo* from this template.
 
 ```bash
-pip install "git+https://github.com/T-Gates/tm-mode"
+pipx install tm-mode   # or: pip install tm-mode
 gh auth login          # GitHub login (once, if you haven't)
 tm-mode init           # create repo from template → clone → setup → wire remote
 ```
@@ -291,7 +291,7 @@ https://github.com/T-Gates/tm-mode 읽고 tm-mode 세팅해줘.
 가장 흔한 경우 — 공통 요구사항(python3·git) 외 추가 도구 불필요(**`gh` 안 씀**).
 
 ```bash
-pip install "git+https://github.com/T-Gates/tm-mode"   # 런처 (PyPI 발행 후: pipx install tm-mode)
+pipx install tm-mode          # 또는: pip install tm-mode
 tm-mode join <팀레포-clone-url>                          # 클론 → 셋업 → remote 연결까지 한 번에
 ```
 
@@ -310,7 +310,7 @@ Claude Code / Codex 를 열고 →  "셋업해줘"
 **레포를 미리 만들 필요 없다.** `gh`(GitHub CLI)가 이 템플릿에서 *당신의 새 팀 레포*를 자동 생성한다.
 
 ```bash
-pip install "git+https://github.com/T-Gates/tm-mode"
+pipx install tm-mode   # 또는: pip install tm-mode
 gh auth login          # GitHub 로그인 (아직 안 했다면, 한 번만)
 tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → 셋업 → remote 연결
 ```

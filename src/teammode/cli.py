@@ -2,7 +2,7 @@
 """tm-mode — 팀모드 부트스트랩 런처 (pip·curl 진입 스킨; 스펙 "코어 ≠ 스킨").
 
 진입 2종(등가 — 둘 다 이 cli.py 로 위임):
-  pip:  pip install "git+https://github.com/T-Gates/tm-mode" && tm-mode join <url>
+  pipx: pipx install tm-mode && tm-mode join <url>
   curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.1/install.sh | sh -s -- join <url>
 
   tm-mode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
@@ -515,7 +515,7 @@ def _invite_lines(url: str) -> list[str]:
     기본값 설치 후 tm-onboard 로 마무리.
     """
     return [
-        f'  pip:  pip install "git+https://github.com/{TEMPLATE_REPO}" && tm-mode join {url}',
+        f'  pip:  pipx install tm-mode && tm-mode join {url}',
         f'  curl: curl -fsSL https://raw.githubusercontent.com/{TEMPLATE_REPO}'
         f'/{PIN_REF}/install.sh | sh -s -- join {url}',
     ]
