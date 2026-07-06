@@ -29,9 +29,15 @@ def _run_hook(payload: dict, team_root: Path, extra_env=None):
 
 
 def _seed_active(team_root: Path):
-    """팀 모드 활성 최소 구조 생성."""
+    """팀 모드 활성 최소 구조 생성.
+
+    PR-i1: config 없음 → en 폴백이므로, 한국어 주입을 단정하는 이 파일의 테스트는
+    locale=ko_KR 를 명시한 ko 팀 픽스처로 고정한다(기존 문구 계약 보존).
+    """
     (team_root / "memory" / "team" / "sessions").mkdir(parents=True, exist_ok=True)
     (team_root / ".teammode-active").write_text("")
+    (team_root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "ko_KR"}}), encoding="utf-8")
 
 
 def _payload():
