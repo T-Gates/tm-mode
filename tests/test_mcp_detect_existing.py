@@ -180,12 +180,13 @@ def test_codex_detects_existing_slack_server(tmp_path):
 
 
 def test_codex_no_existing_server_keeps_placeholder(tmp_path):
-    """미감지 → 기존 동작: placeholder 블록 등록 + 수동 안내."""
+    """미감지 → placeholder 는 **주석으로만**(실 TOML 블록 금지 — codex 벽돌화 P1)."""
     root = _scaffold(tmp_path, SLACK_CONNECTED)
     ad = _codex(root, tmp_path)
     out = ad.install_mcp()
     text = Path(ad.settings_path).read_text()
-    assert "[mcp_servers.tm-slack]" in text
+    assert "[mcp_servers.tm-slack]" not in text  # 실블록 금지(P1 벽돌화)
+    assert "# [tm-placeholder] slack" in text
     assert any("placeholder" in c for c in out)
 
 
@@ -196,7 +197,8 @@ def test_codex_own_tm_alias_not_self_detected(tmp_path):
     ad.install_mcp()
     out2 = ad.install_mcp()
     text = Path(ad.settings_path).read_text()
-    assert "[mcp_servers.tm-slack]" in text
+    assert "# [tm-placeholder] slack" in text
+    assert "[mcp_servers.tm-slack]" not in text
     assert any("[ok]" in c for c in out2)
 
 
@@ -206,11 +208,11 @@ def test_codex_detection_removes_stale_placeholder(tmp_path):
     ad = _codex(root, tmp_path)
     ad.install_mcp()
     text = Path(ad.settings_path).read_text()
-    assert "[mcp_servers.tm-slack]" in text
+    assert "# [tm-placeholder] slack" in text
     Path(ad.settings_path).write_text(
         text + "\n[mcp_servers.my-slack]\ncommand = 'npx'\nargs = ['slack-mcp']\n")
     out = ad.install_mcp()
     text2 = Path(ad.settings_path).read_text()
-    assert "[mcp_servers.tm-slack]" not in text2
+    assert "# [tm-placeholder] slack" not in text2  # 사용자 서버 감지 → 주석 placeholder 제거
     assert "[mcp_servers.my-slack]" in text2
     assert any("my-slack" in c for c in out)
