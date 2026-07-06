@@ -13,7 +13,7 @@ tm-mode 기여를 환영합니다. 코드 PR은 누구나 보낼 수 있고, tm-
 
 ## 코드 지도
 
-어디를 보면 되는지는 [README.ko.md](README.ko.md) 하단 "아키텍처 — 코드 지도" 절 — 3계층 구조·컴포넌트 지도·세션 데이터 흐름·설계 철칙·기여 시나리오별 진입점.
+어디를 보면 되는지는 [README.md](README.md) 의 Architecture 절(영/한) — 3계층 구조·컴포넌트 지도·세션 데이터 흐름·설계 철칙·기여 시나리오별 진입점.
 
 ## 개발 루프
 
@@ -41,4 +41,4 @@ chore: switch license to Apache 2.0
 
 ## 문서
 
-front-door 문서는 **영어 기본**(README.md=en, 한국어는 [README.ko.md](README.ko.md))입니다(2026-07-06 정책 전환). 내부 명세(docs/spec/)는 당분간 한국어 우선 — 영어 번역 기여를 환영합니다.
+front-door 문서는 **영어 기본**이며 한국어는 같은 [README.md](README.md) 하단 '한국어' 절입니다(2026-07-06 — 홈에서 앵커 점프, 파일 이동 없음). 내부 명세(docs/spec/)는 당분간 한국어 우선 — 영어 번역 기여를 환영합니다.
