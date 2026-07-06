@@ -850,7 +850,7 @@ def test_invalid_fallback_no_mismatch_warning(env, capsys):
     assert "[warn]" not in capsys.readouterr().out
 
 
-def test_sync_notices_hooks_json_coexistence(tmp_path):
+def test_sync_notices_hooks_json_coexistence(tmp_path, capsys):
     """[2026-07-06 공존 계약] hooks.json 병용 감지 시 [info] 1줄 — 무해 경고 설명."""
     Adapter = _load_codex_adapter()
     import json as _json
@@ -865,5 +865,6 @@ def test_sync_notices_hooks_json_coexistence(tmp_path):
     (tmp_path / "hooks.json").write_text("{}")  # 타 도구 소유 가정
     a = Adapter(agent_dir=str(agent_dir), manifest_path=str(hooks_dir / "manifest.json"),
                 settings_path=str(cfg), python="python3", team_root=str(tmp_path), member=None)
-    out = a.sync(mode="on")
-    assert any("hooks.json coexists" in c for c in out), out
+    a.sync(mode="on")
+    printed = capsys.readouterr().out
+    assert "hooks.json coexists" in printed, printed
