@@ -1018,6 +1018,22 @@ def cmd_join(args, *, created: bool = False) -> int:
         return 2
 
     is_tty = sys.stdin.isatty()
+    if not args.url:
+        if not is_tty:
+            _err("team repo URL is required in non-interactive mode: "
+                 "`tm-mode join <url>`")
+            return 2
+        # Step 0: 위저드가 URL 부터 묻는다(레일 시작) — 빈 입력은 재질문.
+        _rail_top(_hi("tm-mode") + _dim(" · set up your team"))
+        print(_hi("◆  Team repo URL   — paste the repo your team lead shared"))
+        while True:
+            candidate = _ask_text("  ›", None).strip()
+            if candidate:
+                args.url = candidate
+                break
+            print(_dim("  A URL is required — e.g. git@github.com:org/team.git"))
+        if sys.stdout.isatty() and _raw_capable():
+            _collapse_lines(2, "Team repo URL", args.url)
     # 명시 플래그(--dir/--member-name/--agent/--role/--obsidian)가 하나라도 있으면
     # TTY 여도 wizard 를 건너뛴다(플래그 = 비대화 의도, CLI 관례). /dev/tty 재연결(#6)로
     # 터미널의 curl 사용자가 플래그를 줬는데 wizard 가 무시하는 회귀 방지(codex P2).
@@ -1092,7 +1108,8 @@ def main(argv=None) -> int:
     pi.set_defaults(func=cmd_init)
 
     pj = sub.add_parser("join", help="Clone an existing team repo + setup")
-    pj.add_argument("url", help="Team repo clone URL")
+    pj.add_argument("url", nargs="?", default=None,
+                    help="Team repo clone URL (omit in a terminal to be asked)")
     pj.add_argument("--member-name")
     pj.add_argument("--dir", help="Clone location")
     pj.add_argument("--agent", action="append", metavar="AGENT",
