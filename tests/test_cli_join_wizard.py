@@ -407,19 +407,56 @@ class TestWizardTty:
         assert "claude" in agent_args and "codex" in agent_args
 
     def test_role_passed(self, tmp_path):
-        """5단계: 역할 입력 → --role extra."""
+        """5단계: 역할 picker 번호 선택 → --role extra.
+
+        role_choices = [Skip, developer, pm, …, Other] 이므로 developer = 2번.
+        """
         inputs = [
             str(tmp_path / "dest"),
             "",
             "1",
             "alice",
-            "developer",
+            "2",       # 역할 picker: 2 = developer (1=Skip)
             "N",
             "Y",
         ]
         dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
         assert "--role" in extra
         assert "developer" in extra
+
+    def test_role_other_freeform(self, tmp_path):
+        """5단계: 'Other…' 선택 → 목록에 없는 역할 자유입력(§7.2 H1 의도 보존).
+
+        role_choices = [Skip, developer, pm, designer, researcher, marketer,
+        ops, lead, Other] → Other = 9번. 이어서 자유텍스트를 받는다.
+        """
+        inputs = [
+            str(tmp_path / "dest"),
+            "",
+            "1",
+            "alice",
+            "9",         # 역할 picker: 9 = Other…
+            "founder",   # 자유입력 역할
+            "N",
+            "Y",
+        ]
+        dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
+        assert "--role" in extra
+        assert "founder" in extra
+
+    def test_role_skip_default(self, tmp_path):
+        """5단계: Enter(빈 입력) → 기본 Skip → --role 없음."""
+        inputs = [
+            str(tmp_path / "dest"),
+            "",
+            "1",
+            "alice",
+            "",          # 역할 picker: Enter = 기본 Skip
+            "N",
+            "Y",
+        ]
+        dest, member, extra, _, _cs = self._run_wizard(tmp_path, inputs)
+        assert "--role" not in extra
 
     def test_obsidian_yes(self, tmp_path):
         """6단계: y 입력 → --register-obsidian extra."""
@@ -496,7 +533,7 @@ class TestWizardTty:
             "",
             "1",
             "bob",
-            "pm",
+            "3",       # 역할 picker: 3 = pm (1=Skip, 2=developer)
             "N",
             "Y",
         ]
@@ -1048,3 +1085,33 @@ class TestExplicitFlagsSkipWizard:
         rc = cli.cmd_join(args)
         assert rc == 0
         assert ran.get("hit") is True
+
+
+def test_join_without_url_non_tty_errors(tmp_path, capsys, monkeypatch):
+    """[Step 0] 비-TTY 에서 url 생략 = 명확한 에러(무한 대기·오동작 금지)."""
+    import sys as _sys
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+    rc = cli.main(["join"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "URL is required" in err or "url" in err.lower()
+
+
+def test_join_without_url_tty_asks_first(tmp_path, capsys, monkeypatch):
+    """[Step 0] TTY 에서 url 생략 → 위저드가 URL 을 먼저 묻는다(빈 입력 재질문)."""
+    import sys as _sys
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+    answers = iter(["", "git@github.com:acme/team.git"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    # URL 확보 후 clone 단계로 가기 전에 멈추도록 clone 실패 주입
+    calls = {}
+    def fake_run(cmd, *a, **k):
+        calls["cmd"] = cmd
+        class R: returncode = 1
+        return R()
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    rc = cli.main(["join", "--dir", str(tmp_path / "d")])  # 플래그로 위저드 스킵 → URL 만 검증
+    out = capsys.readouterr()
+    assert "Team repo URL" in out.out
+    assert calls["cmd"][:2] == ["git", "clone"]
+    assert "git@github.com:acme/team.git" in calls["cmd"]
