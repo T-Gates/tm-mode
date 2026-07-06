@@ -101,11 +101,15 @@ def _prompt(label: str, default: str | None = None) -> str:
 
 _ANSI = {
     "reset": "\x1b[0m",
-    "ok": "\x1b[32m",      # 초록 — 성공·완료
-    "warn": "\x1b[33m",    # 노랑 — 주의
-    "hi": "\x1b[36m",      # 시안 — 강조·명령
-    "dim": "\x1b[2m",      # 흐림 — 부가·비활성
-    "inv": "\x1b[7m",      # 반전 — 커서 하이라이트(clack 풍)
+    "ok": "\x1b[32m",      # 초록 — 성공·완료·완료 심볼 ◇
+    "warn": "\x1b[33m",    # 노랑 — 주의·경고(미설치/재설치)
+    "hi": "\x1b[36m",      # 시안 — 진행 심볼 ◆·강조·명령
+    "dim": "\x1b[2m",      # 흐림 — 레일 │·힌트·부가
+    "inv": "\x1b[7m",      # 반전 — 커서줄 폴백(256색 미지원 시)
+    "err": "\x1b[31m",     # 빨강 — 에러·중단
+    "bold": "\x1b[1m",     # 볼드 — 값 강조(내가 고른 것)
+    # 커서줄 배경 하이라이트(Vivid): 어두운 청록 배경 + 밝은 전경. 256색 터미널.
+    "curbg": "\x1b[48;5;24m\x1b[97m",
 }
 
 
@@ -139,6 +143,14 @@ def _hi(text: str) -> str:
     return _paint(text, "hi")
 
 
+def _g(text: str) -> str:
+    return _paint(text, "ok")
+
+
+def _bold(text: str) -> str:
+    return _paint(text, "bold")
+
+
 # ── clack 풍 세로 레일(2026-07-06 리스킨) — 순수 문자+ANSI, 외부 의존 0 ──
 # 위저드 전체가 ┌…│…└ 한 덩어리로 이어지고, 끝난 단계는 ◇ 한 줄로 접힌다.
 # 비-TTY/raw-불가에선 같은 문자가 정적으로 찍힐 뿐(폴백 계약 §7.1 불변).
@@ -152,8 +164,8 @@ def _rail(text: str = "") -> None:
 
 
 def _rail_done(label: str, value: str) -> None:
-    """완료 단계 접힘 줄: ◇ label ─ value"""
-    print(_dim("◇  ") + label + _dim("  ─  ") + value)
+    """완료 단계 접힘 줄: ◇(초록) label ─ value(볼드) — Vivid 팔레트."""
+    print(_g("◇  ") + label + _dim("  ─  ") + _bold(value))
 
 
 def _rail_end(text: str) -> None:
@@ -170,7 +182,7 @@ def _collapse_lines(n: int, label: str, value: str) -> None:
     sys.stdout.write(f"\x1b[{n}A")
     sys.stdout.write("\x1b[2K")
     sys.stdout.flush()
-    _rail_done(label, value)
+    _rail_done(label, _fit(value))
 
 
 def _dim(text: str) -> str:
@@ -259,6 +271,40 @@ def _read_key() -> str:
             pass
 
 
+import re as _re
+_SGR = _re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _vis_len(s: str) -> int:
+    """ANSI SGR 제외 가시 길이."""
+    return len(_SGR.sub("", s))
+
+
+def _fit(s: str, width: int | None = None) -> str:
+    """터미널 폭으로 자른다(wrap 방지 — collapse 커서 산술이 물리=논리 줄수 전제).
+
+    ANSI 코드는 길이에서 제외하고, 자르면 … 를 붙인다. width 미지정 시 현재 폭.
+    """
+    if width is None:
+        import shutil
+        width = shutil.get_terminal_size((80, 24)).columns
+    width = max(8, width)
+    if _vis_len(s) <= width:
+        return s
+    # SGR 보존하며 가시문자만 세어 자르기
+    out, vis = [], 0
+    for tok in _re.split(r"(\x1b\[[0-9;]*m)", s):
+        if tok.startswith("\x1b["):
+            out.append(tok); continue
+        for ch in tok:
+            if vis >= width - 1:
+                break
+            out.append(ch); vis += 1
+        if vis >= width - 1:
+            break
+    return "".join(out) + "…" + _ANSI["reset"]
+
+
 def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
                  *, first: bool) -> None:
     """메뉴를 in-place 로 다시 그린다. first=False 면 직전 출력 줄 수만큼 위로 올려 덮어쓴다.
@@ -272,17 +318,18 @@ def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
     if not first:
         # 커서를 위로 total 줄 올리고 각 줄을 지운다.
         sys.stdout.write(f"\x1b[{total}A")
+    cur = _ANSI["curbg"] if _use_color() else ""
+    rst = _ANSI["reset"] if _use_color() else ""
     if show_title:
-        sys.stdout.write("\x1b[2K" + _hi("◆  ") + title + "\n")
+        sys.stdout.write("\x1b[2K" + _fit(_hi("◆  ") + title) + "\n")
     rail = _dim("│  ")
-    sys.stdout.write("\x1b[2K" + rail + _dim(hint) + "\n")
+    sys.stdout.write("\x1b[2K" + _fit(rail + _dim(hint)) + "\n")
     for i, ln in enumerate(lines):
         if i == cursor:
             # clack 풍: 현재 줄 반전 하이라이트(❯ 유지 — 스크린리더/무색 터미널 겸용)
-            sys.stdout.write("\x1b[2K" + rail + _hi("❯ ")
-                             + _ANSI["inv"] + ln + _ANSI["reset"] + "\n")
+            sys.stdout.write("\x1b[2K" + _fit(rail + _hi("❯ ") + cur + ln + rst) + "\n")
         else:
-            sys.stdout.write(f"\x1b[2K{rail}  {ln}\n")
+            sys.stdout.write("\x1b[2K" + _fit(f"{rail}  {ln}") + "\n")
     sys.stdout.flush()
 
 
@@ -791,9 +838,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             else:
                 clone_skip = False
                 break
-        if _step1_clean and sys.stdout.isatty() and _raw_capable():
-            _collapse_lines(2, "Where to install", str(dest))
-        _rail()
+        _rail()  # 텍스트 입력은 접지 않는다(입력값이 wrap 될 수 있어 collapse 산술 불안정) — 레일만 잇는다
 
         # ── 2단계: 에이전트 선택 ──────────────────────────────────────────
         installed = _detect_agents_from_install_lib(home)
@@ -811,6 +856,8 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
             selected_agents(클로저)를 갱신하고 인덱스 리스트를 반환한다.
             마크는 raw 메뉴(_pick_many)와 동일한 ◉/◯ — `[x]`는 '제외'로 오독(1c).
             """
+            print(_hi("◆  Step 2 of 5 · Your agents")
+                  + _dim("   — which AI coding agents to wire up"))
             print("  (number = toggle, Enter = confirm — ◉ on / ◯ off)")
             while True:
                 for i, ag in enumerate(all_agents, 1):
@@ -887,8 +934,7 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
                         break
             else:
                 member = _ask_text("  Your name (lowercase letters, digits, - or _)  ›", slug) or slug
-            if sys.stdout.isatty() and _raw_capable():
-                _collapse_lines(1, "Your name", member)
+
         else:
             if existing_members:
                 # 기존팀원 = _pick_one(번호 1입력). "직접입력" 항목 금지(§7.5 H4).
@@ -919,8 +965,6 @@ def _wizard_join(url: str, args, clone_fn=None) -> tuple[Path, str | None, list[
         _rail()
         print(_hi("◆  Step 4 of 5 · Your role") + _dim("   — optional (" + " / ".join(ROLES) + ")"))
         role = _ask_text("  › (Enter to skip)", "")  # default 없음 → _prompt 폴백, 1입력
-        if sys.stdout.isatty() and _raw_capable():
-            _collapse_lines(2, "Your role", role or _dim("(skipped)"))
         _rail()
 
         # ── 6단계(구 6): Obsidian — _confirm(§7.3: default=True, n/no 만 부정) ──
