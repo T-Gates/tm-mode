@@ -20,15 +20,33 @@ def _mod():
 
 def test_fit_truncates_by_visible_width_ignoring_ansi():
     m = _mod()
-    _fit, _hi = m["_fit"], m["_hi"]
-    long = "x" * 200
-    out = _fit(long, width=40)
-    # 가시 길이 ≤ 40 (… 포함), 원본보다 짧다
-    vis = m["_vis_len"](out)
-    assert vis <= 40 and out.endswith("…") or out.endswith("…\x1b[0m")
+    _fit, _hi, _vis = m["_fit"], m["_hi"], m["_vis_len"]
+    out = _fit("x" * 200, width=40)
+    assert _vis(out) <= 40           # 가시폭 상한(괄호로 precedence 고정)
+    assert out.rstrip("\x1b[0m").endswith("…") or out.endswith("…")
     # ANSI 는 길이에서 제외 — 색 입힌 짧은 문자열은 안 잘린다
     short = _hi("hello")
     assert _fit(short, width=40) == short
+
+
+def test_fit_no_color_omits_reset_on_truncate(monkeypatch):
+    """[재검수 P3] NO_COLOR 면 truncate 꼬리에 ANSI reset 을 붙이지 않는다."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    m = _mod()
+    out = m["_fit"]("y" * 200, width=30)
+    assert "\x1b[0m" not in out and out.endswith("…")
+
+
+def test_render_menu_line_count_titleless():
+    """[재검수 P3] title 없는 경로: hint + choices = len+1 (collapse 산술)."""
+    import io, sys
+    m = _mod()
+    buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+    try:
+        m["_render_menu"]("", "(hint)", ["a", "b"], 0, first=True)
+    finally:
+        sys.stdout = old
+    assert buf.getvalue().count("\n") == 3  # hint + 2 = len+1
 
 
 def test_render_menu_line_count_matches_collapse_arithmetic():

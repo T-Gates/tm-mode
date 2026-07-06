@@ -302,7 +302,8 @@ def _fit(s: str, width: int | None = None) -> str:
             out.append(ch); vis += 1
         if vis >= width - 1:
             break
-    return "".join(out) + "…" + _ANSI["reset"]
+    tail = _ANSI["reset"] if _use_color() else ""  # NO_COLOR 누출 방지(잘린 SGR 복구는 색 켤 때만)
+    return "".join(out) + "…" + tail
 
 
 def _render_menu(title: str, hint: str, lines: list[str], cursor: int,
