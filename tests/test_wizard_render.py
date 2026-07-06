@@ -94,3 +94,26 @@ def test_rail_done_uses_green_symbol_and_bold_value_when_color(monkeypatch):
     out = buf.getvalue()
     assert "\x1b[32m" in out   # ◇ 초록
     assert "\x1b[1m" in out    # 값 볼드
+
+
+def test_render_menu_context_adds_two_lines_and_matches_height():
+    """context 有 = context줄 + 빈레일줄 추가 — _menu_height 와 물리 줄수 일치(collapse 산술)."""
+    m = _mod()
+    buf = io.StringIO()
+    old = sys.stdout
+    sys.stdout = buf
+    try:
+        m["_render_menu"]("Title", "hint", ["a", "b"], 0, first=True,
+                          context="Why we ask this.")
+    finally:
+        sys.stdout = old
+    out = buf.getvalue()
+    # title + context + 빈레일 + 2 항목 + hint = 6 줄 = _menu_height
+    assert out.count("\n") == 6
+    assert out.count("\n") == m["_menu_height"]("Title", "Why we ask this.", 2)
+    # 배치: context 가 항목보다 먼저, hint 가 마지막 줄(아티팩트 after 계약)
+    lines = out.splitlines()
+    ctx_i = next(i for i, l in enumerate(lines) if "Why we ask this." in l)
+    item_i = next(i for i, l in enumerate(lines) if "❯" in l)  # 커서 항목(0)
+    hint_i = next(i for i, l in enumerate(lines) if "hint" in l)
+    assert ctx_i < item_i < hint_i
