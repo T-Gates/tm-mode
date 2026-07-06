@@ -65,9 +65,33 @@ except ImportError:
 # 리마인더(session-log-remind, compact 기본)의 "(규칙: 세션 시작 주입 참조)"가 가리키는
 # 블록을 여기서 세션당 1회 주입한다. 부재 시 규칙 블록만 생략(advisory — 주입은 계속).
 try:
-    from _slog_rules import SESSION_LOG_RULES as _SESSION_LOG_RULES  # type: ignore
+    import _slog_rules as _slog_rules_mod  # type: ignore
 except ImportError:
-    _SESSION_LOG_RULES = None
+    _slog_rules_mod = None
+# i18n(PR-i1) — 팀 locale(team.config.json team.locale)에 따라 주입 라벨 ko/en 선택.
+# io_encoding 과 동일한 infra/ sys.path 재사용 패턴. 부재(부분 배포) 시 ko 강등(무해).
+try:
+    import i18n as _i18n  # type: ignore
+except ImportError:
+    _i18n = None
+
+
+def _hook_lang(root: str) -> str:
+    """팀 locale → 주입 언어("ko"|"en"). i18n 부재/실패 시 ko(종전 거동 보존)."""
+    if _i18n is None:
+        return "ko"
+    try:
+        return _i18n.team_lang(root)
+    except Exception:  # noqa: BLE001 — locale 해석 실패가 주입을 막지 않는다
+        return "ko"
+
+
+def _t(key: str, lang: str, ko: str, **fmt) -> str:
+    """주입 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화 계약),
+    en 은 i18n 카탈로그(hook_* 키). i18n 부재 시 ko 폴백."""
+    if lang == "en" and _i18n is not None:
+        return _i18n.t(key, "en", **fmt)
+    return ko.format(**fmt) if fmt else ko
 # kb-write-guard — 세션 id relay 규약의 단일 소스(A2). 파일명이 하이픈이라 importlib 로
 # 로드한다(top-level 은 정의뿐이라 부작용 없음). 부재/실패 시 relay 만 생략(advisory).
 try:
@@ -293,18 +317,22 @@ def _persist_session_relay(data: dict) -> None:
         pass
 
 
-def _build_context(root: Path) -> str | None:
+def _build_context(root: Path, lang: str = "ko") -> str | None:
     """INDEX + 멤버별 최근 세션로그 summary 를 주입 문자열로 조립.
 
     엔진 _collect_members/_read_index 재사용. 수집 결과가 비어도(빈 팀) 유효 구조의
     안내를 돌려준다(I1 — 빈 상태라도 L1 데이터를 '읽어냄'). 엔진 부재 시 None.
+
+    i18n(PR-i1): **엔진 소유 라벨만** lang 분기 — 팀 작성물(INDEX 본문·summary 내용·
+    팀 커스텀 guidelines)은 절대 번역하지 않는다.
     """
     if _engine is None:
         return None
     index_text = _engine._read_index(root)
     members = _engine._collect_members(root)
 
-    lines = ["[teammode] 팀 모드 활성 — 세션 시작 맥락:"]
+    lines = [_t("hook_ss_header", lang,
+                "[teammode] 팀 모드 활성 — 세션 시작 맥락:")]
 
     # ── 동기화 상태(이슈 #23): origin(팀 공유) vs upstream(템플릿) 분리 표시 ──
     # push 실패 마커가 있으면 크게 경고(로컬 커밋이 origin 에 안 올라간 상태). 이어서
@@ -314,48 +342,69 @@ def _build_context(root: Path) -> str | None:
             warn = _git_ops.read_sync_warning(str(root))
             if warn:
                 lines.append("")
-                lines.append("⚠️ [동기화 경고] 로컬 커밋이 origin 에 push 되지 않았습니다 "
-                             "— 팀원과 분기(divergence) 위험. 확인 후 `teammode pull`/수동 "
-                             f"정리 필요: {warn}")
+                lines.append(_t(
+                    "hook_ss_sync_warn", lang,
+                    "⚠️ [동기화 경고] 로컬 커밋이 origin 에 push 되지 않았습니다 "
+                    "— 팀원과 분기(divergence) 위험. 확인 후 `teammode pull`/수동 "
+                    "정리 필요: {warn}", warn=warn))
             ahead, behind = _git_ops.ahead_behind(str(root))
             if ahead or behind:
                 lines.append("")
-                lines.append(f"--- origin 동기화 상태(팀 공유) --- ahead {ahead} / "
-                             f"behind {behind}"
-                             + (" (push 안 된 로컬 커밋 있음)" if ahead else ""))
+                lines.append(_t(
+                    "hook_ss_sync_status", lang,
+                    "--- origin 동기화 상태(팀 공유) --- ahead {ahead} / "
+                    "behind {behind}", ahead=ahead, behind=behind)
+                    + (_t("hook_ss_sync_ahead_suffix", lang,
+                          " (push 안 된 로컬 커밋 있음)") if ahead else ""))
         except Exception:  # noqa: BLE001 — 상태 표시 실패가 맥락 주입을 막지 않는다
             pass
 
-    # guidelines 주입: 범용(root/infra/ 우선, fallback _INFRA) + 팀 커스텀
-    _infra_gl = root / "infra" / "guidelines.md"
-    if not _infra_gl.is_file():
-        _infra_gl = _INFRA / "guidelines.md"
+    # guidelines 주입: 범용(root/infra/ 우선, fallback _INFRA) + 팀 커스텀.
+    # en 팀은 guidelines.en.md 를 먼저 찾고, 없으면(구배포) ko 판으로 폴백.
+    # 팀 커스텀(memory/team/guidelines.md)은 팀 작성물 — 번역 없이 그대로 주입.
+    _gl_names = ("guidelines.en.md", "guidelines.md") if lang == "en" \
+        else ("guidelines.md",)
+    _infra_gl = None
+    for _name in _gl_names:
+        for _base in (root / "infra", _INFRA):
+            if (_base / _name).is_file():
+                _infra_gl = _base / _name
+                break
+        if _infra_gl is not None:
+            break
     for _gl_path in (_infra_gl, root / "memory" / "team" / "guidelines.md"):
-        if _gl_path.is_file():
+        if _gl_path is not None and _gl_path.is_file():
             lines.append("")
             lines.append(_gl_path.read_text(encoding="utf-8").rstrip())
 
     # 세션로그 규칙 — 세션당 1회, 압축 블록(≤6줄). 리마인더(compact)가 매번 장문
     # 룰셋을 싣는 대신 이 블록을 "(규칙: 세션 시작 주입 참조)"로 가리킨다(단일 소스
-    # _slog_rules — 드리프트 방지). 모듈 부재 시 생략(advisory).
-    if _SESSION_LOG_RULES:
-        lines.append("")
-        lines.append(_SESSION_LOG_RULES)
+    # _slog_rules — 드리프트 방지, ko/en 동일 모듈). 모듈 부재 시 생략(advisory).
+    if _slog_rules_mod is not None:
+        _rules_fn = getattr(_slog_rules_mod, "session_log_rules", None)
+        _rules = _rules_fn(lang) if callable(_rules_fn) else getattr(
+            _slog_rules_mod, "SESSION_LOG_RULES", None)  # 구모듈 하위호환
+        if _rules:
+            lines.append("")
+            lines.append(_rules)
 
     if index_text.strip():
         lines.append("")
-        lines.append("--- 팀 메모리 INDEX ---")
+        lines.append(_t("hook_ss_index_header", lang, "--- 팀 메모리 INDEX ---"))
         lines.append(index_text.rstrip())
     lines.append("")
-    lines.append("--- 멤버별 최근 작업 (summary) ---")
+    lines.append(_t("hook_ss_members_header", lang,
+                    "--- 멤버별 최근 작업 (summary) ---"))
     if members:
         for m in members:
-            summ = m["summary"] if m["summary"] else "(summary 없음 — 구로그)"
+            summ = m["summary"] if m["summary"] else _t(
+                "hook_ss_no_summary", lang, "(summary 없음 — 구로그)")
             lines.append(f"- {m['author']} [{m['date']}]: {summ}")
             lines.append(f"    file: {m['file']}")
     else:
-        lines.append("(아직 세션로그 없음 — 첫 작업부터 "
-                     "memory/team/sessions/<이름>/ 에 기록하세요.)")
+        lines.append(_t("hook_ss_no_logs", lang,
+                        "(아직 세션로그 없음 — 첫 작업부터 "
+                        "memory/team/sessions/<이름>/ 에 기록하세요.)"))
     return "\n".join(lines)
 
 
@@ -382,8 +431,13 @@ def main() -> int:
     # 세션당 1회 레포 최신화 — 맥락 주입 전에(최신 상태로 주입). 실패 무해(철칙).
     _maybe_auto_pull(str(root))
 
+    # 팀 locale → 주입 언어(PR-i1). config 1회 읽기 — 실패는 ko/en 폴백 계약이 흡수.
+    # locale 판정용 config 1회 open — session-start 는 세션당 1회만 실행되므로
+    # 무해하다(매 프롬프트 도는 session-log-remind 와 달리 재사용 최적화 불요).
+    lang = _hook_lang(str(root))
+
     try:
-        context = _build_context(root)
+        context = _build_context(root, lang)
     except Exception:  # noqa: BLE001 — 수집 실패가 세션을 막지 않는다
         return 0
 

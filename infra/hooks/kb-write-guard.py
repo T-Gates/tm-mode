@@ -75,6 +75,36 @@ except ImportError:
     def _ensure_utf8_io() -> None:  # 모듈 부재여도 훅은 동작(보정만 스킵)
         return
 
+# i18n(PR-i1) — deny/안내 문구 ko/en 분기. io_encoding 과 동일한 infra/ sys.path
+# 재사용 패턴. 부재(부분 배포·훅 단독 복사) 시 ko 강등(종전 거동 보존, fail-safe).
+try:
+    import i18n as _i18n  # type: ignore
+except ImportError:
+    _i18n = None
+
+
+def _hook_lang(team_root: str) -> str:
+    """팀 locale → deny 문구 언어("ko"|"en").
+
+    ⚠️ 이 훅은 TEAMMODE_HOME 을 신뢰하지 않는다(P0-3) — locale 도 반드시
+    __file__ 기준 팀 루트(team_root 인자)의 config 에서 읽는다(env 기반 헬퍼 금지).
+    i18n 부재/실패 시 ko(종전 거동).
+    """
+    if _i18n is None:
+        return "ko"
+    try:
+        return _i18n.team_lang(team_root)
+    except Exception:  # noqa: BLE001 — locale 해석 실패가 가드 판정을 막지 않는다
+        return "ko"
+
+
+def _t(key: str, lang: str, ko: str, **fmt) -> str:
+    """deny 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화 계약),
+    en 은 i18n 카탈로그(hook_* 키). i18n 부재 시 ko 폴백."""
+    if lang == "en" and _i18n is not None:
+        return _i18n.t(key, "en", **fmt)
+    return ko.format(**fmt) if fmt else ko
+
 
 # unlock 플래그 TTL(초). 5분 = 스킬 한 사이클에 충분하고 잔류 허용은 최소.
 KB_UNLOCK_TTL_SECONDS = 300
@@ -353,7 +383,7 @@ def _is_memory_path(file_path: str, team_root: str) -> bool | None:
         return None
 
 
-def _deny(reason: str) -> None:
+def _deny(reason: str, lang: str = "ko") -> None:
     """Claude PreToolUse 차단 결정 JSON 을 stdout 으로 출력(+ 호출부가 exit 2)."""
     print(json.dumps({
         "hookSpecificOutput": {
@@ -362,11 +392,17 @@ def _deny(reason: str) -> None:
             "permissionDecisionReason": reason,
         }
     }, ensure_ascii=False))
-    sys.stderr.write(f"[teammode] KB 쓰기 차단: {reason}\n")
+    sys.stderr.write(_t("hook_kb_stderr_blocked", lang,
+                        "[teammode] KB 쓰기 차단: {reason}", reason=reason) + "\n")
 
 
 def main() -> int:
     _ensure_utf8_io()
+
+    # 팀 루트는 __file__ 기준 정적 계산(TEAMMODE_HOME 무신뢰) — locale 도 같은
+    # 루트의 config 에서 읽는다. stdin 과 무관하므로 파싱 전에 결정해도 안전.
+    root = _team_root()
+    lang = _hook_lang(root)
 
     # ── 0. 입력 파싱 ── (fail-closed: 파싱 불가 → deny)
     raw_stdin = sys.stdin.read()
@@ -374,19 +410,19 @@ def main() -> int:
         data = json.loads(raw_stdin or "{}")
     except (json.JSONDecodeError, ValueError):
         # stdin 파싱 실패 = 알 수 없는 입력 → 보수적으로 차단(fail-closed, P1-2).
-        _deny("입력 파싱 실패 — 보수적 차단(fail-closed).")
+        _deny(_t("hook_kb_deny_parse", lang,
+                 "입력 파싱 실패 — 보수적 차단(fail-closed)."), lang)
         return 2
 
     # top-level 이 JSON object(dict) 가 아니면 malformed → fail-closed.
     # (유효 JSON 이어도 [], "x", 123, null 등은 data.get() 에서 터지므로 먼저 차단.)
     if not isinstance(data, dict):
-        _deny("입력이 JSON object(dict) 가 아님 — 보수적 차단(fail-closed).")
+        _deny(_t("hook_kb_deny_not_dict", lang,
+                 "입력이 JSON object(dict) 가 아님 — 보수적 차단(fail-closed)."), lang)
         return 2
 
     if data.get("event") != "PreToolUse":
         return 0
-
-    root = _team_root()
 
     # ── 1. .teammode-active 가드: 마커 없으면 차단도 안 함(빌드 안전) ──
     if not os.path.isfile(os.path.join(root, ".teammode-active")):
@@ -410,10 +446,10 @@ def main() -> int:
     if files_raw is None:
         files = []
     elif not isinstance(files_raw, list):
-        _deny(
+        _deny(_t(
+            "hook_kb_deny_files_not_list", lang,
             "malformed 입력 — files 필드가 리스트가 아님(fail-closed). "
-            "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
-        )
+            "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."), lang)
         return 2
     else:
         files = files_raw
@@ -421,10 +457,10 @@ def main() -> int:
     # 각 원소가 문자열인지 검증 (정수·None 등 섞이면 malformed → fail-closed)
     for item in files:
         if not isinstance(item, str):
-            _deny(
+            _deny(_t(
+                "hook_kb_deny_files_item", lang,
                 "malformed 입력 — files 원소가 문자열이 아님(fail-closed). "
-                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
-            )
+                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."), lang)
             return 2
 
     # 정규 스키마에 경로가 없으면 raw.tool_input.file_path 로 보조 조회(단일 경로 폴백)
@@ -432,19 +468,19 @@ def main() -> int:
         raw = data.get("raw")
         # raw 타입 검증: dict 여야 함
         if raw is not None and not isinstance(raw, dict):
-            _deny(
+            _deny(_t(
+                "hook_kb_deny_raw_not_dict", lang,
                 "malformed 입력 — raw 필드가 dict 가 아님(fail-closed). "
-                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
-            )
+                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."), lang)
             return 2
         raw = raw or {}
         tool_input = raw.get("tool_input")
         # tool_input 타입 검증: dict 여야 함 (문자열이면 malformed → fail-closed)
         if tool_input is not None and not isinstance(tool_input, dict):
-            _deny(
+            _deny(_t(
+                "hook_kb_deny_tool_input_not_dict", lang,
                 "malformed 입력 — raw.tool_input 이 dict 가 아님(fail-closed). "
-                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."
-            )
+                "정규 스키마로 재시도하거나 tm-manage-memory 스킬을 사용하세요."), lang)
             return 2
         tool_input = tool_input or {}
         fp = tool_input.get("file_path", "") or ""
@@ -453,11 +489,11 @@ def main() -> int:
 
     # file_edit 인데 경로를 하나도 못 구함 → fail-closed(P1-2)
     if not files:
-        _deny(
+        _deny(_t(
+            "hook_kb_deny_no_path", lang,
             "memory/ 경로 판별 실패 — 보수적 차단(fail-closed). "
             "파일 경로가 포함된 정규 스키마로 재시도하거나 "
-            "tm-manage-memory 스킬을 사용하세요."
-        )
+            "tm-manage-memory 스킬을 사용하세요."), lang)
         return 2
 
     # ── 4. 각 파일 개별 판정 ──
@@ -470,10 +506,10 @@ def main() -> int:
         in_memory = _is_memory_path(file_path, root)
         if in_memory is None:
             # resolve() 실패(심링크·권한 등) → fail-closed(P1-2)
-            _deny(
+            _deny(_t(
+                "hook_kb_deny_resolve_error", lang,
                 "memory/ 경로 판별 중 오류 — 보수적 차단(fail-closed). "
-                "tm-manage-memory 스킬을 사용하세요."
-            )
+                "tm-manage-memory 스킬을 사용하세요."), lang)
             return 2
         if not in_memory:
             continue  # memory/ 밖 → 무영향
@@ -491,13 +527,13 @@ def main() -> int:
     if _is_unlock_valid(root, data):
         return 0  # 스킬이 플래그를 세운 구간 → 통과
 
-    _deny(
+    _deny(_t(
+        "hook_kb_deny_direct_edit", lang,
         "memory/ 하위 직접 편집은 금지돼 있습니다. "
         "KB(메모리 베이스)는 '동사 경유 원칙' — Edit/Write 직접 편집 대신 엔진 동사를 써야 "
         "충돌 없이 팀 공유 메모리에 기록됩니다. "
         "메모리는 tm-manage-memory 스킬을 통해서만 추가·수정·삭제하세요 "
-        "(엔진: python infra/teammode.py memory write …)."
-    )
+        "(엔진: python infra/teammode.py memory write …)."), lang)
     return 2  # PreToolUse 차단
 
 

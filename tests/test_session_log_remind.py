@@ -143,7 +143,10 @@ def test_member_fallback_degraded_when_no_config(tmp_path):
     date=오늘로 선시드해 warm-up 을 건너뛰고 발화를 검증한다.
     """
     (tmp_path / ".teammode-active").write_text("")
-    # team.config.json 없음 → _resolve_member → None → 폴백 경로
+    # PR-i1: 한국어 발화("세션 로그")를 단정하므로 ko 팀으로 고정(locale=ko_KR).
+    # members 키는 없음 → _resolve_member → None → 폴백(degraded) 경로 유지.
+    (tmp_path / "team.config.json").write_text(
+        json.dumps({"team": {"locale": "ko_KR"}}), encoding="utf-8")
     # sessions 폴더도 없음 → g_mtime=0.0, age=9999
     state_f = tmp_path / "teammode-remind-state-claude-fallback.json"
     state_f.write_text(json.dumps({

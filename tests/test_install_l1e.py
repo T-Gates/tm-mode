@@ -80,9 +80,15 @@ def test_ignores_non_sessionstart_event(tmp_path):
 
 
 def test_empty_team_still_valid_structure(tmp_path):
-    """I1: 로그 0이어도 활성이면 유효 구조 안내 주입(빈 상태도 읽어냄)."""
+    """I1: 로그 0이어도 활성이면 유효 구조 안내 주입(빈 상태도 읽어냄).
+
+    PR-i1: 한국어 안내 문구를 단정하므로 ko 팀 픽스처(locale=ko_KR)로 고정
+    (config 없음 → en 폴백 계약).
+    """
     (tmp_path / "memory" / "team" / "sessions").mkdir(parents=True)
     (tmp_path / ".teammode-active").write_text("")
+    (tmp_path / "team.config.json").write_text(
+        json.dumps({"team": {"locale": "ko_KR"}}), encoding="utf-8")
     proc = _run_hook({"event": "SessionStart", "agent": "claude"}, tmp_path)
     assert proc.returncode == 0
     out = json.loads(proc.stdout)

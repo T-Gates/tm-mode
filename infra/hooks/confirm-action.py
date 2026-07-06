@@ -71,6 +71,31 @@ except ImportError:
     def _ensure_utf8_io() -> None:  # 모듈 부재여도 훅은 동작(보정만 스킵)
         return
 
+# i18n(PR-i1) — deny 메시지 ko/en 분기(codex 판정으로 범위 포함). io_encoding 과
+# 동일한 infra/ sys.path 재사용 패턴. 부재(부분 배포) 시 ko 강등(종전 거동 보존).
+try:
+    import i18n as _i18n  # type: ignore
+except ImportError:
+    _i18n = None
+
+
+def _hook_lang(root: str) -> str:
+    """팀 locale → deny 문구 언어("ko"|"en"). i18n 부재/실패 시 ko(종전 거동)."""
+    if _i18n is None:
+        return "ko"
+    try:
+        return _i18n.team_lang(root)
+    except Exception:  # noqa: BLE001 — locale 해석 실패가 게이트 판정을 막지 않는다
+        return "ko"
+
+
+def _t(key: str, lang: str, ko: str, **fmt) -> str:
+    """deny 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화 계약),
+    en 은 i18n 카탈로그(hook_* 키). i18n 부재 시 ko 폴백."""
+    if lang == "en" and _i18n is not None:
+        return _i18n.t(key, "en", **fmt)
+    return ko.format(**fmt) if fmt else ko
+
 
 # allow 신호 파일의 신선도 한계(초). acme-toolkit 원형의 confirm TTL 과 동일.
 CONFIRM_TTL_SECONDS = 300
@@ -167,7 +192,7 @@ def _has_human_allow(root: str, marker: str) -> bool:
     return 0 <= age < CONFIRM_TTL_SECONDS
 
 
-def _deny(reason: str) -> None:
+def _deny(reason: str, lang: str = "ko") -> None:
     """Claude PreToolUse 차단 결정 JSON 을 stdout 으로 출력(+ 호출부가 exit 2)."""
     print(json.dumps({
         "hookSpecificOutput": {
@@ -176,7 +201,8 @@ def _deny(reason: str) -> None:
             "permissionDecisionReason": reason,
         }
     }, ensure_ascii=False))
-    sys.stderr.write(f"[teammode] 차단: {reason}\n")
+    sys.stderr.write(_t("hook_ca_stderr_blocked", lang,
+                        "[teammode] 차단: {reason}", reason=reason) + "\n")
 
 
 def main() -> int:
@@ -200,6 +226,9 @@ def main() -> int:
     # ── 1. .teammode-active 가드: teammode 비활성 시 차단하지 않음(빌드 안전) ──
     if not os.path.isfile(os.path.join(root, ".teammode-active")):
         return 0
+
+    # 팀 locale → deny 언어(PR-i1). config 1회 읽기 — 게이트 판정과 무관(표시 전용).
+    lang = _hook_lang(root)
 
     # ── 2. 정규 스키마로 대상 확인 (manifest 기반 동적 판정 — S6 일반화) ──
     # 런타임 자가 필터(§2.10-2)가 normalize 단에서 이미 매처 불일치를 걸러주지만,
@@ -227,7 +256,9 @@ def main() -> int:
     if targets is None:
         if argv_marker:
             # marker 있고 manifest 로드 실패 → fail-closed
-            _deny("manifest 로드 실패로 안전 차단(fail-closed). manifest.json 을 확인하세요.")
+            _deny(_t("hook_ca_deny_manifest", lang,
+                     "manifest 로드 실패로 안전 차단(fail-closed). "
+                     "manifest.json 을 확인하세요."), lang)
             return 2
         return 0  # marker 없음 → 게이트 대상 미지정 → 통과
     if (server, name) not in targets:
@@ -239,20 +270,20 @@ def main() -> int:
     # argv_marker 가 있는데 manifest_marker 와 다르면 fail-closed deny(오배선 차단).
     manifest_marker = targets[(server, name)]
     if argv_marker and argv_marker != manifest_marker:
-        _deny(
-            f"marker 불일치 — argv={argv_marker!r} != manifest={manifest_marker!r} "
-            "(오배선 의심, fail-closed 차단)."
-        )
+        _deny(_t("hook_ca_deny_marker_mismatch", lang,
+                 "marker 불일치 — argv={argv} != manifest={manifest} "
+                 "(오배선 의심, fail-closed 차단).",
+                 argv=repr(argv_marker), manifest=repr(manifest_marker)), lang)
         return 2
 
     # ── 3. 사람의 명시적 allow 신호(모델 비제어 채널)가 있으면 통과, 없으면 차단 ──
     if _has_human_allow(root, manifest_marker):
         return 0
 
-    _deny(
-        f"{server}/{name} 은 사람 확인이 필요합니다(teammode confirm-action). "
-        "의도한 동작이면 명시적으로 승인 후 재시도하세요."
-    )
+    _deny(_t("hook_ca_deny_confirm", lang,
+             "{server}/{name} 은 사람 확인이 필요합니다(teammode confirm-action). "
+             "의도한 동작이면 명시적으로 승인 후 재시도하세요.",
+             server=server, name=name), lang)
     return 2  # PreToolUse 차단 — normalize 가 exit code 를 그대로 전파
 
 
