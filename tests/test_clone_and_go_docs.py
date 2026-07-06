@@ -37,9 +37,11 @@ def test_tm_onboard_keeps_no_install_contract_with_routing():
 
 
 def test_install_docs_offer_clone_and_go_path():
-    for rel in ("README.md", "INSTALL.md"):
+    # 영어 기본 전환(2026-07-06): README.md=en("set up this repo"), ko 는 README.ko.md
+    for rel, phrase in (("README.md", "set up this repo"),
+                        ("README.ko.md", "셋업해줘"), ("INSTALL.md", "셋업해줘")):
         text = _read(rel)
-        assert "clone" in text.lower() and "셋업해줘" in text, f"{rel} clone-and-go 경로 부재"
+        assert "clone" in text.lower() and phrase in text, f"{rel} clone-and-go 경로 부재"
 
 
 def test_spec_entry_contract_updated():
