@@ -7,8 +7,9 @@ tm-mode 기여를 환영합니다. 코드 PR은 누구나 보낼 수 있고, tm-
 ## 기여 흐름
 
 1. **이슈 먼저 (권장)** — 버그·개선안은 [GitHub Issues](https://github.com/T-Gates/tm-mode/issues)에 먼저 올려주세요. 방향을 미리 맞추면 PR이 헛돌지 않습니다. 팀 인스턴스에서는 `tm-contribute` 스킬이 "진짜 업스트림 버그인지 / 로컬 설정 문제인지" 진단 후 이슈를 올려줍니다.
+   - **이슈 양식은 [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/)이 단일 소스** — 버그는 `[Bug] ` 제목 접두 + `bug` 라벨 + 환경/현상/재현 절차/기대·실제 동작/원인·진단 근거, 제안은 `[Feature] ` + `enhancement`. 웹에서는 폼이 자동 적용되지만, **`gh` CLI·에이전트로 올릴 때는 yml 템플릿이 적용되지 않으므로** 템플릿 파일을 먼저 읽고 같은 제목 접두·라벨·필드 구조로 본문을 작성해주세요.
 2. **Fork → 브랜치** — 레포를 fork하고 작업 브랜치를 만듭니다 (`fix/...`, `feat/...` 등).
-3. **PR to `main`** — 변경 이유·동작 변화를 본문에 짧게 적어 `main`으로 PR을 엽니다.
+3. **PR to `main`** — 본문은 [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) 양식(무엇/왜 · 변경사항 · 테스트 · 체크리스트)을 따릅니다. 웹 PR에는 자동으로 뜨지만 **`gh pr create --body` 는 템플릿을 채워주지 않으므로** 같은 구조로 직접 작성해주세요.
 4. **리뷰·머지** — 메인테이너가 리뷰 후 머지합니다. 리뷰 코멘트에는 수정 커밋으로 응답해주세요.
 
 ## 코드 지도
