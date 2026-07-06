@@ -7,30 +7,46 @@
 **Everyone on the team works with their own AI, and nobody has to write up or ask "so what did you do today?"**
 Each session, the agent automatically *reads* the team context and *records* what it did. The only thing a human does is `git push`.
 
-## Getting started — two paths
+## Install — just copy-paste
 
-**① clone-and-go (if a team repo already exists — no CLI install needed):**
+Common requirements: **`python3` (3.9+) · `git`**. Anything else is per-case below.
+
+### ⓐ Join a team (member — the team repo already exists)
+
+The common case — nothing beyond the common requirements (python3·git); **no `gh` needed**.
 
 ```bash
-git clone <team-repo-clone-url> && cd <team-repo>
-# Open Claude Code / Codex and say: "set up this repo"
+pip install "git+https://github.com/T-Gates/tm-mode"   # launcher (after PyPI: pipx install tm-mode)
+tm-mode join <team-repo-clone-url>                      # clone → setup → remote wiring, all at once
 ```
 
-→ The agent shows an install plan (dry-run — everything it would write to your machine), waits for your approval in chat, then sets up. The engine ships inside the repo, so cloning it means you're ready to install.
+Or **let the agent do it** — just clone and open:
 
-**② CLI wizard (starting from team creation, or if you want it to clone for you):**
+```bash
+git clone <team-repo-clone-url> && cd <repo-name>
+```
+```text
+Open Claude Code / Codex →  "set up this repo"
+   → shows an install plan (dry-run, everything it writes to your machine), sets up after you approve.
+```
+
+### ⓑ Start a new team (introducer — first to bring it in)
+
+**No need to create a repo first.** `gh` (GitHub CLI) generates *your own team repo* from this template.
 
 ```bash
 pip install "git+https://github.com/T-Gates/tm-mode"
-tm-mode init                      # new team (introducer) — creates the repo, then sets up
-tm-mode join <team-repo-clone-url> # join an existing team (member)
+gh auth login          # GitHub login (once, if you haven't)
+tm-mode init           # create repo from template → clone → setup → wire remote
 ```
 
-→ The CLI wizard asks for org, team name, your name, agents, and install location, then handles **repo creation/clone, hooks, skills, and env in one go.** (Same via curl — `... | sh -s -- init|join`. Once published to PyPI, `uv tool install tm-mode` / `pipx install tm-mode` will be the recommended route.)
+### ⓒ New team without gh (fallback)
 
-Either way, once installed, run `tm-onboard` in your agent — verification and a value briefing are automatic.
+1. On GitHub, [tm-mode](https://github.com/T-Gates/tm-mode) → **"Use this template"** button to create the repo
+2. Run `tm-mode join <new-repo-clone-url>` from ⓐ above
 
-**Requirements**: `python3` (3.9+) · `git` — that's it. (`gh` is optional, used only for automatic repo creation in `tm-mode init`.)
+> **Without `pip` (curl):** `curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.0/install.sh | sh -s -- join <url>` (`init` too).
+> Once installed, run `tm-onboard` in your agent for auto verification & briefing. For activation, flags, and engine verbs, see **→ [INSTALL.md](INSTALL.md)** (Korean).
 
 > Status: **v0.1 — L1 (team memory, automatic context injection, session logs, Obsidian view) works and is validated in daily use.** For L2 (service connections), some providers work today (linear, notion — those with MCP launch info); others (slack, google) are placeholders while the provider pack grows.
 
@@ -100,10 +116,6 @@ Pile up product specs, team rules, decisions, and domain knowledge as markdown i
 ```
 team setup (introducer, once)  →  personal setup (each member)  →  service connections (L2)
 ```
-
-## Install
-
-**If a team repo exists, clone-and-go (clone → "set up this repo"); to start from team creation, a single `tm-mode init`** (see [Getting started](#getting-started--two-paths) above). For requirements, **activation** (`tm on`), flags, and engine verbs, see **→ [INSTALL.md](INSTALL.md)** (Korean).
 
 ## Layout
 

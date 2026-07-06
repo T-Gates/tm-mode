@@ -57,10 +57,24 @@ def test_approval_dry_run_includes_yes_flag():
 
 
 def test_readme_no_stale_anchor():
-    """[codex P3] 옛 앵커(#도입은-이-한-줄) 잔존 금지 + 새 앵커 참조."""
+    """옛 깨진 앵커 잔존 금지 + 남아있는 self 앵커 링크는 실제 헤딩을 가리킨다.
+
+    설치 절을 상단 단일 '## 설치' 블록으로 통합하며 self 앵커 참조(#도입…)는
+    제거됨 — 옛 깨진 앵커가 없고, 잔존 self 링크가 있으면 실헤딩과 일치함을 검증.
+    """
+    import re
     text = _read("README.md")
-    assert "#도입은-이-한-줄" not in text
-    assert "#도입--두-가지-길" in text
+    assert "#도입은-이-한-줄" not in text      # 옛 리팩터 잔재
+    assert "#도입--두-가지-길" not in text      # 통합으로 사라진 섹션 앵커
+    # 남아있는 self 앵커 링크(있다면) 는 실제 헤딩 slug 로 해석돼야 한다
+    heading_slugs = set()
+    for line in text.splitlines():
+        m = re.match(r'#{2,6}\s+(.*)', line)
+        if m:
+            slug = re.sub(r'[^\w가-힣\s-]', '', m.group(1).lower()).strip()
+            heading_slugs.add(re.sub(r'\s+', '-', slug))
+    for anchor in re.findall(r'\]\(#([^)]+)\)', text):
+        assert anchor in heading_slugs, f"깨진 self 앵커: #{anchor}"
 
 
 def test_no_stale_cli_only_stop_contract():
