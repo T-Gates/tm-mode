@@ -1,112 +1,112 @@
-# 배너 커스텀
+# Banner Customization
 
-## 배너가 뭔가
+## What the Banner Is
 
-`tm on`(팀모드 켜기) 할 때 맨 위에 뜨는 ASCII 아트. 팀의 첫인상 — 세션을 열 때마다 보이는 팀 간판이다.
+The ASCII art shown at the top when running `tm on` (turning team mode on). It is the team's first impression, the team sign shown every time a session opens.
 
-- **소스**: `memory/banner.txt`. 이 파일이 있으면 엔진이 그대로 출력한다. `install.py`로 셋업한 팀엔 기본값(`ansi_shadow`, "TEAMMODE")이 이미 깔려 있다(install이 fresh 팀에도 banner.txt를 깐다). 순수 `teammode.py on`만 돈 환경이면 단순 텍스트로 폴백한다.
-- **부수효과**: 배너 내용을 기본과 **다르게** 바꾸면 `personality_customized`가 `true`가 되어 `tm on` 배너 끝의 "💡 팀색 입히기: tm-customize" 권유가 사라진다(이미 팀색을 입혔다는 신호). 이 플래그는 `team.config.json`에 저장되는 키가 **아니라** 엔진이 런타임에 계산하는 값이다 — `tm context --json` 출력의 필드로만 존재하고, 기본 배너·greeting·farewell과 비교해 하나라도 다르면 `true`. ('존재'가 아니라 '내용 비교'라 기본 배너 그대로면 false.)
+- **Source**: `memory/banner.txt`. If this file exists, the engine prints it exactly as-is. Teams set up with `install.py` already have the default (`ansi_shadow`, "TEAMMODE") installed (`install` also installs banner.txt for fresh teams). An environment that only ran plain `teammode.py on` falls back to simple text.
+- **Side effect**: If the banner content is changed to be **different** from the default, `personality_customized` becomes `true`, and the "💡 팀색 입히기: tm-customize" suggestion at the end of the `tm on` banner disappears (a signal that the team color has already been applied). This flag is **not** a key stored in `team.config.json`; it is a value the engine computes at runtime. It exists only as a field in `tm context --json` output, and becomes `true` if any one of the banner, greeting, or farewell differs from the default. Because this is a content comparison, not an existence check, an unchanged default banner is false.
 
-## ⚠️ 가드 (반드시)
+## ⚠️ Guard (Mandatory)
 
-`banner.txt`는 `memory/` 하위 → `kb-write-guard` 훅이 **Edit/Write 도구를 차단**한다. 반드시 **Bash**(`cp`·`tee` 등)로만 쓴다.
+`banner.txt` is under `memory/`, so the `kb-write-guard` hook **blocks Edit/Write tools**. Write it only through **Bash** (`cp`, `tee`, etc.).
 
 ```bash
-# ✅ 맞음
+# ✅ Correct
 cp infra/banners/slant.txt memory/banner.txt
-# ❌ 막힘 — Edit/Write 도구로 memory/banner.txt 작성 시 가드가 거부
+# ❌ Blocked — the guard rejects writing memory/banner.txt with Edit/Write tools
 ```
 
-## 방법 선택 — 배너 커스텀을 시작할 때 반드시 두 갈래를 제시하라
+## Choose the Method — Always Present Both Paths When Starting Banner Customization
 
-**⚠️ 에이전트 필수 행동**: 배너 커스텀 요청이 오면, 프리셋만 보여주고 끝내지 말고 **다음 두 갈래를 명시적으로 안내**한다:
+**⚠️ Required agent behavior**: When a banner customization request arrives, do not stop after showing only presets. **Explicitly guide the user through these two paths**:
 
-> **(A) 프리셋 6종** — "TEAMMODE" 글자의 기성 ASCII 아트 중 폰트를 고르는 방법  
-> **(B) 팀명 ASCII** — 예: "ACME" 같은 실제 팀명으로 커스텀 아트를 직접 생성하는 방법
+> **(A) 6 presets** — Choose a font from the ready-made ASCII art for the text "TEAMMODE"  
+> **(B) Team-name ASCII** — Generate custom art directly from the actual team name, for example "ACME"
 
-둘 다 가능하다는 걸 사용자에게 **먼저** 알리고, 어느 쪽으로 갈지 물어보거나 양쪽 샘플을 보여준 뒤 고르게 한다.
+Tell the user **first** that both are possible, then either ask which direction to take or show samples from both and let the user choose. Respond in the user's language.
 
 ---
 
-## 방법 1 — 프리셋 6종에서 고르기
+## Method 1 — Choose from 6 Presets
 
-`infra/banners/`에 6종이 있다. 각각 성격이 다르다:
+There are 6 options in `infra/banners/`. Each has a different character:
 
-| 폰트 | 성격 | 느낌 |
+| Font | Character | Feel |
 |---|---|---|
-| `ansi_shadow` | 굵은 블록 + 그림자 | 묵직·임팩트 (현재 기본값) |
-| `slant` | 이탤릭 슬래시 | 날렵·속도감 |
-| `chunky` | 박스/도트형 | 레트로·아케이드 |
-| `cyberlarge` | 가늘고 넓음 | 미니멀·테크 |
-| `larry3d` | 입체 3D | 화려·올드스쿨 |
-| `speed` | 밑줄 이탤릭 | 빠름·심플 |
+| `ansi_shadow` | Heavy blocks + shadow | Weighty, high-impact (current default) |
+| `slant` | Italic slashes | Sharp, fast |
+| `chunky` | Box/dot style | Retro, arcade |
+| `cyberlarge` | Thin and wide | Minimal, technical |
+| `larry3d` | 3D depth | Flashy, old-school |
+| `speed` | Underlined italic | Fast, simple |
 
-**추천**: 팀 이름이 짧고 임팩트를 원한다면 `ansi_shadow`(기본값), 날렵한 느낌을 원한다면 `slant`를 먼저 보여주길 권장한다. 최종 선택은 사용자가.
+**Recommendation**: If the team name is short and the user wants impact, show `ansi_shadow` (the default) first. If the user wants a sharper feel, show `slant` first. The final choice belongs to the user.
 
-**절차** — 추측으로 고르지 말고 **실물을 보여주고 사용자가 고르게** 한다:
+**Procedure** — Do not choose by guessing. **Show the actual output and let the user choose**:
 
 ```bash
-# 1) 후보를 직접 보여준다 (한 번에 한둘씩, 또는 전부)
+# 1) Show candidates directly (one or two at a time, or all)
 cat infra/banners/slant.txt
-# 2) 사용자가 고른 폰트를 적용
+# 2) Apply the font selected by the user
 cp infra/banners/<폰트명>.txt memory/banner.txt
-# 3) 적용 확인
+# 3) Verify the applied result
 cat memory/banner.txt
 ```
 
-**⚠️ 출력 규칙**: ASCII 아트는 공백·정렬이 의미를 가진다. 후보를 사용자에게 보여줄 때는 **반드시 코드블록(``` 펜스)으로 감싸라**. 감싸지 않으면 마크다운 렌더러가 정렬을 깨뜨리거나 내용을 축약한다. 여러 후보를 한 번에 보여줄 땐 각 후보를 **각각 별도 코드블록**으로 감싼다.
+**⚠️ Output rule**: Spaces and alignment are meaningful in ASCII art. When showing candidates to the user, **always wrap them in code blocks (``` fences)**. Without fences, the Markdown renderer may break alignment or collapse content. When showing multiple candidates at once, wrap **each candidate in its own separate code block**. Respond in the user's language.
 
-> 참고: 프리셋은 전부 "TEAM"/"TEAMMODE" 글자다. 팀명으로 바꾸고 싶으면 방법 2.
+> Note: All presets use the text "TEAM" or "TEAMMODE". If the user wants to change it to the team name, use Method 2.
 
-## 방법 2 — 팀명으로 커스텀 ASCII 생성
+## Method 2 — Generate Custom ASCII from the Team Name
 
-`figlet` 또는 `pyfiglet`(파이썬 패키지)으로 팀명 그대로 아트를 만든다. **figlet이 없어도 pyfiglet으로 생성 가능**하므로 아래 순서대로 시도한다.
+Use `figlet` or `pyfiglet` (a Python package) to create art directly from the team name. Because generation is possible with pyfiglet **even when figlet is unavailable**, try the options in the order below.
 
-### figlet (시스템 명령어)
-
-```bash
-command -v figlet || echo "figlet 없음"                    # 먼저 가용 확인
-figlet -f slant "ACME" > /tmp/b.txt && cat /tmp/b.txt    # 미리보기
-cp /tmp/b.txt memory/banner.txt                            # 마음에 들면 적용
-```
-
-- figlet 폰트: `standard`·`big`·`banner`·`block`·`slant` 등 다수(`figlist`로 목록). `figlet -f <폰트> "팀명"`으로 미리보고 적용.
-
-### pyfiglet (파이썬 패키지 — figlet 없을 때 우선 시도)
-
-figlet이 없으면 먼저 pyfiglet을 확인한다. 시스템 python3에 이미 설치돼 있는 경우가 많다(별도 설치 불필요):
+### figlet (system command)
 
 ```bash
-python3 -c "import pyfiglet; print(pyfiglet.__version__)"                          # 가용 확인
-python3 -c "import pyfiglet; print(pyfiglet.figlet_format('ACME', font='slant'))"  # 미리보기
+command -v figlet || echo "figlet 없음"                    # Check availability first
+figlet -f slant "ACME" > /tmp/b.txt && cat /tmp/b.txt    # Preview
+cp /tmp/b.txt memory/banner.txt                            # Apply if the user likes it
 ```
 
-pyfiglet로 생성해서 적용:
+- figlet fonts: many options such as `standard`, `big`, `banner`, `block`, and `slant` (list them with `figlist`). Preview and apply with `figlet -f <폰트> "팀명"`.
+
+### pyfiglet (Python package — try first when figlet is unavailable)
+
+If figlet is unavailable, check pyfiglet first. It is often already installed in the system python3 (no separate installation needed):
+
+```bash
+python3 -c "import pyfiglet; print(pyfiglet.__version__)"                          # Check availability
+python3 -c "import pyfiglet; print(pyfiglet.figlet_format('ACME', font='slant'))"  # Preview
+```
+
+Generate and apply with pyfiglet:
 
 ```bash
 python3 -c "import pyfiglet; print(pyfiglet.figlet_format('ACME', font='ansi_shadow'))" > /tmp/b.txt
-cat /tmp/b.txt          # 확인 후
-cp /tmp/b.txt memory/banner.txt   # 적용
+cat /tmp/b.txt          # After checking
+cp /tmp/b.txt memory/banner.txt   # Apply
 ```
 
-pyfiglet 폰트명은 프리셋과 동일하게 매칭된다(`ansi_shadow`·`slant`·`chunky`·`cyberlarge`·`larry3d`·`speed` 등).
+pyfiglet font names match the presets (`ansi_shadow`, `slant`, `chunky`, `cyberlarge`, `larry3d`, `speed`, etc.).
 
-**추천**: 팀명 ASCII는 `slant`가 대부분의 팀명 길이에 잘 맞는다. 팀명이 4글자 이하면 `ansi_shadow`로 묵직하게 가도 좋다.
+**Recommendation**: For team-name ASCII, `slant` works well for most team-name lengths. If the team name is 4 characters or fewer, `ansi_shadow` can also work well for a heavier look.
 
-### figlet·pyfiglet 모두 없을 때
+### When neither figlet nor pyfiglet is available
 
-① 방법 1의 프리셋을 쓰거나 ② 설치를 안내한다(`sudo apt install figlet` — 데비안/라즈비안, 또는 `pip install pyfiglet`). 설치를 임의로 강행하지 말고 사용자에게 물어본다.
+Either ① use the presets from Method 1 or ② guide installation (`sudo apt install figlet` for Debian/Raspbian, or `pip install pyfiglet`). Do not force installation on your own; ask the user.
 
-> **출력 규칙 동일**: 생성한 ASCII 미리보기를 사용자에게 보여줄 때도 **코드블록으로 감싸라** (방법 1과 동일 원칙).
+> **Same output rule**: When showing a generated ASCII preview to the user, **wrap it in a code block** (the same principle as Method 1). Respond in the user's language.
 
-## 흔한 실수
+## Common Mistakes
 
-| 실수 | 올바른 방법 |
+| Mistake | Correct Method |
 |---|---|
-| Edit/Write 도구로 `memory/banner.txt` 작성 | Bash `cp`/`tee`만 (가드 차단됨) |
-| 후보를 안 보여주고 임의로 골라 적용 | `cat`으로 실물 보여주고 사용자가 선택 |
-| ASCII 아트를 코드블록 없이 그냥 붙여넣기 | 반드시 ``` 펜스로 감싼다 (정렬 보존) |
-| 프리셋만 보여주고 팀명 ASCII 선택지 안 알림 | 방법 1·2 두 갈래를 먼저 제시한다 |
-| figlet 없는데 있다고 가정 | `command -v figlet` 확인 → 없으면 pyfiglet 시도 |
-| pyfiglet도 없는데 그냥 실패 처리 | `python3 -c "import pyfiglet"` 확인 → 없으면 설치 안내 |
-| `infra/banners/` 원본을 수정 | 원본은 그대로, `memory/banner.txt`만 만든다 |
+| Writing `memory/banner.txt` with Edit/Write tools | Bash `cp`/`tee` only (the guard blocks Edit/Write) |
+| Applying a candidate arbitrarily without showing it | Show the actual output with `cat`, then let the user choose |
+| Pasting ASCII art without a code block | Always wrap it in ``` fences (preserve alignment) |
+| Showing only presets and not mentioning the team-name ASCII option | Present both Method 1 and Method 2 first |
+| Assuming figlet exists | Check `command -v figlet`; if unavailable, try pyfiglet |
+| Treating missing pyfiglet as immediate failure | Check `python3 -c "import pyfiglet"`; if unavailable, guide installation |
+| Modifying the original files under `infra/banners/` | Leave originals unchanged; create only `memory/banner.txt` |

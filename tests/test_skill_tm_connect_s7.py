@@ -138,7 +138,7 @@ def test_lint_skill_canonical_with_tmp_isolation(tmp_path):
 def test_slot_selection_step_present():
     """슬롯 선택(issues/chat/docs/calendar)이 첫 단계로 명시돼야 한다."""
     text = _skill_text()
-    assert "슬롯" in text, "슬롯 어휘가 없다"
+    assert "Select the Slot" in text or "role slot" in text
     # 역할 슬롯 4종이 모두 언급
     for role in ("issues", "chat", "docs", "calendar"):
         assert role in text, f"역할 슬롯 '{role}' 가 없다"
@@ -149,30 +149,31 @@ def test_provider_from_config_for_followers():
     text = _skill_text()
     assert "services" in text and "provider" in text, \
         "config services.<역할>.provider 참조가 없다"
-    assert "재선택" in text, "후속 멤버 provider 재선택 금지 서술이 없다"
+    assert "do not reselect it" in text, "후속 멤버 provider 재선택 금지 서술이 없다"
 
 
 def test_first_registrant_chooses_provider():
     """첫 등록자는 사람이 provider 를 고르고, 공식 식별이 보안 게이트다."""
     text = _skill_text()
-    assert "첫 등록자" in text or "첫등록자" in text, "첫 등록자 경로 언급이 없다"
-    assert "보안 게이트" in text, "공식 식별=보안 게이트 서술이 없다"
+    assert "First Registrar" in text, "첫 등록자 경로 언급이 없다"
+    assert "official provider is a security gate" in text, \
+        "공식 식별=보안 게이트 서술이 없다"
 
 
 def test_mcp_provision_official_first():
     """공식 벤더 MCP를 마련하되 공식 우선, 없으면 자작 흐름이 있어야 한다."""
     text = _skill_text()
-    assert "공식" in text, "공식 MCP 우선 서술이 없다"
-    assert "자작" in text, "공식 없을 때 자작 대안 서술이 없다"
+    assert "Official first" in text, "공식 MCP 우선 서술이 없다"
+    assert "custom" in text, "공식 없을 때 자작 대안 서술이 없다"
     assert "infra/mcp/" in text, "마련한 MCP 보관 위치(infra/mcp/<provider>/) 언급이 없다"
 
 
 def test_self_authored_mcp_not_role_abstraction():
     """자작 MCP는 역할 추상화가 아니라 그 벤더 전용 MCP라는 원칙이 명시돼야 한다."""
     text = _skill_text()
-    assert "벤더 전용" in text or "벤더 API" in text, \
+    assert "vendor-specific MCP" in text or "provider API *as-is*" in text, \
         "자작 MCP=벤더 전용 원칙이 없다"
-    assert "역할 추상화" in text, "역할 추상화 폐기 경고가 없다"
+    assert "role abstraction" in text, "역할 추상화 폐기 경고가 없다"
 
 
 def test_config_push_team_declaration():
@@ -193,8 +194,9 @@ def test_install_mcp_alias_registration():
 def test_action_is_ai_direct_call():
     """동작은 AI가 등록된 벤더 MCP 도구를 직접 호출한다는 A안 서술이 있어야 한다."""
     text = _skill_text()
-    assert "직접 호출" in text, "AI 직접 호출(A안) 서술이 없다"
-    assert "벤더 MCP" in text, "벤더 MCP 도구 언급이 없다"
+    assert "directly calls the registered vendor MCP tools" in text, \
+        "AI 직접 호출(A안) 서술이 없다"
+    assert "vendor MCP tools" in text, "벤더 MCP 도구 언급이 없다"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -209,7 +211,8 @@ def _is_abolish_context(line: str) -> bool:
     구멍이라 제외한다 — 폐기 선언이라야만 매칭되게 회귀방어를 강화한다.
     """
     markers = ("폐기", "부활", "금지", "안티예시", "deprecated",
-               "Common Mistakes")
+               "Common Mistakes", "discarded", "revive", "forbidden",
+               "does not create", "Do not create")
     return any(m in line for m in markers)
 
 
@@ -278,8 +281,7 @@ def test_no_action_cli_wrapper():
     # 동작 CLI 래퍼를 만들라는 지시가 없어야 한다 — 모든 등장은 '금지/폐기' 문맥이어야 한다.
     for i, line in enumerate(text.splitlines(), 1):
         if "tm-issues create" in line or "tm-calendar add" in line:
-            assert ("만들지" in line or "않는" in line or "폐기" in line
-                    or "부활" in line or "금지" in line or "래퍼" in line), \
+            assert _is_abolish_context(line) or "wrappers are forbidden" in line, \
                 f"line {i}: 동작 CLI 래퍼가 금지 문맥 없이 등장 — A안 위반: {line.strip()}"
 
 
@@ -308,8 +310,7 @@ def test_no_plaintext_token_in_output():
     """토큰을 stdout·로그에 출력하지 않는다는 경고가 있어야 한다."""
     text = _skill_text()
     has_warning = (
-        "평문 토큰" in text
-        or ("stdout" in text and "출력" in text)
+        "plaintext tokens" in text and "stdout" in text and "logs" in text
     )
     assert has_warning, "평문 토큰 노출 방지 경고가 없다"
 
@@ -317,8 +318,9 @@ def test_no_plaintext_token_in_output():
 def test_each_member_inputs_token():
     """팀 scope 도 각 멤버가 각자 토큰을 입력한다(자동공유 없음)는 서술이 있어야 한다."""
     text = _skill_text()
-    assert "각자 입력" in text or "각자 1회" in text, "각자 입력 원칙이 없다"
-    assert "자동공유" in text, "팀 토큰 자동공유 부재 서술이 없다"
+    assert "Each person enters their own token" in text
+    assert "Automatic team token sharing does not exist" in text, \
+        "팀 토큰 자동공유 부재 서술이 없다"
 
 
 # ──────────────────────────────────────────────────────────────────

@@ -126,9 +126,9 @@ def test_skill_md_has_graceful_skip(phrase):
 def test_skill_md_has_empty_session_log_guidance():
     """갓 셋업(세션로그 0개) 시 안내 문구가 있어야 한다."""
     text = SKILL_MD.read_text(encoding="utf-8")
-    assert "세션로그" in text and ("없" in text or "기록" in text), (
-        "SKILL.md 에 세션로그 0개 시 안내가 없다"
-    )
+    assert "Fresh Setup Guidance(Zero Session Logs)" in text
+    assert "There are no team records yet" in text
+    assert "Session logs will accumulate" in text
 
 
 # ── install_skills 포함 검증 ──

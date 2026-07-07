@@ -1,44 +1,44 @@
 ---
 name: tm-memory
-description: Use when the user wants to load team memory into context. Triggers on "메모리 불러와", "팀 메모리", "메모리 로드", "memory", "메모리 로드".
+description: Use when the user wants to load team memory into context. Triggers on "메모리 불러와", "팀 메모리", "메모리 로드", "memory", "메모리 로드", "load memory", "team memory", "load team memory".
 ---
 
-# tm-memory — 팀 메모리 로드
+# tm-memory — Load Team Memory
 
 ## Overview
 
-`memory/` 하위 메모리의 **INDEX(요약)를 컨텍스트에 로드**한다. 메모리 로드의 목적은 "무엇이 어디 있는지" 맥락 파악이고, 그건 INDEX만으로 충분하다. 개별 파일 전문은 그 깊이가 실제로 필요한 작업에 들어갈 때만 읽는다.
+Load the **INDEX summaries under `memory/` into context**. The purpose of loading memory is to understand "what exists where," and the INDEX files are enough for that. Read full individual files only when the work actually requires that depth.
 
 ## When to Use
 
-- "메모리 불러와", "팀 메모리", "메모리 로드", "memory", "메모리 로드"
-- "DB 스펙 좀 봐봐", "코드 컨벤션 읽어" 같이 **특정 문서를 콕 집은** 요청 → 제안 건너뛰고 그 파일만 바로 로드
+- "메모리 불러와", "팀 메모리", "메모리 로드", "memory", "메모리 로드", "load memory", "team memory", "load team memory"
+- Requests that **point to a specific document**, such as "DB 스펙 좀 봐봐" or "코드 컨벤션 읽어" -> skip the suggestion step and load only that file immediately.
 
-## 절차
+## Procedure
 
-### 모드 A — INDEX 로드 (기본)
-1. **레포 최신화**: 팀 루트에서 `python3 infra/teammode.py pull --root .` 실행(엔진 동사) — 다른 팀원이 push한 메모리 반영.
-2. **INDEX 계층 발견 및 로드** — 먼저 `memory/INDEX.md`를 폴더 지도로 읽는다. 그다음 `find memory -name INDEX.md`로 하위 INDEX를 실제 발견해 **전부** 읽는다. tm-mode는 제품 구조에 무관하므로 경로를 하드코딩하지 않고 동적으로 발견한다. INDEX는 각 문서의 한 줄 요약을 담고 있어 이것만으로 "무엇이 어디 있는지"가 파악된다.
-3. **요약 제시** — 로드된 INDEX 기반으로 "지금 어떤 메모리가 있는지"를 그룹별로 정리해 보여주고, **"특정 주제를 깊이 보려면 말해달라"**고 안내.
-4. **전문 로드는 요청 시에만** — 사용자가 콕 집으면 그 파일만 Read.
+### Mode A — Load INDEX Files (Default)
+1. **Update the repo**: from the team root, run `python3 infra/teammode.py pull --root .` (engine verb) to pick up memory pushed by other teammates.
+2. **Discover and load the INDEX hierarchy**: first read `memory/INDEX.md` as the folder map. Then use `find memory -name INDEX.md` to discover lower-level INDEX files and read **all** of them. tm-mode is independent of product structure, so discover paths dynamically instead of hard-coding them. INDEX files contain one-line summaries for each document; that is enough to understand "what exists where."
+3. **Present the summary**: based on the loaded INDEX files, group and show "what memory exists now," and tell the user, in the user's language, **"tell me if you want to go deep on a specific topic."**
+4. **Load full files only on request**: if the user points to a specific file, Read only that file.
 
-### 모드 B — FTS (키워드 검색)
-"X 관련 맥락 찾아줘", "Y 결정 언제 했어?" 같이 **키워드로 뭔가를 찾는 요청**일 때.
+### Mode B — FTS (Keyword Search)
+Use this for requests that **search for something by keyword**, such as "X 관련 맥락 찾아줘" or "Y 결정 언제 했어?"
 
-1. `grep -r --include="*.md" -l "키워드" memory/` 로 히트 파일 목록 확보.
-   - 세션로그(`memory/team/sessions/`)도 포함 — "이전에 누가 이 작업 했는지"까지 잡힌다.
-2. 히트 파일별로 키워드 주변 맥락(±2줄) 발췌해 보여준다.
-3. 관련 파일이 있으면 "전문이 필요하면 말해달라"고 안내.
+1. Use `grep -r --include="*.md" -l "키워드" memory/` to collect the list of hit files.
+   - Include session logs (`memory/team/sessions/`) too, so the search also captures "who worked on this before."
+2. For each hit file, excerpt the context around the keyword (±2 lines) and show it.
+3. If related files exist, say, in the user's language, "tell me if you need the full text."
 
-## 규칙
+## Rules
 
-- **기본은 INDEX만.** 폴더 전체·"전부" 전문 로드는 사용자가 명시적으로 요청할 때만. 묻지도 않고 전문을 컨텍스트에 들이붓지 않는다.
-- **바이너리(pdf·jpg·png 등)는 절대 Read하지 않는다.** 경로·건수만 안내.
-- **대용량 참조 폴더**(`prior-art` 등 자체 INDEX/README 보유) — README/INDEX만. 개별 파일은 명시 요청 시. **"다" / "전부" 같은 대량 지정이면** 개별 전문을 들이붓지 말고, README의 목록표를 보여준 뒤 **"어느 항목을 볼까요?"**로 범위를 좁힌다.
+- **Default to INDEX files only.** Load full text for entire folders or "everything" only when the user explicitly asks. Do not pour full files into context without being asked.
+- **Never Read binary files (pdf, jpg, png, etc.).** Report only paths and counts.
+- **Large reference folders** (`prior-art`, etc. with their own INDEX/README): read only README/INDEX. Read individual files only on explicit request. If the user asks for a large scope like **"다" / "전부"**, do not dump individual full texts into context; show the README's listing table, then narrow scope by asking, in the user's language, **"which item should I open?"**
 
-## 안 하는 것
+## Non-Goals
 
-- 파일 수정 (읽기 전용)
-- 묻지 않은 전문 대량 로드
-- 팀 현황 / 세션 요약 생성 (→ tm-context)
-- 외부 API 호출(issues / docs / calendar 등 외부 서비스)
+- Editing files (read-only)
+- Bulk-loading full text without being asked
+- Creating team-status or session summaries (-> tm-context)
+- Calling external APIs (external services such as issues, docs, or calendar)

@@ -1,78 +1,78 @@
 ---
 name: tm-onboard
-description: Use right after a tm-mode install (`tm-mode init` / `tm-mode join`) — when entering Claude Code/Codex in a freshly set-up team repo. Dispatches a verification subagent to confirm the install landed, and meanwhile conveys what tm-mode does for you. Triggers on "tm-onboard", "팀모드 온보딩", "팀모드 시작", "설치 잘 됐나", "팀모드 셋업 확인", or when the CLI tells the user to open an agent and run tm-onboard.
+description: Use right after a tm-mode install (`tm-mode init` / `tm-mode join`) — when entering Claude Code/Codex in a freshly set-up team repo. Dispatches a verification subagent to confirm the install landed, and meanwhile conveys what tm-mode does for you. Triggers on "tm-onboard", "teammode onboarding", "start teammode", "is the install ok", "check teammode setup", "팀모드 온보딩", "팀모드 시작", "설치 잘 됐나", "팀모드 셋업 확인", or when the CLI tells the user to open an agent and run tm-onboard.
 ---
 
-# tm-onboard — 설치 검증 + 팀모드 가치 전달
+# tm-onboard — Install Verification + tm-mode Value Briefing
 
-설치는 **CLI(`tm-mode init` / `tm-mode join`)가 이미 끝냈다.** 이 스킬은 사람이 셋업 직후 에이전트로 처음 들어왔을 때 **딱 두 가지만** 한다:
+The install was **already completed by the CLI (`tm-mode init` / `tm-mode join`)**. When a person enters an agent right after setup, this skill does **exactly two things**:
 
-1. **설치가 제대로 됐나 확인** — **검증 서브에이전트에 위임**한다(메인은 기다리지 않는다).
-2. **팀모드가 뭘 해주는지(가치)** — 검증이 도는 **그 동안** 메인이 사람에게 전한다.
+1. **Check whether the install landed correctly** — delegate this to a **verification subagent** (the main agent does not wait).
+2. **Explain what tm-mode does for the person (value)** — the main agent delivers this **while** verification is running.
 
-> ⛔ **설치·질문을 하지 않는다.** 멤버명·org·팀명·역할·에이전트·obsidian 묻기, `install.py` 직접 호출, 레포 생성/clone — **전부 CLI wizard 몫이고 이미 끝났다.** 재현 금지. (아직 설치 안 된 상태로 "셋업해줘" 하면 → **레포 안에 `infra/install.py`와 AGENTS.md가 있으면 AGENTS.md "첫 접촉"의 bootstrap 절차로 라우팅**(clone-and-go — dry-run→대화 승인→설치는 그 절차가 담당), 아니면 "`tm-mode init`(새 팀) / `tm-mode join <url>`(합류)을 터미널에서 실행하세요"로 CLI 진입 안내 후 멈춘다. 이 스킬 자신은 어느 경우에도 설치를 실행하지 않는다.)
+> ⛔ **Do not install or ask setup questions.** Asking for member name, org, team name, role, agent, or obsidian; calling `install.py` directly; creating or cloning a repo — **all of that belongs to the CLI wizard and has already happened.** Do not reproduce it. (If the user says "set this up" while tm-mode is not installed yet → **if the repo contains `infra/install.py` and AGENTS.md, route to the bootstrap procedure in the "첫 접촉" (first contact) section of AGENTS.md** (clone-and-go — dry-run → conversational approval → that procedure handles installation). Otherwise, tell them to run "`tm-mode init` (new team) / `tm-mode join <url>` (join)" in their terminal and stop. This skill itself never runs installation in any case.)
 
-## 진입 흐름 (병렬 — 이 순서대로)
-1. 진입 즉시 **검증 서브에이전트를 띄운다**(§①). 읽기 전용·결과만 보고. **메인은 그 완료를 기다리지 않는다.**
-2. 서브가 도는 동안 **메인은 §② 가치 전달**을 사람에게 진행한다 — 사람을 빈 화면으로 기다리게 두지 않는다.
-3. 검증 결과가 도착하면 **종합**한다:
-   - 전부 ✅ → "설치도 정상 확인됐어요" 한 줄로 매듭.
-   - 빠진 게 있음(❌) → *무엇이* 안 됐는지 사람 말로 짚고 → `tm-mode join <팀레포 URL>` 을 같은 위치에 다시 실행하라고 안내(install 은 멱등 — 안전하게 덮어 채운다). **손으로 install.py 단계를 재현하지 말 것.**
+## Entry Flow (Parallel — In This Order)
+1. Immediately dispatch a **verification subagent** (§①). Read-only; report results only. **The main agent does not wait for it to finish.**
+2. While the subagent runs, **the main agent delivers the §② value briefing** to the person — do not leave them staring at an empty screen.
+3. When the verification result arrives, **summarize it in the user's language**:
+   - Everything ✅ → close with one line like "The install was also verified successfully."
+   - Anything missing (❌) → explain *what* failed in plain language → tell the person to run `tm-mode join <team-repo URL>` again from the same location (install is idempotent — it safely fills in missing pieces). **Do not manually reproduce the install.py steps.**
 
-> 진입 맥락: `tm-mode init/join` 을 마치면 CLI 가 *"Claude/Codex 열고 'tm-onboard' 입력하면 검증·브리핑이 자동"*이라고 안내한다(cli.py `_done()`). 그 첫 진입이 이 스킬이다. **팀 루트(clone된 레포)에서 실행**된다고 가정한다.
+> Entry context: after `tm-mode init/join`, the CLI tells the user that *opening Claude/Codex and entering 'tm-onboard' will automatically run verification and briefing* (cli.py `_done()`). This skill is that first entry point. Assume it is running from the **team root (the cloned repo)**.
 
 ---
 
-## ① 설치 검증 — 검증 서브에이전트로 위임
+## ① Install Verification — Delegate to a Verification Subagent
 
-진입하자마자 아래 프롬프트로 **검증 전용 서브에이전트 1개**를 띄운다(읽기 전용, **수정·설치 절대 금지** — 검증만). 도그푸딩에서 "훅·스킬 심링크가 등록 안 됨"이 핵심 버그였으니 **통과를 가정하지 말고 실제 파일/명령으로 확인**시킨다.
+As soon as this skill starts, dispatch **one dedicated verification subagent** with the prompt below (read-only, **absolutely no modification or installation** — verification only). In dogfooding, the core bug was "hooks and skill symlinks were not registered", so **do not assume success; have the subagent verify with real files and commands**.
 
-> **[검증 서브에이전트 프롬프트 템플릿]** — `<팀루트>`·`<멤버명>`·`<에이전트>` 를 채워 디스패치:
+> **[Verification Subagent Prompt Template]** — fill in `<team-root>`, `<member-name>`, and `<agent>`, then dispatch:
 >
-> 팀 루트 `<팀루트 절대경로>` 에서 tm-mode 설치가 제대로 됐는지 **검증만** 해라. **수정·설치·git 쓰기 절대 금지(읽기 전용).** 아래 각 항목을 실제 명령/파일로 확인하고 ✅/❌ + 안 된 건 사유 한 줄로 표를 만들어 보고하라:
-> 1. **코어 엔진**: `python3 infra/teammode.py context --root <팀루트> --json` 이 **에러 없이** state 를 출력하는가 (설치 직후 `state=off` 가 정상 — 설치 ≠ 활성화). 출력의 팀명·멤버수·세션수도 같이 적어라(가치 브리핑에 쓰임).
-> 2. **scaffold**: `memory/team/members.md` 에 `<멤버명>` 이 등재됐는가, `memory/INDEX.md` 가 있는가.
-> 3. **팀 config**: `team.config.json` 존재 + `agents` 가 기록됐는가.
-> 4. **스킬 심링크**: 에이전트 스킬 디렉토리(claude=`~/.claude/skills`, codex=해당 경로)에 `tm`·`tm-onboard`·`tm-memory` 등 tm-mode 스킬이 심링크/설치돼 있는가.
-> 5. **훅 배선**: 에이전트 설정(claude=`~/.claude/settings.json`)에 tm-mode 훅(session-start 등)이 들어갔는가.
+> From team root `<absolute team-root path>`, **only verify** whether tm-mode was installed correctly. **Absolutely no modification, installation, or git writes (read-only).** Check each item below with real commands/files and report a table with ✅/❌ plus a one-line reason for anything that failed:
+> 1. **Core engine**: Does `python3 infra/teammode.py context --root <team-root> --json` print state **without errors**? (`state=off` immediately after install is normal — installed does not mean active.) Also include the team name, member count, and session count from the output (used in the value briefing).
+> 2. **Scaffold**: Is `<member-name>` listed in `memory/team/members.md`, and does `memory/INDEX.md` exist?
+> 3. **Team config**: Does `team.config.json` exist, and are `agents` recorded?
+> 4. **Skill symlinks**: In the agent skill directory (claude=`~/.claude/skills`, codex=the relevant path), are tm-mode skills such as `tm`, `tm-onboard`, and `tm-memory` symlinked/installed?
+> 5. **Hook wiring**: Does the agent configuration (claude=`~/.claude/settings.json`) include tm-mode hooks such as session-start?
 >
-> 마지막 줄에 **전체 판정**(전부 정상 / 빠진 항목 목록)을 한 줄로.
+> On the last line, give the **overall verdict** (all normal / list of missing items) in one line.
 
-- 메인은 이 서브의 final 결과만 받아 §진입흐름 3 으로 종합한다. **서브 자기보고를 의심**해야 할 만큼 중요하면 빠진 항목만 메인이 직접 재확인.
-- **Codex 사용자 한 줄 안내**: 첫 설치·훅 변경 후에는 codex(TUI)를 한 번 열어 hook trust 프롬프트에서 **Trust** 를 눌러야 한다 — 아니면 headless(`codex exec`)에서 훅이 조용히 스킵된다(`tm on` 이 감지하면 [warn] 으로 알려준다).
-
----
-
-## ② 팀모드 가치 전달 (검증이 도는 동안)
-
-검증 서브를 띄운 **직후 곧바로**, **`infra/skills/base/tm-onboard/value.md` 를 읽고** 거기 담긴 가치를 사람·맥락(새 팀 창립 / 기존 팀 합류, 직군)에 맞게 **사람 말로 전한다.** 그대로 낭독하지 말고 — value.md 의 톤 가이드를 따라 요점을 네 말로, 짧게.
-
-> 💡 가치 "내용"의 **단일 소스는 `value.md`** 다. 이 본문에 가치 문구를 중복하지 않는다 — 팀/창업자가 value.md 만 고치면 전달 메시지가 바뀐다.
-
-그 다음, **검증 서브가 돌려준 현황**(팀명·멤버수·세션수)으로 "지금 팀 상황: …"을 덧붙인다.
-- **갓 만든 팀은 비어 있다**(세션로그 0, KB 0) → 정상. value.md 톤대로 "구조는 섰고, **지금부터** 쌓입니다" — 빈 상태를 실패처럼 말하지 말 것.
-- **마무리, 다음 한 걸음**: "작업을 시작할 땐 `tm on` 하세요 — 최신화하고 팀 맥락과 함께 엽니다." 셋업 직후의 "이제 뭐하지?"를 막는 단 하나의 안내.
-- 팀이 비어 있고(세션로그·KB 0) 문서 서비스에 이미 팀 문서가 쌓여 있어 보이면 **딱 한 문장** 덧붙일 수 있다: "기존 문서가 있으면 '메모리 업로드'라고 말하면 팀 메모리로 가져올 수 있어요." — 언급까지만, 실행은 `tm-import-memory` 스킬 몫. 여기서 끝낸다.
+- The main agent receives only this subagent's final result and summarizes it through Entry Flow step 3. If the result is important enough to distrust self-reporting, the main agent directly re-checks only the missing items.
+- **One-line note for Codex users**: after the first install or a hook change, they may need to open codex (TUI) once and press **Trust** on the hook trust prompt — otherwise hooks are silently skipped in headless mode (`codex exec`) (`tm on` detects this and reports it with `[warn]`).
 
 ---
 
-## 안 하는 것 / 경계
-- **설치·질문·레포 생성·install.py 호출 안 함** — 전부 CLI(`tm-mode init/join`)가 끝냈다.
-- **검증을 메인이 동기로 붙잡고 하지 않는다** — 서브에이전트에 위임하고, 메인은 가치 전달로 병렬 진행(사람을 기다리게 두지 않음).
-- **메뉴 나열 안 함** — 서비스 연결(L2)·Obsidian 등록·배너/personality 커스텀·메모리 업로드는 *여기서 다루지 않는다*. 필요해지는 순간 각 스킬(`tm-connect`·`tm-customize`·`tm-import-memory`)이 트리거로 자연히 드러난다(progressive).
-- 활성화(`tm on`)는 **권유까지만** — 실제 켜기·웰컴/배너는 `tm` 스킬 몫.
-- 코드 작성·이슈 생성·푸시 안 함.
+## ② tm-mode Value Briefing (While Verification Runs)
+
+Immediately after dispatching the verification subagent, **read `infra/skills/base/tm-onboard/value.md`** and explain the value there in human language, adapted to the person and context (founding a new team / joining an existing team, role). Do not recite it verbatim — follow the tone guide in value.md and give the key points briefly in your own words. **Respond in the user's language.**
+
+> 💡 The **single source of truth for the value content is `value.md`**. Do not duplicate value copy in this body — if the team/founder edits only value.md, the delivered message should change.
+
+Then add the current team status using **the status returned by the verification subagent** (team name, member count, session count), in the user's language.
+- **A brand-new team is empty** (0 session logs, 0 KB items) → normal. In the value.md tone, say that the structure is in place and it starts accumulating **from now** — do not describe the empty state as a failure.
+- **Close with the next single step**: say that when they start work, they should run `tm on` — it refreshes and opens the agent with team context. This is the only instruction needed to prevent "what now?" right after setup.
+- If the team is empty (0 session logs / 0 KB items) and it looks like team documents already exist in a document service, you may add exactly one sentence: if they have existing docs, they can say "memory upload" to bring them into team memory. Mention it only; execution belongs to the `tm-import-memory` skill. Stop there.
+
+---
+
+## Non-Goals / Boundaries
+- **No installation, setup questions, repo creation, or install.py calls** — the CLI (`tm-mode init/join`) already handled all of it.
+- **Do not hold the main flow synchronously for verification** — delegate to a subagent, and let the main agent deliver the value briefing in parallel (do not make the person wait).
+- **Do not list menus** — service connection (L2), Obsidian registration, banner/personality customization, and memory upload are *not handled here*. When they become necessary, each skill (`tm-connect`, `tm-customize`, `tm-import-memory`) will naturally appear as the trigger (progressive).
+- Activation (`tm on`) is **only recommended** here — actually turning it on and showing the welcome/banner belongs to the `tm` skill.
+- Do not write code, create issues, or push.
 
 ## Common Mistakes
-| 실수 | 올바른 방법 |
+| Mistake | Correct Method |
 |------|------------|
-| 멤버명·org·팀명·역할을 다시 묻는다 | 묻지 않는다 — CLI wizard 가 이미 받았다 |
-| 검증을 메인이 직접 동기로 하느라 사람을 기다리게 함 | **검증 서브에이전트 디스패치 + 그 동안 가치 전달**(병렬) |
-| `install.py` 를 직접 호출해 설치를 재현 | 검증만. 안 됐으면 `tm-mode join <url>` 재실행 안내(멱등) |
-| 검증을 건너뛰고 "설치됐겠지" 가정 | 서브에게 실제 파일/명령으로 확인시킨다 — 특히 훅·스킬 심링크 |
-| L2·Obsidian·personality 를 메뉴로 늘어놓는다 | 다루지 않는다. 각 스킬이 그때 드러난다 |
-| 빈 팀(세션로그 0)을 실패로 말한다 | 정상 — "지금부터 쌓인다"로 내레이션 |
-| 설치 안 된 사람에게 스킬이 설치를 시작 | 스킬은 설치하지 않는다 — 레포 안이면 AGENTS.md 첫 접촉 bootstrap 으로 라우팅, 레포 밖이면 "`tm-mode init`/`join` 터미널" 안내 후 멈춤 |
+| Asking again for member name, org, team name, or role | Do not ask — the CLI wizard already collected it |
+| Making the person wait while the main agent performs verification synchronously | **Dispatch a verification subagent + deliver value while it runs** (parallel) |
+| Calling `install.py` directly to reproduce installation | Verify only. If something is missing, guide the user to rerun `tm-mode join <url>` (idempotent) |
+| Skipping verification and assuming "it must be installed" | Have the subagent verify with real files/commands — especially hooks and skill symlinks |
+| Listing L2, Obsidian, or personality items as a menu | Do not handle them. Each skill appears when needed |
+| Treating an empty team (0 session logs) as a failure | Normal — narrate that it starts accumulating from now |
+| Starting installation for someone who is not installed yet | The skill does not install — inside a repo, route to the "첫 접촉" (first contact) bootstrap in AGENTS.md; outside a repo, guide them to "`tm-mode init`/`join` in the terminal" and stop |
 
 ---
-> 동작 명세는 `docs/spec/`(install.py·onboard 스킬), 진입 계약은 `src/teammode/cli.py` 의 `_done()`(이 스킬을 가리킨다)을 확인.
+> For behavior specs, check `docs/spec/` (install.py and onboard skill); for the entry contract, check `_done()` in `src/teammode/cli.py` (it points to this skill).
