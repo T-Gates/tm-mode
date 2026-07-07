@@ -1,7 +1,8 @@
-"""clone-and-go PR2 — 문서·스킬 계약 앵커 테스트 (토큰 최소화 — 문안 리팩터 내성).
+"""clone-and-go PR2 doc and skill contract anchor tests.
 
-계약: AGENTS.md 첫 접촉 = 설치 판정 + bootstrap(dry-run→대화 승인→--yes→Trust→
-tm-onboard 라우팅). tm-onboard 는 설치 금지 계약 유지 + bootstrap 라우팅 1줄만.
+Contract: AGENTS.md first contact = install detection + bootstrap
+(dry-run -> chat approval -> --yes -> Trust -> tm-onboard routing).
+tm-onboard keeps the no-install contract and only adds one bootstrap route.
 """
 from __future__ import annotations
 
@@ -18,59 +19,59 @@ def test_agents_md_first_contact_bootstrap_contract():
     text = _read("AGENTS.md")
     for token in ("--dry-run", "--yes", "--member-name", "tm-onboard",
                   "Trust", "team.config.json", "members.md"):
-        assert token in text, f"AGENTS.md 첫 접촉에 {token!r} 부재"
-    # 승인 전 무접촉 계약
-    assert "승인 전에는" in text and "쓰지 않는다" in text
-    # 설치 판정에 .teammode-active 를 쓰지 않는 계약
-    assert ".teammode-active" in text and "설치 판정에 쓰지 않는다" in text
+        assert token in text, f"AGENTS.md first-contact section is missing {token!r}"
+    # No host writes before approval.
+    assert "Before approval" in text and "must not write" in text
+    # Installation-state detection must not use .teammode-active.
+    assert ".teammode-active" in text and "not used for installation-state detection" in text
 
 
 def test_tm_onboard_keeps_no_install_contract_with_routing():
     text = _read("infra/skills/base/tm-onboard/SKILL.md")
-    # 설치 금지 계약 불변
+    # Keep the no-install contract.
     assert "Do not install or ask setup questions" in text
     assert "calling `install.py` directly" in text
-    # bootstrap 라우팅 1줄
+    # Keep one bootstrap routing line.
     assert "AGENTS.md" in text and "bootstrap" in text
-    # 스킬 자신은 설치 안 함 명시
+    # The skill itself must not install.
     assert "never runs installation in any case" in text
 
 
 def test_install_docs_offer_clone_and_go_path():
-    # 단일 이중언어 README(2026-07-06): en 본문 + 하단 한국어 절(홈 앵커 점프)
+    # Single bilingual README (2026-07-06): English body + Korean section below.
     text = _read("README.md")
     assert "clone" in text.lower()
-    assert "set up this repo" in text and "셋업해줘" in text, "양어 clone-and-go 경로 부재"
-    assert "셋업해줘" in _read("INSTALL.md")
+    assert "set up this repo" in text and "셋업해줘" in text, "bilingual clone-and-go path is missing"
+    install = _read("INSTALL.md")
+    assert "셋업해줘" in install and "set this up" in install
 
 
 def test_spec_entry_contract_updated():
     text = _read("docs/spec/onboarding.md")
     assert "clone-and-go" in text
-    # spec translated to English (docs/ English-first); the approval-gate anchor
-    # "대화 승인" now reads "chat approval".
+    # The spec is English-first; the approval-gate anchor is now "chat approval".
     assert "chat approval" in text
 
 
 def test_approval_dry_run_includes_yes_flag():
-    """[codex P1] 승인 게이트의 dry-run 은 --yes 동반 — 승인한 계획=실행 계약."""
+    """[codex P1] Approval-gate dry-run includes --yes; approved plan equals execution."""
     text = _read("AGENTS.md")
     assert "--dry-run --yes" in text, (
-        "승인용 dry-run 에 --yes 부재 — 비실설치 계획을 승인시키는 결함")
-    assert "실설치 기준" in text
+        "approval dry-run is missing --yes, so it would approve a non-install plan")
+    assert "real-install basis" in text
 
 
 def test_readme_no_stale_anchor():
-    """옛 깨진 앵커 잔존 금지 + 남아있는 self 앵커 링크는 실제 헤딩을 가리킨다.
+    """Reject stale broken anchors; remaining self anchors must target real headings.
 
-    설치 절을 상단 단일 '## 설치' 블록으로 통합하며 self 앵커 참조(#도입…)는
-    제거됨 — 옛 깨진 앵커가 없고, 잔존 self 링크가 있으면 실헤딩과 일치함을 검증.
+    The install section was consolidated into one top-level block, so stale
+    introduction anchors must be gone and remaining self links must resolve.
     """
     import re
     text = _read("README.md")
-    assert "#도입은-이-한-줄" not in text      # 옛 리팩터 잔재
-    assert "#도입--두-가지-길" not in text      # 통합으로 사라진 섹션 앵커
-    # 남아있는 self 앵커 링크(있다면) 는 실제 헤딩 slug 로 해석돼야 한다
+    assert "#도입은-이-한-줄" not in text      # stale refactor residue
+    assert "#도입--두-가지-길" not in text      # section anchor removed by consolidation
+    # Remaining self-anchor links, if any, must resolve to real heading slugs.
     heading_slugs = set()
     for line in text.splitlines():
         m = re.match(r'#{1,6}\s+(.*)', line)
@@ -78,43 +79,43 @@ def test_readme_no_stale_anchor():
             slug = re.sub(r'[^\w가-힣\s-]', '', m.group(1).lower()).strip()
             heading_slugs.add(re.sub(r'\s', '-', slug))
     for anchor in re.findall(r'\]\(#([^)]+)\)', text):
-        assert anchor in heading_slugs, f"깨진 self 앵커: #{anchor}"
+        assert anchor in heading_slugs, f"broken self anchor: #{anchor}"
 
 
 def test_no_stale_cli_only_stop_contract():
-    """[codex P2] tm-onboard·spec 에 '레포 안=bootstrap 라우팅' 없는 옛 멈춤 계약 잔존 금지."""
+    """[codex P2] Reject stale stop-only contracts without in-repo bootstrap routing."""
     for rel in ("infra/skills/base/tm-onboard/SKILL.md", "docs/spec/skills.md"):
         text = _read(rel)
         for line in text.splitlines():
             if ("멈춘다" in line or "멈춤" in line) and (
                     "init" in line and "join" in line):
                 assert "AGENTS" in line or "bootstrap" in line, (
-                    f"{rel} 옛 CLI-only 멈춤 계약 잔존: {line!r}")
+                    f"{rel} retains stale CLI-only stop contract: {line!r}")
 
 
 def test_readme_agent_oneliner_entrypoint():
-    """URL 한 줄 진입점(2026-07-06 사용자 요구): 복붙 문구 + For-AI-agents 절차 존재."""
+    """URL one-line entrypoint: copy-paste prompt plus For-AI-agents procedure."""
     text = _read("README.md")
-    # 복붙 한 줄(에이전트에게 이 레포 URL 주며 세팅 요청) — en/ko 양쪽
+    # Copy-paste line for giving this repo URL to an agent, in English and Korean.
     assert "Read https://github.com/T-Gates/tm-mode and set up tm-mode" in text
     assert "읽고 tm-mode 세팅해줘" in text
-    # 에이전트용 결정적 절차 절 — 승인 게이트가 핵심 계약
+    # Deterministic agent procedure; the approval gate is the core contract.
     assert "## For AI agents" in text
     agent_sec = text[text.index("## For AI agents"):text.index("## Layout")]
-    # [codex P1 회귀락] 에이전트 절차에 curl|sh **실행 명령** 금지(비-TTY = 무승인 설치).
-    # ("curl 쓰지 마라" 금지 문구의 단어 언급은 허용) — bootstrap 동일 계약: clone → dry-run 승인 → --yes
+    # [codex P1 regression lock] Agent procedure must not include executable curl|sh commands.
+    # Mentioning curl in a prohibition is okay; the bootstrap contract is clone -> dry-run approval -> --yes.
     assert "curl -fsSL" not in agent_sec
     assert "--dry-run --yes" in agent_sec
     assert "without `--dry-run`" in agent_sec
-    assert "--member-name" in agent_sec  # 비대화 멤버명 계약(P2)
-    # 사람용 curl 원라이너는 상단 설치 절에 유지(join 리터럴 + init 언급)
+    assert "--member-name" in agent_sec  # non-interactive member-name contract (P2)
+    # Human curl one-liner remains in the install section.
     human_sec = text[:text.index("## For AI agents")]
     assert "sh -s -- join" in human_sec and "init" in human_sec
 
 
 def test_agents_md_url_entry_routing():
-    """AGENTS.md 입력 형태 판정: 제품 URL/팀 URL/레포 안 3분기 존재."""
+    """AGENTS.md input-form routing covers product URL, team URL, and in-repo paths."""
     text = _read("AGENTS.md")
-    assert "입력 형태 판정" in text
-    assert "For AI agents" in text          # 제품 URL → README 절차 위임
-    assert "git clone" in text              # 팀 URL → clone 후 bootstrap
+    assert "Input-form classification" in text
+    assert "For AI agents" in text          # product URL delegates to README procedure
+    assert "git clone" in text              # team URL clones, then bootstraps

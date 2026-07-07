@@ -162,7 +162,7 @@ team setup (introducer, once)  →  personal setup (each member)  →  service c
 4. **Only after the user approves**, run the same command **without `--dry-run`**:
    `python3 infra/install.py --root . --yes [--member-name <name>]`
 5. Tell the user to run **`/tm-onboard`** in their agent session — it verifies the
-   install and turns team mode on. If any step fails, report the exact error and
+   install and points them to `tm on`. If any step fails, report the exact error and
    stop. Do not guess at fixes.
 
 (If you are already inside a cloned team repo, skip step 2 — and prefer that repo's

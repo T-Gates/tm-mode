@@ -10,7 +10,7 @@ The install was **already completed by the CLI (`tm-mode init` / `tm-mode join`)
 1. **Check whether the install landed correctly** — delegate this to a **verification subagent** (the main agent does not wait).
 2. **Explain what tm-mode does for the person (value)** — the main agent delivers this **while** verification is running.
 
-> ⛔ **Do not install or ask setup questions.** Asking for member name, org, team name, role, agent, or obsidian; calling `install.py` directly; creating or cloning a repo — **all of that belongs to the CLI wizard and has already happened.** Do not reproduce it. (If the user says "set this up" while tm-mode is not installed yet → **if the repo contains `infra/install.py` and AGENTS.md, route to the bootstrap procedure in the "첫 접촉" (first contact) section of AGENTS.md** (clone-and-go — dry-run → conversational approval → that procedure handles installation). Otherwise, tell them to run "`tm-mode init` (new team) / `tm-mode join <url>` (join)" in their terminal and stop. This skill itself never runs installation in any case.)
+> ⛔ **Do not install or ask setup questions.** Asking for member name, org, team name, role, agent, or obsidian; calling `install.py` directly; creating or cloning a repo — **all of that belongs to the CLI wizard and has already happened.** Do not reproduce it. (If the user says "set this up" while tm-mode is not installed yet → **if the repo contains `infra/install.py` and AGENTS.md, route to the bootstrap procedure in the "첫 접촉" (First contact) section of AGENTS.md** (clone-and-go — dry-run → conversational approval → that procedure handles installation). Otherwise, tell them to run "`tm-mode init` (new team) / `tm-mode join <url>` (join)" in their terminal and stop. This skill itself never runs installation in any case.)
 
 ## Entry Flow (Parallel — In This Order)
 1. Immediately dispatch a **verification subagent** (§①). Read-only; report results only. **The main agent does not wait for it to finish.**
@@ -72,7 +72,7 @@ Then add the current team status using **the status returned by the verification
 | Skipping verification and assuming "it must be installed" | Have the subagent verify with real files/commands — especially hooks and skill symlinks |
 | Listing L2, Obsidian, or personality items as a menu | Do not handle them. Each skill appears when needed |
 | Treating an empty team (0 session logs) as a failure | Normal — narrate that it starts accumulating from now |
-| Starting installation for someone who is not installed yet | The skill does not install — inside a repo, route to the "첫 접촉" (first contact) bootstrap in AGENTS.md; outside a repo, guide them to "`tm-mode init`/`join` in the terminal" and stop |
+| Starting installation for someone who is not installed yet | The skill does not install — inside a repo, route to the "첫 접촉" (First contact) bootstrap in AGENTS.md; outside a repo, guide them to "`tm-mode init`/`join` in the terminal" and stop |
 
 ---
 > For behavior specs, check `docs/spec/` (install.py and onboard skill); for the entry contract, check `_done()` in `src/teammode/cli.py` (it points to this skill).
