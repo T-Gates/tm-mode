@@ -28,12 +28,12 @@ def test_agents_md_first_contact_bootstrap_contract():
 def test_tm_onboard_keeps_no_install_contract_with_routing():
     text = _read("infra/skills/base/tm-onboard/SKILL.md")
     # 설치 금지 계약 불변
-    assert "설치·질문을 하지 않는다" in text
-    assert "install.py` 직접 호출" in text or "install.py 직접 호출" in text
+    assert "Do not install or ask setup questions" in text
+    assert "calling `install.py` directly" in text
     # bootstrap 라우팅 1줄
     assert "AGENTS.md" in text and "bootstrap" in text
     # 스킬 자신은 설치 안 함 명시
-    assert "설치를 실행하지 않는다" in text
+    assert "never runs installation in any case" in text
 
 
 def test_install_docs_offer_clone_and_go_path():

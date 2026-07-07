@@ -1,91 +1,91 @@
 ---
 name: tm-import-memory
-description: Use when the user wants to bulk-import external docs (docs 슬롯에 연결된 문서 서비스) into team memory — "메모리 업로드", "문서 메모리로 옮겨", "메모리로 가져와/시드", "이 페이지(들) 메모리에 추가해" (연결된 문서 서비스명으로 부르는 경우 포함, 예: "노션 메모리 가져와"). 대화 유래 단건 CRUD는 tm-manage-memory 소관.
+description: Use when the user wants to bulk-import external docs (docs 슬롯에 연결된 문서 서비스, docs slot connected document service) into team memory — "메모리 업로드", "문서 메모리로 옮겨", "메모리로 가져와/시드", "이 페이지(들) 메모리에 추가해" (including when the user refers to the connected document service by name, for example "노션 메모리 가져와"); English triggers include "upload docs to memory", "move docs into memory", "import/seed memory", "add this page/these pages to memory", and "import docs memory". Single-item CRUD from conversation belongs to tm-manage-memory.
 ---
 
-# tm-import-memory — 외부 문서 → 팀 memory 업로드 (import)
+# tm-import-memory — External Docs -> Team Memory Upload (Import)
 
-연결된 **docs 슬롯**의 문서 서비스에서 페이지를 긁어 주제별로 정리해 팀 `memory/`로 저장한다.
-콜드스타트 시드 + 이후 재실행 추가, 둘 다 이 스킬. **판단은 이 스킬이, 저장은 엔진 `memory write` 가** 한다.
+Scrape pages from the document service connected to the **docs slot**, organize them by topic, and save them into team `memory/`.
+This skill handles both cold-start seeding and later incremental reruns. **This skill makes the judgment; the engine `memory write` performs the save.**
 
-> **역할 어휘 원칙**: 이 스킬은 "docs 슬롯"이라는 역할로만 말한다. 실제 어느 서비스인지는 `team.config.json` 의 `services.docs.provider` 가 답한다 — 사용자 안내·출처 표기에는 **그 provider 이름을 읽어서** 쓴다(특정 제품명 하드코딩 금지).
+> **Role vocabulary principle**: This skill speaks only in terms of the "docs slot". The actual service is determined by `services.docs.provider` in `team.config.json`; read that provider name and use it in user-facing guidance and source attribution (do not hardcode a specific product name).
 
-## 경계 (tm-manage-memory 와)
+## Boundary (With tm-manage-memory)
 
-| 유래 | 스킬 |
+| Origin | Skill |
 |---|---|
-| 외부 문서(docs 슬롯)·대량·트리 | **tm-import-memory** (이 스킬) |
-| 대화에서 나온 단건 지식/결정 | tm-manage-memory |
+| External docs (docs slot), bulk, tree-shaped import | **tm-import-memory** (this skill) |
+| Single-item knowledge/decisions from conversation | tm-manage-memory |
 
-재실행("이 페이지 추가해")도 이 스킬이다 — 파일명은 **승인된 저장 위치(주제) 기준**으로 결정되므로 같은 주제는 같은 파일로 수렴해 멱등이다(부분 재실행 규칙은 §4).
+Reruns such as "add this page" also use this skill. Because filenames are chosen from the **approved destination topic**, the same topic converges into the same file and stays idempotent (see the partial rerun rule in section 4).
 
-## 절차
+## Procedure
 
-### 0. docs 슬롯 확인
-`team.config.json` 의 `services.docs` 와 에이전트에 연결된 해당 MCP 를 확인한다.
-**미연결이면**: "문서 서비스가 아직 연결 안 됐어요 — `tm-connect` 로 연결하면 가져올 수 있어요" 안내 후 **멈춘다** (연결 실행은 tm-connect 몫).
+### 0. Check the docs slot
+Check `services.docs` in `team.config.json` and the corresponding MCP connected to the agent.
+**If it is not connected**: respond in the user's language and say that the document service is not connected yet, and that `tm-connect` can connect it; then **stop**. Connecting the service belongs to tm-connect.
 
-### 1. 범위 파악 — 본문 읽지 않기
-사용자가 준 링크(또는 워크스페이스 검색)에서 **페이지 목록/트리만** 파악한다 — 허브 페이지 fetch 는 하위 페이지 링크 목록을 반환하므로 본문 없이 열거할 수 있다.
-기본 상한: **20페이지 · 깊이 2**. 초과분은 목록만 보여주고 사용자가 고른 것만 진행한다. "쭉 다"는 폭주다 — 목록 확인 없이 진행 금지.
+### 1. Scope discovery — do not read page bodies
+From the link the user provided (or from workspace search), identify **only the page list/tree**. A hub-page fetch returns the child-page link list, so it can be enumerated without reading bodies.
+Default cap: **20 pages and depth 2**. For anything beyond that, show only the list and proceed only with the pages the user chooses. "All of it" is an unbounded run; do not proceed without list confirmation.
 
-### 2. preview 확인 게이트 (필수 — 이 확인이 weight·route 설명 일괄 승인을 겸한다)
-fan-out 전에 계획 표를 보여주고 **한 번** 확인받는다:
+### 2. Preview confirmation gate (required — this one confirmation also approves the weight and route explanation in bulk)
+Respond in the user's language. Before fan-out, show a plan table and get **one** confirmation:
 
-| 원본 페이지 | → 저장 위치(folder/filename) | weight 제안 | 근거 |
+| Source page | -> Destination (folder/filename) | Proposed weight | Rationale |
 |---|---|---|---|
 
-- weight 기본 **📎(참고)**. 명백한 결정/규칙/운영원칙만 📌 제안. **🔥 는 자동 제안 금지**(핵심 승격은 팀이 나중에 직접). weight 규약의 본질은 "몰래 확정 금지"다 — 이 표를 사용자가 승인하면 확인을 받은 것이며, 파일마다 따로 문답하지 않는다.
-- 저장 위치는 기존 구조(`product/<제품>/…`·`team/decisions` 등) 우선. **새 최상위 폴더**가 필요하면(예: `fundraise/`) 표에 **경로 + 라우팅 맵 한 줄 설명(desc)** 까지 적어 함께 승인받는다 — 엔진 `route upsert` 는 `--desc` 추측 금지(필수 인자)라 여기서 확정해야 한다.
-- 함께 명시: "최대 N개 파일 생성/갱신, 파일당 commit/push 1회 수행".
-- **주제별 병합** — 페이지:파일 1:1 금지, 생성 파일 ~10개 이내 권장.
+- Default weight is **📎(reference)**. Propose 📌 only for clear decisions/rules/operating principles. **Never auto-propose 🔥** (the team can promote core items later). The point of the weight convention is "no silent confirmation"; once the user approves this table, confirmation has been received, and you do not ask separately per file.
+- Prefer existing structure for destinations (`product/<product>/...`, `team/decisions`, etc.). If a **new top-level folder** is needed (for example `fundraise/`), include the **path plus a one-line routing map description (`desc`)** in the table and approve it together. Engine `route upsert` must not guess `--desc` (required argument), so it must be settled here.
+- State together: "Up to N files will be created/updated, with one commit/push attempt per file."
+- **Merge by topic**. Do not create one file per page; aim for about 10 generated files or fewer.
 
-### 3. 페이지별 fan-out (서브에이전트)
-페이지마다 서브에이전트를 병렬 디스패치한다. 각 서브는:
-- 자기 페이지 **1개의 본문만** 읽는다 (대량 외부 문서로 메인 컨텍스트를 오염시키지 않는 것이 fan-out 의 이유).
-- 요약 + 주제 태깅 + 출처(페이지 제목·URL)를 **구조화 결과로 반환만** 한다.
-- **파일을 직접 쓰지 않는다.**
+### 3. Per-page fan-out (subagents)
+Dispatch subagents in parallel, one per page. Each subagent:
+- Reads **only one page body**, its own page. This is the reason for fan-out: large external docs should not pollute the main context.
+- Returns only a **structured result** containing summary, topic tags, and source (page title and URL).
+- **Does not write files directly.**
 
-### 4. 취합·저장 (메인)
-새 최상위 폴더가 승인됐으면 **먼저 등재**한다 (전 인자 필수 — bare 호출은 exit 2):
-
-```
-python3 infra/teammode.py memory route upsert --root <팀루트> \
-  --path <폴더>/ --desc "<preview 에서 승인된 한 줄 설명>" --author <멤버명>
-```
-
-서브 결과를 주제별로 병합·중복 제거 후, 파일마다 엔진 동사로 저장한다:
+### 4. Aggregate and save (main)
+If a new top-level folder was approved, **register it first** (all arguments are required; a bare call exits 2):
 
 ```
-python3 infra/teammode.py memory write --root <팀루트> \
+python3 infra/teammode.py memory route upsert --root <team-root> \
+  --path <folder>/ --desc "<one-line description approved in preview>" --author <member-name>
+```
+
+After merging and deduplicating subagent results by topic, save each file through the engine verb:
+
+```
+python3 infra/teammode.py memory write --root <team-root> \
   --folder <folder> --filename <kebab-name>.md \
-  --content "<본문>
+  --content "<body>
 
-## 출처
-- [페이지제목](URL) (<docs provider 이름>, YYYY-MM-DD 수집)" \
-  --author <멤버명> --weight <승인된 weight>
+## Sources
+- [Page title](URL) (<docs provider name>, collected YYYY-MM-DD)" \
+  --author <member-name> --weight <approved weight>
 ```
 
-- 본문 하단에 `## 출처` 절 필수 — 외부유래 표시. provider 이름은 `services.docs.provider` 값을 쓴다.
-- **부분 재실행 병합 규칙**: 대상 주제 파일이 이미 있으면 **기존 파일을 먼저 읽어, 재실행된 출처(페이지) 부분만 갱신**하고 나머지 출처의 내용·`## 출처` 목록은 보존한 전체 본문을 만들어 저장한다. 엔진 write 는 전체 교체(replace)이므로, 병합 결과 전체를 넘기지 않으면 다른 출처 내용이 유실된다. 재실행된 페이지만으로 파일을 새로 만들지도 않는다(1:1 금지 위반).
-- ⛔ `memory/` 를 **직접 Edit/Write 하지 않는다** — INDEX 등재·frontmatter·백링크·커밋은 전부 엔진이 한다.
+- The body must include a `## Sources` section at the bottom to mark external provenance. Use the value from `services.docs.provider` as the provider name.
+- **Partial rerun merge rule**: if the target topic file already exists, **read the existing file first, update only the rerun source/page portion**, and build the full body while preserving content from other sources and the `## Sources` list. Engine write is a full replace, so if you do not pass the entire merged result, content from other sources is lost. Do not create a new file from only the rerun page either (that violates the no 1:1 rule).
+- ⛔ Do **not** directly Edit/Write `memory/`; INDEX registration, frontmatter, backlinks, and commits are all handled by the engine.
 
-### 5. 완료 보고
-생성/수정 파일 목록 · INDEX 반영 · push 성공/실패(엔진이 push 실패는 비차단 — 로컬 커밋 보존) 구분 보고.
-재온보딩/팀원은 수집 불필요 — `git pull` 로 이미 수령된다.
+### 5. Completion report
+Respond in the user's language. Report the created/updated file list, INDEX reflection, and push success/failure separately (engine push failure is non-blocking; the local commit is preserved).
+No need to collect re-onboarding/team members; they receive it through `git pull`.
 
-## 안 하는 것
-- 토큰 발급·연결(→ tm-connect) · 단건 대화 메모리(→ tm-manage-memory)
-- 원본 문서 수정(읽기 전용) · 지속 자동 동기화(v0.2+)
-- 상한 무시한 "전부 다" 수집 — 목록 확인 없이 진행 금지
+## What This Does Not Do
+- Token issuance/connection (-> tm-connect) or single conversation-memory CRUD (-> tm-manage-memory)
+- Source-document edits (read-only) or continuous automatic sync (v0.2+)
+- Ignoring caps to collect "everything"; do not proceed without list confirmation
 
 ## Common Mistakes
-| 실수 | 올바른 방법 |
+| Mistake | Correct approach |
 |---|---|
-| 메인이 페이지 본문을 직접 다 읽음 | 본문은 서브에이전트만, 메인은 목록·취합 |
-| 파일마다 weight 문답 | preview 표 단일 확인이 일괄 승인 |
-| 페이지:파일 1:1 덤프 | 주제별 병합, ~10파일 이내 |
-| memory/ 직접 Edit | 반드시 `memory write` 경유 |
-| 새 최상위 폴더에 바로 write | `route upsert`(--path·--desc·--author 전부) 등재 먼저 |
-| 병합 파일 부분 재실행 때 파일 통째 교체 | 기존 파일 읽어 해당 출처만 갱신한 전체 본문으로 저장 |
-| 특정 제품명("노션" 등) 하드코딩 안내 | `services.docs.provider` 를 읽어 그 이름으로 말한다 |
+| Main agent reads all page bodies directly | Only subagents read bodies; main agent handles list and aggregation |
+| Asking about weight per file | The single preview table confirmation approves them in bulk |
+| Page:file 1:1 dump | Merge by topic, about 10 files or fewer |
+| Directly editing `memory/` | Always go through `memory write` |
+| Writing directly to a new top-level folder | Register first with `route upsert` (all of `--path`, `--desc`, and `--author`) |
+| Replacing a whole merged file during a partial rerun | Read the existing file and save the full body with only that source updated |
+| Hardcoding guidance for a specific product name | Read `services.docs.provider` and speak using that name |

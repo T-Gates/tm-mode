@@ -1,223 +1,225 @@
 ---
 name: tm-connect
-description: Use to connect a service slot (issues / chat / docs / calendar) to a tm-mode team — guiding token issuance, storing it in the local credentials vault, and recording the resource in team config. Triggers on "서비스 연결", "이슈 트래커 연결", "채팅 연결", "문서 연결", "캘린더 연결", "팀모드 서비스 붙여줘", "tm-mode connect", "connect service", or after tm-onboard offers L2.
+description: Use to connect a service slot (issues / chat / docs / calendar) to a tm-mode team — guiding token issuance, storing it in the local credentials vault, and recording the resource in team config. Triggers on "서비스 연결", "이슈 트래커 연결", "채팅 연결", "문서 연결", "캘린더 연결", "팀모드 서비스 붙여줘", "tm-mode connect", "connect service", "connect issues tracker", "connect chat", "connect docs", "connect calendar", "connect team service", or after tm-onboard offers L2.
 ---
 
-# tm-connect — 서비스 슬롯 연결 (L2 등록기)
+# tm-connect — Service Slot Connection (L2 Registrar)
 
-tm-mode 의 **역할 슬롯**(issues / chat / docs / calendar)에 팀이 고른 **공식 벤더 MCP를 꽂아주는 등록기**. tm-onboard 가 첫 가치(L1) 직후 "연결할래요?" 하고 제안하면, **실행은 이 스킬**이 한다.
+This skill is the registrar that attaches the team's chosen **official vendor MCP** to a tm-mode **role slot** (issues / chat / docs / calendar). When tm-onboard offers "연결할래요?" after the first value moment (L1), **this skill** performs the work.
 
 ```
-tm-onboard (제안+트리거)  →  tm-connect (등록기 실행)
-   "연결할래요?"              슬롯 → provider → MCP 마련 → 토큰 안내 → 금고 저장 → config 기록 → MCP alias 등록
+tm-onboard (offer+trigger)  →  tm-connect (run registrar)
+   "연결할래요?"              slot → provider → prepare MCP → token guidance → vault storage → config write → MCP alias registration
 ```
 
-> **A안 (2026-06-25 확정).** tm-mode 는 **연결(등록)만** 한다. 이슈 생성·일정 추가 같은 **동작은 AI가 등록된 벤더 MCP 도구를 직접 호출**한다 — 이 스킬이 동작을 래핑하지 않는다. 핸들러 생성·`role_server` 프록시·역할 추상화 동사·"재사용>흡수>수제" 우선순위 판정은 모두 폐기됐다. 권위 스펙은 `docs/spec/skills.md §5.4.1`·`internals.md §2.8`.
+> **A안 / Option A (decided 2026-06-25).** tm-mode only handles **connection (registration)**. For actions such as creating issues or adding calendar events, **the AI directly calls the registered vendor MCP tools**. This skill does not wrap those actions. Handler generation, the `role_server` proxy, role-abstraction verbs, and the "reuse > absorb > hand-build" priority rule were all discarded. The authoritative specs are `docs/spec/skills.md §5.4.1` and `internals.md §2.8`.
 
-## 원칙
+## Principles
 
-- **될 일은 데이터·엔진이, 판단·동의 게이트는 이 스킬이.** 발급 링크·단계·연결방식은 **`providers/<provider>.json` 에서 읽어** 안내한다 — 스킬 본문에 링크·단계를 하드코딩하지 않는다.
-- **역할 어휘만.** 이 스킬은 issues / chat / docs / calendar 라는 **역할**로만 말한다. 실제 어느 서비스인지는 `team.config.json` 의 `services.<역할>.provider` 와 `providers/<provider>.json` 이 답한다 — 런타임에 데이터를 보고 옮긴다.
-- **각자 입력(v0.2).** 각 멤버가 **자기 토큰을 직접 입력**한다. 팀 토큰 자동공유는 v0.2 에 없다 — 팀 scope 슬롯도 각 멤버가 "각자 1회" 입력한다.
-- **정직한 경계(사람 몫).** 토큰 발급·동의(OAuth "허용", 개인키 "Create+붙여넣기", 봇 설치)와 **공식 제공처 식별**은 **사람이 권한을 부여·확정**하는 보안 경계라 무인 불가. 스킬은 동의 게이트 직전까지 데려가고 클릭·붙여넣기·선택만 사람이.
-- **연결만, 동작은 AI 직접.** 등록이 끝나면 동작은 AI가 등록된 벤더 MCP 도구를 직접 호출한다. 이 스킬은 동작 명령(`tm-issues create` 같은 CLI)을 만들지 않는다 — 폐기한 추상화(B안)의 부활이다.
+- **Data and the engine handle what can be automated; this skill handles judgment and consent gates.** Token issuance links, steps, and connection methods are read from **`providers/<provider>.json`** when guiding the user. Do not hardcode links or steps in the skill body.
+- **Use role vocabulary only.** This skill speaks only in the roles issues / chat / docs / calendar. The actual service is answered by `team.config.json` at `services.<역할>.provider` and by `providers/<provider>.json`; read the runtime data and relay it.
+- **Each person enters their own token (v0.2).** Each member **directly enters their own token**. Automatic team token sharing does not exist in v0.2. Even team-scope slots require each member to enter a token "once per person."
+- **Honest boundary (human-owned).** Token issuance, consent (OAuth "Allow", private key "Create+paste", bot installation), and **identifying the official provider** are security boundaries where a human grants or confirms authority. This cannot be unattended. The skill takes the user up to the consent gate; the human clicks, pastes, and chooses.
+- **Connection only; actions are done directly by the AI.** After registration, actions are performed by the AI directly calling the registered vendor MCP tools. This skill does not create action commands such as `tm-issues create`; that would revive the discarded abstraction (Option B).
 
 ---
 
-## 0. 사용자에게 먼저 — 절차 안내 + 쉬운 말
+## 0. Tell the User First — Plain-Language Procedure
 
-연결을 시작하면 **바로 단계로 들어가지 말고, 먼저 사용자에게 전체 절차를 쉬운 말로 한 번 안내**한다. 사용자는 tm-mode 내부 용어(슬롯·provider·MCP·alias)를 모른다 — 그 단어를 쓰지 말고 풀어서 말한다.
+When starting a connection, **do not jump straight into the steps. First explain the whole procedure once in plain language**. The user does not know tm-mode internal terms such as slot, provider, MCP, or alias. Avoid those words and explain what they mean.
 
-**시작 안내 예시** (캘린더 연결 시):
+All user-facing responses in this flow must respond in the user's language. The examples below are English illustrations; localize them naturally instead of hardcoding English wording.
 
-> "이제 **캘린더**를 팀에 연결할게요. 순서는 이래요:
-> 1. 어떤 캘린더 서비스를 쓸지 정하고 (예: 구글 캘린더, 노션)
-> 2. 그 서비스 토큰(비밀번호 같은 열쇠)을 한 번 발급해서 붙여넣고
-> 3. 끝이에요 — 그다음부턴 제가 캘린더에 일정 추가·조회를 직접 해드려요.
+**Opening guidance example** (for a calendar connection):
+
+> "I'll connect the team's **calendar** now. The order is:
+> 1. Choose which calendar service the team will use (the provider comes from the provider pack or the team's config).
+> 2. Create and paste one service token, which works like a key.
+> 3. That's it. After that, I can add and look up calendar events directly for you.
 >
-> 직접 하실 건 **토큰 발급·붙여넣기 한 번**뿐이에요. 나머지는 제가 합니다."
+> The only thing you need to do yourself is **create and paste the token once**. I'll handle the rest."
 
-**용어 쉬운 말 대응** (사용자에겐 왼쪽 단어 쓰지 말고 오른쪽으로):
+**Plain-language term mapping** (do not use the left-hand terms with the user; use the right-hand phrasing):
 
-| 내부 용어 | 사용자에게는 |
+| Internal term | Say to the user |
 |---|---|
-| 슬롯 / 역할 | "이슈 / 채팅 / 문서 / 캘린더" (그 자체로) |
-| provider | "어떤 서비스" (구글·노션·슬랙 등) |
-| MCP / alias 등록 | "AI가 그 서비스를 다룰 수 있게 연결" |
-| credentials 금고 | "토큰을 안전하게 보관" |
-| 인스턴스 값 / resource_fields | "어느 캘린더·문서·채널인지" |
+| slot / role | "issues / chat / docs / calendar" (as-is) |
+| provider | "which service" (the provider chosen from config or the provider pack) |
+| MCP / alias registration | "connect it so the AI can use that service" |
+| credentials vault | "store the token safely" |
+| instance value / resource_fields | "which calendar, document, or channel" |
 
-각 단계로 넘어갈 때도 **지금 뭘 하는지·왜 필요한지 한 줄로 쉽게** 곁들인다. "토큰 발급 페이지로 가서…"가 아니라 "AI가 당신 대신 캘린더를 만지려면 열쇠가 하나 필요해요 — 이 링크에서 한 번 만들어 주세요"처럼. 후속 멤버(이미 팀이 정해둔 경우)에겐 "팀이 캘린더는 구글로 쓰기로 했어요. 당신은 토큰만 한 번 넣으면 끝이에요"로 더 짧게.
-
----
-
-## 1. 슬롯 선택 — 어느 역할을 연결하나
-
-사용자가 붙이려는 역할(issues / chat / docs / calendar)을 정한다. 이후 모든 단계는 그 슬롯 하나에 대해서만 진행한다.
+When moving to each step, also add **one simple line saying what is happening and why it is needed**. For example, instead of "Go to the token issuance page...", say something like "The AI needs one key to work with your calendar on your behalf. Please create it once at this link." For a follow-up member whose team already chose the service, keep it shorter: "The team already chose the calendar service. You only need to enter your token once."
 
 ---
 
-## 2. provider 결정 — config 가 진실, 첫 등록자만 고른다
+## 1. Select the Slot — Which Role to Connect
 
-그 슬롯의 provider 를 `team.config.json` 의 `services.<역할>.provider` 에서 읽는다 (**추측 금지 — 데이터가 진실**).
+Determine the role the user wants to attach (issues / chat / docs / calendar). Every later step proceeds for that one slot only.
 
-### 2-A. provider 가 이미 있으면 (후속 멤버)
+---
 
-`services.<역할>.provider` 가 채워져 있으면 **재선택하지 않는다.** 도입자가 골라 config 에 커밋·push 해 둔 provider 를 그대로 따른다. 바로 §3 의 MCP 마련(이미 본 레포에 와 있을 것)·§4 토큰 입력으로 진행한다.
+## 2. Decide the Provider — Config Is Truth, Only the First Registrar Chooses
 
-> "이미 팀이 이 슬롯에 `<provider>` 를 선언해 뒀습니다. 재선택하지 않고 그 provider 로 진행합니다.
-> provider 를 바꾸려면 `team.config.json` 의 `services.<역할>` 을 직접 수정 후 PR 로 팀 합의를 거쳐야 합니다."
+Read the slot provider from `team.config.json` at `services.<역할>.provider` (**do not guess; data is truth**).
 
-### 2-B. 슬롯이 비어 있으면 (첫 등록자)
+### 2-A. Provider Already Exists (Follow-Up Member)
 
-어떤 provider 를 쓸지 사람에게 묻는다. 필요하면 후보를 검색해 N개 제시한다.
+If `services.<역할>.provider` is populated, **do not reselect it**. Follow the provider that the introducer already chose, committed, and pushed in config. Proceed directly to §3 MCP preparation (it should already be in this repository) and §4 token entry.
 
-1. **사람이 고른다** — **공식 제공처 식별이 보안 게이트**다. 무인 추측으로 진행하지 않는다(공식 아닌 가짜 MCP/엔드포인트를 잡으면 토큰 유출).
-2. `providers/<provider>.json` 팩이 실재하는지 확인한다. 없으면 미지원 — 추측해서 진행하지 않는다.
-3. **공식 벤더 MCP를 마련한다** (§3).
-4. 고른 provider·인스턴스 값을 `team.config.json` 의 `services.<역할>` 에 기록하고 **GitHub 에 push** 한다 = 팀 공유 선언 (§5).
+> "The team has already declared `<provider>` for this slot. I will not reselect it and will continue with that provider.
+> To change the provider, edit `team.config.json` at `services.<역할>` directly and get team agreement through a PR."
 
-provider 가 정해지면 그 팩에서 **다음 필드를 데이터로 읽어** 안내를 구성한다:
+### 2-B. Slot Is Empty (First Registrar)
 
-| 팩 필드 | 용도 (스킬이 읽어서 안내) |
+Ask the human which provider to use. If needed, search and present N candidates.
+
+1. **The human chooses**. **Identifying the official provider is a security gate**. Do not proceed from unattended guesswork; a fake non-official MCP or endpoint can leak tokens.
+2. Check that a `providers/<provider>.json` pack exists. If it does not, it is unsupported; do not continue by guessing.
+3. **Prepare the official vendor MCP** (§3).
+4. Record the chosen provider and instance values in `team.config.json` at `services.<역할>`, then **push to GitHub**. This is the team-shared declaration (§5).
+
+After the provider is chosen, read **the following fields as data** from that pack to build the guidance:
+
+| Pack field | Purpose (read by the skill for guidance) |
 |---|---|
-| `token_guide.url` | 토큰 발급 페이지로 가는 **딥링크** — 그대로 사람에게 제시 |
-| `token_guide.steps` | 발급까지의 **단계 목록** — 순서대로 안내 |
-| `auth` | 연결방식(`api_key` / `oauth` / `bot_token`) — 멘트를 이 값에 맞춰 고른다(§4) |
-| `default_scope` | `team` / `personal` — credentials namespace·기본값(§4) |
-| `resource_fields` | 연결 후 config 에 채울 **인스턴스 필드** 이름 목록(§5) |
-| `mcp.register_hint` | MCP alias 등록 안내에 참고(§3·§6) |
+| `token_guide.url` | **Deep link** to the token issuance page; present it to the human as-is |
+| `token_guide.steps` | **Ordered step list** for issuance; guide the user in order |
+| `auth` | Connection method (`api_key` / `oauth` / `bot_token`); choose wording according to this value (§4) |
+| `default_scope` | `team` / `personal`; credentials namespace and default (§4) |
+| `resource_fields` | Names of **instance fields** to fill in config after connection (§5) |
+| `mcp.register_hint` | Reference for MCP alias registration guidance (§3, §6) |
 
 ---
 
-## 3. 공식 벤더 MCP 마련 — 공식 우선, 없으면 자작
+## 3. Prepare the Official Vendor MCP — Official First, Custom If None Exists
 
-첫 등록자 경로에서 그 provider 의 **공식 벤더 MCP**를 본 레포에 둔다. 실제 alias 등록 동작은 §6 의 install-mcp(install.py 재실행)가 하고, 이 단계는 그 등록이 가리킬 **MCP 코드·실행 메타를 마련**하는 일이다.
+On the first-registrar path, place that provider's **official vendor MCP** in this repository. The actual alias registration is done later by §6 install-mcp (rerunning install.py); this step prepares the **MCP code and execution metadata** that registration will point to.
 
 ```
-공식 MCP 레포 있음 → git 으로 가져와 본 레포 infra/mcp/<provider>/ 에 둠 + 커밋 (팀 공유 보관소)
-공식 없음          → AI 자작 (사용자에게 안 미룬다 — "자작 X" 원칙은 폐기)
+Official MCP repo exists → fetch it with git and place it in infra/mcp/<provider>/ in this repo + commit (team-shared storage)
+No official MCP         → AI builds a custom one (do not push this onto the user; the "no custom MCP" rule was discarded)
 ```
 
-**공식 우선.** 자작은 공식 MCP 레포가 없을 때만의 대안이다. 다음 멤버는 본 레포에 든 것을 재사용한다(재마련 X).
+**Official first.** Custom MCP is only the fallback when no official MCP repository exists. Later members reuse what is already in this repository (do not prepare it again).
 
-### 자작 (공식 없을 때만)
+### Custom MCP (Only When No Official One Exists)
 
-1. provider 공식 API 스펙(REST/GraphQL 문서)을 출처로 **그 벤더 전용 MCP** 를 Python MCP SDK 로 작성한다.
-2. **그 슬롯 역할에 필요한 도구만** 노출한다 (예: calendar 면 list_events / create_event 수준 — 슬롯 전부를 덮는 만능 X).
-3. `infra/mcp/<provider>/` 에 서버 코드 + 실행 command(기동 메타)를 두고 본 레포에 커밋한다. 공식 MCP를 가져왔을 때와 같은 위치·구조다.
-4. 토큰은 공식 MCP와 동일 경로(§4 로컬 금고 0600)다. 자작이라고 별도 토큰 경로를 만들지 않는다.
-5. 첫 자작 직후 **적대검수(서브에이전트)** 로 노출 도구의 실동작을 검증한다.
+1. Use the provider's official API spec (REST/GraphQL docs) as the source and write **a vendor-specific MCP** with the Python MCP SDK.
+2. Expose **only the tools needed for that slot role**. For example, a calendar slot may expose list_events / create_event level tools; do not build an all-purpose server covering every slot.
+3. Put server code plus the execution command (startup metadata) under `infra/mcp/<provider>/` and commit it to this repository. Use the same location and structure as when importing an official MCP.
+4. Tokens use the same path as official MCPs (§4 local vault 0600). Do not create a separate token path just because it is custom.
+5. Immediately after the first custom build, run an **adversarial review (subagent)** to verify the exposed tools actually work.
 
-> ⚠️ **자작 MCP는 역할 추상화가 아니다.** provider API 를 감싼 도구를 *그대로* 노출할 뿐, 슬롯 통일 동사(역할별 추상 동사)를 만드는 게 **아니다**. 그건 폐기한 `role_server`/역할 추상화(B안)의 부활이다. tm-mode 는 자작 MCP 에 대해서도 **연결(등록)만** 하고, 동작은 AI가 직접 호출한다(A안).
+> ⚠️ **A custom MCP is not role abstraction.** It only exposes tools wrapping the provider API *as-is*. It does **not** create unified slot verbs (role-specific abstraction verbs). That would revive the discarded `role_server` / role abstraction (Option B). Even for custom MCPs, tm-mode only handles **connection (registration)**, and actions are called directly by the AI (Option A).
 
-상세 7단계·원칙은 `docs/spec/internals.md §2.8` 참조.
+See `docs/spec/internals.md §2.8` for the detailed seven steps and principles.
 
 ---
 
-## 4. 토큰 안내 → 각자 입력 → credentials 금고 저장
+## 4. Token Guidance → Individual Entry → Credentials Vault Storage
 
-### 4-A. 토큰 안내 (사람 몫 — 동의 게이트까지)
+### 4-A. Token Guidance (Human-Owned, Up to the Consent Gate)
 
-팩의 `token_guide.url` 로 데려가고 `token_guide.steps` 를 순서대로 옮긴다. 막연한 "키 찾아와" 금지 — **정확한 링크·버튼**으로.
+Take the user to the pack's `token_guide.url` and relay `token_guide.steps` in order. Do not vaguely say "find the key"; use **exact links and buttons**.
 
-- 사람이 발급 페이지에서 토큰을 만든다(이 단계는 사람이 권한을 부여하는 보안 경계 — 무인 불가).
-- "당신 몫은 토큰 N개뿐"으로 기대치를 고정한다(토큰 병목 완화).
+- The human creates the token on the issuance page. This is a security boundary where the human grants authority; it cannot be unattended.
+- Set expectations with "your part is only N tokens" to reduce the token bottleneck.
 
-팩의 `auth` 값을 읽어 안내를 고른다(스킬이 서비스를 모름 — 값으로만 분기):
+Read the pack's `auth` value and choose the guidance accordingly. The skill does not know the service; it branches only on the value:
 
-| `auth` | 안내 |
+| `auth` | Guidance |
 |---|---|
-| `api_key` | 발급 페이지에서 **개인/통합 키를 Create → 복사 → 붙여넣기**. attribution 이 본인으로 남도록 각자 발급. |
-| `bot_token` | 앱/봇 토큰을 발급해 워크스페이스에 설치 후 **봇 토큰 복사 → 붙여넣기**. |
-| `oauth` | **localhost OAuth(PKCE)** — 동의 화면에서 사람이 "허용". 콜백으로 토큰 수령(붙여넣기 없을 수 있음). |
+| `api_key` | On the issuance page, **Create → copy → paste** a personal/integration key. Each member issues their own so attribution remains theirs. |
+| `bot_token` | Issue an app/bot token, install it into the workspace, then **copy → paste the bot token**. |
+| `oauth` | **localhost OAuth(PKCE)**; the human clicks "Allow" on the consent screen. Tokens are received through the callback, so pasting may not be needed. |
 
-OAuth 크리덴셜 키 계약:
+OAuth credential key contract:
 
-| auth 타입 | 저장 key |
+| auth type | storage key |
 |-----------|---------|
 | `api_key` / `bot_token` | `<역할>` |
 | `oauth` | `<역할>_access_token` + `<역할>_refresh_token` |
 
-### 4-B. 각자 입력 → credentials 금고에 저장
+### 4-B. Individual Entry → Store in the Credentials Vault
 
-**팀 자동공유 없음(v0.2).** 각 멤버가 자기 토큰을 직접 입력하고, **로컬 금고**(`infra/credentials.py`)에 저장한다.
+**No automatic team sharing (v0.2).** Each member directly enters their own token, and it is stored in the **local vault** (`infra/credentials.py`).
 
-- 저장 위치: 멤버 로컬 `$XDG_DATA_HOME/teammode/credentials/default.json`(단일 금고, 파일 권한 0600). git 추적 안 됨.
-- 팩의 `default_scope` 로 네임스페이스를 고른다 — `team` 이든 `personal` 이든 **v0.2 는 각자 1회 입력**이다(팀 scope 라고 도입자 1회로 끝나지 않는다 — 자동공유 미구현).
-- 저장은 엔진/모듈이 한다(스킬이 평문 토큰을 stdout·로그·세션로그에 절대 출력하지 않는다):
+- Storage location: member-local `$XDG_DATA_HOME/teammode/credentials/default.json` (single vault, file mode 0600). It is not tracked by git.
+- Choose the namespace from the pack's `default_scope`. Whether it is `team` or `personal`, **v0.2 requires one entry per person**. A team scope does not mean the introducer enters it once for everyone; automatic sharing is not implemented.
+- Storage is done by the engine/module. The skill must never print plaintext tokens to stdout, logs, or session logs:
   ```bash
   python3 -c "import sys; sys.path.insert(0,'infra'); import credentials; \
     credentials.store('<team>', '<scope>', '<역할>', input())"
   ```
-  토큰은 표준입력으로만 흘리고, 명령행 인자·로그·세션로그 어디에도 평문으로 남기지 않는다.
+  Tokens flow only through standard input and must never remain in command-line arguments, logs, or session logs.
 
-> ⚠️ **평문 금고 경고(필수 안내).** v0.2 금고는 **평문 JSON** 이다. Syncthing·Dropbox·iCloud 등 **동기화 폴더에 절대 두지 말 것** — 평문 토큰이 동기화되어 다른 기기·서비스로 새면 곧 유출이다. 0600 권한 + git 미추적 + 동기화 폴더 금지가 v0.2 의 방어선이다(OS 키체인은 후속).
-
----
-
-## 5. config 슬롯 기록 — 인스턴스 값(resource_fields)
-
-토큰을 받으면 그 서비스에서 **실제 어느 리소스**(문서 DB·채팅 채널·캘린더 등)를 쓸지 정한다. 팩의 `resource_fields` 가 config 에 채울 **인스턴스 필드 이름**을 선언한다 — **이 목록이 인스턴스 값 필요 여부를 결정한다**. 빈 리스트면 인스턴스 값 불필요(예: 채팅 슬롯은 채널을 다 써서 dbid 류가 없다), 비어 있지 않으면 그 슬롯만 해당 값(예: 문서/캘린더 슬롯의 dbid)을 사람에게 묻는다.
-
-- `team.config.json` 의 `services.<역할>` 슬롯에 `{ provider, scope, <resource_fields 각 필드 = 고른 값> }` 를 기록한다.
-- **인스턴스 값(리소스 ID·채널·캘린더 등)은 config 소관**이다 — 토큰(비밀)은 금고에, 인스턴스 값(비밀 아님)은 config 에. 토큰을 config 에 적지 않는다(토큰키 추적 거부 린트가 막는다).
-- 첫 등록자 경로에선 provider·인스턴스 값을 **도입자가 config 에 커밋·push** 한다(팀 공유 선언, §2-B). 팀원은 그 선언을 읽기만 한다(단, 토큰은 v0.2 에서 각자 입력 — §4).
+> ⚠️ **Plaintext vault warning (required guidance).** The v0.2 vault is **plaintext JSON**. Never place it in a synchronized folder such as Syncthing, Dropbox, or iCloud. If plaintext tokens sync to other devices or services, they are effectively leaked. File mode 0600 + not tracked by git + no sync folder is the v0.2 defense line. OS keychain support comes later.
 
 ---
 
-## 6. MCP alias 등록 (install-mcp 재실행) → 첫 가치
+## 5. Record the Config Slot — Instance Values (resource_fields)
 
-### 6-A. MCP alias 등록 (재배선)
+After receiving the token, decide **which actual resource** in that service to use (document DB, chat channel, calendar, etc.). The pack's `resource_fields` declares the **instance field names** to fill in config, and **this list determines whether instance values are needed**. If it is an empty list, no instance value is needed (for example, a chat slot may use all channels and have no dbid-like value). If it is non-empty, ask the human only for the values relevant to that slot (for example, the dbid for docs/calendar slots).
 
-연결을 마치면 adapter 가 그 provider 의 **벤더 MCP alias 를 멤버 에이전트(claude/codex) 설정에 등록**하도록 **install-mcp 를 재실행**한다. install-mcp 는 §3 에서 마련한 공식/자작 MCP 산출물을 **동일하게** 다뤄 정규 서버명 alias 로 등록한다(`internals.md §2.8`). 팩의 `mcp.register_hint` 를 참고로 옮긴다.
+- Record `{ provider, scope, <resource_fields each field = chosen value> }` in the `services.<역할>` slot of `team.config.json`.
+- **Instance values (resource IDs, channels, calendars, etc.) belong in config**. Tokens (secrets) go in the vault; instance values (not secrets) go in config. Do not write tokens into config; the token-key anti-tracking lint will block it.
+- On the first-registrar path, the introducer **commits and pushes** the provider and instance values in config (team-shared declaration, §2-B). Team members only read that declaration. Tokens are still entered by each person in v0.2 (§4).
+
+---
+
+## 6. MCP Alias Registration (Rerun install-mcp) → First Value
+
+### 6-A. MCP Alias Registration (Rewiring)
+
+After finishing the connection, **rerun install-mcp** so the adapter registers that provider's **vendor MCP alias in the member agent (claude/codex) settings**. install-mcp handles the official/custom MCP artifact prepared in §3 **the same way**, registering it under the canonical server-name alias (`internals.md §2.8`). Relay the pack's `mcp.register_hint` as reference.
 
 ```bash
-python3 infra/install.py --root . --yes        # 재배선(adapter 에 벤더 MCP alias 등록 + sync)
+python3 infra/install.py --root . --yes        # rewire (register vendor MCP alias in adapter + sync)
 ```
 
-재배선 후 확인:
-- 그 provider 의 벤더 MCP alias 가 에이전트 설정에 teammode 관리 항목으로 등록됐는지 확인.
-- 해당 벤더 MCP 도구가 에이전트에 노출됐는지 확인.
+After rewiring, verify:
+- The provider's vendor MCP alias is registered in the agent settings as a teammode-managed entry.
+- That vendor MCP's tools are exposed to the agent.
 
-### 6-B. 첫 가치 (A안 — AI가 벤더 MCP 도구 직접 호출)
+### 6-B. First Value (A안 / Option A — AI Directly Calls Vendor MCP Tools)
 
-동작은 tm-connect 가 래핑하지 않는다. 연결이 끝나면 **AI가 등록된 벤더 MCP 도구를 직접 호출**해 첫 가치를 보여준다.
+tm-connect does not wrap actions. After connection is complete, **the AI directly calls the registered vendor MCP tools** to demonstrate first value.
 
-- 예: issues 슬롯이면 그 provider MCP 의 이슈 생성 도구를, calendar 슬롯이면 일정 추가 도구를 AI가 직접 호출한다.
-- 도구 호출이 보이면 그 자리에서 **첫 도그푸딩**(실제 서비스에 이슈/일정이 생김)이 가능하다.
-- 동작 명령(`tm-issues create` 같은 CLI)을 새로 만들지 않는다 — 그것은 폐기한 추상화(B안)의 부활이다.
+- For example, for an issues slot, the AI calls that provider MCP's issue creation tool; for a calendar slot, it calls the event creation tool.
+- If the tool call is visible, **first dogfooding** can happen immediately: an actual issue/event appears in the service.
+- Do not create new action commands such as `tm-issues create`; that would revive the discarded abstraction (Option B).
 
 ---
 
-## 안 하는 것 / 경계
+## Non-Goals / Boundaries
 
-- 토큰 발급·동의 클릭을 대신하지 않는다 — 보안 경계(사람 몫).
-- 공식 제공처 식별을 무인 추측으로 확정하지 않는다 — 사람이 고른다(보안 게이트).
-- 평문 토큰을 stdout·로그·세션로그·config 어디에도 출력하지 않는다.
-- 동작(이슈 만들기·일정 추가 등)을 직접 실행하거나 래핑하지 않는다 — 동작은 AI가 등록된 벤더 MCP 도구를 직접 호출한다.
-- 동작 CLI/래퍼(`tm-issues create` 류)를 만들지 않는다 — B안(역할 추상화)의 부활이라 폐기.
-- 후속 멤버 경로에서 provider 를 재선택하지 않는다 — config 선언을 읽는다(교체는 직접 수정 + 팀 PR 합의).
-- 검증·자가수리는 `doctor`(로드맵) 몫. 연결 직후 유효 ping 정도까지만.
-- 첫 등록자 경로의 **provider 선언(config)·가져온 공식 MCP의 커밋/푸시**는 등록기 흐름의 정상 단계다(팀 공유 선언). 사용자 코드 레포에 대한 임의 커밋·PR 은 하지 않는다.
+- Do not perform token issuance or consent clicks on the user's behalf; that is a security boundary owned by the human.
+- Do not confirm the official provider through unattended guesswork; the human chooses it (security gate).
+- Do not print plaintext tokens anywhere: stdout, logs, session logs, or config.
+- Do not directly execute or wrap actions such as creating issues or adding events; actions are performed by the AI directly calling the registered vendor MCP tools.
+- Do not create action CLIs/wrappers such as `tm-issues create`; that would revive Option B (role abstraction), which was discarded.
+- Do not reselect the provider on the follow-up-member path; read the config declaration. Replacement requires direct editing plus team agreement through a PR.
+- Validation and self-repair belong to `doctor` (roadmap). Immediately after connection, do no more than a basic validity ping.
+- On the first-registrar path, **declaring the provider in config and committing/pushing the imported official MCP** are normal registrar-flow steps (team-shared declaration). Do not make arbitrary commits or PRs to the user's code repository.
 
 ## Common Mistakes
 
-| 실수 | 올바른 방법 |
+| Mistake | Correct approach |
 |------|------------|
-| 발급 링크·단계를 스킬 본문에 하드코딩 | `providers/<provider>.json` 의 `token_guide` 를 읽어 안내 |
-| 후속 멤버인데 provider 재선택 | config 의 `services.<역할>.provider` 를 읽고 그대로 진행 |
-| 공식 제공처를 추측해서 무인 진행 | 사람이 고른다 — 공식 식별은 보안 게이트 |
-| 공식 MCP 있는데 자작부터 | 공식 우선 — 자작은 공식 레포 없을 때만의 대안 |
-| 자작 MCP에 역할 통일 동사 노출 | 벤더 API 도구를 그대로 노출 — 역할 추상화는 폐기(B안) |
-| 동작 CLI(`tm-issues create`)를 만듦 | 동작은 AI가 벤더 MCP 도구 직접 호출 — 래퍼 금지(A안) |
-| 팀 scope 면 도입자 1회로 끝난다고 안내 | v0.2 는 각자 입력 — 팀 scope 도 각 멤버가 자기 토큰 입력 |
-| 토큰을 config·세션로그에 기록 | 토큰은 금고(0600)에, 인스턴스 값만 config 에 |
-| 금고를 동기화 폴더에 둬도 된다고 안내 | 평문이라 동기화 폴더 금지 — 0600 + git 미추적이 방어선 |
-| 빈 슬롯을 에러로 취급 | 빈 슬롯 = 1급 시민. 첫 등록자가 provider 골라 채우면 재배선으로 활성 |
-| 도구명·서비스명 직표기 | 역할 어휘(issues/chat/docs/calendar)로만 말한다 |
+| Hardcoding issuance links or steps in the skill body | Read `token_guide` from `providers/<provider>.json` and guide from that data |
+| Reselecting the provider as a follow-up member | Read config at `services.<역할>.provider` and continue with it |
+| Guessing the official provider and continuing unattended | The human chooses; official identification is a security gate |
+| Building custom first when an official MCP exists | Official first; custom is only the fallback when no official repo exists |
+| Exposing unified role verbs in a custom MCP | Expose vendor API tools as-is; role abstraction was discarded (Option B) |
+| Creating an action CLI such as `tm-issues create` | Actions are direct AI calls to vendor MCP tools; wrappers are forbidden (Option A) |
+| Saying team scope means the introducer enters the token once | v0.2 requires individual entry; even team scope means each member enters their own token |
+| Recording tokens in config or session logs | Tokens go in the vault (0600); only instance values go in config |
+| Saying the vault may be placed in a sync folder | It is plaintext, so sync folders are forbidden; 0600 + not tracked by git is the defense line |
+| Treating an empty slot as an error | Empty slots are first-class. The first registrar chooses a provider, fills it, and rewiring activates it |
+| Naming concrete tools or services directly | Speak only in role vocabulary (issues/chat/docs/calendar) |
 
 ---
-> 발견: 이 스킬은 AGENTS.md / CLAUDE.md 의 포인터로 찾는다(tm-onboard 와 동일 방식). 동작·데이터 근거는 `providers/<name>.json`(연결 데이터)·`infra/credentials.py`(금고)·`docs/spec/skills.md §5.4.1`(등록기 흐름·A안 기준)·`internals.md §2.8`(install-mcp 의무) 확인.
+> Discovery: This skill is found through pointers in AGENTS.md / CLAUDE.md (same as tm-onboard). For action and data grounding, check `providers/<name>.json` (connection data), `infra/credentials.py` (vault), `docs/spec/skills.md §5.4.1` (registrar flow and Option A baseline), and `internals.md §2.8` (install-mcp requirement).
 </content>
 </invoke>

@@ -1,120 +1,139 @@
 ---
 name: tm-contribute
-description: Use when the user wants to report a tm-mode product bug or improvement to the upstream repo (T-Gates/tm-mode) as a GitHub issue — diagnosing first whether it is a real upstream bug or the instance's own local breakage (avoids false issues). Triggers on "본레포에 올려", "이슈로 올려", "tm-mode에 기여", "버그 신고", "contribute", "업스트림에 알려".
+description: Use when the user wants to report a tm-mode product bug or improvement to the upstream repo (T-Gates/tm-mode) as a GitHub issue — diagnosing first whether it is a real upstream bug or the instance's own local breakage (avoids false issues). Triggers on "본레포에 올려", "이슈로 올려", "tm-mode에 기여", "버그 신고", "contribute", "업스트림에 알려", "report to upstream", "file an issue", "contribute to tm-mode", "report a bug".
 ---
 
-# tm-contribute — tm-mode 본레포 기여 (이슈 제출)
+# tm-contribute — Contribute to the tm-mode upstream repo (issue submission)
 
 ## Overview
 
-인스턴스(이 팀)에서 tm-mode 를 쓰다 발견한 **제품(infra/) 문제·개선**을 본레포
-`T-Gates/tm-mode` 에 **GitHub 이슈로 제출**한다. 코드를 직접 PR 하지 않는다 —
-인스턴스 팀은 권한·충돌 없이 "이런 문제 + 원인 + 우리가 한 수정"을 던지고,
-본레포 메인테이너가 판단해 정식 반영한다.
+Submit **product (infra/) problems or improvements** found while this instance
+(this team) uses tm-mode to the upstream repo `T-Gates/tm-mode` as a
+**GitHub issue**. Do not open a code PR directly — the instance team reports
+"this problem + cause + our local fix" without permission or merge conflicts,
+and the upstream maintainers decide whether and how to officially apply it.
 
-**핵심 차별점**: 단순 이슈 제출이 아니라 **"진짜 본레포 문제인지 선별"**한다.
-인스턴스가 자기 환경을 망가뜨린 걸 본레포 버그로 오인해 헛이슈를 던지는 걸 막는다.
+**Key distinction**: this is not just issue submission. It **filters whether the
+problem is truly an upstream repo problem**. It prevents false issues caused by
+mistaking the instance's own broken local environment for an upstream bug.
 
 ## When to Use
 
 - "이거 본레포에 올려", "이슈로 올려", "tm-mode 에 기여", "버그 신고", "업스트림에 알려"
-- tm-mode **자체(infra/)** 의 버그·개선을 발견했을 때
-  (memory/ 팀 데이터 문제는 대상 아님 — 그건 우리 팀 안에서 해결)
+- "report to upstream", "file an issue", "contribute to tm-mode", "report a bug"
+- When a bug or improvement is found in tm-mode **itself (infra/)**
+  (`memory/` team data issues are out of scope — resolve those inside this team)
 
-## 0. 무엇을 기여하나 — 대화 맥락에서 정리
+## 0. What to contribute — summarize from the conversation context
 
-지금까지의 대화·작업에서 다음을 뽑는다(부족하면 사용자에게 묻는다):
+Extract the following from the conversation and work so far (ask the user if
+anything is missing):
 
-- **현상**: 무슨 일이 일어났나 (에러·오작동·불편)
-- **원인**: 분석했으면 적고, 안 했으면 "미파악"으로 둔다 — **추측 금지**
-- **재현/맥락**: 어떤 작업 중이었나, 환경(에이전트·OS·인스턴스), 재현 절차
+- **Symptom**: what happened (error, malfunction, inconvenience)
+- **Cause**: if analyzed, record it; if not, leave it as "unknown" — **do not guess**
+- **Reproduction/context**: what task was underway, environment (agent, OS,
+  instance), and reproduction steps
 
-## 1. ★ 본레포 대조 진단 (핵심 — 헛이슈 방지)
+## 1. ★ Compare against upstream (core step — avoid false issues)
 
-이슈를 올리기 **전에**, 문제가 본레포 탓인지 인스턴스 탓인지 가른다.
+**Before** filing an issue, determine whether the problem comes from upstream or
+from this instance.
 
 ```bash
-git -C <팀루트> fetch upstream                  # 본레포 최신 받기
-git -C <팀루트> diff upstream/main -- infra/     # 인스턴스가 로컬에서 바꾼 infra
+git -C <팀루트> fetch upstream                  # Fetch latest upstream
+git -C <팀루트> diff upstream/main -- infra/     # Local infra changes made by the instance
 ```
 
-판정:
+Decision:
 
-| 관측 | 판정 | 조치 |
+| Observation | Decision | Action |
 |------|------|------|
-| 문제 코드가 `upstream/main` 원본 그대로 (인스턴스가 안 건드림) | **본레포 버그** | 2단계로 진행 |
-| 문제가 `upstream/main` 최신에서도 재현됨 | **본레포 버그** | 2단계로 진행 |
-| 인스턴스가 `infra/` 를 로컬 수정해서 깨진 것 | **인스턴스 탓** | `tm on`(sync) 권고하고 **중단** |
+| The problem code is identical to the original in `upstream/main` (the instance did not touch it) | **Upstream bug** | Continue to step 2 |
+| The problem also reproduces on the latest `upstream/main` | **Upstream bug** | Continue to step 2 |
+| The instance broke it through local changes to `infra/` | **Instance fault** | Recommend `tm on` (sync) and **stop** |
 
-- 문제 코드를 본레포 원본과 직접 대조한다: `git -C <팀루트> show upstream/main:infra/<파일>`.
-- **판정 근거를 사용자에게 제시하고 동의를 받은 뒤** 진행한다
-  (예: "이 코드가 upstream 원본에도 그대로 있어서 본레포 버그로 보입니다 — 진행할까요?").
-- 인스턴스 탓이면 이슈를 올리지 않고 sync 를 권고한다 — 이게 이 스킬의 존재 이유다.
+- Compare the problem code directly with the upstream original:
+  `git -C <팀루트> show upstream/main:infra/<파일>`.
+- **Present the decision evidence to the user in the user's language and get
+  consent before proceeding**
+  (example: "This code is also present unchanged in upstream, so it appears to
+  be an upstream bug — should I proceed?").
+- If it is the instance's fault, do not file an issue; recommend sync instead.
+  This is the reason this skill exists.
 
-## 2. 이슈 초안 작성 — 본레포 템플릿이 단일 소스
+## 2. Draft the issue — the upstream template is the single source
 
-**본레포의 이슈 템플릿을 먼저 읽고 그 구조대로 쓴다** (임의 형식 금지):
+**Read the upstream repo's issue template first and use that structure** (do not
+invent a format):
 
 ```bash
-git -C <팀루트> show upstream/main:.github/ISSUE_TEMPLATE/bug_report.yml       # 버그
-git -C <팀루트> show upstream/main:.github/ISSUE_TEMPLATE/feature_request.yml  # 개선 제안
+git -C <팀루트> show upstream/main:.github/ISSUE_TEMPLATE/bug_report.yml       # Bug
+git -C <팀루트> show upstream/main:.github/ISSUE_TEMPLATE/feature_request.yml  # Feature request
 ```
 
-템플릿에서 가져올 것: **제목 접두**(버그 `[Bug] ` / 제안 `[Feature] `), **라벨**(`bug` / `enhancement`),
-**본문 필드 구조**. 현재 bug_report 기준 필드(템플릿이 바뀌면 템플릿이 우선):
+Use these from the template: **title prefix** (bug `[Bug] ` / feature request
+`[Feature] `), **label** (`bug` / `enhancement`), and **body field structure**.
+Current `bug_report` fields (if the template changes, the template wins):
 
 ```
-제목: [Bug] <한 줄 요약 — 무엇이 잘못되나>
+Title: [Bug] <one-line summary — what is wrong>
 
-### 환경
-에이전트(Claude Code/Codex)·OS·Python·tm-mode 버전/커밋
+### Environment
+Agent (Claude Code/Codex), OS, Python, tm-mode version/commit
 
-### 현상
-무슨 일이 일어났는지 구체적으로 (에러 메시지·로그 원문).
+### Symptom
+Describe exactly what happened (raw error message/log text).
 
-### 재현 절차
-1) … 2) … 3) …
+### Reproduction steps
+1) ... 2) ... 3) ...
 
-### 기대 동작 / 실제 동작
-(각각 별도 섹션으로)
+### Expected behavior / actual behavior
+(Use separate sections for each.)
 
-### 원인 / 진단 근거
-분석했으면 코드 라인 근거와 함께. 미파악이면 "미파악"이라고 정직하게.
-1단계의 upstream 대조 결과(로컬 수정 여부)를 함께 적는다.
+### Cause / diagnostic evidence
+If analyzed, include code-line evidence. If unknown, honestly write "unknown".
+Also include the upstream comparison result from step 1 (whether there were local
+changes).
 
-### 적용한 수정 (선택)
-로컬에서 고쳤으면 1단계의 git diff 를 다듬어 첨부 / 안 고쳤으면 생략.
+### Applied fix (optional)
+If fixed locally, clean up and attach the git diff from step 1; otherwise omit.
 ```
 
-## 3. 사람 확인 게이트 (필수)
+## 3. Human confirmation gate (required)
 
-이슈는 **외부 공개**다. 제출 전 초안 **전문**을 사용자에게 보이고 승인을 받는다.
-승인 없이 제출하지 않는다.
+Issues are **public externally**. Before submitting, show the user the **full
+draft** in the user's language and get approval. Do not submit without approval.
 
-## 4. gh 로 이슈 생성
+## 4. Create the issue with gh
 
-> ⚠️ `gh issue create --body` 는 **yml 이슈 템플릿을 적용하지 않는다**(웹 폼 전용) —
-> §2에서 템플릿대로 맞춘 제목 접두·본문 구조를 그대로 쓰고, **라벨을 직접 단다**.
+> ⚠️ `gh issue create --body` **does not apply yml issue templates** (they are
+> for the web form only) — use the title prefix and body structure matched to
+> the template in §2, and **set the label manually**.
 
 ```bash
 gh issue create --repo T-Gates/tm-mode \
   --title "[Bug] <제목>" --label bug --body "<§2 템플릿 구조의 본문>"
 ```
 
-생성된 이슈 URL 을 사용자에게 보고한다.
+Report the created issue URL to the user in the user's language.
 
-## 안 하는 것 / 경계
+## Non-goals / Boundaries
 
-- **코드 직접 PR 안 함** — 이슈만 올린다. 코드 반영은 본레포 메인테이너 몫.
-- **진단 없이 제출 안 함** — 인스턴스 탓(로컬 오염)을 본레포 버그로 신고하면 헛이슈.
-- **memory/(팀 데이터) 문제는 대상 아님** — infra/(제품) 만.
-- 중복 이슈 검색은 v2 (지금은 제출 전 사람이 판단).
+- **Do not open a code PR directly** — only file an issue. Applying code is the
+  upstream maintainers' responsibility.
+- **Do not submit without diagnosis** — reporting instance fault (local
+  contamination) as an upstream bug creates a false issue.
+- **`memory/` (team data) issues are out of scope** — only `infra/` (product).
+- Duplicate issue search is v2 (for now, the human decides before submission).
 
 ## Common Mistakes
 
-- 진단을 생략하고 로컬 오염을 본레포 버그로 오인 신고 → 헛이슈.
-- "안 됨"만 적고 현상·원인·맥락·환경을 빠뜨림 → 본레포가 재현 못 함.
-- 추측한 원인을 사실처럼 단정 → "미파악"으로 정직하게 둔다.
-- **본레포 이슈 템플릿(.github/ISSUE_TEMPLATE/)을 안 읽고 임의 형식으로 제출** →
-  제목 접두([Bug]/[Feature])·라벨·필드 구조가 어긋나 메인테이너가 재작성하게 된다.
-  gh CLI 는 yml 템플릿을 자동 적용하지 않는다는 점을 잊지 말 것(§2·§4).
+- Skipping diagnosis and misreporting local contamination as an upstream bug →
+  false issue.
+- Writing only "doesn't work" and omitting symptom, cause, context, and
+  environment → upstream cannot reproduce it.
+- Stating a guessed cause as fact → honestly leave it as "unknown".
+- **Submitting in an arbitrary format without reading the upstream issue
+  templates (`.github/ISSUE_TEMPLATE/`)** → title prefix ([Bug]/[Feature]),
+  label, and field structure drift, forcing maintainers to rewrite it.
+  Remember that the gh CLI does not automatically apply yml templates (§2, §4).

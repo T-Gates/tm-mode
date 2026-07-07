@@ -1,58 +1,61 @@
 <!--
-  팀모드 가치 — 단일 소스.
-  tm-onboard 스킬이 이 파일을 읽고, 사람·맥락(새 팀 창립 / 기존 팀 합류, 직군)에 맞게
-  **사람 말로** 전한다. 그대로 낭독하지 말 것 — 요점을 전달자의 말로, 상황에 맞는 것만.
-  (가치 "문구"는 팀/창업자가 자유롭게 다듬는다. 스킬은 절차만, 내용은 여기.)
+  tm-mode value — single source.
+  The tm-onboard skill reads this file and conveys it according to the person and context
+  (new team creation / joining an existing team, role) in the user's language,
+  **in human words**. Do not recite it verbatim — deliver the points in the speaker's words,
+  and only what fits the situation.
+  (The team/founder may freely refine the value "wording." The skill owns only the procedure;
+  the content lives here.)
 -->
 
-# tm-mode는 무엇을 해주는가
+# What tm-mode does
 
-## 한 줄로
-tm-mode는 네가 이미 쓰는 **Claude·Codex에 "팀 모드"를 켜는 것**이다 — **방금 한 줄로 끝낸 그 설치가 전부다.** 새 도구도, 새 대시보드도, 따로 배울 것도 없다. 쓰던 에이전트가 이제 **팀을 안다.**
+## In one line
+tm-mode **turns on "team mode" in the Claude and Codex you already use** — **that one-line install you just finished is all of it.** There is no new tool, no new dashboard, and nothing separate to learn. The agent you already use now **knows the team.**
 
-그래서 팀의 **기록과 열람이 사람이 아니라 에이전트에게** 넘어간다 — 혼자 빠르게 일해도 팀 맥락이 자동으로 흐르고 쌓인다.
+That moves the team's **recording and reading from people to agents** — even when someone works fast alone, team context automatically flows and accumulates.
 
-## 왜 — AI 네이티브에게는 선택이 아니라 인프라
-AI 에이전트로 일하면 개인은 폭발적으로 빨라진다. 그런데 **바로 그래서 팀은 더 깜깜해진다.**
+## Why — for AI-native teams, this is infrastructure, not an option
+When people work with AI agents, individuals get explosively faster. But **that is exactly why the team gets more opaque.**
 
-- 개인이 빠를수록 맥락이 더 빨리·더 많이 개인의 세션에 갇힌다 → *"빠른 개인, 깜깜한 팀"* 역설이 **AI 네이티브 팀에서 가장 극심**하다.
-- 게다가 에이전트는 맥락을 먹어야 움직인다 → 매 세션 에이전트에 팀 맥락을 손으로 떠먹이는 비용이 끝없이 든다.
+- The faster individuals move, the faster and more deeply context gets trapped inside personal sessions -> the *"fast individuals, opaque team"* paradox is **most severe in AI-native teams**.
+- On top of that, agents need context to work -> every session creates an endless cost of hand-feeding team context to the agent.
 
-tm-mode는 이 둘을 동시에 푼다. **AI를 안 쓰는 팀에겐 "있으면 좋은" 것이지만, AI 네이티브 팀에겐 "없으면 안 되는" 인프라다.**
+tm-mode solves both at once. **For teams that do not use AI, it is "nice to have"; for AI-native teams, it is infrastructure they cannot do without.**
 
-> 왜 Slack·Notion·위키가 아니라? — 그것들은 *사람이 쓰고 사람이 읽는다.* 팀모드는 양쪽 다 **에이전트가** 한다 → 사람의 추가 노동 0.
+> Why not Slack, Notion, or a wiki? — people write those, and people read those. In tm-mode, **agents** do both sides -> zero extra human labor.
 
-## 무엇을 해주나
+## What it does
 
-### 1. 팀 맥락 자동 주입
-- 전 — 일 시작할 때마다 "쟤 지금 뭐 하지?"를 묻거나, 모른 채 달린다.
-- 후 — 세션을 열면 *팀이 지금 뭘 하고 있는지*가 자동으로 떠오른다. 시작부터 팀 위에 선다.
+### 1. Automatic team context injection
+- Before — every time work starts, people ask "What is that person doing right now?" or move ahead without knowing.
+- After — when a session opens, *what the team is doing right now* comes up automatically. You start on top of the team context.
 
-### 2. 세션로그 자동 기록
-- 전 — "오늘 뭐 했어?"를 정리해 보고하고, 회의로 맞춘다.
-- 후 — 작업이 끝나면 그대로 팀 공유 로그가 된다. 따로 말하지 않아도 팀이 안다 — 보고 비용 0.
+### 2. Automatic session-log recording
+- Before — people summarize and report "What did you do today?" and align in meetings.
+- After — when work ends, it becomes a shared team log as-is. The team knows without anyone separately saying it — zero reporting cost.
 
-### 3. 팀 메모리 공유
-- 전 — 한 명이 푼 문제를 다음 사람이 또 삽질한다.
-- 후 — 노하우·결정·삽질이 팀 메모리베이스에 쌓이고 검색된다. 한 번 푼 건 팀의 자산.
+### 3. Shared team memory
+- Before — the next person struggles through a problem someone else already solved.
+- After — know-how, decisions, and hard-won lessons accumulate in the team memory base and become searchable. What was solved once becomes a team asset.
 
-### 4. 바로 꺼내 쓰는 팀 스킬 — `/tm`
-- 팀모드는 쌓인 **세션로그·메모리를 활용하는 스킬들**을 기본으로 들고 온다 — 팀 맥락 조회, 팀 메모리 검색·추가, 팀 커스텀, 서비스 연결.
-- 팀모드를 켜면 **`/tm` 한 번**으로 이 스킬들을 한자리에서 꺼낸다. 명령어를 외울 필요 없이, 쌓인 팀 데이터가 곧장 지금 작업에 붙는다.
+### 4. Team skills ready to use — `/tm`
+- tm-mode brings a default set of **skills that use accumulated session logs and memory** — checking team context, searching and adding team memory, customizing the team, and connecting services.
+- Once tm-mode is on, **one `/tm`** brings those skills into one place. There is no need to memorize commands; the accumulated team data attaches directly to the work at hand.
 
-### 5. 자유로운 커스터마이징 — 스킬·팀 정체성
-- 전 — 각자 자기 에이전트 설정을 따로 만지고, 좋은 일하는 법이 개인 머리에만 머문다.
-- 후 — 팀이 쓸 스킬(작업 방식·절차)을 **한 곳에 정의하면 Claude·Codex 양쪽에 자동 배포**된다. 팀원은 원하는 스킬만 골라 켠다. **팀의 일하는 법이 코드처럼 공유·버전관리**된다 — 합류자도 첫날 팀의 방식을 그대로 물려받는다.
-- **유틸 스킬은 골라 쓴다** — 팀 공통(base) 스킬은 자동 배포되고, 그 밖의 유틸 스킬은 `tm-customize`의 `util`(추가·제거·목록)로 **각자 켜고 끈다.** 강제 0, 각자 필요한 것만 가볍게.
-- 팀 **정체성도 자유롭게** — 배너·인사말 같은 팀색을 `tm-customize`로 입힌다. 정해진 틀이 아니라, tm-mode를 **너희 팀에 맞게 빚는다.**
+### 5. Free customization — skills and team identity
+- Before — everyone tweaks their own agent settings separately, and better ways of working stay in individual heads.
+- After — when the team defines the skills it will use (work methods and procedures) **in one place, they are automatically distributed to both Claude and Codex**. Team members choose and enable only the skills they want. **The team's way of working is shared and versioned like code** — even joiners inherit the team's way of working on day one.
+- **Utility skills are opt-in** — shared team (base) skills are distributed automatically, and other utility skills are **enabled and disabled individually** through `tm-customize`'s `util` (add, remove, list). Zero coercion; each person keeps only what they need, lightly.
+- Team **identity is flexible too** — apply the team's color, such as banners and greetings, with `tm-customize`. This is not a fixed mold; shape tm-mode **to fit your team.**
 
-### 6. 팀모드 전환 — 켜고 끄기
-- tm-mode는 늘 켜져 있지 않다. `tm on`으로 **켜면** 팀 맥락·자동 기록 위에서 일하고, `tm off`로 **끄면** 개인 작업으로 돌아간다.
-- *"지금부터 팀의 일을 한다"*를 명시적으로 켜는 스위치다. 팀 일과 개인 일이 섞이지 않고, 팀 메모리엔 팀 작업만 남는다. (tm-mode = **Turn your team mode on.**)
+### 6. Team-mode switching — on and off
+- tm-mode is not always on. When you **turn it on** with `tm on`, you work on top of team context and automatic recording; when you **turn it off** with `tm off`, you return to personal work.
+- It is the switch that explicitly turns on *"I am doing team work from now on."* Team work and personal work do not mix, and only team work remains in team memory. (tm-mode = **Turn your team mode on.**)
 
-## 전달 톤 (가이드)
-- **듣는 사람은 방금 설치(`tm-mode init`/`tm-mode join`)를 끝냈다.** 설치 *방법*을 안내하지 말 것 — "방금 그 한 줄이 전부였다"로 가볍게 짚고 곧장 가치로.
-- 과장·세일즈 금지. 담백하게 "이게 **너한테** 뭘 해주는지".
-- 상대가 **AI 네이티브**면 "왜 — 없으면 안 되는 인프라"를 앞세운다(역설 + 맥락 떠먹이는 비용).
-- **새로 만든 팀**이면: "지금은 비어 있지만 — **지금부터** 쌓입니다." / **합류한 팀**이면: "이미 쌓인 팀 맥락 위에서 시작합니다."
-- 여섯 가지를 다 읊지 말고, 그 사람 상황에 맞는 둘셋을 또렷이. 길게 늘이지 말 것.
+## Delivery tone (guide)
+- **The listener has just finished installation (`tm-mode init`/`tm-mode join`).** Do not explain the installation *method* — lightly note, in the user's language, that "that one line just now was all of it," then go straight to the value.
+- No exaggeration or sales pitch. Plainly explain "what this does **for you**."
+- If the listener is **AI-native**, lead with "why — infrastructure you cannot do without" (the paradox + the cost of hand-feeding context).
+- For a **newly created team**: say, in the user's language, "It is empty now — but it accumulates **from now on**." / For a **team the person has joined**: say, in the user's language, "You start on top of already accumulated team context."
+- Do not recite all six items. Pick two or three that fit the person's situation and make them clear. Do not drag it out.
