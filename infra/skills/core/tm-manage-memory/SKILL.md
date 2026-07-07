@@ -1,211 +1,216 @@
 ---
 name: tm-manage-memory
-description: Use when adding, updating, or deleting memory in the team memory base. Triggers on "메모리 추가해", "메모리 수정", "메모리 삭제", "KB 업데이트", "메모리에 저장".
+description: Use when adding, updating, or deleting memory in the team memory base. Triggers on "메모리 추가해", "메모리 수정", "메모리 삭제", "KB 업데이트", "메모리에 저장", "add memory", "update memory", "delete memory", "update the KB", "save this to memory".
 ---
 
-# tm-manage-memory — 팀 메모리 베이스 CRUD
+# tm-manage-memory — Team Memory Base CRUD
 
 ## Overview
 
-`memory/` 하위 메모리 파일의 추가/수정/삭제를 처리한다.
-**판단은 이 스킬이, 기계는 엔진 `memory` 동사가** 담당한다(구현 깊이 B).
-대량·외부 문서(docs 슬롯) import 는 `tm-import-memory` 소관 — 이 스킬은 대화 유래 단건 CRUD.
-스킬은 직접 파일을 쓰거나 INDEX를 편집하지 않는다 — 반드시 엔진 동사를 경유한다.
+Handles adding, updating, and deleting memory files under `memory/`.
+**This skill makes the judgment; the engine `memory` verb handles the mechanics**(implementation depth B).
+Bulk or external document(docs slot) imports belong to `tm-import-memory` — this skill is for one-off CRUD derived from conversation.
+The skill must not write files directly or edit INDEX. Always go through the engine verb.
 
 ## When to Use
 
-- "메모리 추가해", "KB에 저장", "메모리에 저장"
-- "~ 수정해", "~ 업데이트해" (메모리 파일 대상)
-- "~ 삭제해", "~ 지워" (메모리 파일 대상)
-- 대화에서 도출된 내용을 메모리 베이스에 반영할 때
+- "메모리 추가해", "KB에 저장", "메모리에 저장", "add memory", "save to the KB", "save this to memory"
+- "~ 수정해", "~ 업데이트해", "update ~", "edit ~" (when the target is a memory file)
+- "~ 삭제해", "~ 지워", "delete ~", "remove ~" (when the target is a memory file)
+- When content derived from the conversation should be reflected in the memory base
 
-## 대상 범위
+## Target Scope
 
-| 폴더 | 대상 | 비고 |
+| Folder | Target | Notes |
 |------|------|------|
-| `product/` | O | 제품 관련 메모리 |
-| `team/` | O | 컨벤션, 그라운드룰, 멤버 |
-| `team/decisions/` | O | 팀 결정사항 |
-| 루트 INDEX 등재 최상위 폴더 | O | 팀 전용 도메인(예: `fundraise/`) — `memory route upsert` 로 등재 후 |
-| `team/sessions/` | X | 자동 누적 (훅) |
-| `team/meeting/` | X | → tm-context |
+| `product/` | O | Product-related memory |
+| `team/` | O | Conventions, ground rules, members |
+| `team/decisions/` | O | Team decisions |
+| Top-level folders registered in the root INDEX | O | Team-specific domains(for example, `fundraise/`) — after registration with `memory route upsert` |
+| `team/sessions/` | X | Accumulated automatically(hooks) |
+| `team/meeting/` | X | -> tm-context |
 
-## 메타데이터 규약
+## Metadata Contract
 
-모든 메모리 파일에 YAML frontmatter(엔진이 자동 스탬프):
+Every memory file has YAML frontmatter(the engine stamps it automatically):
 
 ```yaml
 ---
 created_at: 2026-06-18
 updated_at: 2026-06-18
 author: bob
-weight: 🔥          # 🔥 핵심 / 📌 중요 / 📎 참고
+weight: 🔥          # 🔥 core / 📌 important / 📎 reference
 ---
 ```
 
-**weight 규약 (핵심)**:
-- `🔥 핵심`: 팀이 자주 참조하는 안정 메모리
-- `📌 중요`: 작업에 영향을 주는 정보
-- `📎 참고`: 배경 메모리 / 이력
-- **에이전트가 임의로 추측해 박지 않는다** — 반드시 사용자에게 확인.
-  사용자가 "알아서 해"라고 하면 그때만 맥락 기반 자동 추정 가능.
+**weight contract(core)**:
+- `🔥 핵심`: Stable memory the team references often
+- `📌 중요`: Information that affects work
+- `📎 참고`: Background memory / history
+- **The agent must not guess and insert this arbitrarily** — always confirm with the user.
+  Only when the user says "알아서 해" / "decide for me" may the agent infer it from context.
 
-## 절차
+## Procedure
 
-### 1. 의도 판단
+### 1. Determine Intent
 
-사용자 메시지에서 **동작**과 **대상**을 파악한다.
+Identify the **action** and **target** from the user's message.
 
-| 패턴 | 동작 |
+| Pattern | Action |
 |------|------|
-| "~에 ~추가해", "KB에 저장", 파일명 없이 내용 제공 | **추가** |
-| "~ 업데이트해", "~ 수정해", 기존 파일명 언급 + 변경 내용 | **수정** |
-| "~ 삭제해", "~ 지워" | **삭제** |
+| "~에 ~추가해", "KB에 저장", content provided without a filename | **Add** |
+| "~ 업데이트해", "~ 수정해", existing filename mentioned + change details | **Update** |
+| "~ 삭제해", "~ 지워" | **Delete** |
 
-대상이 모호하면 `memory/INDEX.md`를 읽어 폴더 목록을 제시하고 선택받는다.
+If the target is ambiguous, read `memory/INDEX.md`, present the folder list, and ask the user to choose.
 
-### 2. 폴더 라우팅 (추가 시)
+### 2. Folder Routing(when adding)
 
-INDEX.md의 폴더 설명을 대조하여 적절한 폴더를 자동 추천한다.
-
-```
-📂 이 내용은 team/decisions/ 에 넣으면 적절해 보여요.
-   맞으면 "ㅇ", 다른 폴더면 알려주세요.
-```
-
-대상 폴더는 아래 중 하나여야 한다:
-- `product/`, `team/`, `team/decisions/`, 또는 루트 INDEX 에 등재된 팀 전용 최상위 폴더
-
-### 3. 파일명 + 가중치 결정 (추가 시)
-
-파일명은 kebab-case, 내용을 요약하는 이름으로 제안 후 확인.
-가중치는 **반드시 사용자에게 물어 확정** — 추측 금지.
+Compare against the folder descriptions in INDEX.md and automatically recommend an appropriate folder.
+Respond in the user's language.
 
 ```
-📄 파일명: api-auth-flow.md
-   가중치: 📌 중요 (🔥 핵심 / 📌 중요 / 📎 참고)
-   맞으면 "ㅇ", 바꿀 게 있으면 알려주세요.
+This looks appropriate for team/decisions/.
+If that is correct, say "yes"; if another folder is better, tell me which one.
 ```
 
-### 4. 엔진 동사 호출
+The target folder must be one of:
+- `product/`, `team/`, `team/decisions/`, or a team-specific top-level folder registered in the root INDEX
 
-확인 완료 후 엔진 동사를 호출한다.
+### 3. Decide Filename + Weight(when adding)
 
-> **unlock 플래그에 대한 정직한 설명**: 엔진 `memory` 동사는 별도 프로세스 `open()` 이라
-> PreToolUse 훅 대상이 아니므로 엔진 경유 자체에는 unlock 이 필요 없다. 스킬이 직접
-> `Write`/`Edit` 도구로 `memory/` 를 건드리는 경우에만 unlock 이 필요하다 — 이 스킬은
-> 그런 경우가 없으므로 unlock 창을 열지 않는 것이 원칙이다(직접 편집 창 불필요).
-> 아래 4-0/4-2 단계는 예외적 수동 편집이 필요한 경우를 위한 참조 구현이다.
-> **정상 흐름(엔진 경유)에서는 4-0/4-2 를 실행하지 않는다.**
+Suggest a kebab-case filename that summarizes the content, then confirm it.
+The weight must **always be asked and confirmed with the user** — do not guess.
+Respond in the user's language.
 
-#### 4-0. unlock begin (시작)
+```
+Filename: api-auth-flow.md
+Weight: 📌 중요 (🔥 핵심 / 📌 중요 / 📎 참고)
+If this is correct, say "yes"; if anything should change, tell me.
+```
+
+### 4. Call the Engine Verb
+
+After confirmation is complete, call the engine verb.
+
+> **Honest explanation of the unlock flag**: The engine `memory` verb uses a separate process `open()`,
+> so it is not subject to the PreToolUse hook; going through the engine does not itself require unlock.
+> Unlock is only necessary if the skill directly touches `memory/` with the `Write`/`Edit` tools — this skill
+> never does that, so the principle is to avoid opening an unlock window(no direct-edit window needed).
+> Steps 4-0/4-2 below are reference implementations for exceptional cases that require manual editing.
+> **In the normal flow(engine path), do not run 4-0/4-2.**
+
+#### 4-0. unlock begin(start)
 
 ```bash
 python3 infra/teammode.py memory unlock begin --root .
 ```
 
-엔진이 플래그 경로 규약(root_hash + session_id, XDG/TMPDIR 폴백)을 kb-write-guard 와
-단일 소스로 처리한다 — 스킬이 경로를 손으로 재계산하지 않는다.
+The engine handles the flag path contract(root_hash + session_id, XDG/TMPDIR fallback) together with
+kb-write-guard as a single source; the skill must not manually recompute the path.
 
-세션 id 해석 순서: ① env `CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID` (Claude)
-② SessionStart 훅이 남긴 relay 파일 중 최신 (Codex — env 가 없는 세션도 동작)
-③ 둘 다 없으면 명시 에러 — 에이전트 세션 밖에서는 unlock 을 열 수 없다(fail-closed).
+Session id resolution order: ① env `CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID`(Claude)
+② latest relay file left by the SessionStart hook(Codex — also works for sessions without env)
+③ explicit error if neither exists — unlock cannot be opened outside an agent session(fail-closed).
 
-#### 4-1. 엔진 동사 호출
+#### 4-1. Call the engine verb
 
-**추가/수정:**
+**Add/update:**
 ```bash
 python3 infra/teammode.py memory write \
   --root . \
-  --folder <폴더> \
-  --filename <파일명.md> \
-  --content "<내용>" \
-  --author <현재사용자> \
-  --weight "<가중치>"
+  --folder <folder> \
+  --filename <filename.md> \
+  --content "<content>" \
+  --author <current-user> \
+  --weight "<weight>"
 ```
 
-**삭제 (삭제 전 사용자 재확인 필수):**
+**Delete(user reconfirmation required before deletion):**
 ```bash
 python3 infra/teammode.py memory delete \
   --root . \
-  --path <memory/상대경로> \
-  --author <현재사용자>
+  --path <memory/relative-path> \
+  --author <current-user>
 ```
 
-엔진이 처리하는 것(스킬이 직접 하면 안 됨):
-- frontmatter 스탬프 (created_at/updated_at/author/weight)
-- 파일 write/delete
-- INDEX.md 행 upsert/제거
-- 편집일 계산 (메타 커밋 제외한 본문 커밋 기준)
-- do_commit(paths 한정, push=False)
+What the engine handles(the skill must not do these directly):
+- frontmatter stamping(created_at/updated_at/author/weight)
+- file write/delete
+- INDEX.md row upsert/removal
+- edit date calculation(based on the body commit, excluding metadata commits)
+- do_commit(paths only, push=False)
 
-#### 4-2. unlock end (커밋 완료 후)
+#### 4-2. unlock end(after commit completes)
 
-엔진 동사가 정상 완료(커밋 포함)된 **직후** 편집 창을 닫는다(멱등 — 이미 없으면 무시).
+Immediately after the engine verb completes successfully(including commit), close the edit window(idempotent — ignore if already absent).
 
 ```bash
 python3 infra/teammode.py memory unlock end --root .
 ```
 
-> 비정상 종료(오류·인터럽트)로 플래그가 잔류해도 TTL(5분) 이후 자동 만료된다.
+> If a flag remains after abnormal termination(error/interruption), it expires automatically after the TTL(5 minutes).
 
-### 5. 양방향 백링크 (엔진 자동 — 확인만)
+### 5. Bidirectional Backlinks(engine automatic — verify only)
 
-엔진이 memory 변경 직후 **기계적으로** 양방향 링크를 건다(스킬은 아무것도 안 함):
+Immediately after the memory change, the engine **mechanically** creates bidirectional links(the skill does nothing):
 
-- **세션로그 → 문서**: 현재 author 의 오늘 세션로그에 `📝 생성/✏️ 수정/🗑️ 삭제: [[<경로>]]` 한 줄 append.
-- **문서 → 세션로그**: 쓰는 문서 frontmatter 에 `session: team/sessions/<author>/<작업일>.md` 필드 추가.
+- **Session log -> document**: append one line to today's session log for the current author: `📝 생성/✏️ 수정/🗑️ 삭제: [[<경로>]]`.
+- **Document -> session log**: add `session: team/sessions/<author>/<work-date>.md` to the written document's frontmatter.
 
-멱등(재수정 시 중복 줄·필드 없음)·비차단(백링크 실패해도 memory 변경은 유지). 스킬은 결과만 확인한다.
+Idempotent(no duplicate lines/fields on repeated edits) and non-blocking(memory change remains even if backlinking fails). The skill only checks the result.
 
-### 6. chat 통지 (chat 슬롯 연결 시)
+### 6. Chat Notification(when the chat slot is connected)
 
-memory 변경이 **정상 완료된 후**, `team.config.json` 의 `services.chat` 가 연결돼 있으면
-**AI 가 chat 슬롯의 벤더 MCP 도구를 직접 호출**해 팀에 통지한다(A안 — 엔진은 MCP 호출 안 함).
+After the memory change **completes successfully**, if `services.chat` in `team.config.json` is connected,
+**the AI directly calls the vendor MCP tool for the chat slot** and notifies the team(option A — the engine does not call MCP).
+When reporting the notification outcome to the user, respond in the user's language.
 
-- 엔진은 통지용 한 줄 요약을 stdout 에 `[chat-notify] memory 추가/수정/삭제: <경로> · weight=… · author=… · 요약=…` 형태로 출력한다.
-  AI 는 이 줄을 받아 통지 메시지(작업·파일경로·weight·작성자·첫줄 요약)를 구성한다.
-- 모든 변경(추가/수정/삭제)을 통지한다(필터 없음).
-- chat 슬롯이 연결돼 있지 않으면(`services.chat` 없음) 통지를 건너뛴다.
-- **비차단(advisory)**: 통지 호출이 실패해도 memory 변경은 그대로 유지한다 — 오류만 보고하고 멈추지 않는다.
+- The engine outputs a one-line notification summary to stdout in this form: `[chat-notify] memory 추가/수정/삭제: <경로> · weight=… · author=… · 요약=…`.
+  The AI uses that line to compose the notification message(action, file path, weight, author, first-line summary).
+- Notify for every change(add/update/delete); there is no filter.
+- If the chat slot is not connected(no `services.chat`), skip notification.
+- **Non-blocking(advisory)**: if the notification call fails, keep the memory change as-is — report only the error and do not stop.
 
-> chat 슬롯의 실제 벤더 MCP 도구명·채널 지정은 `tm-connect` 가 연결할 때 config 에 기록된 provider 를 따른다.
+> The actual vendor MCP tool name and channel selection for the chat slot follow the provider recorded in config when `tm-connect` connected it.
 
-### 7. 완료 보고
+### 7. Completion Report
+
+Respond in the user's language.
 
 ```
-✅ team/decisions/api-auth-decision.md 추가 완료
-   INDEX 갱신 · 커밋 완료 (push는 별도)
-   세션로그 백링크 · chat 통지 완료
+Added team/decisions/api-auth-decision.md
+INDEX updated · commit completed(push is separate)
+Session-log backlink · chat notification completed
 ```
 
-## 새 최상위 폴더 등재 — 루트 라우팅 맵 (route)
+## Registering a New Top-Level Folder — Root Routing Map(route)
 
-루트 `memory/INDEX.md`(2열 라우팅 맵)는 세션마다 주입되는 단일 진입점 —
-**새 최상위 폴더를 만들면 여기 등재가 필수**다. 등재/해제도 엔진 동사를 경유한다:
+The root `memory/INDEX.md`(2-column routing map) is the single entry point injected into every session —
+**when a new top-level folder is created, registering it here is required**. Registration/removal also goes through engine verbs:
 
 ```bash
 python3 infra/teammode.py memory route upsert \
-  --root . --path fundraise/ --desc "투자유치 리서치" --author <현재사용자>
-# 해제: memory route remove --root . --path fundraise/ --author <현재사용자>
+  --root . --path fundraise/ --desc "투자유치 리서치" --author <current-user>
+# Remove: memory route remove --root . --path fundraise/ --author <current-user>
 ```
 
-- `memory write` 가 미등재 폴더를 감지하면 `[hint] '...'가 루트 INDEX에 미등재 — 등록: ...`
-  한 줄을 출력한다 — 그 명령을 그대로 따라 하면 된다(`--desc` 한 줄만 사용자와 확정).
-- `--desc` 는 추측 금지 — 라우팅 맵 품질이 매 세션 주입 품질이므로 사용자에게 확인한다.
+- If `memory write` detects an unregistered folder, it prints one line like `[hint] '...'가 루트 INDEX에 미등재 — 등록: ...`
+  Follow that command as-is(confirm only the one-line `--desc` with the user).
+- Do not guess `--desc` — routing-map quality determines the quality of every session injection, so confirm with the user.
 
-## 안 하는 것 (L1)
+## Non-Goals(L1)
 
-- verification-sources 매니페스트 등록 (선택, 후속)
-- 세션 로그 관리 (→ 훅 자동)
-- 회의록 관리 (→ tm-context)
-- 메모리 읽기/로드 (→ tm-memory)
-- 이슈 트래커 / 문서 도구 / 일정 관리 API 호출
-- 파일 직접 편집 (반드시 memory 동사 경유)
+- Registering a verification-sources manifest(optional, follow-up)
+- Session log management(-> automatic hooks)
+- Meeting note management(-> tm-context)
+- Reading/loading memory(-> tm-memory)
+- Calling issue tracker / document tool / calendar management APIs
+- Direct file editing(always go through the memory verb)
 
-## INDEX 포맷 (참고)
+## INDEX Format(reference)
 
-엔진이 자동 유지하는 형식:
+Format maintained automatically by the engine:
 
 ```
 > 가중치: 🔥 핵심 · 📌 중요 · 📎 참고
@@ -215,5 +220,5 @@ python3 infra/teammode.py memory route upsert \
 | 📌 | `memory/team/decisions/api-auth-decision.md` | API 인증 방식 결정 | 2026-06-18 |
 ```
 
-- **편집일**: 본문이 실제로 바뀐 마지막 커밋 날짜 (메타/INDEX/weight 커밋 제외)
-- tm-memory 스킬이 이 INDEX로 "무엇이 어디 있는지"를 파악한다
+- **Edit date**: last commit date on which the body actually changed(excluding meta/INDEX/weight commits)
+- The tm-memory skill uses this INDEX to understand "what exists where"

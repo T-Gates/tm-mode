@@ -39,7 +39,7 @@ def test_triggers_role_vocabulary():
     """트리거는 역할 어휘 중심 — '메모리 업로드' 필수, docs 슬롯 언급."""
     desc = _description()
     assert "메모리 업로드" in desc
-    assert "docs 슬롯" in desc
+    assert "docs slot" in desc
     assert "tm-manage-memory" in desc  # 경계 명시
 
 
@@ -47,28 +47,28 @@ def test_provider_neutral_wording():
     """본문은 provider 중립 — services.docs.provider 를 읽어 말하는 원칙 명문화."""
     text = _text()
     assert "services.docs.provider" in text, "provider 이름의 소스(config) 미명시"
-    assert "하드코딩 금지" in text
+    assert "do not hardcode" in text
     # 출처 표기는 provider placeholder — 특정 제품명 고정 표기가 아님
-    assert "(<docs provider 이름>, YYYY-MM-DD 수집)" in text
+    assert "(<docs provider name>, collected YYYY-MM-DD)" in text
 
 
 def test_limits_in_scope_section():
     """상한(20페이지·깊이 2)이 범위 파악 절에 있고, 초과 시 선택 진행."""
     text = _text()
     scope = text.split("### 1.")[1].split("### 2.")[0]
-    assert "20페이지" in scope and "깊이 2" in scope
-    assert "목록 확인 없이 진행 금지" in scope
+    assert "20 pages" in scope and "depth 2" in scope
+    assert "do not proceed without list confirmation" in scope.lower()
 
 
 def test_preview_gate_covers_weight_and_route_desc():
     """preview 단일 확인이 weight 와 route desc 승인을 겸함 + 📎 기본·🔥 금지."""
     text = _text()
     gate = text.split("### 2.")[1].split("### 3.")[0]
-    assert "preview" in text and "한 번** 확인" in gate
+    assert "preview" in text.lower() and "**one** confirmation" in gate
     assert "📎" in gate
-    assert "🔥 는 자동 제안 금지" in gate
+    assert "Never auto-propose 🔥" in gate
     assert "--desc" in gate or "desc" in gate  # route 설명까지 이 게이트에서 승인
-    assert "1:1 금지" in gate
+    assert "no 1:1" in text  # 병합 규칙은 §4(Sources)로 이동 — 규칙 존재 계약은 전문 기준
 
 
 def test_route_upsert_full_command():
@@ -85,24 +85,24 @@ def test_memory_write_via_engine_and_no_direct_edit():
     text = _text()
     save = text.split("### 4.")[1].split("### 5.")[0]
     assert "memory write" in save
-    assert "## 출처" in save
-    assert "직접 Edit/Write 하지 않는다" in save
+    assert "## Sources" in save
+    assert "directly Edit/Write" in save  # ⛔ Do not directly Edit/Write memory/
 
 
 def test_partial_rerun_merge_rule():
     """부분 재실행: 기존 파일 읽어 해당 출처만 갱신 — 전체 교체 유실 방지 규칙."""
     text = _text()
-    assert "부분 재실행" in text
-    assert "기존 파일을 먼저 읽어" in text
-    assert "출처(페이지) 부분만 갱신" in text
+    assert "Partial rerun" in text
+    assert "read the existing file first" in text
+    assert "update only the rerun source/page portion" in text
 
 
 def test_fanout_subagent_boundaries():
     """fan-out 계약: 본문은 서브에이전트만, 서브는 파일을 직접 쓰지 않음."""
     text = _text()
     fanout = text.split("### 3.")[1].split("### 4.")[0]
-    assert "서브에이전트" in fanout
-    assert "파일을 직접 쓰지 않는다" in fanout
+    assert "subagent" in fanout.lower()
+    assert "Does not write files directly" in fanout
 
 
 def test_unconnected_docs_slot_stops_at_tm_connect():
@@ -110,4 +110,4 @@ def test_unconnected_docs_slot_stops_at_tm_connect():
     text = _text()
     step0 = text.split("### 0.")[1].split("### 1.")[0]
     assert "tm-connect" in step0
-    assert "멈춘다" in step0
+    assert "**stop**" in step0

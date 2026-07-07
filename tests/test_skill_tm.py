@@ -100,7 +100,9 @@ def test_skill_md_no_push():
 def test_skill_md_has_off_confirmation():
     """OFF 절차에 사용자 확인 단계가 있어야 한다."""
     text = SKILL_MD.read_text(encoding="utf-8")
-    assert "확인" in text, "OFF 절차에 사용자 확인 요구가 없다"
+    assert "**⚠️ Confirm**" in text
+    assert "proceed only after confirmation" in text
+    assert "Do not turn it off without confirmation" in text
 
 
 # ── install_skills 포함 검증 ──
