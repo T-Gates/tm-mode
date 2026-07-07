@@ -1,12 +1,12 @@
 # tm-mode SPEC
 
-tm-mode SPEC v0.3 — 인덱스
+tm-mode SPEC v0.3 - Index
 
 spec_version: **0.3**
 
-단일 권위본은 이 폴더(`docs/spec/`)입니다.
+The single source of authority is this folder (`docs/spec/`).
 
-- [개요](00-overview.md) — §0 개요·용어·표기·버저닝.
-- [설치 · 부트스트랩](onboarding.md) — §4 설치·부트스트랩.
-- [온보딩 스킬](skills.md) — §5 tm-onboard·tm-connect.
-- [내부 규범](internals.md) — §1 메모리, §2 훅·어댑터, §3 엔진 동사, §6 conformance, §7 provider, 부록 A~D.
+- [Overview](00-overview.md) - §0 overview, terminology, notation, and versioning.
+- [Install and Bootstrap](onboarding.md) - §4 install and bootstrap.
+- [Onboarding Skills](skills.md) - §5 tm-onboard and tm-connect.
+- [Internal Norms](internals.md) - §1 memory, §2 hooks and adapters, §3 engine verbs, §6 conformance, §7 providers, appendices A-D.

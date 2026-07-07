@@ -47,7 +47,9 @@ def test_install_docs_offer_clone_and_go_path():
 def test_spec_entry_contract_updated():
     text = _read("docs/spec/onboarding.md")
     assert "clone-and-go" in text
-    assert "대화 승인" in text
+    # spec translated to English (docs/ English-first); the approval-gate anchor
+    # "대화 승인" now reads "chat approval".
+    assert "chat approval" in text
 
 
 def test_approval_dry_run_includes_yes_flag():
