@@ -1,57 +1,112 @@
+**English** | [한국어](CONTRIBUTING.ko.md)
+
 # Contributing to tm-mode
 
-> **EN:** Fork → branch → PR to `main`; run `python -m pytest -q` before submitting; stdlib-only (`dependencies = []` — no new runtime deps); commit prefixes `feat/fix/docs/chore`.
+Thanks for considering a contribution to **tm-mode** — a cross-agent team collaboration toolkit for AI coding agents (Claude Code · Codex). Start with [README.md](README.md) for what the project does and how it's laid out; this document covers how to contribute to it.
 
-tm-mode 기여를 환영합니다. 코드 PR은 누구나 보낼 수 있고, tm-mode를 쓰는 팀 인스턴스는 보통 `tm-contribute` 스킬로 이슈부터 올립니다 — 둘 다 좋은 기여입니다.
+## 1. Two contribution paths
 
-## 기여 흐름
+- **You're working inside a team instance** (a repo created from this template, e.g. via `tm-mode init`/`join`): the fastest path for a bug or improvement is the **`tm-contribute` skill** (`infra/skills/core/tm-contribute/SKILL.md`). Ask your agent to "report this upstream" — it diagnoses whether the problem is really a `tm-mode` bug (reproducible against `upstream/main`) or local instance drift, then files a GitHub issue on your behalf after you approve the draft. It does not open PRs; only issues. A team instance may also carry its own local files or directories on top of the template (extra scripts, integration servers, drafts, and so on) — those belong to that team and are never part of an upstream PR.
+- **You want to contribute code directly**: fork the product repo, `T-Gates/tm-mode` (not a team instance's own `origin` — team instances typically track this repo as a git remote named `upstream`), and follow the flow below.
 
-1. **이슈 먼저 (권장)** — 버그·개선안은 [GitHub Issues](https://github.com/T-Gates/tm-mode/issues)에 먼저 올려주세요. 방향을 미리 맞추면 PR이 헛돌지 않습니다. 팀 인스턴스에서는 `tm-contribute` 스킬이 "진짜 업스트림 버그인지 / 로컬 설정 문제인지" 진단 후 이슈를 올려줍니다.
-   - **이슈 양식은 [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/)이 단일 소스** — 버그는 `[Bug] ` 제목 접두 + `bug` 라벨 + 환경/현상/재현 절차/기대·실제 동작/원인·진단 근거, 제안은 `[Feature] ` + `enhancement`. 웹에서는 폼이 자동 적용되지만, **`gh` CLI·에이전트로 올릴 때는 yml 템플릿이 적용되지 않으므로** 템플릿 파일을 먼저 읽고 같은 제목 접두·라벨·필드 구조로 본문을 작성해주세요.
-2. **Fork → 브랜치** — 레포를 fork하고 작업 브랜치를 만듭니다 (`fix/...`, `feat/...` 등).
-3. **PR to `main`** — 본문은 [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) 양식(무엇/왜 · 변경사항 · 테스트 · 체크리스트)을 따릅니다. 웹 PR에는 자동으로 뜨지만 **`gh pr create --body` 는 템플릿을 채워주지 않으므로** 같은 구조로 직접 작성해주세요.
-4. **리뷰·머지** — 메인테이너가 리뷰 후 머지합니다. 리뷰 코멘트에는 수정 커밋으로 응답해주세요.
+## 2. File an issue first (recommended)
 
-## 코드 지도
+Before writing code, open an issue on [T-Gates/tm-mode](https://github.com/T-Gates/tm-mode/issues) so the direction is agreed before a PR goes stale. Use the issue forms:
 
-어디를 보면 되는지는 [README.md](README.md) 의 Architecture 절(영/한) — 3계층 구조·컴포넌트 지도·세션 데이터 흐름·설계 철칙·기여 시나리오별 진입점.
+- **Bug report** (`.github/ISSUE_TEMPLATE/bug_report.yml`) — scoped to `tm-mode` itself (`infra/`); problems in a team's own `memory/` data are out of scope. It asks for environment, symptom, repro steps, expected vs. actual behavior, and your diagnosis (say "not yet diagnosed" rather than guessing).
+- **Feature request** (`.github/ISSUE_TEMPLATE/feature_request.yml`) — problem/proposal/alternatives, plus a checkbox confirming the idea is implementable stdlib-only.
 
-## 개발 루프
+`.github/ISSUE_TEMPLATE/` is the single source for both forms — the title prefix (`[Bug]`/`[Feature]`), label (`bug`/`enhancement`), and field structure. The web UI applies these automatically; if you file via the `gh` CLI or an agent, read the template file first and match the same prefix, label, and fields yourself, since `gh issue create --body` doesn't render the form.
+
+## 3. Dev environment
 
 ```bash
 git clone https://github.com/<you>/tm-mode && cd tm-mode
-python -m pytest -q        # 전체 테스트 — PR 전 반드시 통과
+pip install pytest          # pytest isn't stdlib and isn't pinned by a lockfile here
+python -m pytest -q         # full suite — must pass before submitting
 ```
 
-- Python **3.9+**, 외부 실행 의존성 없음.
-- 테스트는 `tests/`에 있고, 새 동작에는 테스트를 함께 넣어주세요 (버그 수정이면 재현 테스트 먼저).
+- Python **3.9+**. The product itself has zero runtime dependencies (`dependencies = []` in `pyproject.toml`) — git/gh are host prerequisites, not pip packages.
+- The package doesn't need to be installed to develop or test: each test file manages its own `sys.path` (e.g. adding `infra/`, or `infra/hooks/` where a hook module is under test), so there's no `pip install -e .`, `uv sync`, or virtualenv step required.
+- Commands above use bare `python`, matching this repo's own CI (`.github/workflows/test.yml`) and PR template. If your machine has no `python` alias (common on a plain Homebrew/python.org install on macOS), use `python3` instead.
+- `gh` (GitHub CLI) is only needed if you're also exercising flows that create repos or issues (`tm-mode init`, `tm-contribute`).
 
-## 철칙: stdlib-only
+## 4. Repository layout
 
-`pyproject.toml`의 `dependencies = []`는 규칙입니다 — **런타임 pip 의존성을 추가하지 마세요.** git/gh는 호스트 필수도구(prerequisite)이지 pip 의존성이 아닙니다. 외부 라이브러리가 꼭 필요해 보이면 코드 대신 이슈로 먼저 논의해주세요.
+**Product code** — what an upstream PR touches:
 
-## 코드 언어 — 코드 내용은 영어로
+| Path | What it is |
+|---|---|
+| `src/teammode/cli.py` | Launcher — thin stdlib entry point shipped via pip/curl/npx (`tm-mode init`/`join`) |
+| `infra/teammode.py` | Engine — verb dispatcher (`on`/`off`/`log`/`context`/`pull`/`commit`/`update`/`issue`/`memory`/`util`) |
+| `infra/install.py` + `infra/install_lib.py` | Bootstrap — hook wiring, skill deploy, env injection; gated by `--dry-run`/`--yes` |
+| `infra/git_ops.py` | Shared git operations + sync planning |
+| `infra/agents/<name>/` | Per-agent adapters (Claude `settings.json`, Codex `config.toml`) |
+| `infra/hooks/` | Shared hooks — session-start, auto-commit, push-worker, kb-write-guard, and others |
+| `infra/skills/{base,core,util}/` | Skills in three tiers — see §6 for the activation rules |
+| `infra/mcp/` | MCP OAuth helper code supporting L2 service connections |
+| `infra/credentials.py`, `infra/i18n.py`, `infra/io_encoding.py`, `infra/providers.py`, `infra/workday.py` | Supporting engine modules |
+| `infra/guidelines.md`, `infra/guidelines.en.md` | The "team-mode operating guidelines" text injected into agent sessions (Korean/English) |
+| `infra/banners/`, `infra/migrations/`, `infra/scaffolds/` | Banner art, migration notes, and scaffold templates used when a new team repo is set up |
+| `tests/` | pytest suite, one `test_*.py` per feature/fix |
+| `conformance/check.py` | The `lint` / `verify` / `conform` checker |
+| `conformance/scenarios/*.json` | 5 golden scenarios — the executable spec `verify`/`conform` run against |
+| `docs/spec/` | **Single source of truth** for behavior (SPEC v0.3, English) |
+| `docs/BACKLOG.md`, `docs/archive/`, `docs/scenarios/` | Design backlog, archived design notes, narrative onboarding scenarios |
+| `providers/*.json` | L2 provider packs (issues/chat/docs/calendar) — data only, no code change needed to add one |
+| `npm/` | npm publish shim (`npx tm-mode`) over the pinned `cli.py` |
+| `.github/` | `CODEOWNERS`, CI workflows, PR template, issue templates |
+| `LICENSE`, `NOTICE.md` | Apache-2.0 license; `NOTICE.md` is the maintainers' running update-announcement feed, diffed against your instance on `tm on` |
+| `install.sh`, `INSTALL.md` | Human-facing curl installer and install reference |
+| `team.config.example.json` | Template for the per-instance `team.config.json`, which is generated at setup and is itself instance-local |
 
-**신규·수정 코드의 내용물(주석·docstring·테스트 코드·식별자·assert 메시지)은 영어로 작성해주세요.** 기존 한국어 주석은 해당 코드를 고칠 때 함께 영어로 옮기면 좋습니다(일괄 번역 강제 아님).
+**Instance-local** — a team's own data, never part of an upstream PR: `memory/` (that team's session logs and decisions — no product code path ever syncs or deletes it), `team.config.json`, `.teammode-active`. A team instance may also add its own local files or directories on top of the template for its own purposes; those aren't upstream code either.
 
-- **사용자에게 보이는 런타임 문구**(설치 출력·훅 주입물·CLI 메시지)는 이 정책이 아니라 **i18n(locale) 체계**를 따릅니다 — 하드코딩 언어 전환 금지.
-- 문서도 영어 기본: front-door(README 등)는 영어 기본 + 한국어 절, `docs/`(spec 포함)도 영어로 작성/이관한다. 코드블록 안 한국어(예시 config·에러 문자열)와 인용된 런타임 문자열은 그대로 둔다.
+For the full architecture map (component table, session data flow, design principles), see the "Architecture" section of [README.md](README.md).
 
-## 공개 위생 — 실환경 식별자 금지 (필수)
+## 5. Running tests and conformance checks
 
-이 레포는 공개 제품입니다. **어떤 파일에도(테스트 fixture·문서 예시·주석 포함) 실제 사람·팀·머신의 식별자를 쓰지 마세요.** 2026-07-07 공개 전 감사에서 실멤버명·홈경로·팀 인스턴스 레포가 fixture 로 다수 유입돼 전수 익명화 + 히스토리 처리를 치렀습니다 — 같은 일을 반복하지 않습니다.
+```bash
+python -m pytest -q                                                          # full test suite
+python conformance/check.py lint    --root .                                 # static: manifest / events.json shape, no engine run
+python conformance/check.py verify  --root . --engine "python infra/teammode.py"   # dynamic: run the 5 golden scenarios against our own engine
+python conformance/check.py conform --root . --engine "<some other implementation>" # same scenarios, against a third-party engine, for advisory Tier scoring
+```
 
-**금지**: 실명·실멤버 핸들, 실 이메일, 하드코딩 홈경로(`/Users/<실계정>/…`), 팀 인스턴스 레포/조직 참조(제품 레포 `T-Gates/tm-mode` 제외), 실제 팀·제품·사업 도메인 명칭.
+Each flag is documented by `python conformance/check.py --help`; the golden scenario format is documented in `conformance/scenarios/README.md`. Add a test for any new behavior; for a bug fix, write the reproducing test first (red), then make it pass.
 
-**허용 어휘(이것만 쓰세요)** — 사람: `alice`·`bob`·`jane-doe`, 편집거리 쌍: `jonathan`↔`jonathon`, 팀/조직: `acme`/`Acme`/`ACME`, 레포: `acme/acme-team`, 이메일: `user@example.com`(개인메일 판정 fixture 는 `me@gmail.com`), 경로: `tmp_path`(pytest)·`~/…`·`/Users/alice/…`.
+The full suite takes a few minutes, not seconds — budget for that rather than assuming a hang. If `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` is the *only* test that fails for you, that's expected on a machine with a global `git config user.name` set (see the warning comment at the top of `.github/workflows/test.yml`) — it's an environment precondition, not a product bug.
 
-CI 가드 `tests/test_no_identity_leaks.py` 가 일반 패턴(하드코딩 홈경로·이메일·비제품 org 레포)을 기계적으로 차단합니다. 가드에 걸리면 실값을 허용 어휘로 바꾸는 게 정답이지, 가드에 예외를 추가하는 게 아닙니다(예외는 위 허용 어휘 확장에 한함).
+## 6. Code style and conventions
 
-**리뷰 체크**: 도그푸딩에서 가져온 실측 값(경로·명령어·해시·로그)을 커밋하기 전, 식별자를 허용 어휘로 치환했는지 확인하세요. 실측 golden(해시 벡터 등)은 치환 후 동일 알고리즘으로 재유도합니다.
+- **stdlib-only is an iron law**: `pyproject.toml`'s `dependencies = []` is a rule, not a default — don't add a runtime pip dependency. `git`/`gh` are host prerequisites, not pip deps. If an external library seems necessary, open an issue to discuss it before writing code.
+- **Design principles**: the engine never judges — verbs are idempotent mechanics, summarizing/classifying is skills'/agents' job; hooks never kill a session — no raises, timeouts with `killpg` down to grandchild processes, failures are non-fatal and surfaced later; tests never touch the real host — never `~/.claude` or real remotes, only tmp + `--settings` isolation and faked remotes; instance data is inviolable — no product code path syncs or deletes `memory/`/`team.config.json`; distribution artifacts (`install.sh`, `cli.py`, the npx shim) are pinned to release tags so `main` stays free to move.
+- **Skill tiers** (`infra/skills/{base,core,util}/`): `base` is always installed; `core` activates automatically whenever team mode is on and is inactive when `off` — it isn't something a team opts into; `util` is the actual opt-in layer, chosen per member.
+- Stick to Python 3.9+ syntax (check `requires-python` in `pyproject.toml` before reaching for newer-only syntax like `match`/`case`).
+- Note: a team instance's `memory/team/code-conventions.md`, if you find one, documents that *team's own product* (e.g. a separate backend it builds) — it has nothing to do with tm-mode's own code and doesn't apply here.
 
-## 커밋 스타일
+## 7. Code language — write code content in English
 
-히스토리 관례를 따릅니다 — `<type>(<scope>): <설명>` 형식, 타입은 `feat` / `fix` / `docs` / `chore`. 설명은 한국어·영어 모두 좋습니다.
+**Write the content of new or changed code — comments, docstrings, test code, identifiers, and assert messages — in English.** Migrating existing Korean comments to English when you touch that code is welcome, but it isn't a mandatory blanket pass.
+
+- **User-facing runtime strings** (install output, hook-injected text, CLI messages) follow the **i18n (locale) system** instead of this policy — no hardcoded language switching.
+- Docs default to English too: front-door docs are English-default with Korean coverage (a section or a sibling file, depending on the doc), and `docs/` — including the spec — is written and maintained in English. Korean inside code blocks (example configs, error strings) and quoted runtime strings are left as-is.
+
+## 8. Public-repo hygiene — no real-environment identifiers (required)
+
+This repo is a public product. **Don't put real people's, teams', or machines' identifiers in any file — including test fixtures, doc examples, and comments.** A pre-publish audit on 2026-07-07 found real member names, home paths, and team-instance repo references had leaked into fixtures in several places, requiring a full anonymization pass plus history cleanup. Don't repeat it.
+
+**Forbidden**: real names or member handles, real email addresses, hardcoded home paths (`/Users/<real-account>/...`), references to team-instance repos or orgs (except the product repo `T-Gates/tm-mode` itself), and real team/product/business domain names.
+
+**Allowed vocabulary (use only this)** — people: `alice`, `bob`, `jane-doe`; an edit-distance pair for near-duplicate testing: `jonathan`/`jonathon`; team/org: `acme`/`Acme`/`ACME`; repo: `acme/acme-team`; email: `user@example.com` (the personal-email-detection fixture uses `me@gmail.com`); paths: pytest's `tmp_path`, `~/...`, or `/Users/alice/...`.
+
+The CI guard `tests/test_no_identity_leaks.py` mechanically blocks the general patterns (hardcoded home paths, emails, non-product-org repo references). If it flags something, swap the real value for the allowed vocabulary above — don't add an exception to the guard (exceptions are limited to extending the allowed vocabulary itself).
+
+**Review checklist**: before committing real measured values pulled from dogfooding (paths, commands, hashes, logs), confirm you've swapped identifiers for the allowed vocabulary. Re-derive measured goldens (e.g. hash vectors) with the same algorithm after the substitution.
+
+## 9. Commit style
+
+Follow the existing history: `<type>(<scope>): <description>`. Scope is optional. Types in use: `feat` / `fix` / `docs` / `chore`. Description in Korean or English is both fine.
 
 ```
 feat(memory): add `memory route {upsert|remove}` verb
@@ -59,6 +114,18 @@ fix(codex): pass TEAMMODE_MEMBER to Codex hooks
 chore: switch license to Apache 2.0
 ```
 
-## 문서
+## 10. Pull requests
 
-front-door 문서는 **영어 기본**이며 한국어는 같은 [README.md](README.md) 하단 '한국어' 절입니다(2026-07-06 — 홈에서 앵커 점프, 파일 이동 없음). 내부 명세(docs/spec/)와 시나리오(docs/scenarios/)도 **영어 기본**으로 이관 완료 — 예시 발화·코드블록 안 한국어와 인용된 런타임 문자열은 보존합니다.
+1. Fork → branch (`fix/...`, `feat/...`) → PR against `main` of `T-Gates/tm-mode`.
+2. Fill out `.github/PULL_REQUEST_TEMPLATE.md`: what/why, change list, test evidence (paste `python -m pytest -q` output), and the checklist (stdlib-only maintained, full suite passes). The web UI applies this template automatically; `gh pr create --body` does not, so match the same structure yourself if you file that way.
+3. A maintainer reviews and merges, per `.github/CODEOWNERS`. Respond to review comments with follow-up commits rather than force-pushing over history mid-review.
+
+## 11. Docs and i18n
+
+- Front-door docs (`README.md`, `CONTRIBUTING.md`) are **English-canonical**. `README.md` carries its Korean translation as a section in the same file (anchor-linked at the top); `CONTRIBUTING.md` carries it as a same-structure sibling file, `CONTRIBUTING.ko.md`, cross-linked at the top of each — a deliberate, intentionally different i18n layout from README's, chosen for this file.
+- **Sync rule**: a PR that changes `CONTRIBUTING.md` must update `CONTRIBUTING.ko.md` in the same PR (and vice versa).
+- Internal specs (`docs/spec/`) and scenario docs (`docs/scenarios/`) are **English-default** — that migration is complete. A team instance's local copy may still lag in Korean; that's the instance's own translation debt, not upstream policy.
+
+## License
+
+tm-mode is distributed under the Apache License 2.0 — see [LICENSE](LICENSE). By submitting a contribution you agree it is licensed under the same terms (standard inbound=outbound; this repo has no separate CLA). `NOTICE.md` isn't a legal notices file so much as the maintainers' running update log; your instance shows you the diff against it automatically when you run `tm on`.
