@@ -3,6 +3,13 @@
 이 파일은 tm-mode의 주요 변경 사항을 기록합니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
 
+## 0.1.2 — 2026-07-07
+
+- **Install wizard, redesigned**: clack-style rail UI with arrow-key widgets, vivid palette (stdlib ANSI, zero deps), context lines and key hints on every step, `◇ answer` echoes, URL Step 0 (`tm-mode join` without arguments now asks), and `init` fully matching the same style.
+- **English by default, Korean preserved**: engine output, docs, skills, and agent entry docs (AGENTS/CLAUDE/INSTALL) are now English; skill/entry triggers are bilingual (Korean phrases kept). Hook injections pick ko/en automatically from `team.locale` (existing teams unchanged).
+- **Public hygiene**: fixtures and history fully anonymized; a CI guard (`tests/test_no_identity_leaks.py`) now blocks real-environment identifiers. Repo history was rewritten accordingly (fresh clones recommended).
+- Codex `hooks.json` coexistence notice + spec contract; backlog moved to GitHub Issues (label `design`).
+
 ## [0.1.1] - 2026-07-06
 
 ### Added

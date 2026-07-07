@@ -17,7 +17,7 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 
-const PIN_REF = 'refs/tags/v0.1.1'; // 릴리스마다 __version__ 과 함께 bump
+const PIN_REF = 'refs/tags/v0.1.2'; // 릴리스마다 __version__ 과 함께 bump
 const CLI_URL = process.env.TEAMMODE_CLI_URL ||
   `https://raw.githubusercontent.com/T-Gates/tm-mode/${PIN_REF}/src/teammode/cli.py`;
 

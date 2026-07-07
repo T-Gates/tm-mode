@@ -1,6 +1,6 @@
 {
   "name": "tm-mode",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Turn your team mode on — cross-agent team memory bootstrapper for AI coding agents. (thin launcher: downloads the tag-pinned Python CLI and runs it)",
   "bin": { "tm-mode": "bin/tm-mode.js" },
   "files": ["bin/"],
