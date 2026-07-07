@@ -1,15 +1,15 @@
 # CLAUDE.md — tm-mode
 
-이 레포의 에이전트 운영·셋업 지침은 **[AGENTS.md](AGENTS.md)** 를 단일 소스로 따른다 (Claude Code · Codex 공통).
+For agent operation and setup in this repo, **[AGENTS.md](AGENTS.md)** is the single source of truth (shared by Claude Code and Codex).
 
-## 빠른 시작
-사용자가 **"이 레포 셋업해줘"**(또는 "팀모드 셋업"·"온보딩")라고 하면, AGENTS.md의 **"첫 접촉"** 절차대로 `tm-onboard` 스킬(`infra/skills/base/tm-onboard/SKILL.md`)을 따른다.
+## Quick Start
+When the user says **"이 레포 셋업해줘" / "set up this repo"** (or "팀모드 셋업" / "team-mode setup", "온보딩" / "onboarding"), follow the **"첫 접촉" (First contact)** procedure in AGENTS.md and use the `tm-onboard` skill (`infra/skills/base/tm-onboard/SKILL.md`).
 
-- **설치 경로 둘**: ① clone-and-go — 팀 레포를 클론했으면 AGENTS.md "첫 접촉" bootstrap(dry-run 계획 → 대화 승인 → `install.py --yes`)으로 여기서 셋업 완료 ② CLI — 새 팀: `tm-mode init`, 합류: `tm-mode join <url>`(wizard).
-- **스킬(tm-onboard)은 설치 후 검증·브리핑만 한다.** `install.py` 직접 호출·멤버명·팀명 묻기는 스킬이 하지 않는다(설치·멤버명 1회 질문은 AGENTS.md bootstrap 절차 몫).
-- 안전: 팀 루트는 `--root` 명시만(env 무신뢰). 실 설정 쓰기는 `--yes`(대화 승인 후) / `--settings`(격리) 게이트. 푸시는 사람 결정.
+- **Two installation paths**: 1. clone-and-go — if the team repo is already cloned, finish setup here through the AGENTS.md "첫 접촉" bootstrap (dry-run plan → conversational approval → `install.py --yes`); 2. CLI — new team: `tm-mode init`, joining: `tm-mode join <url>` (wizard).
+- **The `tm-onboard` skill only verifies and briefs after installation.** It does not call `install.py` directly or ask for member name or team name (installation and the one-time member-name question belong to the AGENTS.md bootstrap procedure).
+- Safety: the team root is explicit `--root` only (do not trust env). Real settings writes are gated by `--yes` (after conversational approval) / `--settings` (isolated). Pushes are the person's decision.
 
-## 서비스 연결 (L2)
-역할 슬롯(issues / chat / docs / calendar)에 서비스를 붙이려면 **`tm-connect` 스킬**(`infra/skills/core/tm-connect/SKILL.md`)을 따른다. tm-onboard 는 첫 가치 직후 *제안*만, 실행은 tm-connect. 발급 안내는 `providers/<provider>.json` 데이터를 읽어 하고, 토큰은 **각자 입력** → 로컬 금고(`infra/credentials.py`, 평문 0600 — 동기화 폴더 금지).
+## Service Connection (L2)
+To attach a service to a role slot (issues / chat / docs / calendar), follow the **`tm-connect` skill** (`infra/skills/core/tm-connect/SKILL.md`). tm-onboard only *suggests* this right after the first value briefing; tm-connect performs it. Issuance guidance must be read from `providers/<provider>.json` data, and tokens are **entered individually** → local vault (`infra/credentials.py`, plaintext 0600 — sync folders forbidden).
 
-자세한 내용은 [AGENTS.md](AGENTS.md) · 동작 명세는 [docs/spec/](docs/spec/README.md), 백로그·미구현 설계는 [docs/BACKLOG.md](docs/BACKLOG.md) 참조.
+For details, see [AGENTS.md](AGENTS.md). For behavior specs, see [docs/spec/](docs/spec/README.md); for backlog and unimplemented designs, see [docs/BACKLOG.md](docs/BACKLOG.md).
