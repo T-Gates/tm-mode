@@ -1,39 +1,39 @@
-# tm-mode 시나리오
+# tm-mode Scenarios
 
-이 폴더는 tm-mode 기능명세서(행동별 유저 여정)다.
+This folder is the tm-mode functional specification, organized as user journeys by action.
 
-시나리오=목표 흐름이자 명세, 구현을 여기 맞춰 깎아간다(드림스테이트와 현재동작을 하나로 수렴).
+Each scenario is both the target flow and the specification. Implementation should be shaped against these documents so the dream state and current behavior converge.
 
-| 행동 | 역할 | 파일 | 상태 |
+| Action | Role | File | Status |
 |---|---|---|---|
-| 도입자 온보딩 | introducer | [onboard-introducer.md](onboard-introducer.md) | L1 셋업 + L2 서비스 연결 |
-| 팀원 온보딩 | member | [onboard-member.md](onboard-member.md) | L1 셋업 + L2 서비스 연결 |
-| 초기화 | introducer/member | [reset.md](reset.md) | install.py --uninstall 직접 |
+| Introducer onboarding | introducer | [onboard-introducer.md](onboard-introducer.md) | L1 setup + L2 service connection |
+| Member onboarding | member | [onboard-member.md](onboard-member.md) | L1 setup + L2 service connection |
+| Reset | introducer/member | [reset.md](reset.md) | Direct `install.py --uninstall` |
 
-## 원문 서문
+## Original Preface
 
-# tm-mode 시나리오 (기능명세서)
+# tm-mode Scenarios (Functional Specification)
 
-> 스킬 이름 표기: 이 문서는 L1 셋업 스킬을 **`tm-join`** 으로 부른다. **현 코드상 스킬 디렉토리·이름은 `tm-onboard`(`infra/skills/base/tm-onboard/`) 이며, `tm-join` 으로 리네임이 확정돼 곧 적용된다.** 명령·출력 문자열·exit code 는 전부 현재 코드(`infra/install.py`, `infra/install_lib.py`, `infra/teammode.py`) 기준이다.
+> Skill naming note: this document calls the L1 setup skill **`tm-join`**. **In the current code, the skill directory and name are `tm-onboard`(`infra/skills/base/tm-onboard/`), and the rename to `tm-join` has been confirmed and will be applied soon.** Commands, output strings, and exit codes are all based on the current code(`infra/install.py`, `infra/install_lib.py`, `infra/teammode.py`).
 
-## 이 문서의 역할
+## Role of This Document
 
-이 문서는 tm-mode 개발의 **중심 기능명세서**다. "유저가 이렇게 행동하면 시스템이 이렇게 반응한다"를 사용자 시점으로 명세해, 구현이 명세대로 동작하는지 **대조하는 기준점**이 된다. `conformance/` 의 골든(기계 검증)이 정확한 출력 문자열·exit code 를 자동으로 잡는다면, 이 문서는 그 **사람용 짝** — 한 사람이 처음부터 끝까지 따라가며 "맞게 흘러가는지" 읽고 판단하는 서사다. 기획·구현·QA 가 같은 그림을 공유하기 위해, 추측·창작 없이 코드와 문서에 실제로 적힌 동작만 적었다.
+This document is the **central functional specification** for tm-mode development. It specifies, from the user's perspective, "when the user acts this way, the system responds this way," and becomes the **reference point** for checking whether the implementation behaves according to the spec. If the goldens in `conformance/` provide machine verification for exact output strings and exit codes, this document is their **human counterpart**: a narrative that one person can follow from start to finish and judge whether the flow is correct. To keep planning, implementation, and QA aligned on the same picture, it records only behavior that is actually written in the code and docs, without guessing or invention.
 
-진입점은 항상 **자연어**다. 사용자는 슬래시 명령을 외우지 않는다 — "이 레포 셋업해줘" 같은 말을 하면 에이전트가 스킬(`tm-join`/`tm-connect`)을 골라 `install.py`(결정적 기계)를 대신 호출하고, 결과를 사람 말로 옮긴다.
+The entry point is always **natural language**. Users do not memorize slash commands. When they say something like "이 레포 셋업해줘", the agent selects the appropriate skill(`tm-join`/`tm-connect`), calls `install.py`(the deterministic machine) on their behalf, and translates the result back into human language.
 
-### 시나리오 인덱스
+### Scenario Index
 
-| # | 시나리오 | 핵심 | role 판정 |
+| # | Scenario | Core idea | Role determination |
 |---|---|---|---|
-| 1 | [도입자](#시나리오-1--도입자) | 팀을 처음 만드는 첫 사람. `team.config.json` 없음 → config 를 새로 쓴다 | `introducer` |
-| 2 | [팀원](#시나리오-2--팀원) | 이미 만들어진 팀 레포에 합류. config 유효 → 읽기만, 자기 엔트리만 upsert | `member` |
+| 1 | [Introducer](#시나리오-1--도입자) | The first person creating the team. No `team.config.json` → writes a new config | `introducer` |
+| 2 | [Member](#시나리오-2--팀원) | Joins an already-created team repo. Valid config → read only, upsert only their own entry | `member` |
 
-각 시나리오는 3국면으로 나뉜다:
-- **국면 ① 레포 clone** — 레포를 손에 넣고 에이전트에 말 거는 지점
-- **국면 ② `tm-join` L1 셋업** — `install.py` 부트스트랩(메모리 + 훅 배선 + verify)
-- **국면 ③ `tm-connect` L2 서비스 연결** — 역할 슬롯(issues/chat/docs/calendar)에 서비스 붙이기
+Each scenario has 3 phases:
+- **Phase ① Repo clone** — the point where the user gets the repo and talks to the agent
+- **Phase ② `tm-join` L1 setup** — `install.py` bootstrap(memory + hook wiring + verify)
+- **Phase ③ `tm-connect` L2 service connection** — attaching services to role slots(issues/chat/docs/calendar)
 
-각 단계는 **4박자**로 적는다: (a) 사용자가 정확히 뭘 입력/실행 → (b) 에이전트가 뭐라 말하고 내부적으로 무슨 명령을 실행 → (c) 터미널/화면에 실제로 뭐가 출력(실제 출력 문자열·exit code) → (d) 사용자가 보고 다음에 뭘.
+Each step is written in a **four-beat** form: (a) exactly what the user types/runs → (b) what the agent says and what command it runs internally → (c) what actually appears in the terminal/screen(actual output string and exit code) → (d) what the user sees and what they do next.
 
-> 표기: `[plan]`·`[scaffold]`·`[wire]`·`[env]`·`[verify]`·`[done]` 등 대괄호 태그는 `install.py` 가 stdout 에 실제로 찍는 접두사다. `[error]`·`[warn]` 은 stderr.
+> Notation: bracketed tags such as `[plan]`, `[scaffold]`, `[wire]`, `[env]`, `[verify]`, and `[done]` are prefixes that `install.py` actually prints to stdout. `[error]` and `[warn]` go to stderr.

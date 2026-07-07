@@ -1,59 +1,58 @@
-# 개요
+# Overview
 
-tm-mode SPEC v0.3 — 개요·용어·표기·버저닝
+tm-mode SPEC v0.3 - Overview, terminology, notation, and versioning
 
 | | |
 |---|---|
 | spec_version | **0.3** |
-| 상태 | 정식 단일판 (reconciled with build, 2026-06-15; 0.3 — memory·util 동사 명문화 + 동적 허용 폴더) |
-| 범위 | 팀 메모리 표준 · 훅/어댑터 표준 · 엔진 동사 · 설치/부트스트랩 · 온보딩 스킬 · 호환 선언 · 서비스 슬롯 |
-| 대체 관계 | 본 문서가 흩어진 `spec/01`~`spec/05`를 **통합·대체**한다(부록 D의 repoint 목록 참조). |
-| 표기 규약 | **필수 / 권장 / 예약** (§0.3) |
+| Status | Official single edition (reconciled with build, 2026-06-15; 0.3 - memory and util verbs made explicit + dynamically allowed folders) |
+| Scope | Team memory standard · hook/adapter standard · engine verbs · install/bootstrap · onboarding skills · conformance declarations · service slots |
+| Supersedes | This document **integrates and replaces** the scattered `spec/01` through `spec/05` documents (see the repoint list in Appendix D). |
+| Notation | **Required / Recommended / Reserved** (§0.3) |
 
-> **reconcile 원칙**: 설계(`spec/`)와 빌드(`infra/`·`conformance/`)가 어긋나면 **빌드(코드)가 진실**이다. 본문은 코드로 닫힌 미결을 closed로 서술하고, 차이는 부록 A에 명시한다. 04/05 draft가 미결로 남겼으나 구현으로 답이 난 것은 본문에서 확정으로 기술한다. 코드보다 앞선(미구현) 설계 항목은 본문에서 "예약/로드맵"으로 명시한다.
+> **Reconcile principle**: when the design (`spec/`) and build (`infra/` and `conformance/`) differ, **the build (code) is the truth**. The body describes issues closed by code as closed, and records differences in Appendix A. Items left open by the 04/05 draft but answered by implementation are stated as final in the body. Design items that are ahead of the code (not implemented) are explicitly marked "reserved/roadmap" in the body.
 
 ---
 
-## §0. 개요 · 용어 · 표기 규약
+## §0. Overview, Terminology, and Notation
 
-### 0.1 한 문장
+### 0.1 One Sentence
 
-> 팀의 작업 맥락(세션로그·결정·상태)을 **git 레포 하나에 마크다운으로** 모으고, 어떤 AI 코딩 에이전트(Claude Code · Codex · …)로 읽고 쓰든 동일한 팀 메모리를 공유하며, 에이전트가 **세션 시작 시 그 맥락을 자동으로 읽어** 들어오는 크로스에이전트 팀 협업 툴킷.
+> A cross-agent team collaboration toolkit that gathers a team's work context (session logs, decisions, status) **as Markdown in one git repository**, lets any AI coding agent (Claude Code, Codex, ...) read and write the same team memory, and has agents **automatically read that context at session start**.
 
-tm-mode는 두 직교 축으로 설계된다: **에이전트 축**(§2 — 같은 훅/스킬 내용 1벌, 에이전트별 표기는 어댑터가 번역)과 **서비스 축**(§7 — 같은 역할을 팀마다 다른 제품으로). 데이터 표준(§1)은 두 축의 토대다.
+tm-mode is designed along two orthogonal axes: the **agent axis** (§2 - one copy of the same hook/skill content, translated into each agent's notation by adapters) and the **service axis** (§7 - the same role may be backed by different products for each team). The data standard (§1) is the foundation for both axes.
 
-### 0.2 용어
+### 0.2 Terminology
 
-| 용어 | 정의 |
+| Term | Definition |
 |---|---|
-| **팀 레포** | 팀 메모리와 엔진 설정을 담는 git 저장소. 팀당 1개, private. |
-| **팀 루트** | 팀 레포의 로컬 클론 경로. |
-| **세션로그** | 멤버가 에이전트 세션에서 수행한 팀 작업의 일지(§1.3). |
-| **작업일** | 06시 컷 적용 후의 날짜(§1.4). |
-| **주입(injection)** | 세션 시작 시 팀 메모리 일부를 에이전트 컨텍스트에 자동 로드(§1.6). |
-| **정규형 (canonical)** | 에이전트 무관하게 tm-mode가 정의하는 표준 어휘 — 정규 이벤트(§2.4)·행위 클래스(§2.5)·정규 입력 스키마(§2.10). |
-| **어댑터 (adapter)** | `infra/agents/<name>/` 폴더. 설치 시점에 정규 선언을 해당 에이전트의 설정으로 번역·등록(§2.7). |
-| **normalize 심 (shim)** | 런타임에 에이전트의 훅 입력 JSON을 정규 스키마로 변환하는 얇은 통역 계층(§2.10). |
-| **행위 클래스 (action)** | 빌트인 툴의 에이전트 무관 추상화. 예: `file_edit` = Claude의 `Write\|Edit` = Codex의 `apply_patch`. |
-| **공통 스크립트** | `infra/hooks/*.py`. 정규 스키마만 인지하며 특정 에이전트를 모름. |
-| **역할 슬롯 (service slot)** | issues/chat/docs/calendar 등 서비스 역할을 가리키는 이름. 슬롯에는 팀이 고른 **공식 벤더 MCP를 등록**한다(§7). tm-mode는 연결만 하고, 동작은 AI가 그 MCP 도구를 직접 호출한다(도구 중립 함수 계약으로 한 겹 감싸지 않는다). |
-| **reference 구현** | 본 레포의 구현. Tier 1 = Claude Code 기준. 코드: `infra/`·`conformance/`. |
-| **독립 구현** | 본 레포 코드와 별개로 작성된, 본 스펙 준수를 목표로 하는 구현(§6). |
-| **L1 / L2 / L3** | 도달 단계: L1 = 세션로그+훅+맥락수집(install.py 자력 도달), L2 = **서비스 슬롯에 공식 벤더 MCP를 꽂는 등록기**(연결만 — 동작은 AI가 MCP 도구 직접 호출), L3 = 다이제스트 등. |
+| **Team repo** | A git repository containing team memory and engine settings. One private repo per team. |
+| **Team root** | The local clone path of the team repo. |
+| **Session log** | A journal of team work a member performed during an agent session (§1.3). |
+| **Workday** | The date after applying the 06:00 cutoff (§1.4). |
+| **Injection** | Automatically loading part of team memory into agent context at session start (§1.6). |
+| **Canonical** | The standard vocabulary tm-mode defines independently of any agent: canonical events (§2.4), action classes (§2.5), and canonical input schema (§2.10). |
+| **Adapter** | A folder under `infra/agents/<name>/`. At install time, it translates and registers canonical declarations into the corresponding agent's settings (§2.7). |
+| **Normalize shim** | A thin runtime translation layer that converts an agent's hook input JSON into the canonical schema (§2.10). |
+| **Action class** | An agent-independent abstraction of built-in tools. Example: `file_edit` = Claude `Write\|Edit` = Codex `apply_patch`. |
+| **Common script** | `infra/hooks/*.py`. It knows only the canonical schema and does not know any specific agent. |
+| **Service slot** | A name for a service role such as issues/chat/docs/calendar. The team registers its chosen **official vendor MCP** in the slot (§7). tm-mode only connects it; the AI calls that MCP tool directly for behavior (there is no extra wrapper layer with a tool-neutral function contract). |
+| **Reference implementation** | The implementation in this repo. Tier 1 = Claude Code baseline. Code: `infra/` and `conformance/`. |
+| **Independent implementation** | An implementation written separately from this repo's code, targeting compliance with this spec (§6). |
+| **L1 / L2 / L3** | Reach levels: L1 = session log + hooks + context collection (reachable by install.py alone), L2 = **registrar that plugs official vendor MCPs into service slots** (connection only; the AI calls MCP tools directly for behavior), L3 = digests, etc. |
 
-### 0.3 표기 규약
+### 0.3 Notation
 
-- **필수** — 따르지 않으면 비준수. conformance 검사 대상.
-- **권장** — 따르지 않아도 비준수는 아니나, 정당한 사유가 있어야 한다.
-- **예약** — 현재 spec_version(0.3)에서 자리만 정의하고 의미를 확정하지 않은 항목. 임의 사용 금지.
+- **Required** - noncompliance if not followed. Subject to conformance checks.
+- **Recommended** - not noncompliant if omitted, but there should be a justified reason.
+- **Reserved** - an item whose place is defined in the current spec_version (0.3), but whose meaning is not finalized. Do not use arbitrarily.
 
-### 0.4 버저닝 (전 영역 공통)
+### 0.4 Versioning (common to all areas)
 
-- 본 SPEC의 모든 영역(§1~§7)은 **단일 `spec_version`을 공유**하며, 현재 **0.3**이다. 어느 영역이든 규범 변경이 생기면 버전이 함께 오른다. 팀 레포 `team.config.json`의 최상위 `spec_version` 필드는 그 팀 데이터가 따르는 버전을 선언한다.
-- **minor bump 대상(필수 + CHANGELOG 기록)**: 세션로그 포맷 필드의 추가/의미 변경, 폴더 구조 변경, 정규 이벤트(§2.4)·행위 클래스(§2.5)·정규 입력 스키마(§2.10)·어댑터 계약(§2.7)·엔진 동사 계약(§3)·conformance 검사 항목(§6.4)의 변경. 오탈자·설명 보강 등 의미 불변 수정은 버전 불변.
-- **0.x 기간에는 하위 호환이 깨질 수 있다.** 독립 구현이 2개 이상 등재되면 1.0으로 동결하고 RFC-lite 변경 절차(제안 이슈 → 구현 영향 검토 → 합의 후 머지)를 도입한다.
-- reference 구현의 지원 버전 단일 소스는 `infra/install_lib.py::SPEC_VERSION`이다. 현 reference 어댑터 `events.json`에는 별도 `spec_version` 필드가 없다. 독립 구현은 등재 신청·배지·결과 로그에서 지원 `spec_version`을 명시해야 한다(§6).
-- CHANGELOG는 스펙을 배포하는 본진 레포에서 관리한다(팀 레포가 아니다).
+- Every area of this SPEC (§1-§7) **shares a single `spec_version`**, currently **0.3**. If any area has a normative change, the version rises together. A team repo's `team.config.json` top-level `spec_version` field declares the version followed by that team data.
+- **Minor bump targets (required + CHANGELOG entry)**: additions or semantic changes to session-log format fields, folder-structure changes, canonical events (§2.4), action classes (§2.5), canonical input schema (§2.10), adapter contract (§2.7), engine verb contract (§3), and conformance check items (§6.4). Meaning-preserving fixes such as typos or explanation improvements do not change the version.
+- **During the 0.x period, backward compatibility may break.** Once two or more independent implementations are listed, freeze 1.0 and introduce an RFC-lite change process (proposal issue -> implementation impact review -> merge after agreement).
+- The single source for supported versions in the reference implementation is `infra/install_lib.py::SPEC_VERSION`. Current reference adapter `events.json` files do not have a separate `spec_version` field. Independent implementations must state their supported `spec_version` in listing applications, badges, and result logs (§6).
+- The CHANGELOG is managed in the main repo that distributes the spec (not in team repos).
 
 ---
-
