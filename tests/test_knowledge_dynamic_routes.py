@@ -212,10 +212,10 @@ def test_static_subfolder_segment_delete_rejected(tmp_path):
     assert r.returncode == 2
 
 
-# ── extras 하드코딩 제거: 팀 전용 폴더는 정적 목록이 아니라 동적 허용으로 (#51) ──
+# ── 팀 전용 폴더 하드코딩 제거: 정적 목록이 아니라 동적 허용으로 (#51) ──
 
-def test_extras_not_statically_allowed(tmp_path):
-    """extras 는 과거 특정 팀 전용 폴더 — 제품 정적 목록에서 제거됨.
+def test_unregistered_folder_not_statically_allowed(tmp_path):
+    """팀 전용 폴더는 제품 정적 목록에 없어야 한다.
 
     루트 INDEX 미등재면 write 거부(범용 product/team 과 달리 스캐폴드에도 없음).
     """
@@ -225,12 +225,12 @@ def test_extras_not_statically_allowed(tmp_path):
     r = _run(root, "memory", "write", "--folder", "extras",
              "--filename", "x.md", "--content", "x",
              "--author", "test", "--weight", "📎")
-    assert r.returncode == 2, "extras 가 아직 정적 허용됨 (하드코딩 잔존)"
+    assert r.returncode == 2, "미등재 폴더가 아직 정적 허용됨 (하드코딩 잔존)"
     assert "허용되지 않습니다" in r.stderr
 
 
-def test_extras_allowed_when_registered(tmp_path):
-    """팀이 extras/ 를 루트 INDEX 에 등재하면 동적 허용으로 write 가능 (우리 인스턴스 경로)."""
+def test_registered_folder_allowed_when_registered(tmp_path):
+    """팀 전용 폴더를 루트 INDEX 에 등재하면 동적 허용으로 write 가능."""
     root = tmp_path / "team"
     root.mkdir()
     _init_git(root)
