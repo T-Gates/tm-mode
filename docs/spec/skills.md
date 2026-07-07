@@ -49,7 +49,7 @@ Migrate proven legacy toolkit skills into general-purpose tm-mode. Legacy-specif
 | Skill | Reason |
 |---|---|
 | `legacy-onboard` · `credentials` | tm-mode already has `tm-onboard` and vault (duplicate) |
-| `3d-modeling` · `soma-browse` | Specific to one team (examples) |
+| `3d-modeling` · `acme-browse` | Specific to one team (examples) |
 | `check-health` · `lint` · `cheer` | Product/toolkit-specific · low priority |
 | `dev-cycle` | General development meta-work — does not fit the core identity (deferred) |
 
