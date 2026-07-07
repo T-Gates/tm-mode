@@ -75,7 +75,7 @@ python conformance/check.py conform --root . --engine "<다른 구현>"         
 
 각 플래그는 `python conformance/check.py --help`로 확인 가능하고, 골든 시나리오 형식은 `conformance/scenarios/README.md`에 문서화돼 있습니다. 새 동작에는 테스트를 함께 추가하고, 버그 수정이면 재현 테스트를 먼저 red로 작성한 뒤 고치세요.
 
-전체 스위트는 수 초가 아니라 **수 분** 걸립니다 — 멈춘 것으로 오해하지 말고 그렇게 예상하세요. `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` **하나만** 실패한다면, 전역 `git config user.name`이 설정된 머신에서는 정상적으로 나타나는 현상입니다(`.github/workflows/test.yml` 맨 위의 경고 주석 참고) — 환경 전제조건 문제이지 제품 버그가 아닙니다.
+전체 스위트는 수 초가 아니라 **수 분** 걸립니다 — 멈춘 것으로 오해하지 말고 그렇게 예상하세요. CI는 Python 3.9와 3.12에서 테스트합니다(`.github/workflows/test.yml`) — 훨씬 최신 인터프리터를 쓰고 있고 관련 없어 보이는 실패가 무더기로 나온다면, 제품 버그로 단정하기 전에 이 버전들 중 하나로 먼저 시도해보세요. `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` **하나만** 실패한다면, 전역 `git config user.name`이 설정된 머신에서는 정상적으로 나타나는 현상입니다(`.github/workflows/test.yml` 맨 위의 경고 주석 참고) — 환경 전제조건 문제이지 제품 버그가 아닙니다.
 
 ## 6. 코드 스타일과 컨벤션
 
