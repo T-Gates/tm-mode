@@ -75,7 +75,7 @@ python conformance/check.py conform --root . --engine "<some other implementatio
 
 Each flag is documented by `python conformance/check.py --help`; the golden scenario format is documented in `conformance/scenarios/README.md`. Add a test for any new behavior; for a bug fix, write the reproducing test first (red), then make it pass.
 
-The full suite takes a few minutes, not seconds — budget for that rather than assuming a hang. If `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` is the *only* test that fails for you, that's expected on a machine with a global `git config user.name` set (see the warning comment at the top of `.github/workflows/test.yml`) — it's an environment precondition, not a product bug.
+The full suite takes a few minutes, not seconds — budget for that rather than assuming a hang. CI tests against Python 3.9 and 3.12 (`.github/workflows/test.yml`); if you're on a much newer interpreter and see many unrelated failures, try one of those versions before assuming a product bug. If `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` is the *only* test that fails for you, that's expected on a machine with a global `git config user.name` set (see the warning comment at the top of `.github/workflows/test.yml`) — it's an environment precondition, not a product bug.
 
 ## 6. Code style and conventions
 
