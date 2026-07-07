@@ -183,11 +183,11 @@ memory/                # team memory (created at setup)
 conformance/           # compatibility checks + golden scenarios
 ```
 
-Spec: [docs/spec/](docs/spec/README.md) — the single authoritative SPEC v0.3 (Korean; docs are Korean-first). Contributor map: the Architecture section above (Korean original in the [한국어 section](#tm-mode--한국어)).
+Spec: [docs/spec/](docs/spec/README.md) — the single authoritative SPEC v0.3 (English). Contributor map: the Architecture section above (Korean original in the [한국어 section](#tm-mode--한국어)).
 
 ## Architecture — a map for contributors
 
-> A map so someone arriving to change the code knows *where to look* within 10 minutes. The single authority on behavior (contracts) is [docs/spec/](docs/spec/README.md) (Korean).
+> A map so someone arriving to change the code knows *where to look* within 10 minutes. The single authority on behavior (contracts) is [docs/spec/](docs/spec/README.md).
 
 ```
 ┌─ Launcher (src/teammode/cli.py · install.sh) ─────────────┐
