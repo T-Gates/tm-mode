@@ -1,25 +1,26 @@
 <!-- NOTICE (Apache-2.0): tm-mode, Copyright 2026 T-Gates -->
+**English** | [한국어](NOTICE.ko.md)
 
-# tm-mode 업데이트 공지
+# tm-mode Update Notices
 
-팀모드 관리자가 팀들에게 전달하는 최신 업데이트·공지 파일입니다.
-`tm on` 시 upstream NOTICE 와 로컬이 다르면 자동으로 표시됩니다.
+This file carries the maintainers' latest update announcements to teams running tm-mode.
+When `tm on` detects that upstream's `NOTICE.md` differs from your local copy, the latest entry is surfaced automatically.
 
 ---
 
 ## 2026-06-18
 
-- **스킬 3계층(base/core/util)** 도입 + `tm-manage-utils`: util 스킬을 팀원별로 선택 설치·관리. `tm on` 시 core 자동 + 등록 util 심링크, `off` 시 제거(base 유지)
-- **`tm` ON 자동 업데이트**: 팀모드 켤 때 upstream 엔진을 자동 동기화·커밋(`infra/`·`NOTICE.md`만, push는 수동). dirty면 skip
-- **`tm-memory` 스킬**: 팀 메모리 INDEX 계층 로드(읽기 전용, 동적 발견)
-- **`memory` 엔진 동사 + `tm-manage-memory` 스킬**: 메모리 추가·수정·삭제(frontmatter·INDEX·편집일 자동, 폴더 화이트리스트·traversal 가드)
-- **KB 쓰기 거버넌스**: `memory/` 직접 편집(Write/Edit) 차단 — 메모리는 동사로만 (claude PreToolUse deny + unlock 플래그/TTL). ⚠️ Write/Edit 가드 한정 — Bash 우회는 막지 않음
+- **Three-tier skill layers (base/core/util)** + `tm-manage-utils`: choose and manage util skills per member. On `tm on`, core skills auto-install and registered util skills are symlinked in; on `off`, they're removed (base skills stay).
+- **Auto-update on `tm` ON**: turning team mode on now automatically syncs and commits the upstream engine (`infra/` and `NOTICE.md` only; push stays manual). Skipped if the working tree is dirty.
+- **`tm-memory` skill**: loads the team memory INDEX hierarchy (read-only, discovered dynamically).
+- **`memory` engine verb + `tm-manage-memory` skill**: add/update/delete memory entries (frontmatter, INDEX, and edit dates handled automatically; folder allowlist and path-traversal guard included).
+- **KB write governance**: direct edits (Write/Edit) to `memory/` are now blocked — memory changes must go through the engine verbs (Claude PreToolUse deny + an unlock flag/TTL). ⚠️ This guards Write/Edit only — it does not block a Bash-based workaround.
 
 ## 2026-06-17
 
-- `tm` 스킬 추가: 팀 모드 on/off 토글 (`infra/skills/base/tm/`)
-- `tm-context` 스킬 추가: 팀 현황 빠른 조회 (`infra/skills/base/tm-context/`)
-- cp949 한글 인코딩 P0 수정: Windows 환경에서 한글 출력 크래시 방지 (`io_encoding.py`)
-- 배너 picker 추가: 6종 랜덤 배너 지원 (`infra/banners/`)
-- `tm-mode update` 파일동기화: template unrelated histories 대응 (merge 대신 checkout 기반 동기화)
-- hook hang 수정: 손자 프로세스(git-remote-https) killpg 로 일괄 종료
+- Added the `tm` skill: toggles team mode on/off (`infra/skills/base/tm/`).
+- Added the `tm-context` skill: quick team-status lookup (`infra/skills/base/tm-context/`).
+- Fixed a P0 cp949 Korean-encoding bug: prevented a crash on Korean console output on Windows (`io_encoding.py`).
+- Added a banner picker: 6 random banner styles (`infra/banners/`).
+- `tm-mode update` file sync: now handles the template's unrelated-histories case (checkout-based sync instead of merge).
+- Fixed a hook hang: grandchild processes (e.g. `git-remote-https`) are now terminated in bulk via `killpg`.
