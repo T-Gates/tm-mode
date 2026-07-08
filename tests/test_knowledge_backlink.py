@@ -151,15 +151,17 @@ def test_chat_notify_summary_on_write(tmp_path):
              "--folder", "team", "--filename", "rule.md",
              "--content", "첫줄 요약.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
+    # i18n 갱신(적대검수 — long tail): action 라벨도 이제 team_lang 을 따른다.
+    # config 없는 픽스처는 en 기본(team_lang 계약) — en 라벨로 검증.
     assert "[chat-notify]" in r.stdout
-    assert "추가" in r.stdout
+    assert "add" in r.stdout
     assert "memory/team/rule.md" in r.stdout
     assert "📌" in r.stdout
     assert "bob" in r.stdout
 
 
 def test_chat_notify_summary_on_update(tmp_path):
-    """수정 시 통지 재료가 '수정' 동작으로 나온다."""
+    """수정 시 통지 재료가 '수정'(en 기본 픽스처에선 'update') 동작으로 나온다."""
     _run(tmp_path, "memory", "write",
          "--folder", "team", "--filename", "rule.md",
          "--content", "v1.", "--author", "bob",
@@ -169,11 +171,11 @@ def test_chat_notify_summary_on_update(tmp_path):
              "--content", "v2.", "--author", "bob",
              "--weight", "📌", "--date", DATE)
     assert "[chat-notify]" in r.stdout
-    assert "수정" in r.stdout
+    assert "update" in r.stdout
 
 
 def test_chat_notify_summary_on_delete(tmp_path):
-    """delete 시 통지 재료가 '삭제' 동작으로 나온다."""
+    """delete 시 통지 재료가 '삭제'(en 기본 픽스처에선 'delete') 동작으로 나온다."""
     _run(tmp_path, "memory", "write",
          "--folder", "team", "--filename", "gone.md",
          "--content", "x.", "--author", "bob",
@@ -181,7 +183,7 @@ def test_chat_notify_summary_on_delete(tmp_path):
     r = _run(tmp_path, "memory", "delete",
              "--path", "memory/team/gone.md", "--author", "bob")
     assert "[chat-notify]" in r.stdout
-    assert "삭제" in r.stdout
+    assert "delete" in r.stdout
     assert "memory/team/gone.md" in r.stdout
 
 

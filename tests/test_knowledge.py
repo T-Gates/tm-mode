@@ -202,9 +202,31 @@ def test_knowledge_write_idempotent(tmp_path):
 
     r2 = _run(tmp_path, *args)
     assert r2.returncode == 0, r2.stderr
-    # 멱등: "변경 없음" 출력
-    assert "변경 없음" in r2.stdout or "멱등" in r2.stdout, \
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약).
+    # 멱등: "no change"/"idempotent" 출력
+    assert "no change" in r2.stdout or "idempotent" in r2.stdout, \
         f"멱등 표시 없음: {r2.stdout!r}"
+
+
+def test_knowledge_write_delete_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, cmd_knowledge): en 팀(locale=en_US)은 write/delete
+    출력 전체(에러/완료/힌트/chat-notify)가 영어이고 한글이 한 글자도 섞이지 않는다."""
+    import re
+    (tmp_path / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    r1 = _run(tmp_path, "memory", "write",
+             "--folder", "team", "--filename", "en-note.md",
+             "--content", "hello world.", "--author", "bob",
+             "--weight", "📌", "--date", "2026-06-18")
+    assert r1.returncode == 0, r1.stderr
+    assert "done" in r1.stdout
+    assert not re.search(r"[가-힣]", r1.stdout), f"en 팀 write 출력에 한글 섞임: {r1.stdout!r}"
+
+    r2 = _run(tmp_path, "memory", "delete",
+             "--path", "team/en-note.md", "--author", "bob")
+    assert r2.returncode == 0, r2.stderr
+    assert "deleted" in r2.stdout
+    assert not re.search(r"[가-힣]", r2.stdout), f"en 팀 delete 출력에 한글 섞임: {r2.stdout!r}"
 
 
 def test_knowledge_delete_idempotent(tmp_path):

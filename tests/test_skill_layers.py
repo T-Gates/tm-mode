@@ -297,6 +297,37 @@ def test_util_remove_updates_json(tmp_path):
     assert "test-util" not in data["installed"]
 
 
+def test_util_add_remove_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, cmd_util): en 팀(locale=en_US)은 add/remove 출력이
+    영어이고 한글이 섞이지 않는다."""
+    import contextlib
+    import io
+    import re
+    root = _scaffold(tmp_path, include_util_skill=True)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    mod = runpy.run_path(str(REPO / "infra" / "teammode.py"),
+                         run_name="__util_en_locale__")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mod["main"](["util", "add", "--root", str(root),
+                          "--member", "alice", "--skill", "test-util"])
+    assert rc == 0
+    out_add = buf.getvalue()
+    assert "registered" in out_add
+    assert not re.search(r"[가-힣]", out_add), f"en 팀 util add 출력에 한글 섞임: {out_add!r}"
+
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        rc2 = mod["main"](["util", "remove", "--root", str(root),
+                           "--member", "alice", "--skill", "test-util"])
+    assert rc2 == 0
+    out_remove = buf2.getvalue()
+    assert "removed" in out_remove
+    assert not re.search(r"[가-힣]", out_remove), \
+        f"en 팀 util remove 출력에 한글 섞임: {out_remove!r}"
+
+
 def test_util_remove_idempotent(tmp_path):
     """util remove: 미등록 스킬 제거는 멱등(에러 없음)."""
     root = _scaffold(tmp_path)

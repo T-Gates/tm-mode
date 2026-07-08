@@ -250,6 +250,149 @@ MESSAGES = {
         "cmd_memory_unlock_end_done":
             "teammode memory unlock end — edit window closed (session={session_id}): {flag}",
 
+        # ── cmd_util ──
+        "cmd_util_member_required":
+            "[error] util {action}: --member <name> is required.",
+        "cmd_util_skill_required":
+            "[error] util {action}: --skill <skill-name> is required.",
+        "cmd_util_add_skill_not_found":
+            "[error] util add: '{skill}' is not an existing util skill.",
+        "cmd_util_add_containment_rejected":
+            "[error] util add: '{skill}' source path points outside the util "
+            "directory (containment rejected).",
+        "cmd_util_immediate_apply_skip":
+            "teammode util {action} — immediate apply skipped "
+            "(needs --settings or --install; applies on the next `on`)",
+        "cmd_util_add_registered":
+            "teammode util add — {skill} registered (member: {member})",
+        "cmd_util_remove_removed":
+            "teammode util remove — {skill} removed (member: {member})",
+        "cmd_util_unknown_action":
+            "[error] util: unknown action: {action!r}. One of list/add/remove.",
+
+        # ── cmd_knowledge (memory write/delete) ──
+        "cmd_memory_write_folder_required":
+            "[error] memory write: --folder is required.",
+        "cmd_memory_write_filename_required":
+            "[error] memory write: --filename is required.",
+        "cmd_memory_write_content_required":
+            "[error] memory write: --content is required.",
+        "cmd_memory_write_author_required":
+            "[error] memory write: --author is required.",
+        "cmd_memory_write_weight_required":
+            "[error] memory write: --weight is required (no guessing).",
+        "cmd_memory_write_weight_invalid":
+            "[error] memory write: --weight must be one of {valid}: {weight!r}",
+        "cmd_memory_write_content_bad_char_surrogate":
+            "[error] memory write: --content has a disallowed character "
+            "(surrogate U+{cp:04X}). Control/format/surrogate characters are rejected.",
+        "cmd_memory_write_content_bad_char":
+            "[error] memory write: --content has a disallowed character "
+            "(U+{cp:04X}, category={cat}). Control/format/surrogate characters "
+            "are rejected.",
+        "cmd_memory_write_no_change":
+            "teammode memory write — no change (idempotent): {folder}/{filename}",
+        "cmd_memory_write_file_write_failed":
+            "[error] memory write: file write failed — {exc}",
+        "cmd_memory_write_index_and_rollback_failed":
+            "[error] memory write: INDEX update failed AND file rollback also "
+            "failed — INDEX: {exc} / rollback: {rb_exc}",
+        "cmd_memory_write_index_failed_rolled_back":
+            "[error] memory write: INDEX update failed (file rolled back) — {exc}",
+        "cmd_memory_route_not_registered_hint":
+            "[hint] '{top}' is not registered in the root INDEX — register: {cmd}",
+        "cmd_memory_write_commit_failed":
+            "[warning] memory write: commit failed — {detail}",
+        "cmd_memory_write_done_not_committed":
+            "teammode memory write — {folder}/{filename} done (not committed)",
+        "cmd_memory_write_push_failed":
+            "[warning] memory write: push failed (local commit preserved) — {detail}",
+        "cmd_memory_write_done":
+            "teammode memory write — {folder}/{filename} done",
+        "cmd_memory_delete_path_required":
+            "[error] memory delete: --path <memory/relative-path> is required.",
+        "cmd_memory_delete_author_required":
+            "[error] memory delete: --author is required.",
+        "cmd_memory_delete_dotdot_forbidden":
+            "[error] memory delete: the path cannot contain '..': {path!r}",
+        "cmd_memory_delete_symlink_escape":
+            "[error] memory delete: memory/ points outside team_root "
+            "(symlink escape blocked)",
+        "cmd_memory_delete_bad_path_chars":
+            "[error] memory delete: the path has a disallowed character — {exc}",
+        "cmd_memory_delete_index_md_forbidden":
+            "[error] memory delete: INDEX.md cannot be deleted directly: {path!r}",
+        "cmd_memory_delete_filename_invalid":
+            "[error] memory delete: --path filename validation failed — {err}",
+        "cmd_memory_delete_folder_required":
+            "[error] memory delete: only files under an allowed folder can be "
+            "deleted. Allowed: {allowed}",
+        "cmd_memory_delete_folder_blocked":
+            "[error] memory delete: folder '{folder}' is not a deletion target "
+            "(hook/tm-context-managed path)",
+        "cmd_memory_delete_folder_not_allowed":
+            "[error] memory delete: folder '{folder}' is not allowed. Allowed: "
+            "{allowed} (and top-level folders registered in the root INDEX)\n"
+            "[hint] register first: {cmd}",
+        "cmd_memory_delete_folder_segment_invalid":
+            "[error] memory delete: folder segment not allowed: {seg!r} in {folder!r}",
+        "cmd_memory_delete_path_escapes":
+            "[error] memory delete: the path escapes memory/: {path!r}",
+        "cmd_memory_delete_file_absent":
+            "teammode memory delete — file absent (idempotent): {path}",
+        "cmd_memory_delete_stat_failed":
+            "[error] memory delete: failed to check file status — {exc}",
+        "cmd_memory_delete_index_update_failed":
+            "[error] memory delete: INDEX update failed — {exc}",
+        "cmd_memory_delete_unlink_and_rollback_failed":
+            "[error] memory delete: file deletion failed AND INDEX rollback also "
+            "failed — unlink: {exc} / rollback: {rb_exc}",
+        "cmd_memory_delete_unlink_failed_rolled_back":
+            "[error] memory delete: file deletion failed (INDEX rolled back) — {exc}",
+        "cmd_memory_delete_commit_failed":
+            "[warning] memory delete: commit failed — {detail}",
+        "cmd_memory_delete_done_not_committed":
+            "teammode memory delete — {path} deleted (not committed)",
+        "cmd_memory_delete_push_failed":
+            "[warning] memory delete: push failed (local commit preserved) — {detail}",
+        "cmd_memory_delete_done":
+            "teammode memory delete — {path} deleted",
+        "cmd_memory_unknown_action":
+            "[error] memory: unknown action: {action!r}. One of write/delete.",
+
+        # ── cmd_route (memory route upsert/remove) ──
+        "cmd_route_upsert_path_required":
+            "[error] memory route upsert: --path is required.",
+        "cmd_route_upsert_desc_required":
+            "[error] memory route upsert: --desc is required (no guessing the "
+            "2-column description).",
+        "cmd_route_upsert_author_required":
+            "[error] memory route upsert: --author is required.",
+        "cmd_route_upsert_index_update_failed":
+            "[error] memory route upsert: INDEX update failed — {exc}",
+        "cmd_route_upsert_no_change":
+            "teammode memory route upsert — no change (idempotent): {path}",
+        "cmd_route_upsert_done":
+            "teammode memory route upsert — {path} registered",
+        "cmd_route_remove_path_required":
+            "[error] memory route remove: --path is required.",
+        "cmd_route_remove_author_required":
+            "[error] memory route remove: --author is required.",
+        "cmd_route_remove_index_update_failed":
+            "[error] memory route remove: INDEX update failed — {exc}",
+        "cmd_route_remove_no_row":
+            "teammode memory route remove — no such row (idempotent): {path}",
+        "cmd_route_remove_done":
+            "teammode memory route remove — {path} removed",
+        "cmd_route_unknown_subaction":
+            "[error] memory route: unknown sub-action: {sub!r}. One of upsert/remove.",
+        "cmd_route_commit_failed":
+            "[warning] memory route: commit failed — {detail}",
+        "cmd_route_not_committed_suffix":
+            " (not committed)",
+        "cmd_route_push_failed":
+            "[warning] memory route: push failed (local commit preserved) — {detail}",
+
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":

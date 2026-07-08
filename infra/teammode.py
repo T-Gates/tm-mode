@@ -1001,6 +1001,7 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
     install: --install 플래그. True 면 detect_agents loop, False 면 claude 만.
     """
     util_dir = team_root / "infra" / "skills" / "util"
+    lang = _i18n.team_lang(str(team_root))
 
     if action == "list":
         # List available util skills + installed for member
@@ -1023,10 +1024,14 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
 
     if action in ("add", "remove"):
         if member is None:
-            print(f"[error] util {action}: --member <이름> 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_util_member_required", lang,
+                     "[error] util {action}: --member <이름> 가 필요합니다.",
+                     action=action), file=sys.stderr)
             return 2
         if skill_name is None:
-            print(f"[error] util {action}: --skill <스킬명> 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_util_skill_required", lang,
+                     "[error] util {action}: --skill <스킬명> 가 필요합니다.",
+                     action=action), file=sys.stderr)
             return 2
         # Validate member and skill name
         err = _validate_author(member)
@@ -1042,8 +1047,9 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
             # Check skill exists
             skill_src = util_dir / skill_name
             if not skill_src.is_dir() or not (skill_src / "SKILL.md").is_file():
-                print(f"[error] util add: '{skill_name}' 은 존재하지 않는 util 스킬입니다.",
-                      file=sys.stderr)
+                print(_t("cmd_util_add_skill_not_found", lang,
+                         "[error] util add: '{skill}' 은 존재하지 않는 util 스킬입니다.",
+                         skill=skill_name), file=sys.stderr)
                 return 2
             # Source containment guard: resolved 경로가 util_dir 하위여야 한다.
             # 심링크 자체(skill_src)가 util_dir 안에 있으면 충분 — resolved 까지
@@ -1052,9 +1058,10 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
             try:
                 skill_src.resolve().relative_to(util_dir.resolve())
             except ValueError:
-                print(f"[error] util add: '{skill_name}' 소스 경로가 "
-                      f"util 디렉터리 밖을 가리킵니다(containment 거부).",
-                      file=sys.stderr)
+                print(_t("cmd_util_add_containment_rejected", lang,
+                         "[error] util add: '{skill}' 소스 경로가 "
+                         "util 디렉터리 밖을 가리킵니다(containment 거부).",
+                         skill=skill_name), file=sys.stderr)
                 return 2
             # Update json
             skills = _read_util_skills(team_root, member)
@@ -1067,8 +1074,10 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
             # 다음 `on` 시 자동 반영된다.
             if _active_marker(team_root).exists():
                 if settings_path is None and skills_dir is None:
-                    print("teammode util add — 즉시반영 skip "
-                          "(--settings 또는 --install 필요; 다음 on 에서 반영)",
+                    print(_t("cmd_util_immediate_apply_skip", lang,
+                             "teammode util {action} — 즉시반영 skip "
+                             "(--settings 또는 --install 필요; 다음 on 에서 반영)",
+                             action="add"),
                           file=sys.stderr)
                 else:
                     # 멀티에이전트 loop: install 플래그 기준으로 배선 대상 결정.
@@ -1096,7 +1105,9 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                             _uadapter = _adapter_for(_uag)
                         target = _uadapter.skills_dir / skill_name
                         _uadapter._link_one_skill(skill_src, target, layer="util")
-            print(f"teammode util add — {skill_name} 등록됨 (member: {member})")
+            print(_t("cmd_util_add_registered", lang,
+                     "teammode util add — {skill} 등록됨 (member: {member})",
+                     skill=skill_name, member=member))
             return 0
 
         if action == "remove":
@@ -1108,8 +1119,10 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
             # P0-2: settings_path 가 None이면 즉시반영 skip — 실호스트 무접촉.
             if _active_marker(team_root).exists():
                 if settings_path is None and skills_dir is None:
-                    print("teammode util remove — 즉시반영 skip "
-                          "(--settings 또는 --install 필요; 다음 on 에서 반영)",
+                    print(_t("cmd_util_immediate_apply_skip", lang,
+                             "teammode util {action} — 즉시반영 skip "
+                             "(--settings 또는 --install 필요; 다음 on 에서 반영)",
+                             action="remove"),
                           file=sys.stderr)
                 else:
                     # 멀티에이전트 loop: install 플래그 기준으로 배선 대상 결정.
@@ -1137,11 +1150,14 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                         if target.exists() or target.is_symlink():
                             if _uadapter._is_layer_skill(target, "util"):
                                 _uadapter._remove_skill(target)
-            print(f"teammode util remove — {skill_name} 제거됨 (member: {member})")
+            print(_t("cmd_util_remove_removed", lang,
+                     "teammode util remove — {skill} 제거됨 (member: {member})",
+                     skill=skill_name, member=member))
             return 0
 
-    print(f"[error] util: 알 수 없는 action: {action!r}. list/add/remove 중 하나.",
-          file=sys.stderr)
+    print(_t("cmd_util_unknown_action", lang,
+             "[error] util: 알 수 없는 action: {action!r}. list/add/remove 중 하나.",
+             action=action), file=sys.stderr)
     return 2
 
 
@@ -1214,13 +1230,19 @@ def _knowledge_folder_allowed(team_root: Path, norm_folder: str) -> bool:
     return False
 
 
-def _route_upsert_hint_command(top_folder: str, author: str) -> str:
+def _route_upsert_hint_command(top_folder: str, author: str, lang: str = "ko") -> str:
     """`memory route upsert` 안내 명령 한 줄 — 성공-path 힌트(#7)와 거부 힌트(#51)가
     같은 포맷을 공유한다(문구 드리프트 방지). 자동 등재는 하지 않는다 — desc 는 사람 몫.
+
+    i18n(적대검수 — long tail): 이 명령은 `git commit -m '...'`류와 달리 **그대로
+    실행 불가능한 placeholder**(`<루트>`/`<한 줄 설명>`)를 담은 안내문이라, 그 자리
+    표시 문구도 팀 locale 을 따른다(고정 리터럴 커맨드가 아니므로 번역 대상).
     """
+    root_ph = "<root>" if lang == "en" else "<루트>"
+    desc_ph = "<one-line description>" if lang == "en" else "<한 줄 설명>"
     return (f"python infra/teammode.py memory route upsert "
-            f"--root <루트> --path {top_folder} "
-            f"--desc \"<한 줄 설명>\" --author {author}")
+            f"--root {root_ph} --path {top_folder} "
+            f"--desc \"{desc_ph}\" --author {author}")
 
 # INDEX 행 구분자 — 파이프 표 형식
 _INDEX_TABLE_HEADER = "| 가중치 | 경로 | 내용 | 편집일 |"
@@ -1781,21 +1803,32 @@ def _doc_add_session_field(doc_path: Path, session_rel: str) -> bool:
 
 
 def _emit_chat_summary(verb: str, rel_path: str, weight: str | None,
-                        author: str | None, description: str | None) -> None:
+                        author: str | None, description: str | None,
+                        lang: str = "ko") -> None:
     """chat 통지용 한 줄 요약을 stdout 에 출력(A안: 엔진은 MCP 호출 안 함).
 
     스킬/AI 가 이 요약을 받아 chat 슬롯 벤더 MCP 도구로 직접 통지한다.
     엔진은 재료(요약 문자열)만 제공한다.
+
+    i18n(적대검수 — long tail): action 라벨("추가"/"수정"/"삭제")과 "요약=" 키는
+    사람이 읽는 자유 텍스트라 lang 을 따른다 — weight/author 같은 이미 영문인
+    키는 그대로.
     """
-    action_ko = {"write-new": "추가", "write-update": "수정",
-                 "delete": "삭제"}.get(verb, "변경")
-    parts = [f"[chat-notify] memory {action_ko}: {rel_path}"]
+    if lang == "en":
+        action_label = {"write-new": "add", "write-update": "update",
+                        "delete": "delete"}.get(verb, "change")
+        summary_key = "summary"
+    else:
+        action_label = {"write-new": "추가", "write-update": "수정",
+                        "delete": "삭제"}.get(verb, "변경")
+        summary_key = "요약"
+    parts = [f"[chat-notify] memory {action_label}: {rel_path}"]
     if weight:
         parts.append(f"weight={weight}")
     if author:
         parts.append(f"author={author}")
     if description:
-        parts.append(f"요약={description}")
+        parts.append(f"{summary_key}={description}")
     print(" · ".join(parts))
 
 
@@ -1823,27 +1856,36 @@ def cmd_knowledge(team_root: Path, action: str | None,
         (+ 루트 INDEX 라우팅 맵에 등재된 팀 전용 최상위 폴더 — 동적 허용).
         sessions/·meeting/ 은 제외.
     """
+    lang = _i18n.team_lang(str(team_root))
     if action == "write":
         # 필수 인자 검증
         if not folder:
-            print("[error] memory write: --folder 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_memory_write_folder_required", lang,
+                     "[error] memory write: --folder 가 필요합니다."), file=sys.stderr)
             return 2
         if not filename:
-            print("[error] memory write: --filename 이 필요합니다.", file=sys.stderr)
+            print(_t("cmd_memory_write_filename_required", lang,
+                     "[error] memory write: --filename 이 필요합니다."), file=sys.stderr)
             return 2
         if content is None:
-            print("[error] memory write: --content 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_memory_write_content_required", lang,
+                     "[error] memory write: --content 가 필요합니다."), file=sys.stderr)
             return 2
         if not author:
-            print("[error] memory write: --author 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_memory_write_author_required", lang,
+                     "[error] memory write: --author 가 필요합니다."), file=sys.stderr)
             return 2
         if not weight:
-            print("[error] memory write: --weight 가 필요합니다(추측 금지).", file=sys.stderr)
+            print(_t("cmd_memory_write_weight_required", lang,
+                     "[error] memory write: --weight 가 필요합니다(추측 금지)."),
+                  file=sys.stderr)
             return 2
 
         # weight 3-enum 검증 (P2)
         if weight not in _KNOWLEDGE_VALID_WEIGHTS:
-            print(f"[error] memory write: --weight 는 {_KNOWLEDGE_VALID_WEIGHTS} 중 하나여야 합니다: {weight!r}",
+            print(_t("cmd_memory_write_weight_invalid", lang,
+                     "[error] memory write: --weight 는 {valid} 중 하나여야 합니다: {weight!r}",
+                     valid=_KNOWLEDGE_VALID_WEIGHTS, weight=weight),
                   file=sys.stderr)
             return 2
 
@@ -1872,16 +1914,20 @@ def cmd_knowledge(team_root: Path, action: str | None,
             _cp = ord(_ch)
             # 고립 surrogate (U+D800–U+DFFF): category() 호출 전 직접 거부
             if 0xD800 <= _cp <= 0xDFFF:
-                print(f"[error] memory write: --content 에 허용되지 않는 문자가 "
-                      f"있습니다(surrogate U+{_cp:04X}). 제어·포맷·surrogate 문자는 거부됩니다.",
+                print(_t("cmd_memory_write_content_bad_char_surrogate", lang,
+                         "[error] memory write: --content 에 허용되지 않는 문자가 "
+                         "있습니다(surrogate U+{cp:04X}). 제어·포맷·surrogate 문자는 거부됩니다.",
+                         cp=_cp),
                       file=sys.stderr)
                 return 2
             cat = unicodedata.category(_ch)
             # Cc=제어(C0+C1), Cf=포맷(ZWJ·ZWNJ·BOM 등), Cs=surrogate(이미 위에서 처리)
             if cat in ("Cc", "Cf", "Cs"):
-                print(f"[error] memory write: --content 에 허용되지 않는 문자가 "
-                      f"있습니다(U+{_cp:04X}, category={cat}). "
-                      f"제어·포맷·surrogate 문자는 거부됩니다.",
+                print(_t("cmd_memory_write_content_bad_char", lang,
+                         "[error] memory write: --content 에 허용되지 않는 문자가 "
+                         "있습니다(U+{cp:04X}, category={cat}). "
+                         "제어·포맷·surrogate 문자는 거부됩니다.",
+                         cp=_cp, cat=cat),
                       file=sys.stderr)
                 return 2
 
@@ -1900,7 +1946,9 @@ def cmd_knowledge(team_root: Path, action: str | None,
             new_full = new_fm + content
             # 멱등: 같은 내용이면 무변경
             if new_full == existing_text:
-                print(f"teammode memory write — 변경 없음(멱등): {folder}/{filename}")
+                print(_t("cmd_memory_write_no_change", lang,
+                         "teammode memory write — 변경 없음(멱등): {folder}/{filename}",
+                         folder=folder, filename=filename))
                 return 0
             # 본문이 실제로 바뀌었는지 확인 (편집일 결정용)
             old_body = _knowledge_body(existing_text)
@@ -1946,7 +1994,9 @@ def cmd_knowledge(team_root: Path, action: str | None,
             os.replace(str(_tmp_path), str(target_path))
             _tmp_path = None  # os.replace 성공 → 파일이 target 으로 이동됐으므로 정리 불필요
         except (OSError, PermissionError) as exc:
-            print(f"[error] memory write: 파일 쓰기 실패 — {exc}", file=sys.stderr)
+            print(_t("cmd_memory_write_file_write_failed", lang,
+                     "[error] memory write: 파일 쓰기 실패 — {exc}", exc=exc),
+                  file=sys.stderr)
             return 2
         finally:
             # 예외 발생 여부와 무관하게 임시파일 잔류 방지
@@ -1981,10 +2031,13 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 elif _old_file_content is not None:
                     target_path.write_text(_old_file_content, encoding="utf-8")
             except Exception as rb_exc:
-                print(f"[error] memory write: INDEX 갱신 실패 + 파일 롤백도 실패 — "
-                      f"INDEX: {exc} / 롤백: {rb_exc}", file=sys.stderr)
+                print(_t("cmd_memory_write_index_and_rollback_failed", lang,
+                         "[error] memory write: INDEX 갱신 실패 + 파일 롤백도 실패 — "
+                         "INDEX: {exc} / 롤백: {rb_exc}", exc=exc, rb_exc=rb_exc),
+                      file=sys.stderr)
                 return 2
-            print(f"[error] memory write: INDEX 갱신 실패(파일 롤백됨) — {exc}",
+            print(_t("cmd_memory_write_index_failed_rolled_back", lang,
+                     "[error] memory write: INDEX 갱신 실패(파일 롤백됨) — {exc}", exc=exc),
                   file=sys.stderr)
             return 2
 
@@ -2026,7 +2079,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
                          and commit_result.detail not in _COMMIT_SILENT_DETAILS)
 
         # ── chat 통지 재료(A안: 엔진은 요약만 stdout 출력, MCP 호출은 AI) ──────
-        _emit_chat_summary(verb, rel_for_git, weight, author, description)
+        _emit_chat_summary(verb, rel_for_git, weight, author, description, lang)
 
         # ── 루트 라우팅 맵 미등재 힌트(#7, advisory) ──────────────────────
         # 루트 INDEX.md 는 "새 폴더 등재 필수" 인데 write 흐름이 등재 동사
@@ -2038,33 +2091,43 @@ def cmd_knowledge(team_root: Path, action: str | None,
             top_folder = folder.split("/")[0] + "/"
             root_index_path = team_root / "memory" / "INDEX.md"
             if not _root_index_covers_top(root_index_path, top_folder):
-                print(f"[hint] '{top_folder}'가 루트 INDEX에 미등재 — 등록: "
-                      f"{_route_upsert_hint_command(top_folder, author)}")
+                print(_t("cmd_memory_route_not_registered_hint", lang,
+                         "[hint] '{top}'가 루트 INDEX에 미등재 — 등록: {cmd}",
+                         top=top_folder,
+                         cmd=_route_upsert_hint_command(top_folder, author, lang)))
         except Exception:
             pass  # advisory — 힌트 실패가 write 를 막지 않는다
 
         if commit_failed:
-            print(f"[warning] memory write: 커밋 실패 — {commit_result.detail}",
-                  file=sys.stderr)
-            print(f"teammode memory write — {folder}/{filename} 완료(커밋 안 됨)")
+            print(_t("cmd_memory_write_commit_failed", lang,
+                     "[warning] memory write: 커밋 실패 — {detail}",
+                     detail=commit_result.detail), file=sys.stderr)
+            print(_t("cmd_memory_write_done_not_committed", lang,
+                     "teammode memory write — {folder}/{filename} 완료(커밋 안 됨)",
+                     folder=folder, filename=filename))
             return 1
 
         # push 실패는 비차단: 로컬 커밋·memory 변경은 유지, 경고만 출력(RC=0).
         if commit_result.committed and not commit_result.pushed:
-            print(f"[warning] memory write: push 실패(로컬 커밋은 유지) — "
-                  f"{commit_result.detail}", file=sys.stderr)
+            print(_t("cmd_memory_write_push_failed", lang,
+                     "[warning] memory write: push 실패(로컬 커밋은 유지) — {detail}",
+                     detail=commit_result.detail), file=sys.stderr)
 
-        print(f"teammode memory write — {folder}/{filename} 완료")
+        print(_t("cmd_memory_write_done", lang,
+                 "teammode memory write — {folder}/{filename} 완료",
+                 folder=folder, filename=filename))
         return 0
 
     if action == "delete":
         # 필수 인자 검증
         if not rel_path:
-            print("[error] memory delete: --path <memory/상대경로> 가 필요합니다.",
+            print(_t("cmd_memory_delete_path_required", lang,
+                     "[error] memory delete: --path <memory/상대경로> 가 필요합니다."),
                   file=sys.stderr)
             return 2
         if not author:
-            print("[error] memory delete: --author 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_memory_delete_author_required", lang,
+                     "[error] memory delete: --author 가 필요합니다."), file=sys.stderr)
             return 2
 
         # author traversal 가드
@@ -2075,8 +2138,9 @@ def cmd_knowledge(team_root: Path, action: str | None,
 
         # .. 세그먼트 명시 차단 (early: resolve 전에)
         if ".." in rel_path:
-            print(f"[error] memory delete: 경로에 '..' 이 포함될 수 없습니다: {rel_path!r}",
-                  file=sys.stderr)
+            print(_t("cmd_memory_delete_dotdot_forbidden", lang,
+                     "[error] memory delete: 경로에 '..' 이 포함될 수 없습니다: {path!r}",
+                     path=rel_path), file=sys.stderr)
             return 2
 
         # ── P0: symlink 탈출 가드 ──────────────────────────────────
@@ -2085,8 +2149,9 @@ def cmd_knowledge(team_root: Path, action: str | None,
         try:
             memory_dir.relative_to(real_root)
         except ValueError:
-            print(f"[error] memory delete: memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단)",
-                  file=sys.stderr)
+            print(_t("cmd_memory_delete_symlink_escape", lang,
+                     "[error] memory delete: memory/ 가 team_root 밖을 가리킵니다"
+                     "(심링크 탈출 차단)"), file=sys.stderr)
             return 2
 
         # rel_path 는 "memory/..." 형식일 수도 있고 "team/decisions/foo.md" 형식일 수도 있다.
@@ -2102,8 +2167,9 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 rel_for_index = "memory/" + rel_path
                 inner = rel_path
         except ValueError as exc:
-            print(f"[error] memory delete: 경로에 허용되지 않는 문자가 있습니다 — {exc}",
-                  file=sys.stderr)
+            print(_t("cmd_memory_delete_bad_path_chars", lang,
+                     "[error] memory delete: 경로에 허용되지 않는 문자가 있습니다 — {exc}",
+                     exc=exc), file=sys.stderr)
             return 2
 
         # ── P1-1: 허용 폴더 검증 (write 와 동일한 blocked/allowed 규칙) ─────
@@ -2113,16 +2179,18 @@ def cmd_knowledge(team_root: Path, action: str | None,
 
         # INDEX.md 삭제 거부 (root-level INDEX 는 특히)
         if filename_part == "INDEX.md":
-            print(f"[error] memory delete: INDEX.md 는 직접 삭제할 수 없습니다: {rel_path!r}",
-                  file=sys.stderr)
+            print(_t("cmd_memory_delete_index_md_forbidden", lang,
+                     "[error] memory delete: INDEX.md 는 직접 삭제할 수 없습니다: {path!r}",
+                     path=rel_path), file=sys.stderr)
             return 2
 
         # ── filename 문자 검증 (write 와 동일한 정책) ──────────────────
         # 제어문자·전각문자·비ASCII filename 거부 (NUL 등은 ValueError 전에 차단)
         fn_err = _validate_filename_chars(filename_part)
         if fn_err is not None:
-            print(f"[error] memory delete: --path 의 filename 검증 실패 — {fn_err}",
-                  file=sys.stderr)
+            print(_t("cmd_memory_delete_filename_invalid", lang,
+                     "[error] memory delete: --path 의 filename 검증 실패 — {err}",
+                     err=fn_err), file=sys.stderr)
             return 2
 
         # 허용 폴더 검증 — write 와 동일한 blocked/allowed 규칙 (P1-1)
@@ -2130,23 +2198,27 @@ def cmd_knowledge(team_root: Path, action: str | None,
         norm_folder = folder_part.replace("\\", "/").rstrip("/") if folder_part else ""
         if not norm_folder:
             # memory/ 바로 아래 파일 — 허용 폴더 목록에 없음 → 거부
-            print(f"[error] memory delete: 허용 폴더 하위의 파일만 삭제할 수 있습니다. "
-                  f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)}",
+            print(_t("cmd_memory_delete_folder_required", lang,
+                     "[error] memory delete: 허용 폴더 하위의 파일만 삭제할 수 있습니다. "
+                     "허용: {allowed}", allowed=', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)),
                   file=sys.stderr)
             return 2
         # 명시 차단 목록 먼저(blocked 우선 — write 와 동일 규칙)
         for bf in _KNOWLEDGE_BLOCKED_FOLDERS:
             if norm_folder == bf or norm_folder.startswith(bf + "/"):
-                print(f"[error] memory delete: folder '{folder_part}' 는 삭제 대상이 아닙니다"
-                      f"(훅/tm-context 관리 경로)",
+                print(_t("cmd_memory_delete_folder_blocked", lang,
+                         "[error] memory delete: folder '{folder}' 는 삭제 대상이 아닙니다"
+                         "(훅/tm-context 관리 경로)", folder=folder_part),
                       file=sys.stderr)
                 return 2
         if not _knowledge_folder_allowed(team_root, norm_folder):
             top = norm_folder.split("/")[0] + "/"
-            print(f"[error] memory delete: folder '{folder_part}' 는 허용되지 않습니다. "
-                  f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} "
-                  f"(및 루트 INDEX 등재 최상위 폴더)\n"
-                  f"[hint] 먼저 등록: {_route_upsert_hint_command(top, author)}",
+            print(_t("cmd_memory_delete_folder_not_allowed", lang,
+                     "[error] memory delete: folder '{folder}' 는 허용되지 않습니다. "
+                     "허용: {allowed} (및 루트 INDEX 등재 최상위 폴더)\n"
+                     "[hint] 먼저 등록: {cmd}",
+                     folder=folder_part, allowed=', '.join(_KNOWLEDGE_ALLOWED_FOLDERS),
+                     cmd=_route_upsert_hint_command(top, author, lang)),
                   file=sys.stderr)
             return 2
 
@@ -2156,16 +2228,19 @@ def cmd_knowledge(team_root: Path, action: str | None,
         for seg in norm_folder.split("/"):
             if seg in ("", ".", "..") or not seg.isascii() \
                     or not all(c.isalnum() or c in "-_" for c in seg):
-                print(f"[error] memory delete: folder 세그먼트가 허용되지 않습니다: "
-                      f"{seg!r} in {folder_part!r}", file=sys.stderr)
+                print(_t("cmd_memory_delete_folder_segment_invalid", lang,
+                         "[error] memory delete: folder 세그먼트가 허용되지 않습니다: "
+                         "{seg!r} in {folder!r}", seg=seg, folder=folder_part),
+                      file=sys.stderr)
                 return 2
 
         # containment 가드
         try:
             candidate.relative_to(memory_dir)
         except ValueError:
-            print(f"[error] memory delete: 경로가 memory/ 를 벗어납니다: {rel_path!r}",
-                  file=sys.stderr)
+            print(_t("cmd_memory_delete_path_escapes", lang,
+                     "[error] memory delete: 경로가 memory/ 를 벗어납니다: {path!r}",
+                     path=rel_path), file=sys.stderr)
             return 2
 
         target_path = candidate
@@ -2179,15 +2254,18 @@ def cmd_knowledge(team_root: Path, action: str | None,
         try:
             _st_mode = os.stat(target_path).st_mode
         except FileNotFoundError:
-            print(f"teammode memory delete — 파일 없음(멱등): {rel_path}")
+            print(_t("cmd_memory_delete_file_absent", lang,
+                     "teammode memory delete — 파일 없음(멱등): {path}", path=rel_path))
             return 0
         except (OSError, PermissionError) as exc:
-            print(f"[error] memory delete: 파일 상태 확인 실패 — {exc}",
+            print(_t("cmd_memory_delete_stat_failed", lang,
+                     "[error] memory delete: 파일 상태 확인 실패 — {exc}", exc=exc),
                   file=sys.stderr)
             return 2
         if not _stat.S_ISREG(_st_mode):
             # 디렉토리·특수파일은 삭제 대상 아님 — 기존 is_file() False 와 동일 멱등.
-            print(f"teammode memory delete — 파일 없음(멱등): {rel_path}")
+            print(_t("cmd_memory_delete_file_absent", lang,
+                     "teammode memory delete — 파일 없음(멱등): {path}", path=rel_path))
             return 0
 
         # ── 파일 I/O (OSError/PermissionError → exit 2 + 친화 메시지) ─────────
@@ -2209,7 +2287,9 @@ def cmd_knowledge(team_root: Path, action: str | None,
         try:
             _index_remove_row(index_path, rel_for_index)
         except (OSError, PermissionError) as exc:
-            print(f"[error] memory delete: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            print(_t("cmd_memory_delete_index_update_failed", lang,
+                     "[error] memory delete: INDEX 갱신 실패 — {exc}", exc=exc),
+                  file=sys.stderr)
             return 2
 
         try:
@@ -2220,10 +2300,13 @@ def cmd_knowledge(team_root: Path, action: str | None,
                 if _index_backup is not None:
                     index_path.write_text(_index_backup, encoding="utf-8")
             except Exception as rb_exc:
-                print(f"[error] memory delete: 파일 삭제 실패 + INDEX 롤백도 실패 — "
-                      f"unlink: {exc} / 롤백: {rb_exc}", file=sys.stderr)
+                print(_t("cmd_memory_delete_unlink_and_rollback_failed", lang,
+                         "[error] memory delete: 파일 삭제 실패 + INDEX 롤백도 실패 — "
+                         "unlink: {exc} / 롤백: {rb_exc}", exc=exc, rb_exc=rb_exc),
+                      file=sys.stderr)
                 return 2
-            print(f"[error] memory delete: 파일 삭제 실패(INDEX 롤백됨) — {exc}",
+            print(_t("cmd_memory_delete_unlink_failed_rolled_back", lang,
+                     "[error] memory delete: 파일 삭제 실패(INDEX 롤백됨) — {exc}", exc=exc),
                   file=sys.stderr)
             return 2
 
@@ -2263,24 +2346,29 @@ def cmd_knowledge(team_root: Path, action: str | None,
                          and commit_result.detail not in _COMMIT_SILENT_DETAILS)
 
         # ── chat 통지 재료(A안) ────────────────────────────────────────────
-        _emit_chat_summary("delete", rel_for_index, None, author, None)
+        _emit_chat_summary("delete", rel_for_index, None, author, None, lang)
 
         if commit_failed:
-            print(f"[warning] memory delete: 커밋 실패 — {commit_result.detail}",
-                  file=sys.stderr)
-            print(f"teammode memory delete — {rel_path} 삭제됨(커밋 안 됨)")
+            print(_t("cmd_memory_delete_commit_failed", lang,
+                     "[warning] memory delete: 커밋 실패 — {detail}",
+                     detail=commit_result.detail), file=sys.stderr)
+            print(_t("cmd_memory_delete_done_not_committed", lang,
+                     "teammode memory delete — {path} 삭제됨(커밋 안 됨)", path=rel_path))
             return 1
 
         # push 실패는 비차단: 로컬 커밋·memory 변경은 유지, 경고만 출력(RC=0).
         if commit_result.committed and not commit_result.pushed:
-            print(f"[warning] memory delete: push 실패(로컬 커밋은 유지) — "
-                  f"{commit_result.detail}", file=sys.stderr)
+            print(_t("cmd_memory_delete_push_failed", lang,
+                     "[warning] memory delete: push 실패(로컬 커밋은 유지) — {detail}",
+                     detail=commit_result.detail), file=sys.stderr)
 
-        print(f"teammode memory delete — {rel_path} 삭제됨")
+        print(_t("cmd_memory_delete_done", lang,
+                 "teammode memory delete — {path} 삭제됨", path=rel_path))
         return 0
 
-    print(f"[error] memory: 알 수 없는 action: {action!r}. write/delete 중 하나.",
-          file=sys.stderr)
+    print(_t("cmd_memory_unknown_action", lang,
+             "[error] memory: 알 수 없는 action: {action!r}. write/delete 중 하나.",
+             action=action), file=sys.stderr)
     return 2
 
 
@@ -2339,18 +2427,22 @@ def cmd_route(team_root: Path, sub_action: str | None,
       - 엔진이 python 직접 write → kb-write-guard 우회(unlock 불필요).
     """
     index_path = team_root / "memory" / "INDEX.md"
+    lang = _i18n.team_lang(str(team_root))
 
     if sub_action == "upsert":
         # 필수 인자 검증 (2열 산문은 자동 추출 불가 → --desc 필수)
         if not path:
-            print("[error] memory route upsert: --path 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_route_upsert_path_required", lang,
+                     "[error] memory route upsert: --path 가 필요합니다."), file=sys.stderr)
             return 2
         if desc is None:
-            print("[error] memory route upsert: --desc 가 필요합니다(2열 설명은 추측 금지).",
+            print(_t("cmd_route_upsert_desc_required", lang,
+                     "[error] memory route upsert: --desc 가 필요합니다(2열 설명은 추측 금지)."),
                   file=sys.stderr)
             return 2
         if not author:
-            print("[error] memory route upsert: --author 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_route_upsert_author_required", lang,
+                     "[error] memory route upsert: --author 가 필요합니다."), file=sys.stderr)
             return 2
 
         # author traversal 가드
@@ -2369,24 +2461,31 @@ def cmd_route(team_root: Path, sub_action: str | None,
         try:
             changed = _root_index_upsert(index_path, path, desc)
         except (OSError, PermissionError) as exc:
-            print(f"[error] memory route upsert: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            print(_t("cmd_route_upsert_index_update_failed", lang,
+                     "[error] memory route upsert: INDEX 갱신 실패 — {exc}", exc=exc),
+                  file=sys.stderr)
             return 2
 
         if not changed:
-            print(f"teammode memory route upsert — 변경 없음(멱등): {path}")
+            print(_t("cmd_route_upsert_no_change", lang,
+                     "teammode memory route upsert — 변경 없음(멱등): {path}", path=path))
             return 0
 
-        return _route_commit(team_root, index_path,
-                             message=f"docs(memory): route upsert {path}",
-                             done_msg=f"teammode memory route upsert — {path} 등재")
+        return _route_commit(
+            team_root, index_path, lang,
+            message=f"docs(memory): route upsert {path}",
+            done_msg=_t("cmd_route_upsert_done", lang,
+                       "teammode memory route upsert — {path} 등재", path=path))
 
     if sub_action == "remove":
         # 필수 인자 검증 (remove 는 --desc 불필요)
         if not path:
-            print("[error] memory route remove: --path 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_route_remove_path_required", lang,
+                     "[error] memory route remove: --path 가 필요합니다."), file=sys.stderr)
             return 2
         if not author:
-            print("[error] memory route remove: --author 가 필요합니다.", file=sys.stderr)
+            print(_t("cmd_route_remove_author_required", lang,
+                     "[error] memory route remove: --author 가 필요합니다."), file=sys.stderr)
             return 2
 
         err = _validate_author(author)
@@ -2402,27 +2501,35 @@ def cmd_route(team_root: Path, sub_action: str | None,
         try:
             changed = _root_index_remove_row(index_path, path)
         except (OSError, PermissionError) as exc:
-            print(f"[error] memory route remove: INDEX 갱신 실패 — {exc}", file=sys.stderr)
+            print(_t("cmd_route_remove_index_update_failed", lang,
+                     "[error] memory route remove: INDEX 갱신 실패 — {exc}", exc=exc),
+                  file=sys.stderr)
             return 2
 
         if not changed:
-            print(f"teammode memory route remove — 행 없음(멱등): {path}")
+            print(_t("cmd_route_remove_no_row", lang,
+                     "teammode memory route remove — 행 없음(멱등): {path}", path=path))
             return 0
 
-        return _route_commit(team_root, index_path,
-                             message=f"docs(memory): route remove {path}",
-                             done_msg=f"teammode memory route remove — {path} 제거")
+        return _route_commit(
+            team_root, index_path, lang,
+            message=f"docs(memory): route remove {path}",
+            done_msg=_t("cmd_route_remove_done", lang,
+                       "teammode memory route remove — {path} 제거", path=path))
 
-    print(f"[error] memory route: 알 수 없는 서브액션: {sub_action!r}. "
-          f"upsert/remove 중 하나.", file=sys.stderr)
+    print(_t("cmd_route_unknown_subaction", lang,
+             "[error] memory route: 알 수 없는 서브액션: {sub!r}. "
+             "upsert/remove 중 하나.", sub=sub_action), file=sys.stderr)
     return 2
 
 
-def _route_commit(team_root: Path, index_path: Path,
+def _route_commit(team_root: Path, index_path: Path, lang: str,
                   message: str, done_msg: str) -> int:
     """루트 라우팅 맵 변경 후 do_commit([memory/INDEX.md], push=True) — memory write 미러.
 
     push 실패는 비차단(로컬 커밋 보존, 경고만). 단일 파일 변경이라 부분 실패 없음.
+    done_msg 는 호출부(cmd_route)가 이미 lang 에 맞게 만들어 넘긴다 — 여기서는
+    그 뒤에 붙는 접미사(커밋 실패 시)만 lang 을 따른다.
     """
     commit_result = _git_ops.do_commit(
         str(team_root),
@@ -2437,15 +2544,17 @@ def _route_commit(team_root: Path, index_path: Path,
                      and commit_result.detail not in _COMMIT_SILENT_DETAILS)
 
     if commit_failed:
-        print(f"[warning] memory route: 커밋 실패 — {commit_result.detail}",
-              file=sys.stderr)
-        print(f"{done_msg}(커밋 안 됨)")
+        print(_t("cmd_route_commit_failed", lang,
+                 "[warning] memory route: 커밋 실패 — {detail}",
+                 detail=commit_result.detail), file=sys.stderr)
+        print(done_msg + _t("cmd_route_not_committed_suffix", lang, "(커밋 안 됨)"))
         return 1
 
     # push 실패는 비차단: 로컬 커밋·맵 변경은 유지, 경고만 출력(RC=0).
     if commit_result.committed and not commit_result.pushed:
-        print(f"[warning] memory route: push 실패(로컬 커밋은 유지) — "
-              f"{commit_result.detail}", file=sys.stderr)
+        print(_t("cmd_route_push_failed", lang,
+                 "[warning] memory route: push 실패(로컬 커밋은 유지) — {detail}",
+                 detail=commit_result.detail), file=sys.stderr)
 
     print(done_msg)
     return 0
