@@ -194,6 +194,62 @@ MESSAGES = {
         "cmd_on_util_skill_link_failed":
             "[warn] util skill '{skill}' link failed ({dir}) → skipped: {err}",
 
+        # ── 엔진 long tail(#104 후속) — cmd_log/cmd_pull/cmd_commit ──
+        "cmd_log_deprecated":
+            "[deprecated] Instead of the `log` verb, write the session log "
+            "directly via Read (tail offset)+Edit (saves context, keeps "
+            "fidelity). This verb is kept for backward compatibility only.",
+        "cmd_log_path_escape":
+            "[error] The log path escapes the sessions directory.",
+        "cmd_log_recorded":
+            "tm-mode log — recorded {author}/{date}.md",
+        "cmd_pull_updated":
+            "tm-mode pull — updated: {detail}",
+        "cmd_pull_skipped":
+            "tm-mode pull — skipped (non-fatal): {detail}",
+        "cmd_commit_push_failed_suffix":
+            " (push failed — commit preserved)",
+        "cmd_commit_done":
+            "tm-mode commit — committed{suffix}: {detail}",
+        "cmd_commit_skipped":
+            "tm-mode commit — skipped (non-fatal): {detail}",
+
+        # ── cmd_context ──
+        "cmd_context_no_index":
+            "(no INDEX.md)",
+        "cmd_context_members_header":
+            "--- members (most recent work-day log summary per member) ---",
+        "cmd_context_no_summary":
+            "(no summary — legacy log)",
+        "cmd_context_no_logs":
+            "(no session logs — nothing to summarize)",
+
+        # ── cmd_issue ──
+        "cmd_issue_slot_not_connected":
+            "[info] The issues slot is not connected. Connect "
+            "services.issues in team.config.json (tm-connect).",
+
+        # ── cmd_memory_unlock ──
+        "cmd_memory_unlock_bad_subaction":
+            "[error] memory unlock: requires a begin or end sub-action — "
+            "usage: teammode.py memory unlock {begin|end} --root <team-root>",
+        "cmd_memory_unlock_guard_load_failed":
+            "[error] memory unlock: could not load infra/hooks/kb-write-guard.py "
+            "(single source for the flag path convention).",
+        "cmd_memory_unlock_no_session_id":
+            "[error] memory unlock: could not determine the session id — no "
+            "CLAUDE_SESSION_ID/CLAUDE_CODE_SESSION_ID env and no SessionStart "
+            "relay file. Run this from within an agent session.",
+        "cmd_memory_unlock_begin_write_failed":
+            "[error] memory unlock begin: failed to create the flag — {exc}",
+        "cmd_memory_unlock_begin_done":
+            "teammode memory unlock begin — edit window open (session={session_id}, "
+            "source={source}, TTL {ttl}s): {flag}",
+        "cmd_memory_unlock_end_remove_failed":
+            "[error] memory unlock end: failed to remove the flag — {exc}",
+        "cmd_memory_unlock_end_done":
+            "teammode memory unlock end — edit window closed (session={session_id}): {flag}",
+
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":

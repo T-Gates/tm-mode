@@ -928,13 +928,15 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
     엔진은 요약하지 않는다(--text 그대로 보존). 하루 1파일 append, frontmatter 자동.
     summary 는 첫 기록의 첫 줄로 초기화(스킬/사람이 갱신; 엔진은 교체 판단 안 함).
     """
+    lang = _i18n.team_lang(str(team_root))
     err = _validate_author(author)
     if err is not None:
         print(f"[error] {err}", file=sys.stderr)
         return 2
 
-    print("[deprecated] log 동사 대신 세션로그를 Read(끝 offset)+Edit 로 직접 쓰세요 "
-          "(컨텍스트 절약·충실도). 이 동사는 하위호환으로만 유지됩니다.", file=sys.stderr)
+    print(_t("cmd_log_deprecated", lang,
+             "[deprecated] log 동사 대신 세션로그를 Read(끝 offset)+Edit 로 직접 쓰세요 "
+             "(컨텍스트 절약·충실도). 이 동사는 하위호환으로만 유지됩니다."), file=sys.stderr)
 
     date_str = _workday.workday_str(now)
     sessions_dir = team_root / "memory" / "team" / "sessions" / author
@@ -942,7 +944,8 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
     # 방어: 정규화 후 경로가 sessions_dir 밖으로 새지 않는지 재확인(이중 방어).
     resolved = log_path.resolve()
     if not str(resolved).startswith(str(sessions_dir.resolve())):
-        print("[error] 로그 경로가 세션 디렉토리를 벗어납니다.", file=sys.stderr)
+        print(_t("cmd_log_path_escape", lang,
+                 "[error] 로그 경로가 세션 디렉토리를 벗어납니다."), file=sys.stderr)
         return 2
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -968,7 +971,8 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
             f.write(_frontmatter(author, date_str, summary))
             f.write(entry)
 
-    print(f"tm-mode log — {author}/{date_str}.md 기록됨")
+    print(_t("cmd_log_recorded", lang,
+             "tm-mode log — {author}/{date}.md 기록됨", author=author, date=date_str))
     return 0
 
 
@@ -2454,12 +2458,15 @@ def cmd_pull(team_root: Path) -> int:
     비치명(우아한 축소): git 아님·오프라인·ff불가·타임아웃 → exit 1 + 안내, 크래시 없음.
     엔진은 절대 워킹트리를 오염시키지 않는다(ff-only).
     """
+    lang = _i18n.team_lang(str(team_root))
     result = _git_ops.do_pull(str(team_root))
     if result.ok:
-        print(f"tm-mode pull — 최신화됨: {result.detail or 'up-to-date'}")
+        print(_t("cmd_pull_updated", lang, "tm-mode pull — 최신화됨: {detail}",
+                 detail=result.detail or 'up-to-date'))
         return 0
     # 비치명: 작업을 막지 않되, 무엇이 안 됐는지 알린다(스킬/사람이 판단).
-    print(f"tm-mode pull — 건너뜀(비치명): {result.detail}", file=sys.stderr)
+    print(_t("cmd_pull_skipped", lang, "tm-mode pull — 건너뜀(비치명): {detail}",
+             detail=result.detail), file=sys.stderr)
     return 1
 
 
@@ -2473,14 +2480,18 @@ def cmd_commit(team_root: Path, message: str, push: bool,
     paths: 스테이징 범위 한정 경로 목록. None이면 git add -A(전체), 지정하면 해당
     경로만 stage(세션로그 단독 커밋 등 안전 모드). do_commit 의 paths 인자로 그대로 전달.
     """
+    lang = _i18n.team_lang(str(team_root))
     result = _git_ops.do_commit(str(team_root), message=message, push=push, paths=paths)
     if result.ok:
         suffix = " (pushed)" if result.pushed else (
-            " (push 실패·커밋은 보존)" if push else "")
-        print(f"tm-mode commit — 커밋됨{suffix}: {result.detail}")
+            _t("cmd_commit_push_failed_suffix", lang, " (push 실패·커밋은 보존)")
+            if push else "")
+        print(_t("cmd_commit_done", lang, "tm-mode commit — 커밋됨{suffix}: {detail}",
+                 suffix=suffix, detail=result.detail))
         return 0
     # 변경 없음/git 아님 등 — 비치명. 작업을 막지 않되 사유를 알린다.
-    print(f"tm-mode commit — 건너뜀(비치명): {result.detail}", file=sys.stderr)
+    print(_t("cmd_commit_skipped", lang, "tm-mode commit — 건너뜀(비치명): {detail}",
+             detail=result.detail), file=sys.stderr)
     return 1
 
 
@@ -2596,6 +2607,7 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
     텍스트 모드: 사람/에이전트가 읽는 섹션 구조(INDEX / 상태 / 멤버별 summary).
     JSON 모드(--json): 스킬이 파싱하는 구조화 데이터.
     """
+    lang = _i18n.team_lang(str(team_root))
     index_text = _read_index(team_root)
     members = _collect_members(team_root)
     # config.members 의 role 을 author 로 매칭해 보강 (A2.3 — 죽은필드 방지).
@@ -2616,12 +2628,15 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
         return 0
 
     lines = ["=== tm-mode context ===", f"state: {state}", "", "--- INDEX ---"]
-    lines.append(index_text.rstrip() if index_text else "(INDEX.md 없음)")
+    lines.append(index_text.rstrip() if index_text else
+                 _t("cmd_context_no_index", lang, "(INDEX.md 없음)"))
     lines.append("")
-    lines.append("--- members (멤버별 최근 작업일 1파일 summary) ---")
+    lines.append(_t("cmd_context_members_header", lang,
+                    "--- members (멤버별 최근 작업일 1파일 summary) ---"))
     if members:
         for m in members:
-            summ = m["summary"] if m["summary"] else "(summary 없음 — 구로그)"
+            summ = m["summary"] if m["summary"] else _t(
+                "cmd_context_no_summary", lang, "(summary 없음 — 구로그)")
             # role 있으면 "이름(role)" 표기 (A2.3) — 없으면 이름만(무회귀).
             # role 을 한 줄로 새니타이즈(개행·제어문자 → 공백): config 검증을 우회한
             # role 이라도 텍스트 출력에서 가짜 멤버 라인을 주입하지 못하게 방어 이중화(P2-1).
@@ -2630,7 +2645,8 @@ def cmd_context(team_root: Path, as_json: bool) -> int:
             lines.append(f"- {who} [{m['date']}] summary: {summ}")
             lines.append(f"    file: {m['file']}")
     else:
-        lines.append("(세션로그 없음 — summary 수집 대상 0)")
+        lines.append(_t("cmd_context_no_logs", lang,
+                        "(세션로그 없음 — summary 수집 대상 0)"))
     print("\n".join(lines))
     return 0
 
@@ -2695,8 +2711,10 @@ def cmd_issue(team_root: Path, action: str | None, fields: dict) -> int:
     }
     if provider is None:
         # 빈 슬롯 = 1급 시민(§7.2). 비치명 안내 후 exit 0 — 작업을 막지 않는다.
-        print("[info] issues 슬롯이 연결돼 있지 않습니다. "
-              "team.config.json 의 services.issues 를 연결하세요(tm-connect).")
+        lang = _i18n.team_lang(str(team_root))
+        print(_t("cmd_issue_slot_not_connected", lang,
+                 "[info] issues 슬롯이 연결돼 있지 않습니다. "
+                 "team.config.json 의 services.issues 를 연결하세요(tm-connect)."))
         return 0
     # 연결 슬롯: 정규 입력 스키마를 JSON 으로 echo(action_map 변환 없음 — 어댑터/스킬 몫).
     print(json.dumps(schema, ensure_ascii=False))
@@ -2778,23 +2796,27 @@ def cmd_memory_unlock(team_root: Path, sub_action) -> int:
 
     TTL(guard.KB_UNLOCK_TTL_SECONDS=300s)은 guard 가 강제 — begin 잔류도 5분 후 만료.
     """
+    lang = _i18n.team_lang(str(team_root))
     if sub_action not in ("begin", "end"):
-        print("[error] memory unlock: begin 또는 end 서브액션이 필요합니다 — "
-              "usage: teammode.py memory unlock {begin|end} --root <팀루트>",
+        print(_t("cmd_memory_unlock_bad_subaction", lang,
+                 "[error] memory unlock: begin 또는 end 서브액션이 필요합니다 — "
+                 "usage: teammode.py memory unlock {begin|end} --root <팀루트>"),
               file=sys.stderr)
         return 2
 
     guard = _load_kb_guard()
     if guard is None:
-        print("[error] memory unlock: infra/hooks/kb-write-guard.py 를 로드할 수 "
-              "없습니다(플래그 경로 규약의 단일 소스).", file=sys.stderr)
+        print(_t("cmd_memory_unlock_guard_load_failed", lang,
+                 "[error] memory unlock: infra/hooks/kb-write-guard.py 를 로드할 수 "
+                 "없습니다(플래그 경로 규약의 단일 소스)."), file=sys.stderr)
         return 1
 
     session_id, source = _resolve_unlock_session_id(guard, team_root)
     if not session_id:
-        print("[error] memory unlock: 세션 id 를 결정할 수 없습니다 — "
-              "CLAUDE_SESSION_ID/CLAUDE_CODE_SESSION_ID env 도 없고 SessionStart "
-              "relay 파일도 없습니다. 에이전트 세션 안에서 실행하세요.",
+        print(_t("cmd_memory_unlock_no_session_id", lang,
+                 "[error] memory unlock: 세션 id 를 결정할 수 없습니다 — "
+                 "CLAUDE_SESSION_ID/CLAUDE_CODE_SESSION_ID env 도 없고 SessionStart "
+                 "relay 파일도 없습니다. 에이전트 세션 안에서 실행하세요."),
               file=sys.stderr)
         return 2
 
@@ -2817,11 +2839,15 @@ def cmd_memory_unlock(team_root: Path, sub_action) -> int:
             except OSError:
                 pass
         except OSError as exc:
-            print(f"[error] memory unlock begin: 플래그 생성 실패 — {exc}",
+            print(_t("cmd_memory_unlock_begin_write_failed", lang,
+                     "[error] memory unlock begin: 플래그 생성 실패 — {exc}", exc=exc),
                   file=sys.stderr)
             return 1
-        print(f"teammode memory unlock begin — 편집 창 열림(session={session_id}, "
-              f"source={source}, TTL {guard.KB_UNLOCK_TTL_SECONDS}s): {flag}")
+        print(_t("cmd_memory_unlock_begin_done", lang,
+                 "teammode memory unlock begin — 편집 창 열림(session={session_id}, "
+                 "source={source}, TTL {ttl}s): {flag}",
+                 session_id=session_id, source=source,
+                 ttl=guard.KB_UNLOCK_TTL_SECONDS, flag=flag))
         return 0
 
     # end — 멱등 제거
@@ -2830,9 +2856,13 @@ def cmd_memory_unlock(team_root: Path, sub_action) -> int:
     except FileNotFoundError:
         pass  # 이미 없음(TTL 만료 후 등) — 멱등
     except OSError as exc:
-        print(f"[error] memory unlock end: 플래그 제거 실패 — {exc}", file=sys.stderr)
+        print(_t("cmd_memory_unlock_end_remove_failed", lang,
+                 "[error] memory unlock end: 플래그 제거 실패 — {exc}", exc=exc),
+              file=sys.stderr)
         return 1
-    print(f"teammode memory unlock end — 편집 창 닫힘(session={session_id}): {flag}")
+    print(_t("cmd_memory_unlock_end_done", lang,
+             "teammode memory unlock end — 편집 창 닫힘(session={session_id}): {flag}",
+             session_id=session_id, flag=flag))
     return 0
 
 
