@@ -97,7 +97,7 @@ def test_notice_differs_shows_update_available(team_with_stale_notice):
     proc = _run_hook(team_with_stale_notice)
     assert proc.returncode == 0, proc.stderr
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "tm-mode update" in ctx, f"엔진 업데이트 안내 없음: {ctx[:300]}"
+    assert "엔진 업데이트가 upstream" in ctx, f"엔진 업데이트 안내 없음: {ctx[:300]}"
 
 
 def test_notice_same_shows_nothing(tmp_path):
@@ -132,7 +132,7 @@ def test_notice_same_shows_nothing(tmp_path):
     proc = _run_hook(team)
     assert proc.returncode == 0, proc.stderr
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "tm-mode update" not in ctx, f"동일한데 안내가 나타남: {ctx[:300]}"
+    assert "엔진 업데이트가 upstream" not in ctx, f"동일한데 안내가 나타남: {ctx[:300]}"
 
 
 def test_no_upstream_remote_does_not_crash(tmp_path):
@@ -152,7 +152,7 @@ def test_no_upstream_remote_does_not_crash(tmp_path):
     proc = _run_hook(team)
     assert proc.returncode == 0, proc.stderr
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "tm-mode update" not in ctx
+    assert "엔진 업데이트가 upstream" not in ctx
 
 
 def test_hook_makes_no_new_fetch(team_with_stale_notice):
@@ -170,6 +170,6 @@ def test_hook_makes_no_new_fetch(team_with_stale_notice):
     proc = _run_hook(team_with_stale_notice)
     assert proc.returncode == 0, proc.stderr
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "tm-mode update" in ctx, (
+    assert "엔진 업데이트가 upstream" in ctx, (
         "upstream 원격이 접근 불가한데도 안내가 사라짐 — 훅이 새로 fetch 를 "
         f"시도했다가 실패한 것으로 보임(로컬 캐시만 써야 함): {ctx[:300]}")

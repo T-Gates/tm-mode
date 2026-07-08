@@ -24,6 +24,9 @@ This session is in team mode. Work by actively using the team's memory (context)
 - Look up with `tm-memory` / add & update with `tm-manage-memory`.
 - When the user states a decision or memory to leave for the team, record it with `tm-manage-memory`. Accumulated memory is auto-injected into the next session.
 
+## If you see an engine-update notice — ask first
+- If the session-start context shows an engine-update notice (text telling you to apply it with `tm-mode update`), tell the user right away and ask whether to apply it: "There's a tm-mode engine update available — want me to apply it with `tm-mode update`?"
+
 ## If you spot a problem in teammode itself — suggest reporting it upstream
 - If you find a bug, friction, or improvement in the tm-mode product (`infra/`), don't bury it — suggest reporting it to the user:
   > "Shall I report this to the teammode upstream repo?"

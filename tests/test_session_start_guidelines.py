@@ -88,6 +88,43 @@ def test_guidelines_absent_does_not_crash(tmp_path):
     assert out != "" or True  # 활성이면 output 있음 — 크래시만 없으면 OK
 
 
+def test_real_guidelines_ko_mentions_engine_update_notice(tmp_path):
+    """실제 배포되는 infra/guidelines.md 에 엔진 업데이트 안내 지침이 들어있다(ko).
+
+    합성 fixture 가 아니라 REPO 의 실제 guidelines.md 를 복사해 검증 — 문구가
+    실린 파일 자체가 바뀌어도(리라이트) 이 계약(안내 지침 존재)만은 깨지지 않게.
+    """
+    _seed_active(tmp_path)
+    infra_dir = tmp_path / "infra"
+    infra_dir.mkdir()
+    real_ko = (REPO / "infra" / "guidelines.md").read_text(encoding="utf-8")
+    (infra_dir / "guidelines.md").write_text(real_ko, encoding="utf-8")
+
+    proc = _run_hook(_payload(), tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "tm-mode update" in ctx and "먼저 물어본다" in ctx, (
+        f"실제 guidelines.md 의 엔진 업데이트 안내 지침이 주입되지 않음: {ctx[:400]}")
+
+
+def test_real_guidelines_en_mentions_engine_update_notice(tmp_path):
+    """실제 배포되는 infra/guidelines.en.md 에도 같은 지침이 들어있다(en)."""
+    (tmp_path / "memory" / "team" / "sessions").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".teammode-active").write_text("")
+    (tmp_path / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "en_US"}}), encoding="utf-8")
+    infra_dir = tmp_path / "infra"
+    infra_dir.mkdir()
+    real_en = (REPO / "infra" / "guidelines.en.md").read_text(encoding="utf-8")
+    (infra_dir / "guidelines.en.md").write_text(real_en, encoding="utf-8")
+
+    proc = _run_hook(_payload(), tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "tm-mode update" in ctx and "ask first" in ctx, (
+        f"실제 guidelines.en.md 의 엔진 업데이트 안내 지침이 주입되지 않음: {ctx[:400]}")
+
+
 def test_team_custom_guidelines_in_context(tmp_path):
     """memory/team/guidelines.md (팀 커스텀) 내용도 additionalContext 에 포함된다."""
     _seed_active(tmp_path)
