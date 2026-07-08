@@ -449,7 +449,11 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     install=True (--install 플래그)일 때만 detect_agents loop 로 전 에이전트 배선.
     install=False (--settings <격리경로> 모드)면 claude 만 배선 — 실호스트
     ~/.codex 등 무접촉. 경로 비교는 보조 진단으로만 사용하고 정책 판정에 쓰지 않는다.
+
+    i18n(적대검수 발견 — addendum 2): greeting(팀 커스텀 가능 필드)은 그대로 출력
+    (번역 금지). 배선/util 스킬 실패 [warn] 은 제품 고정 어휘라 team_lang 을 따른다.
     """
+    lang = _i18n.team_lang(str(team_root))
     # 배너는 엔진이 stdout 에 찍지 않는다(toolkit 패턴) — 에이전트가 memory/banner.txt 를
     # Read 해 코드펜스(```)로 감싸 웰컴 메시지의 첫 번째 요소로 출력한다.
     # 단, 에이전트가 Read 할 수 있도록 banner.txt 캐시는 보장한다(없으면 fallback 생성).
@@ -517,7 +521,9 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
         _active_marker(team_root).write_text("", encoding="utf-8")
     # 실패 에이전트 경고 출력
     for _ag_name, _ag_err in _failed_agents:
-        print(f"[warn] {_ag_name} 에이전트 배선 실패 → skip: {_ag_err}")
+        print(_t("cmd_on_agent_wiring_failed", lang,
+                 "[warn] {agent} 에이전트 배선 실패 → skip: {err}",
+                 agent=_ag_name, err=_ag_err))
     # 대표 어댑터가 없는 경우(전부 실패) 방어 — util replay 건너뜀
     if _primary_adapter is None:
         return 1
@@ -530,12 +536,15 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
             # add 경로(_validate_author)와 동일 규칙으로 on 읽기 경로도 필터.
             err = _validate_author(skill_name)
             if err is not None:
-                print(f"[warn] util 스킬 '{skill_name}' 무효(traversal 위험) → skip: {err}")
+                print(_t("cmd_on_util_skill_invalid", lang,
+                         "[warn] util 스킬 '{skill}' 무효(traversal 위험) → skip: {err}",
+                         skill=skill_name, err=err))
                 continue
             # infra/skills/util/<name> 실재 확인 (on 읽기 경로도 이중 방어)
             src = team_root / "infra" / "skills" / "util" / skill_name
             if not src.is_dir() or not (src / "SKILL.md").is_file():
-                print(f"[warn] util 스킬 '{skill_name}' 소스 없음 → skip")
+                print(_t("cmd_on_util_skill_missing", lang,
+                         "[warn] util 스킬 '{skill}' 소스 없음 → skip", skill=skill_name))
                 continue
             # 지적2: 모든 어댑터에 util 심링크 적용 (기존: 대표 어댑터만)
             # util link 실패가 cmd_on 전체를 crash시키지 않도록 어댑터별 try/except.
@@ -544,7 +553,9 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
                     target = _adp.skills_dir / skill_name
                     _adp._link_one_skill(src, target, layer="util")
                 except Exception as _util_exc:  # noqa: BLE001
-                    print(f"[warn] util 스킬 '{skill_name}' 링크 실패({_adp.skills_dir}) → skip: {_util_exc}")
+                    print(_t("cmd_on_util_skill_link_failed", lang,
+                             "[warn] util 스킬 '{skill}' 링크 실패({dir}) → skip: {err}",
+                             skill=skill_name, dir=_adp.skills_dir, err=_util_exc))
     return 0
 
 

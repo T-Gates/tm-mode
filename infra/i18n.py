@@ -140,6 +140,17 @@ MESSAGES = {
         "cmd_off_no_farewell_fallback":
             "tm-mode off — state saved",
 
+        # ── cmd_on 출력(엔진) — greeting(팀 커스텀 필드)은 그대로 출력(번역 금지),
+        #    배선/util 스킬 실패 [warn] 만 제품 고정 어휘라 라우팅한다.
+        "cmd_on_agent_wiring_failed":
+            "[warn] {agent} agent wiring failed → skipped: {err}",
+        "cmd_on_util_skill_invalid":
+            "[warn] util skill '{skill}' invalid (traversal risk) → skipped: {err}",
+        "cmd_on_util_skill_missing":
+            "[warn] util skill '{skill}' source missing → skipped",
+        "cmd_on_util_skill_link_failed":
+            "[warn] util skill '{skill}' link failed ({dir}) → skipped: {err}",
+
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":
