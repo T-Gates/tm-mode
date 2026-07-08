@@ -223,6 +223,38 @@ def test_worker_non_ff_keeps_pending_writes_marker(xdg, tmp_path):
     assert head_after == head_before, "worker 가 로컬 히스토리를 건드렸다(계약 위반)"
 
 
+def test_worker_non_ff_marker_content_english_for_en_locale_team(xdg, tmp_path):
+    """i18n(적대검수 — B 지적, FIX-REQUIRED 항목1): push-worker.py 의 sync-warning
+    마커도 session-start 의 hook_ss_sync_warn(en-locale) 의 {warn} 자리에 그대로
+    삽입되므로, 마커 CONTENT 자체가 en 팀에선 영어여야 한다(session-start/auto-commit
+    마커 수정과 동일 클래스의 함정 — test_conflict_marker_content_english_for_en_locale_team
+    패턴 미러).
+    """
+    import json as _json
+    import re
+    origin, work = _clone_pair(tmp_path)
+    (work / "team.config.json").write_text(
+        _json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.email", "o@o.com"],
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.name", "O"],
+                   capture_output=True)
+    _commit_file(other, "theirs.md")
+    subprocess.run(["git", "-C", str(other), "push", "-q"], capture_output=True)
+
+    _commit_file(work, "mine.md")
+    git_ops.write_push_pending(str(work))
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg)})
+    assert r.returncode == 0
+    marker = git_ops.read_sync_warning(str(work))
+    assert "non-fast-forward" in marker
+    assert "delegated to session-start reconcile" in marker
+    assert not re.search(r"[가-힣]", marker), f"en 팀 마커 내용에 한글 섞임: {marker!r}"
+
+
 def test_worker_drains_new_pending_written_during_push(xdg, tmp_path):
     """drain: push 성공 후 ahead 가 남아 있으면(새 커밋) 이어서 push — 잔여 0 까지."""
     _, work = _clone_pair(tmp_path)
@@ -381,6 +413,19 @@ def test_recover_ahead_rekicks_worker_no_direct_push(tmp_path, capsys, monkeypat
     assert fake.cleared == 0
 
 
+def test_recover_ahead_english_for_en_locale(tmp_path, capsys, monkeypatch):
+    """i18n(적대검수 — long tail): lang="en" 을 명시로 넘기면 한글 없이 영어로만
+    경고가 나온다(_recover_push_pending 은 _maybe_auto_pull 이 한 번 해석해 넘긴다)."""
+    import re
+    mod = _load_session_start()
+    fake = _FakeGo("pending", ahead=2, has_upstream=True)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    mod._recover_push_pending(str(tmp_path), "en")
+    err = capsys.readouterr().err
+    assert "push" in err and "ahead=2" in err
+    assert not re.search(r"[가-힣]", err), f"en 팀 출력에 한글 섞임: {err!r}"
+
+
 def test_recover_stale_pending_auto_cleared(tmp_path, capsys, monkeypatch):
     """pending + ahead==0 → stale 자동 clear(이미 push 됨), 경고·kick 없음."""
     mod = _load_session_start()
@@ -425,7 +470,9 @@ def test_remind_warns_on_old_pending(xdg, tmp_path, capsys):
     os.utime(old, (old.stat().st_atime, old.stat().st_mtime - 700))
     mod._warn_push_pending_age(root)
     err1 = capsys.readouterr().err
-    assert "push 미완" in err1
+    # i18n 갱신(적대검수 — long tail): root 에 team.config.json 이 없어 en 기본
+    # (team_lang 계약) — "push" 는 en/ko 두 문구 모두에 그대로 나오는 언어중립 토큰.
+    assert "push" in err1
     mod._warn_push_pending_age(root)  # 스로틀 — 재경고 없음
     assert capsys.readouterr().err == ""
 
@@ -488,8 +535,37 @@ def test_auto_commit_ledger_failure_leaves_sync_warning(xdg, tmp_path):
     Path(git_ops.push_pending_path(str(work))).mkdir()
     r = _run_auto_commit(work, [f], xdg, {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
     assert r.returncode == 0
-    assert "pending 기록 실패" in r.stderr
+    # i18n 갱신(적대검수 — long tail): 이 픽스처는 en 기본(team_lang 계약) — 언어중립
+    # 마커("push-pending" 은 ko/en 문구 모두에 그대로 나옴)로 확인.
+    assert "push-pending" in r.stderr
     assert "pending" in git_ops.read_sync_warning(str(work))
+
+
+def test_auto_commit_ledger_failure_english_for_en_locale_team(xdg, tmp_path):
+    """i18n(적대검수 — long tail, auto-commit 신설 스캐폴딩): en 팀은 ledger 기록
+    실패 stderr 도, sync-warning 마커 내용도 전부 영어이고 한글이 섞이지 않는다.
+
+    sync-warning 마커는 나중에 session-start 의 hook_ss_sync_warn(en-locale)의
+    {warn} 자리에 그대로 삽입되므로, 마커 자체가 en 이어야 en 팀 출력이 끝까지
+    영어로 유지된다(addendum 2 에서 발견한 것과 동일한 클래스의 함정).
+    """
+    import json as _json
+    import re
+    _, work = _clone_pair(tmp_path)
+    _activate(work)
+    (work / "team.config.json").write_text(
+        _json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    f = work / "note-lf-en.md"
+    f.write_text("x", encoding="utf-8")
+    Path(git_ops.push_pending_path(str(work))).parent.mkdir(parents=True, exist_ok=True)
+    Path(git_ops.push_pending_path(str(work))).mkdir()
+    r = _run_auto_commit(work, [f], xdg, {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+    assert r.returncode == 0
+    assert "push-pending" in r.stderr
+    marker = git_ops.read_sync_warning(str(work))
+    assert "pending" in marker
+    assert not re.search(r"[가-힣]", r.stderr), f"en 팀 stderr 에 한글 섞임: {r.stderr!r}"
+    assert not re.search(r"[가-힣]", marker), f"en 팀 마커에 한글 섞임: {marker!r}"
 
 
 def test_recover_unknown_upstream_still_kicks_worker(tmp_path, capsys, monkeypatch):

@@ -369,6 +369,29 @@ def test_engine_unlock_begin_end_with_env_session(tmp_path):
     assert not flag.exists(), "end 후 플래그가 제거되어야 한다"
 
 
+def test_engine_unlock_begin_end_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, cmd_memory_unlock): en 팀(locale=en_US)의
+    begin/end 출력이 영어이고 한글이 섞이지 않는다."""
+    import re
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    state = tmp_path / "state"
+    sid = "engine-env-sess-en"
+    env = _clean_env(state, {"CLAUDE_SESSION_ID": sid})
+
+    proc = _run_engine_unlock(root, "begin", env)
+    assert proc.returncode == 0, f"begin 실패: {proc.stderr!r}"
+    assert "edit window open" in proc.stdout
+    assert not re.search(r"[가-힣]", proc.stdout), f"en 팀 출력에 한글 섞임: {proc.stdout!r}"
+
+    proc = _run_engine_unlock(root, "end", env)
+    assert proc.returncode == 0, f"end 실패: {proc.stderr!r}"
+    assert "edit window closed" in proc.stdout
+    assert not re.search(r"[가-힣]", proc.stdout), f"en 팀 출력에 한글 섞임: {proc.stdout!r}"
+
+
 def test_engine_unlock_begin_falls_back_to_most_recent_relay(tmp_path):
     """env 부재 시 최신(mtime) relay 파일의 id 를 쓴다 — Codex 세션 경로."""
     root = tmp_path / "team"

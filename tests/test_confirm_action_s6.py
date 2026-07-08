@@ -341,8 +341,9 @@ def test_stale_teammode_home_warns_on_stderr(tmp_path):
     proc = _run_confirm(payload, gone, marker="teammode-linear-create-allow")
     assert proc.returncode == 0, "거동 불변 — 스테일 루트가 도구를 막으면 안 됨"
     assert proc.stdout.strip() == "", f"stdout 은 deny JSON 채널 — 불변: {proc.stdout!r}"
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약) —
+    # 언어중립 마커만 확인(ko/en 문구 자체는 이 클러스터의 en-locale 테스트가 검증).
     assert "TEAMMODE_HOME" in proc.stderr
-    assert "유효한 팀 루트" in proc.stderr
     assert len(proc.stderr.strip().splitlines()) == 1, "경고는 정확히 한 줄"
 
 

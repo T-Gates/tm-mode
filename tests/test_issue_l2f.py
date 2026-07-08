@@ -56,6 +56,20 @@ def test_issue_empty_slot_no_config_is_info_exit0(tmp_path):
     assert "x" not in r.stdout or "테스트" not in r.stdout  # echo 안 함(연결 안 됨)
 
 
+def test_issue_empty_slot_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, cmd_issue): en 팀(locale=en_US)의 빈 슬롯 [info] 안내는
+    영어이고 한글이 섞이지 않는다."""
+    import re
+    cfg = {"spec_version": "0.1", "team": {"name": "acme", "locale": "en_US"},
+           "services": {}}
+    (tmp_path / "team.config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    r = _run_harness_style(tmp_path, ["issue", "create", "--title", "x"])
+    assert r.returncode == 0, r.stderr
+    assert "[info]" in r.stdout
+    assert "not connected" in r.stdout
+    assert not re.search(r"[가-힣]", r.stdout), f"en 팀 출력에 한글 섞임: {r.stdout!r}"
+
+
 def test_issue_empty_slot_unknown_provider_is_info(tmp_path):
     # providers/ 에 없는 provider → 연결로 인정 안 함(추측 금지) → [info]
     _connect_issues(tmp_path, provider="nonexistent-tracker")

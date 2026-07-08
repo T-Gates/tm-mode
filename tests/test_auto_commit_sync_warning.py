@@ -120,8 +120,9 @@ def test_stale_teammode_home_warns_on_stderr(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert captured.out.strip() == ""
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약) —
+    # 언어중립 마커만 확인.
     assert "TEAMMODE_HOME" in captured.err
-    assert "유효한 팀 루트" in captured.err
     assert len(captured.err.strip().splitlines()) == 1, "경고는 정확히 한 줄"
     assert fake.warnings == []            # git 동작 전에 멈춘다(거동 불변)
 

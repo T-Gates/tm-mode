@@ -54,6 +54,31 @@ except ImportError:
         pass
 _ensure_utf8_io()
 
+# i18n(적대검수 — long tail) — 형제 훅(session-start 등)과 동일한 defensive import +
+# _hook_lang/_t 계약. 이 파일만 스캐폴딩이 없어 [warn] 류가 전부 하드코딩 한국어였다.
+try:
+    import i18n as _i18n  # type: ignore
+except ImportError:
+    _i18n = None
+
+
+def _hook_lang(root: str) -> str:
+    """팀 locale → 경고 언어("ko"|"en"). i18n 부재/실패 시 ko(종전 거동 보존)."""
+    if _i18n is None:
+        return "ko"
+    try:
+        return _i18n.team_lang(root)
+    except Exception:  # noqa: BLE001 — locale 해석 실패가 자동 커밋을 막지 않는다
+        return "ko"
+
+
+def _t(key: str, lang: str, ko: str, **fmt) -> str:
+    """경고 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화 계약),
+    en 은 i18n 카탈로그(hook_* 키). i18n 부재 시 ko 폴백."""
+    if lang == "en" and _i18n is not None:
+        return _i18n.t(key, "en", **fmt)
+    return ko.format(**fmt) if fmt else ko
+
 
 def _team_root() -> str:
     """런타임 훅의 팀 루트 = 환경변수 TEAMMODE_HOME (없으면 cwd).
@@ -82,8 +107,10 @@ def _warn_if_stale_home(root: str) -> None:
     if any(os.path.exists(os.path.join(root, m)) for m in _TEAM_MARKERS):
         return
     try:
-        print(f"[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
-              "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+        print(_t("hook_ss_stale_home_warn", _hook_lang(root),
+                 "[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
+                 "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+                 root=root),
               file=sys.stderr)
     except (OSError, UnicodeError):
         pass  # 경고 실패가 훅을 막지 않는다(철칙: 비차단)
@@ -104,15 +131,18 @@ def _kick_push_worker(root: str) -> None:
     ok = _git_ops.kick_push_worker(root, _WORKER_PATH)
     if not ok:
         try:
+            lang = _hook_lang(root)
             if os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") == "1":
                 # codex P2: kill-switch 가 프로덕션 셸에 남으면 무음 pending 만
                 # 쌓인다 — 비활성 사실을 확실히 표면화(테스트도 이 줄은 무해).
-                print("[teammode] push-worker 비활성(TEAMMODE_DISABLE_PUSH_WORKER)"
-                      " — push 는 세션 시작 recovery 에 위임됩니다.",
+                print(_t("hook_ac_push_worker_disabled", lang,
+                         "[teammode] push-worker 비활성(TEAMMODE_DISABLE_PUSH_WORKER)"
+                         " — push 는 세션 시작 recovery 에 위임됩니다."),
                       file=sys.stderr)
             else:
-                print("[teammode] push-worker 시작 실패 — pending 은 세션 시작 시 "
-                      "재시도됩니다.", file=sys.stderr)
+                print(_t("hook_ac_push_worker_start_failed", lang,
+                         "[teammode] push-worker 시작 실패 — pending 은 세션 시작 시 "
+                         "재시도됩니다."), file=sys.stderr)
         except (OSError, UnicodeError):
             pass
 
@@ -129,6 +159,7 @@ def main() -> int:
 
     root = _team_root()
     _warn_if_stale_home(root)  # 스테일 TEAMMODE_HOME 표면화(이슈 #9a) — 거동 불변
+    lang = _hook_lang(root)  # i18n(적대검수 — long tail): 이하 경고들이 공유
 
     # ── 1. 빌드 안전 핵심: .teammode-active 없으면 즉시 no-op ──
     # 어떤 git 작업보다 먼저. 마커 부재 = teammode off = 자동 커밋 절대 금지.
@@ -158,8 +189,9 @@ def main() -> int:
         # 이전 편집의 push 가 아직 미완이면(worker 지연/실패) 조용히 묻지 않는다.
         # 비차단: 경고만 남기고 커밋은 정상 진행(worker 가 이번 것까지 drain).
         if _git_ops.read_push_pending(root):
-            print("[teammode] 이전 auto-commit 의 push 미완(pending) — "
-                  "worker 가 재시도합니다.", file=sys.stderr)
+            print(_t("hook_ac_prior_push_pending", lang,
+                     "[teammode] 이전 auto-commit 의 push 미완(pending) — "
+                     "worker 가 재시도합니다."), file=sys.stderr)
 
         # ── 4. paths 만 스테이징 + 커밋(동기는 여기까지 — push 는 worker 위임, #45) ──
         # 종전 push=True 동기 push 는 훅 지연(statusMessage 고정 ~26s)·manifest 캡
@@ -182,11 +214,16 @@ def main() -> int:
             if not _git_ops.write_push_pending(root):
                 # codex P1: ledger 기록 실패를 삼키면 "커밋됨·push 안 됨·pending
                 # 없음·마커 없음" 무음 유실 — sync-warning fallback + stderr 1줄.
+                # ⚠️ write_sync_warning 의 내용은 나중에 hook_ss_sync_warn(이미 i18n
+                # 라우팅)의 {warn} 자리에 그대로 삽입된다 — lang 에 안 맞게 쓰면 en
+                # 래퍼 안에 ko 상세가 섞인다(적대검수 발견, session-start 클러스터와 동일 패턴).
                 _git_ops.write_sync_warning(
-                    root, "커밋됨; push-pending 기록 실패 — push 미보장"
-                          "(XDG state 쓰기 오류)")
-                print("[teammode] push-pending 기록 실패 — push 가 예약되지 "
-                      "않았습니다(커밋은 보존). XDG state 쓰기 권한을 확인하세요.",
+                    root, _t("hook_ac_pending_write_failed_marker", lang,
+                            "커밋됨; push-pending 기록 실패 — push 미보장"
+                            "(XDG state 쓰기 오류)"))
+                print(_t("hook_ac_pending_write_failed_print", lang,
+                         "[teammode] push-pending 기록 실패 — push 가 예약되지 "
+                         "않았습니다(커밋은 보존). XDG state 쓰기 권한을 확인하세요."),
                       file=sys.stderr)
             else:
                 _kick_push_worker(root)

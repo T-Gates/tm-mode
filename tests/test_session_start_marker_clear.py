@@ -113,3 +113,30 @@ def test_conflict_writes_marker(tmp_path, monkeypatch):
     fake = _run(res, tmp_path, monkeypatch)
     assert len(fake.writes) == 1
     assert fake.cleared == 0
+
+
+def test_conflict_marker_content_english_for_en_locale_team(tmp_path, monkeypatch):
+    """i18n(적대검수 — long tail): 마커 내용 자체가 lang 을 따른다.
+
+    write_sync_warning 의 detail 은 나중에 session-start 의 hook_ss_sync_warn
+    (이미 i18n 라우팅된 wrapper)의 {warn} 자리에 그대로 삽입되므로, 마커 자체가
+    lang 에 안 맞으면 en 팀도 wrapper 안에 한글 상세가 섞인다(addendum 2 에서
+    발견한 것과 동일 클래스). 여기서는 실제 team_root(tmp_path)에 en_US 팀 config 를
+    둬 _hook_lang 이 진짜로 "en" 을 돌려주게 만들고, 마커 CONTENT 를 직접 검사한다.
+    """
+    import json
+    import re
+    (tmp_path / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    mod = _load_session_start()
+    res = go.ReconcileResult(ok=False, action="conflict", ahead=1, behind=1,
+                             diverged=True, detail="CONFLICT")
+    fake = _FakeGitOps(res)
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    monkeypatch.setattr(mod, "_auto_pull", _FakeAutoPull)
+    mod._maybe_auto_pull(str(tmp_path))
+    assert len(fake.writes) == 1
+    _, detail = fake.writes[0]
+    assert not re.search(r"[가-힣]", detail), f"en 팀 마커 내용에 한글 섞임: {detail!r}"
+    assert "conflict" in detail.lower()

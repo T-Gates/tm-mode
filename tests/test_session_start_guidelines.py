@@ -209,8 +209,9 @@ def test_stale_teammode_home_warns_on_stderr(tmp_path):
     proc = _run_hook(_payload(), gone)
     assert proc.returncode == 0
     assert proc.stdout.strip() == "", f"stdout 은 훅 출력 채널 — 불변: {proc.stdout!r}"
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약) —
+    # 언어중립 마커만 확인.
     assert "TEAMMODE_HOME" in proc.stderr
-    assert "유효한 팀 루트" in proc.stderr
     assert len(proc.stderr.strip().splitlines()) == 1, "경고는 정확히 한 줄"
 
 

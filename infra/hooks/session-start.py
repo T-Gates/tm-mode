@@ -143,8 +143,10 @@ def _warn_if_stale_home(root: str) -> None:
     if any(os.path.exists(os.path.join(root, m)) for m in _TEAM_MARKERS):
         return
     try:
-        print(f"[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
-              "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+        print(_t("hook_ss_stale_home_warn", _hook_lang(root),
+                 "[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
+                 "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+                 root=root),
               file=sys.stderr)
     except (OSError, UnicodeError):
         pass  # 경고 실패가 훅을 막지 않는다(advisory)
@@ -189,9 +191,13 @@ def _maybe_auto_pull(team_root: str) -> None:
     (급격한 세션 재시작도 throttle 창당 1회). git_ops/auto_pull 부재 시 종전 경로로 폴백.
     실패는 절대 세션·주입을 막지 않는다(철칙) — 어떤 예외도 삼킨다.
     """
+    # i18n(적대검수 — long tail): 이 함수 이하의 print/마커는 main() 의 lang 해석보다
+    # 먼저 도므로 여기서 한 번 독자적으로 해석해 _recover_push_pending 에도 넘긴다
+    # (session-start 는 세션당 1회라 재해석 비용 무해 — _hook_lang 자체의 문서 근거).
+    lang = _hook_lang(team_root)
     # #45 pending recovery — pull 스로틀과 **독립**(codex P2: 스로틀에 막혀 복구가
     # 안 도는 구멍 차단). push recovery 는 pull 비용과 별개의 correctness 경로다.
-    _recover_push_pending(team_root)
+    _recover_push_pending(team_root, lang)
 
     # 폴백: 새 정합 경로의 의존(git_ops·auto_pull)이 없으면 종전 ff-only auto_pull.
     if _git_ops is None or _auto_pull is None:
@@ -218,14 +224,23 @@ def _maybe_auto_pull(team_root: str) -> None:
         res = _git_ops.do_reconcile(team_root)
 
         # ── 표면화: diverge/충돌/실패는 마커 + stderr(조용히 넘기지 않음) ──
+        # ⚠️ write_sync_warning 의 detail 은 나중에 hook_ss_sync_warn(이미 i18n 라우팅)의
+        # {warn} 자리에 그대로 삽입된다 — 여기서 lang 에 안 맞게 쓰면 en 래퍼 안에 ko
+        # 상세가 섞인다(적대검수 발견). 그래서 마커 내용도 lang 을 따른다.
         if res.action == "conflict":
             _git_ops.write_sync_warning(
-                team_root, f"세션 시작 정합 충돌(rebase abort) — 수동 정리 필요: {res.detail}")
-            print(f"[teammode] 세션 정합 실패: origin 과 diverge 후 rebase 충돌 — "
-                  f"수동 정리 필요. behind={res.behind} ahead={res.ahead}", file=sys.stderr)
+                team_root, _t("hook_ss_reconcile_conflict_marker", lang,
+                             "세션 시작 정합 충돌(rebase abort) — 수동 정리 필요: {detail}",
+                             detail=res.detail))
+            print(_t("hook_ss_reconcile_conflict_print", lang,
+                     "[teammode] 세션 정합 실패: origin 과 diverge 후 rebase 충돌 — "
+                     "수동 정리 필요. behind={behind} ahead={ahead}",
+                     behind=res.behind, ahead=res.ahead), file=sys.stderr)
         elif res.action in ("fetch-failed", "error"):
             # 네트워크/일시 오류 — 묵은 push 마커는 건드리지 않고 정보만(비치명).
-            print(f"[teammode] 세션 정합 건너뜀(비치명): {res.action} — {res.detail}",
+            print(_t("hook_ss_reconcile_skipped", lang,
+                     "[teammode] 세션 정합 건너뜀(비치명): {action} — {detail}",
+                     action=res.action, detail=res.detail),
                   file=sys.stderr)
         elif res.action in ("up-to-date", "fast-forward", "rebased") and res.ahead == 0:
             # **실제 origin 정합이 입증된** 경우에만 마커 제거(codex 리뷰). no-upstream 도
@@ -287,7 +302,7 @@ def _maybe_fetch_upstream(team_root: str) -> None:
         pass
 
 
-def _recover_push_pending(team_root: str) -> None:
+def _recover_push_pending(team_root: str, lang: str = "ko") -> None:
     """#45 pending recovery — worker 유실(머신 슬립·Windows detach 실패·크래시) 복원.
 
     ledger 가 correctness 의 단일 소스: pending 존재 시 age 무관 ahead 조합 판정 —
@@ -295,7 +310,8 @@ def _recover_push_pending(team_root: str) -> None:
       - ahead > 0 → 경고 + worker **재kick 만**(세션 시작을 push 로 무겁히지 않는다 —
         직접 push 금지가 계약).
       - ahead == 0 → stale pending 자동 clear(이미 push 됨 — worker 가 clear 전에 죽음).
-    무raise — 세션·주입을 막지 않는다.
+    무raise — 세션·주입을 막지 않는다. lang 은 호출부(_maybe_auto_pull)가 한 번
+    해석해 넘긴다(적대검수 — long tail).
     """
     if _git_ops is None:
         return
@@ -310,19 +326,23 @@ def _recover_push_pending(team_root: str) -> None:
             # 판정불가 = 무 upstream(신규 브랜치) 또는 git 오류 — 구분 불가하므로
             # 보수 경고 + **kick**(codex P2: worker 의 push_plain 이 no-upstream 을
             # `push -u` 로 처리한다 — kick 없이 경고만 반복하면 영구 잔존 UX).
-            print("[teammode] push 미완(pending)이 있는데 원격 판정 불가 — "
-                  "worker 를 재시작합니다(신규 브랜치면 push -u 로 처리).",
+            print(_t("hook_ss_push_pending_no_upstream", lang,
+                     "[teammode] push 미완(pending)이 있는데 원격 판정 불가 — "
+                     "worker 를 재시작합니다(신규 브랜치면 push -u 로 처리)."),
                   file=sys.stderr)
             if not _git_ops.kick_push_worker(team_root, worker):
-                print("[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
-                      "재시도됩니다.", file=sys.stderr)
+                print(_t("hook_ss_push_worker_restart_failed", lang,
+                         "[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
+                         "재시도됩니다."), file=sys.stderr)
             return
         if ahead > 0:
-            print(f"[teammode] 이전 세션의 push 미완(pending, ahead={ahead}) — "
-                  f"worker 를 재시작합니다.", file=sys.stderr)
+            print(_t("hook_ss_push_pending_ahead", lang,
+                     "[teammode] 이전 세션의 push 미완(pending, ahead={ahead}) — "
+                     "worker 를 재시작합니다.", ahead=ahead), file=sys.stderr)
             if not _git_ops.kick_push_worker(team_root, worker):
-                print("[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
-                      "재시도됩니다.", file=sys.stderr)
+                print(_t("hook_ss_push_worker_restart_failed", lang,
+                         "[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
+                         "재시도됩니다."), file=sys.stderr)
             return
         # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.
         _git_ops.clear_push_pending(team_root)

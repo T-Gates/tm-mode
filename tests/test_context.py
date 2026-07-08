@@ -45,6 +45,19 @@ def test_context_exit_zero_empty_memory(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+def test_context_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, cmd_context): en 팀(locale=en_US)은 빈 memory 의
+    "(no INDEX.md)"/"(no session logs...)" 표시가 영어이고 한글이 섞이지 않는다."""
+    import re
+    (tmp_path / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    r = _run(tmp_path, "context")
+    assert r.returncode == 0, r.stderr
+    assert "no INDEX.md" in r.stdout
+    assert "no session logs" in r.stdout
+    assert not re.search(r"[가-힣]", r.stdout), f"en 팀 출력에 한글 섞임: {r.stdout!r}"
+
+
 def test_context_stdout_has_index_token(tmp_path):
     _write_index(tmp_path)
     r = _run(tmp_path, "context")

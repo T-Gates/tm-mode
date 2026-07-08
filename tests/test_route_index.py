@@ -13,6 +13,7 @@
 
 모든 테스트는 tmp_path 격리 — 실 호스트 무접촉.
 """
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -104,6 +105,31 @@ def test_route_upsert_inserts_new_row(tmp_path):
     assert "마케팅·GTM·광고" in text
     # 표 안(파이프 행)으로 들어갔는지
     assert "| `product/marketing/` | 마케팅·GTM·광고 |" in text
+
+
+def test_route_upsert_remove_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, cmd_route): en 팀(locale=en_US)은 upsert/remove
+    출력이 전부 영어이고 한글이 섞이지 않는다(--desc 값 자체는 사용자 입력이라 영어로 준다)."""
+    import re
+    root = tmp_path
+    _init_git(root)
+    _seed_root_index(root)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+
+    r1 = _run(root, "memory", "route", "upsert",
+             "--path", "product/en-test/",
+             "--desc", "Marketing and GTM",
+             "--author", "bob")
+    assert r1.returncode == 0, r1.stderr
+    assert "registered" in r1.stdout
+    assert not re.search(r"[가-힣]", r1.stdout), f"en 팀 upsert 출력에 한글 섞임: {r1.stdout!r}"
+
+    r2 = _run(root, "memory", "route", "remove",
+             "--path", "product/en-test/", "--author", "bob")
+    assert r2.returncode == 0, r2.stderr
+    assert "removed" in r2.stdout
+    assert not re.search(r"[가-힣]", r2.stdout), f"en 팀 remove 출력에 한글 섞임: {r2.stdout!r}"
 
 
 # ══════════════════════════════════════════════════════════════════════

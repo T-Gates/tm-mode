@@ -57,6 +57,29 @@ def main(argv: list) -> int:
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import git_ops  # noqa: E402 — infra/ 경로 주입 후 import
+    # i18n(적대검수 — B 지적: sync-warning 마커의 4번째 writer 가 스캐폴딩 없이
+    # 한국어 하드코딩이었다). 다른 훅(auto-commit 등)과 동일한 defensive import +
+    # _hook_lang/_t 계약 — 여기서만 git_ops 와 같은 지연 import 지점에 둔다(이
+    # 파일의 sys.path 주입 자체가 main() 안에서만 일어나는 기존 구조를 따름).
+    try:
+        import i18n as _i18n  # type: ignore # noqa: E402
+    except ImportError:
+        _i18n = None
+
+    def _hook_lang(team_root: str) -> str:
+        if _i18n is None:
+            return "ko"
+        try:
+            return _i18n.team_lang(team_root)
+        except Exception:  # noqa: BLE001 — locale 해석 실패는 ko 폴백
+            return "ko"
+
+    def _t(key: str, lang: str, ko: str, **fmt) -> str:
+        if lang == "en" and _i18n is not None:
+            return _i18n.t(key, "en", **fmt)
+        return ko.format(**fmt) if fmt else ko
+
+    lang = _hook_lang(root)
 
     lock_path = git_ops.push_pending_path(root) + ".lock"
     if not _acquire_lock(lock_path):
@@ -89,9 +112,12 @@ def main(argv: list) -> int:
                 # 실패 = sync-warning detail, pending 유지(recovery 채널이 잇는다).
                 if detail == "non-fast-forward":
                     git_ops.write_sync_warning(
-                        root, "push pending; non-fast-forward — "
-                              "세션 시작 reconcile 에 위임")
+                        root, _t("push_worker_non_ff_marker", lang,
+                                "push pending; non-fast-forward — "
+                                "세션 시작 reconcile 에 위임"))
                 else:
+                    # detail 은 raw git 에러 — 그대로(번역 대상 아님). 앞의 "push
+                    # pending; " 는 이미 en 이라 별도 카탈로그 불필요.
                     git_ops.write_sync_warning(root, f"push pending; {detail}")
                 break
             # 판정불가(무 upstream/git 오류)를 (0,0)으로 접는 ahead_behind 대신
@@ -107,8 +133,9 @@ def main(argv: list) -> int:
             # 기다리지 않는다.
             if git_ops.read_push_pending(root):
                 git_ops.write_sync_warning(
-                    root, "push pending; worker drain limit reached — "
-                          "커밋 폭주 또는 반복 재기록(세션 시작 recovery 가 재시도)")
+                    root, _t("push_worker_drain_limit_marker", lang,
+                            "push pending; worker drain limit reached — "
+                            "커밋 폭주 또는 반복 재기록(세션 시작 recovery 가 재시도)"))
         return 0
     except Exception:  # noqa: BLE001 — 훅 철칙: worker 실패가 아무것도 막지 않는다
         return 0

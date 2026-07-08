@@ -114,7 +114,8 @@ def test_hint_is_advisory_write_still_succeeds(tmp_path):
     r = _write(tmp_path, "product")
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "memory" / "product" / "note.md").is_file()
-    assert "teammode memory write — product/note.md 완료" in r.stdout
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약).
+    assert "teammode memory write — product/note.md done" in r.stdout
 
 
 # ── 등재된 폴더 → 힌트 없음 ─────────────────────────────────────────

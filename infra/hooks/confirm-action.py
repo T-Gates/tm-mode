@@ -127,8 +127,10 @@ def _warn_if_stale_home(root: str) -> None:
     if any(os.path.exists(os.path.join(root, m)) for m in _TEAM_MARKERS):
         return
     try:
-        print(f"[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
-              "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+        print(_t("hook_ss_stale_home_warn", _hook_lang(root),
+                 "[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
+                 "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+                 root=root),
               file=sys.stderr)
     except (OSError, UnicodeError):
         pass  # 경고 실패가 훅을 막지 않는다

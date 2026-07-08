@@ -173,8 +173,10 @@ class Adapter(BaseAdapter):
         if "\n" in home or "\r" in home:
             if not getattr(self, "_warned_home_unpinnable", False):
                 self._warned_home_unpinnable = True
-                print(f"[warn] 팀루트 경로에 개행 문자가 있어 TEAMMODE_HOME 을 hook "
-                      f"command 에 핀하지 못했습니다(셸 프로파일 폴백): {home!r}")
+                print(self._t("adapter_codex_home_unpinnable_warn",
+                             "[warn] 팀루트 경로에 개행 문자가 있어 TEAMMODE_HOME 을 hook "
+                             "command 에 핀하지 못했습니다(셸 프로파일 폴백): {home!r}",
+                             home=home))
             return None
         return home
 
@@ -272,6 +274,8 @@ class Adapter(BaseAdapter):
         changes = []
         warnings = []
         infos = []
+        unsupported: list = []  # (script, event, blocked) — i18n(long tail): 렌더링을
+        # 그룹핑 뒤로 미뤄 regex 로 표시 문자열을 되읽지 않는다(구현 노트: 아래 참고).
         if mode is None:
             # C2 self-heal: plain sync 는 기존 managed 상태 보존(강등·재-trust 방지).
             mode = self._infer_existing_mode()
@@ -290,10 +294,11 @@ class Adapter(BaseAdapter):
 
             if event is None:
                 # 이벤트 미지원 → drop (+ warn). enforcement=block 이면 차단 상실 명시(§11.11).
-                extra = " (block 강제 상실)" if enforcement == "block" else ""
-                warnings.append(
-                    f"[warn] {entry['script']}: {self.events.get('agent')} "
-                    f"미지원(이벤트 {entry['event']}){extra} → 비활성")
+                # i18n(적대검수 — long tail): 문자열은 아래 grouping 이후 한 번에 렌더한다
+                # (이전엔 이 시점에 ko 로 렌더해 두고 나중에 regex 로 되읽어 그룹핑했는데,
+                # en 로 렌더하면 regex 가 매치 못 해 "도배 방지" 그룹핑이 조용히 깨졌다).
+                unsupported.append((entry["script"], entry["event"],
+                                    enforcement == "block"))
                 continue
 
             # ── MCP 매처 전처리(B.2 / §2.9 빈 슬롯 우선 + §2.7 install-mcp 선행) ──
@@ -301,10 +306,13 @@ class Adapter(BaseAdapter):
             if isinstance(match, dict) and "mcp" in match and isinstance(services, dict):
                 canonical = match["mcp"].get("server")
                 if not self._mcp_server_connected(canonical, services):
+                    # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩
+                    # 한국어. claude 형제 어댑터의 동형 문자열과 함께 이후 PR 대상.
                     infos.append(
                         f"[info] {entry['script']}: '{canonical}' 역할 슬롯 미연결 "
                         f"→ MCP 매처 생략(빈 슬롯, 슬롯 연결 후 sync 재실행)")
                     continue
+                # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩 한국어.
                 if not self._mcp_alias_guaranteed(canonical):
                     warnings.append(
                         f"[warn] {entry['script']}: '{canonical}' MCP 별칭 미보장"
@@ -316,6 +324,8 @@ class Adapter(BaseAdapter):
                 if fallback == "runtime":
                     matcher = None
                 else:
+                    # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩
+                    # 한국어. claude 형제 어댑터의 동형 문자열과 함께 이후 PR 대상.
                     warnings.append(
                         f"[warn] {entry['script']}: {self.events.get('agent')} "
                         f"매처 표현 불가 → 비활성")
@@ -350,6 +360,8 @@ class Adapter(BaseAdapter):
         except OSError:
             pass
         if changed:
+            # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): changes 는 install.py
+            # 가 그대로 사람에게 echo 하는 사람용 문구라 아직 하드코딩 한국어.
             changes.append(f"[sync] Codex 훅 {len(toml_entries)}개 등록")
 
         # #D1: 방금 쓴 teammode 훅들의 codex trust 상태 read-only 검사.
@@ -359,38 +371,39 @@ class Adapter(BaseAdapter):
         if trust_warn:
             warnings.append(trust_warn)
 
-        # warn 도배 방지: 같은 이벤트 미지원으로 발생한 warn 들을 묶어 1줄 요약 출력.
-        # 형식 "[warn] {script}: {agent} 미지원(이벤트 {event})..." 을 파싱해 집계.
-        # 다른 패턴(MCP 별칭 미보장, 매처 표현 불가)은 그대로 출력(드문 케이스, 도배 아님).
-        import re as _re
-        _unsupported_pat = _re.compile(
-            r"^\[warn\] (.+?): .+ 미지원\(이벤트 ([^)]+)\)"
-        )
-        grouped: dict = {}   # (script, event) → [warn_msg, ...]
-        other_warns: list = []
-        for w in warnings:
-            m = _unsupported_pat.match(w)
-            if m:
-                key = (m.group(1), m.group(2))
-                grouped.setdefault(key, []).append(w)
-            else:
-                other_warns.append(w)
-        # 묶인 warn 출력: N개면 1줄 요약, 1개면 그대로
+        # warn 도배 방지: 같은 (script, event) 미지원 항목을 묶어 1줄 요약 출력.
+        # i18n(적대검수 — long tail): 예전엔 렌더된 문자열을 regex 로 되읽어 그룹핑했는데
+        # (그 문자열이 en 팀에선 번역돼 regex 가 매치 못 함 → 그룹핑이 조용히 깨짐),
+        # 이제 unsupported 는 처음부터 구조화 데이터(script, event, blocked)라 언어 무관하게
+        # 그룹핑한 뒤 딱 한 번만 lang 에 맞게 렌더한다.
+        grouped: dict = {}   # (script, event) → [blocked, ...]
+        for script, event, blocked in unsupported:
+            grouped.setdefault((script, event), []).append(blocked)
         agent_name = self.events.get("agent", "")
-        for (script, event), msgs in grouped.items():
-            n = len(msgs)
+        for (script, event), blocks in grouped.items():
+            n = len(blocks)
+            has_block = any(blocks)
             if n == 1:
-                print(msgs[0])
+                extra = self._t("adapter_codex_event_unsupported_block_lost",
+                               " (block 강제 상실)") if has_block else ""
+                warnings.append(self._t(
+                    "adapter_codex_event_unsupported",
+                    "[warn] {script}: {agent} 미지원(이벤트 {event}){extra} → 비활성",
+                    script=script, agent=agent_name, event=event, extra=extra))
             else:
-                # block 강제 상실이 하나라도 있으면 표기
-                has_block = any("block 강제 상실" in msg for msg in msgs)
-                extra = " — block 강제 비활성" if has_block else ""
-                print(f"[warn] {script}: {agent_name} {event} 미지원 {n}개{extra} → 비활성")
-        for w in other_warns:
+                extra = self._t("adapter_codex_event_unsupported_grouped_block_lost",
+                               " — block 강제 비활성") if has_block else ""
+                warnings.append(self._t(
+                    "adapter_codex_event_unsupported_grouped",
+                    "[warn] {script}: {agent} {event} 미지원 {n}개{extra} → 비활성",
+                    script=script, agent=agent_name, event=event, n=n, extra=extra))
+
+        for w in warnings:
             print(w)
         for i in infos:
             print(i)
         if not changed and not warnings and not infos:
+            # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩 한국어.
             changes.append("[ok] 변경 없음")
         return changes
 
@@ -619,6 +632,25 @@ class Adapter(BaseAdapter):
         except Exception:  # noqa: BLE001 — 검사는 부가 기능: 어떤 실패도 sync 를 못 막음
             return None
 
+    def _lang(self) -> str:
+        """팀 locale → "ko"|"en". i18n 부재/실패 시 ko(구팀 무변화). 형제 훅(session-start
+        등)의 동명 헬퍼와 동일 계약 — 여기서는 self.team_root 를 쓰는 인스턴스 메서드.
+        """
+        if _i18n is None:
+            return "ko"
+        try:
+            return _i18n.team_lang(str(self.team_root))
+        except Exception:  # noqa: BLE001 — locale 해석 실패는 ko 폴백
+            return "ko"
+
+    def _t(self, key: str, ko: str, **fmt) -> str:
+        """어댑터 출력 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화
+        계약), en 은 i18n 카탈로그. i18n 부재 시 ko 폴백(형제 훅과 동일 계약)."""
+        lang = self._lang()
+        if lang == "en" and _i18n is not None:
+            return _i18n.t(key, "en", **fmt)
+        return ko.format(**fmt) if fmt else ko
+
     def _get_status_message(self) -> str:
         """Codex hook statusMessage 문자열 — '[<팀명>] 팀모드 ON'(ko) / '[<팀명>] Team Mode ON'(en).
 
@@ -629,15 +661,7 @@ class Adapter(BaseAdapter):
         에 문자열로 굳는다 — locale 을 바꾼 팀은 재배선(`tm-mode init`/`install.py`
         재실행 또는 `adapter.py sync`)해야 라벨이 갱신된다(기존 배선은 소급 갱신 안 됨).
         """
-        lang = "ko"
-        if _i18n is not None:
-            try:
-                lang = _i18n.team_lang(str(self.team_root))
-            except Exception:  # noqa: BLE001 — locale 해석 실패는 ko 폴백(구팀 무변화)
-                pass
-        label = "팀모드 ON"
-        if lang == "en" and _i18n is not None:
-            label = _i18n.t("adapter_codex_status_team_mode_on", "en")
+        label = self._t("adapter_codex_status_team_mode_on", "팀모드 ON")
         return f"[{self._get_team_name()}] {label}"
 
     def _render_block(self, entries: list, mode: Optional[str] = None) -> str:

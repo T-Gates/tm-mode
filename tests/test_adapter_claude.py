@@ -102,6 +102,26 @@ def test_canonical_entry_registered(env):
     assert any(event == "SessionStart" for event, _, _ in cmds)
 
 
+def test_unsupported_event_warns_english_for_en_locale_team(env, capsys):
+    """i18n(적대검수 — B 지적, FIX-REQUIRED 항목2): codex 형제 어댑터와 동형인
+    unsupported-event [warn] 이 en 팀에선 영어이고 한글이 섞이지 않는다(이 base
+    클래스엔 grouping 메커니즘이 없어 단순 확인)."""
+    import json as _json
+    import re
+    (env.root / "team.config.json").write_text(
+        _json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    env.write_manifest([
+        {"event": "Stop", "match": None,
+         "script": "some-hook.py", "fallback": "runtime"},
+    ])
+    env.make_adapter().sync(mode="on")
+    out = capsys.readouterr().out
+    assert "[warn]" in out
+    assert "some-hook.py" in out and "Stop" in out
+    assert "does not support event" in out
+    assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글 섞임: {out!r}"
+
+
 # ── 2. action 번역 ──
 
 def test_action_translated_to_matcher(env):

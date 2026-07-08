@@ -297,6 +297,37 @@ def test_util_remove_updates_json(tmp_path):
     assert "test-util" not in data["installed"]
 
 
+def test_util_add_remove_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, cmd_util): en 팀(locale=en_US)은 add/remove 출력이
+    영어이고 한글이 섞이지 않는다."""
+    import contextlib
+    import io
+    import re
+    root = _scaffold(tmp_path, include_util_skill=True)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    mod = runpy.run_path(str(REPO / "infra" / "teammode.py"),
+                         run_name="__util_en_locale__")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mod["main"](["util", "add", "--root", str(root),
+                          "--member", "alice", "--skill", "test-util"])
+    assert rc == 0
+    out_add = buf.getvalue()
+    assert "registered" in out_add
+    assert not re.search(r"[가-힣]", out_add), f"en 팀 util add 출력에 한글 섞임: {out_add!r}"
+
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        rc2 = mod["main"](["util", "remove", "--root", str(root),
+                           "--member", "alice", "--skill", "test-util"])
+    assert rc2 == 0
+    out_remove = buf2.getvalue()
+    assert "removed" in out_remove
+    assert not re.search(r"[가-힣]", out_remove), \
+        f"en 팀 util remove 출력에 한글 섞임: {out_remove!r}"
+
+
 def test_util_remove_idempotent(tmp_path):
     """util remove: 미등록 스킬 제거는 멱등(에러 없음)."""
     root = _scaffold(tmp_path)
@@ -513,6 +544,76 @@ def test_traversal_in_util_skills_json_rejected_on_on(tmp_path):
     if skills_dir.is_dir():
         names = [p.name for p in skills_dir.iterdir()]
         assert "evil" not in names, "skills_dir 안에 'evil' 생성됨"
+
+
+def test_agent_wiring_failed_warn_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, B 가 지적한 사전 테스트 갭): cmd_on_agent_wiring_failed
+    가 실제로 발동하는 경로를 en 팀 config 로 검증한다.
+
+    team.config.json 의 agents 목록에 실재하지 않는 에이전트명을 넣으면
+    (_adapter_for 가 infra/agents/<name>/adapter.py 를 runpy 로 못 찾아 FileNotFoundError)
+    cmd_on 의 배선 loop 가 그 에이전트만 실패로 잡고 [warn] 을 낸다(claude 는 명시
+    --settings 로 격리돼 정상 성공 — 전부 실패가 아니므로 rc=0 유지).
+    """
+    import io, contextlib, re
+    root = _scaffold(tmp_path)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"},
+                    "agents": ["claude", "bogus-agent"]}), encoding="utf-8")
+    settings = _settings(tmp_path)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = _run_teammode(["on", "--root", str(root),
+                             "--settings", settings, "--install"])
+    assert rc == 0, "claude 는 격리 settings 로 성공해야 하므로 전부 실패가 아니다"
+    out = buf.getvalue()
+    assert "[warn]" in out
+    assert "bogus-agent" in out
+    assert "wiring failed" in out
+    assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글 섞임: {out!r}"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 퍼미션 모델 전용")
+@pytest.mark.skipif(os.getuid() == 0, reason="root 는 chmod 무시 → 테스트 불가")
+def test_util_skill_link_failed_warn_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, B 가 지적한 사전 테스트 갭): cmd_on_util_skill_link_failed
+    가 실제로 발동하는 경로를 en 팀 config 로 검증한다.
+
+    core 스킬 설치는 settings_path 파생 skills_dir(claude 몫) 그대로 진행되게 두고,
+    util 심링크만 실패하도록 skills_dir 를 읽기전용(0o555)으로 바꾼다 — target 이
+    아직 없는 상태에서 os.symlink 생성 자체가 PermissionError 로 막힌다(copytree 폴백도
+    같은 디렉토리에 쓰기라 동일하게 막힘). 그 예외가 cmd_on 의 util 심링크 try/except
+    까지 전파돼 link_failed [warn] 을 낸다.
+    """
+    import io, contextlib, re
+    root = _scaffold(tmp_path, include_util_skill=True)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    alice_dir = root / "memory" / "team" / "sessions" / "alice"
+    alice_dir.mkdir(parents=True, exist_ok=True)
+    (alice_dir / "util-skills.json").write_text(
+        json.dumps({"installed": ["test-util"]}), encoding="utf-8")
+    settings = _settings(tmp_path)
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    # core 설치가 이미 끝난 뒤(cmd_on 의 install_skills(layer="core") 호출 시점)에
+    # util 심링크 단계만 막고 싶으므로, on 을 먼저 한 번 돌려 core 를 심어둔 다음
+    # skills_dir 를 읽기전용으로 바꾼다.
+    rc0 = _run_teammode(["on", "--root", str(root), "--settings", settings])
+    assert rc0 == 0
+    skills_dir.chmod(0o555)
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = _run_teammode(["on", "--root", str(root),
+                                 "--settings", settings, "--member", "alice"])
+    finally:
+        skills_dir.chmod(0o755)  # cleanup 이 tmp_path 를 지울 수 있게 복원
+    assert rc == 0, "util 링크 실패가 on 전체를 실패시켜선 안 된다"
+    out = buf.getvalue()
+    assert "[warn]" in out
+    assert "link failed" in out
+    assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글 섞임: {out!r}"
 
 
 def test_util_skill_missing_warn_english_for_en_locale_team(tmp_path):

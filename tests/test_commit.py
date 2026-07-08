@@ -153,6 +153,20 @@ def test_commit_verb_requires_message(local_repo):
     assert r.returncode != 0  # 메시지 필수
 
 
+def test_commit_verb_requires_message_english_for_en_locale_team(local_repo):
+    """i18n(적대검수 — long tail, main()): en 팀(locale=en_US)의 --message 누락
+    에러는 영어이고 한글이 섞이지 않는다."""
+    import json
+    import re
+    (local_repo / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    (local_repo / "i2.txt").write_text("v\n")
+    r = _run_engine(local_repo, "commit")
+    assert r.returncode != 0
+    assert "--message" in r.stderr
+    assert not re.search(r"[가-힣]", r.stderr), f"en 팀 출력에 한글 섞임: {r.stderr!r}"
+
+
 def test_commit_verb_requires_root(tmp_path):
     r = subprocess.run([sys.executable, str(ENGINE), "commit", "--message", "x"],
                        capture_output=True, text=True, cwd=str(tmp_path))
