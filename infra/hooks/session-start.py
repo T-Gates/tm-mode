@@ -27,6 +27,11 @@
   ff/rebase 까지 실제 정합하고, diverge·충돌·push 실패는 sync-warning 마커 + 주입
   맥락(아래 _build_context)으로 **표면화**한다. origin(팀 공유) 동기화 상태는
   upstream(템플릿) 업데이트 상태와 분리해 'ahead/behind' 한 줄로 보여준다.
+- 엔진 업데이트 알림 추가(계속 켜둔 인스턴스 갭 메움): `tm on`을 계속 켜둔 상태로
+  두는 인스턴스는 auto_update_on_start(cmd_on 전용)를 다시 타지 않아 엔진이
+  뒤처져도 알림이 없었다. 이 훅에서 로컬 NOTICE.md 와 upstream/main 의 NOTICE.md
+  (로컬 git 오브젝트 조회 — fetch 아님)를 비교해 다르면 `tm-mode update` 안내를
+  한 줄 추가한다. 새 네트워크 호출·상태변경 없음(read-only, advisory).
 """
 from __future__ import annotations
 
@@ -357,6 +362,28 @@ def _build_context(root: Path, lang: str = "ko") -> str | None:
                     + (_t("hook_ss_sync_ahead_suffix", lang,
                           " (push 안 된 로컬 커밋 있음)") if ahead else ""))
         except Exception:  # noqa: BLE001 — 상태 표시 실패가 맥락 주입을 막지 않는다
+            pass
+
+    # ── 엔진 업데이트 알림(upstream 템플릿, 위 origin 상태와 별개) ──
+    # `tm on` 을 계속 켜둔 인스턴스는 auto_update_on_start(cmd_on 전용)를 다시 타지
+    # 않아 엔진이 뒤처져도 아무도 알려주지 않는다(갭). 여기서 새로 fetch 하지 않고
+    # — 이미 로컬에 캐시된 upstream/main 오브젝트만 읽는 두 read-only 함수를 재사용:
+    #   _engine._read_local_notice(로컬 NOTICE.md 파일 읽기) 와
+    #   _git_ops.read_upstream_notice(`git show upstream/main:NOTICE.md` — 로컬 git
+    #   오브젝트 DB 조회, fetch 아님. detect_default_branch 도 로컬 ref 전용— 네트워크
+    #   없음, infra/git_ops.py 의 두 함수 docstring 참고). 내용이 다르면(=새 엔진
+    #   업데이트가 upstream 에 있으면) tm-mode update 안내 한 줄만 덧붙인다.
+    if _git_ops is not None and _engine is not None:
+        try:
+            local_notice = _engine._read_local_notice(root)
+            upstream_notice = _git_ops.read_upstream_notice(str(root))
+            if upstream_notice and upstream_notice != local_notice:
+                lines.append("")
+                lines.append(_t(
+                    "hook_ss_engine_update_available", lang,
+                    "[teammode] 엔진 업데이트가 upstream 에 있습니다 — "
+                    "`tm-mode update`로 적용하세요."))
+        except Exception:  # noqa: BLE001 — 알림 실패가 맥락 주입을 막지 않는다
             pass
 
     # guidelines 주입: 범용(root/infra/ 우선, fallback _INFRA) + 팀 커스텀.

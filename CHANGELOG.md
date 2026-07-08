@@ -32,6 +32,7 @@
 
 ### Added
 
+- `tm-mode update [path]` launcher subcommand — thin passthrough to `infra/teammode.py update` (`--dry-run`/`--force` pass through; team root resolved from cwd only, no parent walk-up, same contract as `install.py`'s `_resolve_root`). Closes a gap where `infra/teammode.py` already told users to run `tm-mode update` (validation-sync guidance) but the launcher CLI had no such command. session-start hook also gained a read-only, no-fetch actionable notice (`tm-mode update`로 적용하세요) when the local `NOTICE.md` differs from upstream's — closes the "instance stays `on` forever, never told the engine fell behind" gap (`auto_update_on_start` only fires from `cmd_on`).
 - clone-and-go: 팀 레포 클론 → 에이전트 "셋업해줘"로 셋업 완료 — AGENTS.md 첫 접촉 bootstrap(dry-run 계획 → **대화 승인** → `--yes` 실설치 → Codex Trust 안내 → tm-onboard). 설치 상태 판정(config+members+agents)·CLI 경로 병행 유지. README/INSTALL/spec 갱신.
 - async push (#45): auto-commit 훅의 동기 구간을 로컬 커밋까지로 축소 — push 는 XDG push-pending ledger + detach `push-worker`(per-team lock·drain loop·**plain-push-only**, 로컬 히스토리 무접촉) 가 담당. 가시화 3중: session-start pending×ahead 판정(재kick/stale 자동정리/보수경고) + UserPromptSubmit pending-age 경고(30분 스로틀) + auto-commit 잔존 pending 경고 1줄. manifest 30s→20s(index.lock full retry worst 실계산).
 - `tm-import-memory` 스킬 — 외부 문서(docs 슬롯) → 팀 memory 대량 업로드: preview 확인 게이트·주제 병합·`## 출처` 절·route upsert 선행 (#51)
