@@ -259,7 +259,7 @@ def test_bootstrap_scaffolds_introducer(tmp_path, capsys):
     assert list((team / "memory" / "team" / "sessions" / "testuser").iterdir()) == []
 
 
-def test_bootstrap_exit3_when_no_name_resolvable(tmp_path, capsys):
+def test_bootstrap_exit3_when_no_name_resolvable(tmp_path, capsys, monkeypatch):
     """git user.name 없고 --member-name 도 없으면 exit 3(추측 금지, m1)."""
     team = tmp_path / "team"
     team.mkdir()
@@ -267,6 +267,13 @@ def test_bootstrap_exit3_when_no_name_resolvable(tmp_path, capsys):
     # user.name 미설정
     home = tmp_path / "home"
     home.mkdir()
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    empty_gitconfig = tmp_path / "empty-gitconfig"
+    empty_gitconfig.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_gitconfig))
     mod = _load_install()
     opts = il.parse_args(["--root", str(team)])
     rc = mod["bootstrap"](opts, home=home, python_version=(3, 13))
