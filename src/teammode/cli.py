@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -24,6 +25,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ── POSIX raw-key 위젯 백엔드 (선택적) ────────────────────────────────────────
 # termios/tty 는 POSIX 전용 — Windows 에선 ImportError 라, 감싸지 않으면 curl 단일파일
@@ -41,6 +43,9 @@ except ImportError:  # pragma: no cover - Windows 등
 # 사용자 가시 확인(TTY 프롬프트에 표시) 또는 명시 --template 없이는 진행 금지(codex P1).
 DEFAULT_TEMPLATE_REPO = "T-Gates/tm-mode"
 TEMPLATE_REPO = os.environ.get("TM_TEMPLATE_REPO", DEFAULT_TEMPLATE_REPO)
+TEAM_INSTANCE_WORKFLOWS = Path(".github") / "workflows"
+WORKFLOW_STRIP_MESSAGE = (
+    "chore(teammode): remove product workflows from team instance")
 # 설치 원라이너 핀(2b) — cli.py 는 curl 로 단독 실행되므로 패키지 import 불가.
 # 릴리스마다 __init__.__version__ 과 함께 올린다(tests/test_release_pin.py 가 교차 고정).
 PIN_REF = "refs/tags/v0.1.2"
@@ -668,6 +673,227 @@ def _delegate_install(repo_dir: Path, member: str | None, extra: list[str]) -> i
     return subprocess.run(argv).returncode
 
 
+def _repo_git_ops(repo_dir: Path):
+    path = repo_dir / "infra" / "git_ops.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_teammode_repo_git_ops", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        return mod
+    except Exception:  # noqa: BLE001 — old/custom template 은 fallback cleanup 으로 처리
+        return None
+
+
+def _workflow_result(ok: bool, detail: str = "", *, changed: bool = False,
+                     committed: bool = False, pushed: bool = False,
+                     skipped_product: bool = False):
+    class _Result:
+        pass
+    res = _Result()
+    res.ok = ok
+    res.detail = detail
+    res.changed = changed
+    res.committed = committed
+    res.pushed = pushed
+    res.skipped_product = skipped_product
+    return res
+
+
+def _workflow_remote_still_contains_message(reason: str) -> str:
+    return (
+        f"{reason}. The remote repository still contains .github/workflows. "
+        "Fix: re-run the setup after git push works, or delete .github/workflows "
+        "from the repository on GitHub manually.")
+
+
+def _fallback_normalize_remote_repo(url: str | None):
+    if not url:
+        return None
+    raw = str(url).strip()
+    if not raw:
+        return None
+    lower = raw.lower()
+    path = None
+    if "://" not in lower:
+        for marker in ("@github.com:", "@www.github.com:"):
+            idx = lower.find(marker)
+            if idx >= 0:
+                path = raw[idx + len(marker):]
+                break
+        if path is None:
+            for marker in ("github.com:", "www.github.com:"):
+                if lower.startswith(marker):
+                    path = raw[len(marker):]
+                    break
+    if path is not None:
+        pass
+    else:
+        parsed = urlparse(raw)
+        host = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0].lower()
+        if host not in ("github.com", "www.github.com"):
+            return None
+        path = parsed.path.lstrip("/")
+    path = path.rstrip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    return parts[-2], parts[-1]
+
+
+def _fallback_is_github_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    raw = str(url).strip()
+    lower = raw.lower()
+    if "://" not in lower:
+        return (
+            "@github.com:" in lower
+            or "@www.github.com:" in lower
+            or lower.startswith("github.com:")
+            or lower.startswith("www.github.com:")
+        )
+    parsed = urlparse(raw)
+    host = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0].lower()
+    return host in ("github.com", "www.github.com")
+
+
+def _fallback_origin_url(repo_dir: Path) -> str | None:
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_dir), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() or None
+
+
+def _fallback_should_preserve_product(repo_dir: Path) -> bool:
+    origin_url = _fallback_origin_url(repo_dir)
+    origin = _fallback_normalize_remote_repo(origin_url)
+    if not origin or not _fallback_is_github_remote(origin_url):
+        return False
+    owner, repo = origin[0].lower(), origin[1].lower()
+    return (owner, repo) == ("t-gates", "tm-mode") or repo == "tm-mode"
+
+
+def _fallback_push(repo_dir: Path, env: dict, *, changed: bool = True,
+                   committed: bool = True):
+    try:
+        push = subprocess.run(
+            ["git", "-C", str(repo_dir), "-c", "http.lowSpeedLimit=1000",
+             "-c", "http.lowSpeedTime=5", "push"],
+            capture_output=True, text=True, env=env, timeout=10)
+    except subprocess.TimeoutExpired:
+        return _workflow_result(
+            False, _workflow_remote_still_contains_message("push timeout"),
+            changed=changed, committed=committed)
+    except OSError as exc:
+        return _workflow_result(
+            False,
+            _workflow_remote_still_contains_message(f"push exec error: {exc}"),
+            changed=changed, committed=committed)
+    if push.returncode != 0:
+        detail = ((push.stderr or push.stdout) or "").strip()[:200]
+        return _workflow_result(
+            False,
+            _workflow_remote_still_contains_message(f"push failed: {detail}"),
+            changed=changed, committed=committed)
+    return _workflow_result(
+        True, "removed and pushed .github/workflows",
+        changed=changed, committed=committed, pushed=True)
+
+
+def _fallback_push_existing_workflow_strip_commit(repo_dir: Path, env: dict):
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_dir), "log", "-1", "--format=%s"],
+            capture_output=True, text=True, env=env, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return _workflow_result(True, "no workflows")
+    if res.returncode != 0 or res.stdout.strip() != WORKFLOW_STRIP_MESSAGE:
+        return _workflow_result(True, "no workflows")
+    return _fallback_push(repo_dir, env, changed=True, committed=True)
+
+
+def _strip_template_workflows_fallback(repo_dir: Path):
+    """old/custom template fallback: lexists-aware remove + commit + push."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": os.environ.get("GIT_AUTHOR_NAME", "tm-mode"),
+        "GIT_AUTHOR_EMAIL": os.environ.get(
+            "GIT_AUTHOR_EMAIL", "tm-mode@users.noreply.github.com"),
+        "GIT_COMMITTER_NAME": os.environ.get("GIT_COMMITTER_NAME", "tm-mode"),
+        "GIT_COMMITTER_EMAIL": os.environ.get(
+            "GIT_COMMITTER_EMAIL", "tm-mode@users.noreply.github.com"),
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    if _fallback_should_preserve_product(repo_dir):
+        return _workflow_result(
+            True, "product repo checkout — workflows preserved",
+            skipped_product=True)
+
+    workflows = repo_dir / TEAM_INSTANCE_WORKFLOWS
+    if not os.path.lexists(str(workflows)):
+        return _fallback_push_existing_workflow_strip_commit(repo_dir, env)
+    try:
+        if workflows.is_symlink() or workflows.is_file():
+            workflows.unlink()
+        elif workflows.is_dir():
+            shutil.rmtree(workflows)
+        elif os.path.lexists(str(workflows)):
+            workflows.unlink()
+    except OSError as exc:
+        return _workflow_result(
+            False, f"failed to remove .github/workflows: {exc}", changed=True)
+
+    steps = [
+        (["git", "-C", str(repo_dir), "add", "-A", "--",
+          str(TEAM_INSTANCE_WORKFLOWS)], 5, "add"),
+        (["git", "-C", str(repo_dir), "commit", "-m",
+          WORKFLOW_STRIP_MESSAGE, "--", str(TEAM_INSTANCE_WORKFLOWS)], 5, "commit"),
+    ]
+    for cmd, timeout, label in steps:
+        try:
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, env=env, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return _workflow_result(
+                False, _workflow_remote_still_contains_message(f"{label} timeout"),
+                changed=True)
+        except OSError as exc:
+            return _workflow_result(
+                False,
+                _workflow_remote_still_contains_message(f"{label} exec error: {exc}"),
+                changed=True)
+        if res.returncode != 0:
+            detail = ((res.stderr or res.stdout) or "").strip()[:200]
+            return _workflow_result(
+                False,
+                _workflow_remote_still_contains_message(
+                    f"{label} failed: {detail}"),
+                changed=True)
+
+    return _fallback_push(repo_dir, env, changed=True, committed=True)
+
+
+def _strip_template_workflows(repo_dir: Path):
+    """repo-local infra/git_ops.py 의 공통 구현으로 위임."""
+    mod = _repo_git_ops(repo_dir)
+    if mod is None or not hasattr(mod, "strip_template_workflows"):
+        return _strip_template_workflows_fallback(repo_dir)
+    return mod.strip_template_workflows(str(repo_dir))
+
+
 def _default_dest_from_url(url: str) -> Path:
     """--dir 미지정 시 기본 설치 위치 — TTY wizard 1단계 기본값과 동일(#6).
 
@@ -1247,6 +1473,14 @@ def cmd_join(args, *, created: bool = False) -> int:
     if not (dest / "infra").is_dir():
         _err(f"The cloned repo has no infra/: {dest}")
         return 3
+
+    if created:
+        strip_res = _strip_template_workflows(dest)
+        if not strip_res.ok:
+            _err(f"Team repo setup stopped. {strip_res.detail}")
+            return 1
+        if getattr(strip_res, "pushed", False):
+            print("[github] removed product workflows from the team repository.")
 
     # init → join 경유 시 팀명 전달(join 자체 파서엔 --team-name 없음; init 만 줌).
     if getattr(args, "team_name", None):

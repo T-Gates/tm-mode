@@ -984,6 +984,49 @@ def test_wait_template_ready_timeout(monkeypatch):
     assert cli._wait_template_ready("o/r", attempts=3, interval=0) is False
 
 
+def test_strip_template_workflows_keeps_other_github_files(tmp_path):
+    """init team repo cleanup: product workflows 만 제거하고 issue template 은 보존."""
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    team = tmp_path / "team"
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "clone", str(origin), str(seed)], check=True,
+                   capture_output=True, text=True)
+    for key, value in (("user.name", "t"), ("user.email", "t@t")):
+        subprocess.run(["git", "-C", str(seed), "config", key, value], check=True)
+    (seed / "infra").mkdir()
+    (seed / "infra" / "install.py").write_text("# fake\n")
+    (seed / "infra" / "git_ops.py").write_text(
+        (Path(__file__).resolve().parent.parent / "infra" / "git_ops.py")
+        .read_text(encoding="utf-8"),
+        encoding="utf-8")
+    (seed / ".github" / "workflows").mkdir(parents=True)
+    (seed / ".github" / "workflows" / "test.yml").write_text("name: test\n")
+    (seed / ".github" / "ISSUE_TEMPLATE").mkdir(parents=True)
+    (seed / ".github" / "ISSUE_TEMPLATE" / "bug.md").write_text("bug\n")
+    subprocess.run(["git", "-C", str(seed), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(seed), "commit", "-m", "template"], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(seed), "branch", "-M", "main"], check=True)
+    subprocess.run(["git", "-C", str(seed), "push", "-u", "origin", "main"], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"],
+                   check=True)
+    subprocess.run(["git", "clone", str(origin), str(team)], check=True,
+                   capture_output=True, text=True)
+
+    res = cli._strip_template_workflows(team)
+    assert res.ok is True, res.detail
+    assert res.pushed is True
+    assert not (team / ".github" / "workflows").exists()
+    assert (team / ".github" / "ISSUE_TEMPLATE" / "bug.md").exists()
+    removed = subprocess.run(
+        ["git", "-C", str(team), "show", "--name-only", "--format=", "HEAD"],
+        check=True, capture_output=True, text=True).stdout
+    assert ".github/workflows/test.yml" in removed
+
+
 def test_init_template_timeout_skips_join():
     """template 반영이 끝내 안 되면 join 으로 안 넘어가고 비정상 종료(빈 레포 clone 방지)."""
     join_calls = []

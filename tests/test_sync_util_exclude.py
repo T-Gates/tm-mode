@@ -71,6 +71,10 @@ def team_with_upstream(tmp_path):
     (seed / "infra" / "engine.py").write_text("v2\n")
     (seed / "infra" / "newfeature.py").write_text("feature\n")
     (seed / "infra" / "skills" / "util" / ".gitkeep").write_text("upstream-touched\n")
+    (seed / ".github" / "workflows").mkdir(parents=True)
+    (seed / ".github" / "workflows" / "test.yml").write_text("name: test\n")
+    (seed / ".github" / "ISSUE_TEMPLATE").mkdir(parents=True)
+    (seed / ".github" / "ISSUE_TEMPLATE" / "bug.md").write_text("bug\n")
     _git(seed, "add", ".")
     _git(seed, "commit", "-m", "tpl v2")
     _git(seed, "push")
@@ -96,6 +100,19 @@ def test_sync_pathspecs_no_exclude_without_ancestor():
     """util 조상 positive 가 없으면 exclude 불필요(붙이지 않음)."""
     specs = go._sync_pathspecs(["NOTICE.md"])
     assert ":(exclude)infra/skills/util" not in specs
+
+
+def test_sync_pathspecs_excludes_workflows_for_github_parent():
+    """`.github` sync 가 생겨도 product workflow 는 team instance 로 들어가지 않음."""
+    specs = go._sync_pathspecs([".github"])
+    assert ".github" in specs
+    assert ":(exclude).github/workflows" in specs
+
+
+def test_sync_pathspecs_drops_explicit_workflow_positive():
+    """명시 positive 로 workflows 를 요청해도 보호 경로라 무시한다."""
+    specs = go._sync_pathspecs([".github/workflows", ".github/workflows/test.yml"])
+    assert specs == []
 
 
 # ── sync 통합: util 보존 ────────────────────────────────────────────
@@ -142,6 +159,25 @@ def test_sync_result_pathspecs_field(team_with_upstream):
     res = go.sync_from_upstream(str(team_with_upstream), dry_run=True)
     assert ":(exclude)infra/skills/util" in res.pathspecs
     assert ":(exclude)infra/skills/util" not in res.paths
+
+
+def test_sync_github_parent_preserves_team_instance_from_product_workflows(team_with_upstream):
+    """미래에 `.github` 가 sync 대상이 되어도 workflows 만은 재유입되지 않는다."""
+    team = team_with_upstream
+    res = go.sync_from_upstream(str(team), paths=[".github"])
+    assert res.ok and res.changed, res.detail
+    assert (team / ".github" / "ISSUE_TEMPLATE" / "bug.md").exists()
+    assert not (team / ".github" / "workflows" / "test.yml").exists()
+
+
+def test_sync_explicit_workflows_request_is_noop(team_with_upstream):
+    """caller 가 `.github/workflows` 를 직접 넘겨도 보호 경로라 checkout 하지 않는다."""
+    team = team_with_upstream
+    res = go.sync_from_upstream(str(team), paths=[".github/workflows"])
+    assert res.ok is True
+    assert res.changed is False
+    assert res.pathspecs == ()
+    assert not (team / ".github" / "workflows" / "test.yml").exists()
 
 
 def test_do_commit_with_exclude_pathspec_skips_util(team_with_upstream):

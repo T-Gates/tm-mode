@@ -633,6 +633,17 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         err(f"[error] preflight failed: {pre.message}")
         return pre.exit_code
 
+    # GitHub template 로 만든 팀 인스턴스에는 product CI/release workflow 가 복사된다.
+    # dry-run 은 아래 계획 출력에서 무접촉으로 끝나고, 실 bootstrap 은 모든 entry path 의
+    # chokepoint 이므로 여기서 한 번만 제거한다. product repo/fork 는 git_ops 가 보호한다.
+    if not opts.dry_run and _git_ops.is_git_worktree(str(team_root)):
+        strip_res = _git_ops.strip_template_workflows(str(team_root))
+        if not strip_res.ok:
+            err(f"[error] workflow cleanup failed: {strip_res.detail}")
+            return 1
+        if getattr(strip_res, "pushed", False):
+            out("[github] removed product workflows from the team repository.")
+
     # ② detect ③ role
     det = _detect(team_root, home)
     for w in pre.warnings:
