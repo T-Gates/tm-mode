@@ -407,6 +407,80 @@ MESSAGES = {
             "(real install) is required. Without an explicit choice, this "
             "will not write to the real ~/.claude/settings.json.",
 
+        # ── shared validators (_validate_author/_validate_filename_chars/
+        #    _validate_knowledge_path/_validate_route_path) — 13+ call sites across
+        #    the engine. lang threaded directly into each (see breadcrumb comment
+        #    at each definition in teammode.py for the design rationale). ──
+        "validate_author_empty":
+            "author is empty.",
+        "validate_author_path_sep":
+            "author cannot contain a path separator: {author!r}",
+        "validate_author_dot_segment":
+            "author cannot be {author!r}.",
+        "validate_author_absolute":
+            "author cannot be an absolute path: {author!r}",
+        "validate_author_leading_char":
+            "author must start with an alphanumeric character: {author!r}",
+        "validate_author_non_ascii":
+            "author must use ASCII characters only (letters/digits/allowed "
+            "symbols): {author!r}",
+        "validate_author_bad_char":
+            "author has a disallowed character: {author!r}",
+        "validate_filename_empty":
+            "filename is empty.",
+        "validate_filename_path_sep":
+            "filename cannot contain a path separator: {filename!r}",
+        "validate_filename_not_allowed":
+            "filename is not allowed: {filename!r}",
+        "validate_filename_bad_char":
+            "filename has a disallowed character: {filename!r}",
+        "validate_filename_non_ascii":
+            "filename must use ASCII characters only: {filename!r}",
+        "validate_filename_kebab_failed":
+            "filename validation failed: {err}",
+        "validate_knowledge_symlink_escape":
+            "memory/ points outside team_root (symlink escape blocked): "
+            "{memory_dir} not under {real_root}",
+        "validate_knowledge_folder_blocked":
+            "folder '{folder}' is not a memory storage target (hook/tm-context-"
+            "managed path): blocked list: {blocked}",
+        "validate_knowledge_folder_not_allowed":
+            "folder '{folder}' is not allowed. Allowed: {allowed} (and their "
+            "subfolders, or a top-level folder registered in the root INDEX "
+            "routing map)",
+        "validate_knowledge_register_hint":
+            "\n[hint] register first: {cmd}",
+        "validate_knowledge_folder_bad_segment":
+            "folder has a disallowed segment: {seg!r} in {folder!r}",
+        "validate_knowledge_folder_non_ascii":
+            "folder segment must use ASCII characters only: {seg!r}",
+        "validate_knowledge_folder_bad_char":
+            "folder segment has a disallowed character: {seg!r}",
+        "validate_knowledge_index_md_reserved":
+            "INDEX.md is managed by the engine — it cannot be written via "
+            "memory write.",
+        "validate_knowledge_path_escapes":
+            "the path escapes memory/: {folder}/{filename}",
+        "validate_route_path_empty":
+            "the path is empty.",
+        "validate_route_path_absolute":
+            "an absolute path is not allowed: {path!r}",
+        "validate_route_path_dotdot":
+            "the path cannot contain '..': {path!r}",
+        "validate_route_path_bad_char":
+            "the path has a disallowed character: {path!r}",
+        "validate_route_symlink_escape":
+            "memory/ points outside team_root (symlink escape blocked).",
+        "validate_route_normalize_failed":
+            "path normalization failed — {exc}",
+        "validate_route_path_escapes":
+            "the path escapes memory/: {path!r}",
+        "resolve_member_fallback_warn":
+            "[warn] Automatic member resolution failed (neither the "
+            "TEAMMODE_MEMBER env var nor claude settings.json had it) — a "
+            "codex hook with no existing prefix will not get a member recorded. "
+            "You can set it explicitly with `tm on --member <name>`.",
+
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":

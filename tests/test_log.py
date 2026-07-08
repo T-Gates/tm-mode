@@ -224,6 +224,21 @@ def test_log_requires_author_english_for_en_locale_team(tmp_path):
     assert not re.search(r"[가-힣]", r.stderr), f"en 팀 출력에 한글 섞임: {r.stderr!r}"
 
 
+def test_log_rejects_slash_author_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, _validate_author): en 팀은 _validate_author 의
+    반환값(엔진 곳곳에서 {err} 로 interpolate 됨)도 영어이고 한글이 섞이지 않는다."""
+    import json
+    import re
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    r = _run(tmp_path, "log", "--author", "a/b", "--text", "x",
+             "--now", "2026-06-13T10:00:00+09:00")
+    assert r.returncode != 0
+    assert "path separator" in r.stderr
+    assert not re.search(r"[가-힣]", r.stderr), f"en 팀 출력에 한글 섞임: {r.stderr!r}"
+
+
 # ── append 손상 방지: 기존 내용 보존 ──
 
 def test_log_append_preserves_existing_content(tmp_path):

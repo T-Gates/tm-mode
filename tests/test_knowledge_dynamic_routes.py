@@ -69,7 +69,8 @@ def test_unregistered_folder_still_rejected(tmp_path):
              "--filename", "x.md", "--content", "x",
              "--author", "test", "--weight", "📎")
     assert r.returncode == 2
-    assert "허용되지 않습니다" in r.stderr
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약).
+    assert "not allowed" in r.stderr
 
 
 def test_file_row_only_does_not_allow_folder(tmp_path):
@@ -106,7 +107,8 @@ def test_blocked_folder_wins_over_route(tmp_path):
              "--filename", "x.md", "--content", "x",
              "--author", "test", "--weight", "📎")
     assert r.returncode == 2
-    assert "차단" in r.stderr or "저장 대상이 아닙니다" in r.stderr
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약).
+    assert "not a memory storage target" in r.stderr
 
 
 def test_dynamic_top_subfolder_allowed(tmp_path):
@@ -226,7 +228,29 @@ def test_unregistered_folder_not_statically_allowed(tmp_path):
              "--filename", "x.md", "--content", "x",
              "--author", "test", "--weight", "📎")
     assert r.returncode == 2, "미등재 폴더가 아직 정적 허용됨 (하드코딩 잔존)"
-    assert "허용되지 않습니다" in r.stderr
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본(team_lang 계약).
+    assert "not allowed" in r.stderr
+
+
+def test_unregistered_folder_rejection_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — long tail, _validate_knowledge_path): en 팀(locale=en_US)의
+    미등재 폴더 거부 메시지는 register-hint 커맨드까지 포함해 전부 영어이고 한글이
+    섞이지 않는다(_route_upsert_hint_command 의 placeholder 도 포함)."""
+    import json
+    import re
+    root = tmp_path / "team"
+    root.mkdir()
+    _init_git(root)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    r = _run(root, "memory", "write", "--folder", "extras",
+             "--filename", "x.md", "--content", "x",
+             "--author", "test", "--weight", "📎")
+    assert r.returncode == 2
+    assert "not allowed" in r.stderr
+    assert "[hint] register first" in r.stderr
+    assert "<root>" in r.stderr and "<one-line description>" in r.stderr
+    assert not re.search(r"[가-힣]", r.stderr), f"en 팀 출력에 한글 섞임: {r.stderr!r}"
 
 
 def test_registered_folder_allowed_when_registered(tmp_path):

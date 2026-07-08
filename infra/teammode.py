@@ -173,7 +173,7 @@ def _adapter(settings_path=None, skills_dir=None):
     return _adapter_for("claude", settings_path, skills_dir)
 
 
-def _resolve_member_fallback(settings_path=None) -> str | None:
+def _resolve_member_fallback(settings_path=None, lang: str = "ko") -> str | None:
     """issue #41 R2 — `--member` 없이 도는 resync 의 member 자동 해석 체인(엔진 공용).
 
     `tm on`(member 미지정)은 prefix 를 발명하지 못해(어댑터 자가치유는 기존 prefix
@@ -193,7 +193,7 @@ def _resolve_member_fallback(settings_path=None) -> str | None:
     """
     # 2. 현재 프로세스 env
     cand = os.environ.get("TEAMMODE_MEMBER", "").strip()
-    if cand and _validate_author(cand) is None:
+    if cand and _validate_author(cand, lang) is None:
         return cand
     # 3. claude settings.json env (표준 경로 해석 — 파일이 실재할 때만, 격리 안전)
     path = Path(settings_path) if settings_path else Path(
@@ -205,14 +205,15 @@ def _resolve_member_fallback(settings_path=None) -> str | None:
             cand = env.get("TEAMMODE_MEMBER") if isinstance(env, dict) else None
             if isinstance(cand, str):
                 cand = cand.strip()
-                if cand and _validate_author(cand) is None:
+                if cand and _validate_author(cand, lang) is None:
                     return cand
     except Exception:  # noqa: BLE001 — 깨진 settings 는 해석 실패로 강등(비치명)
         pass
     # 4. 전부 실패 — 발명하지 않는다. 안내 1줄(기존 prefix 는 어댑터 자가치유가 보존).
-    print("[warn] member 자동 해석 실패(TEAMMODE_MEMBER env·claude settings.json 모두 "
-          "부재) — 기존 prefix 가 없는 codex hook 에는 member 가 기록되지 않습니다. "
-          "`tm on --member <이름>` 으로 지정할 수 있습니다.")
+    print(_t("resolve_member_fallback_warn", lang,
+             "[warn] member 자동 해석 실패(TEAMMODE_MEMBER env·claude settings.json 모두 "
+             "부재) — 기존 prefix 가 없는 codex hook 에는 member 가 기록되지 않습니다. "
+             "`tm on --member <이름>` 으로 지정할 수 있습니다."))
     return None
 
 
@@ -497,7 +498,7 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     # 소비처(비-claude 어댑터)가 있을 때만 체인 가동 — 격리(claude 전용) 모드 노이즈 방지.
     _member_fb = None
     if member is None and any(_ag != "claude" for _ag in _agents_to_wire):
-        _member_fb = _resolve_member_fallback(settings_path)
+        _member_fb = _resolve_member_fallback(settings_path, lang)
     _all_adapters: list = []  # 생성된 어댑터 전부 보관 — util replay 를 전부에 적용
     _failed_agents: list = []  # 실패 에이전트 수집 (지적3: 부분 실패 처리)
     for _ag in _agents_to_wire:
@@ -534,7 +535,7 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
             # P0-2: traversal 가드 — util-skills.json 의 installed 문자열을 검증 없이
             # src/target 에 쓰면 "../foo" 같은 값이 skills dir 밖으로 탈출한다.
             # add 경로(_validate_author)와 동일 규칙으로 on 읽기 경로도 필터.
-            err = _validate_author(skill_name)
+            err = _validate_author(skill_name, lang)
             if err is not None:
                 print(_t("cmd_on_util_skill_invalid", lang,
                          "[warn] util 스킬 '{skill}' 무효(traversal 위험) → skip: {err}",
@@ -884,32 +885,48 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
     return 0
 
 
-def _validate_author(author: str) -> str | None:
+def _validate_author(author: str, lang: str = "ko") -> str | None:
     """author 가 안전한 단일 디렉토리 세그먼트인지 검증. 위반 시 에러 메시지 반환.
 
     적대 표면(경로 traversal·이상 author): members.md 영문 이름은 소문자 단일 세그먼트
     (스펙 01 §2.1). 슬래시·`..`·절대경로·빈 문자열·널은 팀 루트 밖 쓰기로 이어질 수
     있으므로 거부한다. 화이트리스트(영숫자·`-`·`_`)로 좁혀 OS별 특수문자도 차단한다.
+
+    i18n(적대검수 — long tail, breadcrumb): 이 검증기는 13곳 이상에서 호출되고 대부분
+    호출부가 `[error] ...: {err}` 형태로 반환값을 그대로 interpolate 한다. lang 을 이
+    함수(그리고 자매 검증기 _validate_filename_chars/_validate_knowledge_path/
+    _validate_route_path)에 직접 스레딩하는 쪽을 택했다 — 구조화 reason-code 로
+    바꾸는 대안도 검토했으나, 모든 호출부가 이미 `lang = _i18n.team_lang(...)` 를
+    상단에서 한 번 해석해 두고 있어(이전 커밋들) `lang=lang` 을 넘기는 것이 각 호출부를
+    reason-code→문자열 렌더러로 바꾸는 것보다 훨씬 덜 침습적이다. 기본값 "ko" 는
+    lang 을 안 넘기는 나머지(순수 bool 판정만 하는) 호출부의 기존 거동을 보존한다.
     """
     if not author:
-        return "author 가 비어 있습니다."
+        return _t("validate_author_empty", lang, "author 가 비어 있습니다.")
     if "/" in author or "\\" in author:
-        return f"author 에 경로 구분자가 포함될 수 없습니다: {author!r}"
+        return _t("validate_author_path_sep", lang,
+                  "author 에 경로 구분자가 포함될 수 없습니다: {author!r}", author=author)
     if author in (".", ".."):
-        return f"author 로 {author!r} 는 허용되지 않습니다."
+        return _t("validate_author_dot_segment", lang,
+                  "author 로 {author!r} 는 허용되지 않습니다.", author=author)
     if os.path.isabs(author):
-        return f"author 는 절대 경로일 수 없습니다: {author!r}"
+        return _t("validate_author_absolute", lang,
+                  "author 는 절대 경로일 수 없습니다: {author!r}", author=author)
     # 선두 '-' 거부: '-rf'·'--root' 같은 이름은 다운스트림 git/rm/glob 에서 플래그로
     # 오인되는 footgun(적대 검수 지적). members.md 영문 이름은 식별자이지 플래그가 아니다.
     if author[0] in "-_":
-        return f"author 는 영숫자로 시작해야 합니다: {author!r}"
+        return _t("validate_author_leading_char", lang,
+                  "author 는 영숫자로 시작해야 합니다: {author!r}", author=author)
     # isascii() 강제: 파이썬 isalnum() 은 유니코드라 한글 등 비ASCII 가 통과한다.
     # author·filename(파일명 되는 값)은 ASCII 범위 영문/숫자/제한기호만 허용한다.
     if not author.isascii():
-        return f"author 는 ASCII 문자(영문/숫자/허용기호)만 사용할 수 있습니다: {author!r}"
+        return _t("validate_author_non_ascii", lang,
+                  "author 는 ASCII 문자(영문/숫자/허용기호)만 사용할 수 있습니다: {author!r}",
+                  author=author)
     # 화이트리스트: members.md 영문 이름 규약(소문자 단일 세그먼트)에 부합하는 문자만
     if not all(c.isalnum() or c in "-_" for c in author):
-        return f"author 에 허용되지 않는 문자가 있습니다: {author!r}"
+        return _t("validate_author_bad_char", lang,
+                  "author 에 허용되지 않는 문자가 있습니다: {author!r}", author=author)
     return None
 
 
@@ -929,7 +946,7 @@ def cmd_log(team_root: Path, author: str, text: str, now: datetime) -> int:
     summary 는 첫 기록의 첫 줄로 초기화(스킬/사람이 갱신; 엔진은 교체 판단 안 함).
     """
     lang = _i18n.team_lang(str(team_root))
-    err = _validate_author(author)
+    err = _validate_author(author, lang)
     if err is not None:
         print(f"[error] {err}", file=sys.stderr)
         return 2
@@ -1013,7 +1030,7 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                     available.append({"name": d.name, "description": desc})
         installed = []
         if member is not None:
-            err = _validate_author(member)
+            err = _validate_author(member, lang)
             if err is not None:
                 print(f"[error] {err}", file=sys.stderr)
                 return 2
@@ -1034,11 +1051,11 @@ def cmd_util(team_root: Path, action: str | None, member: str | None,
                      action=action), file=sys.stderr)
             return 2
         # Validate member and skill name
-        err = _validate_author(member)
+        err = _validate_author(member, lang)
         if err is not None:
             print(f"[error] --member: {err}", file=sys.stderr)
             return 2
-        err = _validate_author(skill_name)
+        err = _validate_author(skill_name, lang)
         if err is not None:
             print(f"[error] --skill: {err}", file=sys.stderr)
             return 2
@@ -1260,7 +1277,7 @@ def _escape_index_cell(value: str) -> str:
     return value.replace("\n", " ").replace("\r", " ").replace("|", "⎪").replace("`", "'")
 
 
-def _validate_filename_chars(filename: str) -> str | None:
+def _validate_filename_chars(filename: str, lang: str = "ko") -> str | None:
     """filename 문자 검증. 위반 시 에러 메시지 반환.
 
     - 빈 문자열 거부.
@@ -1270,30 +1287,40 @@ def _validate_filename_chars(filename: str) -> str | None:
     - 0x7F(DEL) 거부.
     - ASCII 외(비ASCII) 거부 — write/author 와 동일 정책.
     - kebab-case(영숫자·-·_) 검증(_validate_author 재사용).
+
+    i18n breadcrumb: _validate_author 와 동일한 lang 스레딩 계약(그쪽 docstring 참고).
     """
     if not filename:
-        return "filename 이 비어 있습니다."
+        return _t("validate_filename_empty", lang, "filename 이 비어 있습니다.")
     if "/" in filename or "\\" in filename:
-        return f"filename 에 경로 구분자가 포함될 수 없습니다: {filename!r}"
+        return _t("validate_filename_path_sep", lang,
+                  "filename 에 경로 구분자가 포함될 수 없습니다: {filename!r}",
+                  filename=filename)
     if ".." in filename or filename.startswith("."):
-        return f"filename 이 허용되지 않습니다: {filename!r}"
+        return _t("validate_filename_not_allowed", lang,
+                  "filename 이 허용되지 않습니다: {filename!r}", filename=filename)
     # 제어문자·공백·파이프·DEL·비ASCII 거부 (write 와 동일 정책)
     for ch in filename:
         cp = ord(ch)
         if cp < 32 or cp == 0x7F or ch in (" ", "|"):
-            return f"filename 에 허용되지 않는 문자가 있습니다: {filename!r}"
+            return _t("validate_filename_bad_char", lang,
+                      "filename 에 허용되지 않는 문자가 있습니다: {filename!r}",
+                      filename=filename)
     if not filename.isascii():
-        return f"filename 은 ASCII 문자만 사용할 수 있습니다: {filename!r}"
+        return _t("validate_filename_non_ascii", lang,
+                  "filename 은 ASCII 문자만 사용할 수 있습니다: {filename!r}",
+                  filename=filename)
     # kebab-case 검증 (확장자 제거 후)
     base = filename.removesuffix(".md") if filename.endswith(".md") else filename
-    err = _validate_author(base)
+    err = _validate_author(base, lang)
     if err is not None:
-        return f"filename 검증 실패: {err}"
+        return _t("validate_filename_kebab_failed", lang,
+                  "filename 검증 실패: {err}", err=err)
     return None
 
 
 def _validate_knowledge_path(team_root: Path, folder: str, filename: str,
-                              author: str | None = None) -> str | None:
+                              author: str | None = None, lang: str = "ko") -> str | None:
     """folder/filename 이 안전한지 검증. 위반 시 에러 메시지 반환.
 
     author 가 주어지면 허용-폴더 거부 메시지에 route upsert 힌트를 내장한다(#51 —
@@ -1307,6 +1334,9 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str,
 
     P0: memory/ 자체가 team_root 밖 symlink 여도 탈출 불가하도록
         memory.resolve() 가 team_root.resolve() 하위인지 먼저 검증.
+
+    i18n breadcrumb: _validate_author 와 동일한 lang 스레딩 계약(그쪽 docstring 참고).
+    _route_upsert_hint_command/_validate_filename_chars 에도 그대로 전파한다.
     """
     # ── P0: symlink 탈출 가드 ─────────────────────────────────────
     # memory 디렉토리가 team_root 바깥을 가리키는 symlink 라면 containment 자체가 무력화된다.
@@ -1315,8 +1345,10 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str,
     try:
         memory_dir.relative_to(real_root)
     except ValueError:
-        return (f"memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단): "
-                f"{memory_dir} not under {real_root}")
+        return _t("validate_knowledge_symlink_escape", lang,
+                  "memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단): "
+                  "{memory_dir} not under {real_root}",
+                  memory_dir=memory_dir, real_root=real_root)
 
     # ── 허용 폴더 검증 (P1-1) ─────────────────────────────────────
     # 정규화된 folder 가 허용 목록의 하나이거나 그 하위여야 한다.
@@ -1326,17 +1358,22 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str,
     # 먼저 명시 차단 목록 검사
     for bf in _KNOWLEDGE_BLOCKED_FOLDERS:
         if norm_folder == bf or norm_folder.startswith(bf + "/"):
-            return (f"folder '{folder}' 는 메모리 저장 대상이 아닙니다(훅/tm-context 관리 경로): "
-                    f"차단 목록: {', '.join(_KNOWLEDGE_BLOCKED_FOLDERS)}")
+            return _t("validate_knowledge_folder_blocked", lang,
+                      "folder '{folder}' 는 메모리 저장 대상이 아닙니다(훅/tm-context "
+                      "관리 경로): 차단 목록: {blocked}",
+                      folder=folder, blocked=', '.join(_KNOWLEDGE_BLOCKED_FOLDERS))
 
     if not _knowledge_folder_allowed(team_root, norm_folder):
-        msg = (f"folder '{folder}' 는 허용되지 않습니다. "
-               f"허용: {', '.join(_KNOWLEDGE_ALLOWED_FOLDERS)} (및 그 하위, "
-               f"또는 루트 INDEX 라우팅 맵에 등재된 최상위 폴더)")
+        msg = _t("validate_knowledge_folder_not_allowed", lang,
+                 "folder '{folder}' 는 허용되지 않습니다. "
+                 "허용: {allowed} (및 그 하위, 또는 루트 INDEX 라우팅 맵에 등재된 "
+                 "최상위 폴더)", folder=folder,
+                 allowed=', '.join(_KNOWLEDGE_ALLOWED_FOLDERS))
         if author:
             top = norm_folder.split("/")[0] + "/"
-            msg += (f"\n[hint] 먼저 등록: "
-                    f"{_route_upsert_hint_command(top, author)}")
+            msg += _t("validate_knowledge_register_hint", lang,
+                     "\n[hint] 먼저 등록: {cmd}",
+                     cmd=_route_upsert_hint_command(top, author, lang))
         return msg
 
     # ── folder: .. 세그먼트 금지 ──────────────────────────────────
@@ -1345,27 +1382,34 @@ def _validate_knowledge_path(team_root: Path, folder: str, filename: str,
     parts = norm_folder.split("/")
     for seg in parts:
         if seg in ("", ".", ".."):
-            return f"folder 에 허용되지 않는 세그먼트: {seg!r} in {folder!r}"
+            return _t("validate_knowledge_folder_bad_segment", lang,
+                      "folder 에 허용되지 않는 세그먼트: {seg!r} in {folder!r}",
+                      seg=seg, folder=folder)
         if not seg.isascii():
-            return f"folder 세그먼트는 ASCII 문자만 사용할 수 있습니다: {seg!r}"
+            return _t("validate_knowledge_folder_non_ascii", lang,
+                      "folder 세그먼트는 ASCII 문자만 사용할 수 있습니다: {seg!r}", seg=seg)
         if not all(c.isalnum() or c in "-_" for c in seg):
-            return f"folder 세그먼트에 허용되지 않는 문자: {seg!r}"
+            return _t("validate_knowledge_folder_bad_char", lang,
+                      "folder 세그먼트에 허용되지 않는 문자: {seg!r}", seg=seg)
 
     # ── filename 검증 (_validate_filename_chars 재사용) ─────────────
-    fn_err = _validate_filename_chars(filename)
+    fn_err = _validate_filename_chars(filename, lang)
     if fn_err is not None:
         return fn_err
 
     # INDEX.md 는 엔진 관리 파일(폴더 4열 표) — write 로 덮어쓰기 금지 (delete 와 대칭)
     if filename == "INDEX.md":
-        return "INDEX.md 는 엔진이 관리합니다 — memory write 로 쓸 수 없습니다."
+        return _t("validate_knowledge_index_md_reserved", lang,
+                  "INDEX.md 는 엔진이 관리합니다 — memory write 로 쓸 수 없습니다.")
 
     # ── containment: 정규화된 절대경로가 memory/ 하위여야 한다 ────
     candidate = (team_root / "memory" / folder / filename).resolve()
     try:
         candidate.relative_to(memory_dir)
     except ValueError:
-        return f"경로가 memory/ 를 벗어납니다: {folder}/{filename}"
+        return _t("validate_knowledge_path_escapes", lang,
+                  "경로가 memory/ 를 벗어납니다: {folder}/{filename}",
+                  folder=folder, filename=filename)
     return None
 
 
@@ -1890,13 +1934,13 @@ def cmd_knowledge(team_root: Path, action: str | None,
             return 2
 
         # author traversal 가드
-        err = _validate_author(author)
+        err = _validate_author(author, lang)
         if err is not None:
             print(f"[error] memory write: --author: {err}", file=sys.stderr)
             return 2
 
         # folder/filename traversal + containment 가드 + 허용 폴더 검증 (P1-1 포함)
-        err = _validate_knowledge_path(team_root, folder, filename, author=author)
+        err = _validate_knowledge_path(team_root, folder, filename, author=author, lang=lang)
         if err is not None:
             print(f"[error] memory write: {err}", file=sys.stderr)
             return 2
@@ -2131,7 +2175,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
             return 2
 
         # author traversal 가드
-        err = _validate_author(author)
+        err = _validate_author(author, lang)
         if err is not None:
             print(f"[error] memory delete: --author: {err}", file=sys.stderr)
             return 2
@@ -2186,7 +2230,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
 
         # ── filename 문자 검증 (write 와 동일한 정책) ──────────────────
         # 제어문자·전각문자·비ASCII filename 거부 (NUL 등은 ValueError 전에 차단)
-        fn_err = _validate_filename_chars(filename_part)
+        fn_err = _validate_filename_chars(filename_part, lang)
         if fn_err is not None:
             print(_t("cmd_memory_delete_filename_invalid", lang,
                      "[error] memory delete: --path 의 filename 검증 실패 — {err}",
@@ -2372,7 +2416,7 @@ def cmd_knowledge(team_root: Path, action: str | None,
     return 2
 
 
-def _validate_route_path(team_root: Path, path: str) -> str | None:
+def _validate_route_path(team_root: Path, path: str, lang: str = "ko") -> str | None:
     """루트 라우팅 맵 `--path` 경량 traversal 가드. 위반 시 에러 메시지 반환.
 
     `_validate_knowledge_path` 는 folder/filename 분리 + allowed-folders 검증을 전제하므로
@@ -2382,17 +2426,22 @@ def _validate_route_path(team_root: Path, path: str) -> str | None:
     - 빈 문자열·절대경로·'..' 세그먼트 거부.
     - 정규화(resolve) 후 team_root/memory/ 하위여야 한다(심링크 탈출 포함 차단).
     - 표 행을 깨뜨리는 제어문자·파이프·개행·백틱 거부(2열 표 정합성).
+
+    i18n breadcrumb: _validate_author 와 동일한 lang 스레딩 계약(그쪽 docstring 참고).
     """
     if not path:
-        return "경로가 비어 있습니다."
+        return _t("validate_route_path_empty", lang, "경로가 비어 있습니다.")
     if path.startswith("/") or path.startswith("\\"):
-        return f"절대경로는 허용되지 않습니다: {path!r}"
+        return _t("validate_route_path_absolute", lang,
+                  "절대경로는 허용되지 않습니다: {path!r}", path=path)
     if ".." in path:
-        return f"경로에 '..' 이 포함될 수 없습니다: {path!r}"
+        return _t("validate_route_path_dotdot", lang,
+                  "경로에 '..' 이 포함될 수 없습니다: {path!r}", path=path)
     # 표 행(`| `<path>` | ... |`)을 깨거나 백틱 마커를 교란하는 문자 거부.
     for ch in path:
         if ord(ch) < 32 or ch in ("|", "`"):
-            return f"경로에 허용되지 않는 문자가 있습니다: {path!r}"
+            return _t("validate_route_path_bad_char", lang,
+                      "경로에 허용되지 않는 문자가 있습니다: {path!r}", path=path)
 
     # ── 정규화 후 memory/ 하위 containment 검증 (심링크 탈출 포함) ──────
     real_root = team_root.resolve()
@@ -2400,15 +2449,18 @@ def _validate_route_path(team_root: Path, path: str) -> str | None:
     try:
         memory_dir.relative_to(real_root)
     except ValueError:
-        return "memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단)."
+        return _t("validate_route_symlink_escape", lang,
+                  "memory/ 가 team_root 밖을 가리킵니다(심링크 탈출 차단).")
     try:
         candidate = (team_root / "memory" / path).resolve()
     except (ValueError, OSError) as exc:
-        return f"경로 정규화 실패 — {exc}"
+        return _t("validate_route_normalize_failed", lang,
+                  "경로 정규화 실패 — {exc}", exc=exc)
     try:
         candidate.relative_to(memory_dir)
     except ValueError:
-        return f"경로가 memory/ 를 벗어납니다: {path!r}"
+        return _t("validate_route_path_escapes", lang,
+                  "경로가 memory/ 를 벗어납니다: {path!r}", path=path)
     return None
 
 
@@ -2446,13 +2498,13 @@ def cmd_route(team_root: Path, sub_action: str | None,
             return 2
 
         # author traversal 가드
-        err = _validate_author(author)
+        err = _validate_author(author, lang)
         if err is not None:
             print(f"[error] memory route upsert: --author: {err}", file=sys.stderr)
             return 2
 
         # path traversal 가드 (경량 — memory/ 이탈 차단)
-        err = _validate_route_path(team_root, path)
+        err = _validate_route_path(team_root, path, lang)
         if err is not None:
             print(f"[error] memory route upsert: {err}", file=sys.stderr)
             return 2
@@ -2488,12 +2540,12 @@ def cmd_route(team_root: Path, sub_action: str | None,
                      "[error] memory route remove: --author 가 필요합니다."), file=sys.stderr)
             return 2
 
-        err = _validate_author(author)
+        err = _validate_author(author, lang)
         if err is not None:
             print(f"[error] memory route remove: --author: {err}", file=sys.stderr)
             return 2
 
-        err = _validate_route_path(team_root, path)
+        err = _validate_route_path(team_root, path, lang)
         if err is not None:
             print(f"[error] memory route remove: {err}", file=sys.stderr)
             return 2
@@ -3164,7 +3216,7 @@ def main(argv=None) -> int:
     if verb == "on":
         member = opts.get("member")
         if member is not None:
-            err = _validate_author(member)
+            err = _validate_author(member, lang)
             if err is not None:
                 print(f"[error] --member: {err}", file=sys.stderr)
                 return 2
