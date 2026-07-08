@@ -3,6 +3,12 @@
 이 파일은 tm-mode의 주요 변경 사항을 기록합니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
 
+## 0.1.3 — 2026-07-08
+
+- `tm-mode update [path]` launcher subcommand: existing team repos can now run the PyPI/pipx launcher to sync the repo engine from upstream (`--dry-run` and `--force` pass through to `infra/teammode.py update`).
+- Session-start engine update notice: active teams now get an actionable notice when local `NOTICE.md` differs from upstream, with a throttled fetch so long-running `on` teams are not silently left behind.
+- Contributor CI gate docs: PR template and CONTRIBUTING now spell out Python 3.9 compatibility, local environment isolation, fake git remote branch setup, identity hygiene, and post-main-merge full-suite reruns.
+
 ## 0.1.2 — 2026-07-07
 
 - **Install wizard, redesigned**: clack-style rail UI with arrow-key widgets, vivid palette (stdlib ANSI, zero deps), context lines and key hints on every step, `◇ answer` echoes, URL Step 0 (`tm-mode join` without arguments now asks), and `init` fully matching the same style.

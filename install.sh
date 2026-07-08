@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # tm-mode — curl 진입 스킨 (pip 와 등가, 둘 다 cli.py 로 위임).
 #
-#   curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.2/install.sh | sh -s -- join <clone-url>
+#   curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.3/install.sh | sh -s -- join <clone-url>
 #
 # python3·git 존재만 확인하고, stdlib 단일파일 cli.py 를 raw 로 받아 그대로 실행한다.
 # 패키지 설치(pip) 단계를 건너뛰는 얇은 진입점 — 스킬·훅·엔진 번들 없음(cli.py 가 clone 후 위임).
@@ -9,7 +9,7 @@
 # 테스트/미러: 소스 URL 은 TEAMMODE_CLI_URL 로 override(file://경로 또는 http(s)). 미지정 시 릴리스 태그 raw(핀).
 set -e
 
-CLI_URL="${TEAMMODE_CLI_URL:-https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.2/src/teammode/cli.py}"
+CLI_URL="${TEAMMODE_CLI_URL:-https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.3/src/teammode/cli.py}"
 
 command -v python3 >/dev/null 2>&1 || { echo "[error] python3 가 필요합니다." >&2; exit 2; }
 command -v git     >/dev/null 2>&1 || { echo "[error] git 이 필요합니다." >&2; exit 2; }
