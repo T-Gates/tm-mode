@@ -1068,8 +1068,10 @@ def test_stale_teammode_home_warns_on_stderr(tmp_path):
         env=env, cwd=str(tmp_path))
     assert proc.returncode == 0, "경고가 프롬프트를 막으면 안 됨(exit 0 불변)"
     assert proc.stdout.strip() == "", f"stdout 은 훅 출력 채널 — 불변이어야 함: {proc.stdout!r}"
+    # i18n 갱신(적대검수 — long tail): 이 경고 문구가 이제 team_lang 을 따른다. config
+    # 없는 이 픽스처는 en 기본(team_lang 계약)이라 "TEAMMODE_HOME" 마커만 언어중립으로
+    # 확인한다 — ko/en 문구 자체는 위 hook_ss_stale_home_warn 의 en-locale 테스트가 검증.
     assert "TEAMMODE_HOME" in proc.stderr
-    assert "유효한 팀 루트" in proc.stderr
     assert str(gone) in proc.stderr  # 어느 경로가 문제인지 표기
     assert len(proc.stderr.strip().splitlines()) == 1, "경고는 정확히 한 줄"
 
@@ -1087,7 +1089,8 @@ def test_stale_teammode_home_no_markers_warns(tmp_path):
         env=env, cwd=str(bare))
     assert proc.returncode == 0
     assert proc.stdout.strip() == ""
-    assert "유효한 팀 루트" in proc.stderr
+    # i18n 갱신(적대검수 — long tail): config 없는 픽스처는 en 기본 — 언어중립 마커만.
+    assert "TEAMMODE_HOME" in proc.stderr
 
 
 def test_valid_root_teammode_off_stays_silent(tmp_path):

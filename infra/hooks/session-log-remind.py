@@ -85,6 +85,21 @@ except ImportError:
     _i18n = None
 
 
+def _hook_lang(root: str) -> str:
+    """팀 locale → 주입 언어("ko"|"en"). i18n 부재/실패 시 ko(종전 거동 보존).
+
+    main() 의 lang(config 1회 로드 + team_lang_from_config)과 별개 — 이 헬퍼는
+    config 로드보다 **먼저** 도는 _warn_if_stale_home/_warn_push_pending_age 전용
+    (적대검수 — long tail). session-start.py 의 동명 헬퍼와 동일 계약.
+    """
+    if _i18n is None:
+        return "ko"
+    try:
+        return _i18n.team_lang(root)
+    except Exception:  # noqa: BLE001 — locale 해석 실패가 주입을 막지 않는다
+        return "ko"
+
+
 def _t(key: str, lang: str, ko: str, **fmt) -> str:
     """주입 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화 계약),
     en 은 i18n 카탈로그(hook_* 키). i18n 부재 시 ko 폴백."""
@@ -132,8 +147,10 @@ def _warn_if_stale_home(root: str) -> None:
     if any(os.path.exists(os.path.join(root, m)) for m in _TEAM_MARKERS):
         return
     try:
-        print(f"[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
-              "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+        print(_t("hook_ss_stale_home_warn", _hook_lang(root),
+                 "[teammode] TEAMMODE_HOME이 유효한 팀 루트가 아닙니다: {root} — "
+                 "레포 이동/이름변경 시 셸 프로파일의 TEAMMODE_HOME을 갱신하세요",
+                 root=root),
               file=sys.stderr)
     except (OSError, UnicodeError):
         pass  # 경고 실패가 훅을 막지 않는다(advisory)
@@ -460,9 +477,10 @@ def _warn_push_pending_age(root: str) -> None:
             return
         with open(warned, "w", encoding="utf-8") as f:
             f.write("warned")
-        print(f"[teammode] push 미완(pending)이 {int(age // 60)}분째 남아 있습니다 — "
-              f"worker 유실 가능. 다음 편집 커밋 시 재시도되며, 세션 재시작이 "
-              f"확실합니다.", file=sys.stderr)
+        print(_t("hook_rm_push_pending_age", _hook_lang(root),
+                 "[teammode] push 미완(pending)이 {minutes}분째 남아 있습니다 — "
+                 "worker 유실 가능. 다음 편집 커밋 시 재시도되며, 세션 재시작이 "
+                 "확실합니다.", minutes=int(age // 60)), file=sys.stderr)
     except Exception:  # noqa: BLE001 — 경고 실패가 세션을 막지 않는다
         pass
 

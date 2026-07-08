@@ -40,6 +40,49 @@ MESSAGES = {
             " (local commits not pushed)",
         "hook_ss_engine_update_available":
             "[teammode] An engine update is available upstream — run `tm-mode update` to apply it.",
+        "hook_ss_stale_home_warn":
+            "[teammode] TEAMMODE_HOME is not a valid team root: {root} — "
+            "if the repo moved/was renamed, update TEAMMODE_HOME in your shell profile",
+        "hook_ss_reconcile_conflict_marker":
+            "Session-start reconcile conflict (rebase abort) — manual cleanup needed: {detail}",
+        "hook_ss_reconcile_conflict_print":
+            "[teammode] Session reconcile failed: diverged from origin then hit a rebase "
+            "conflict — manual cleanup needed. behind={behind} ahead={ahead}",
+        "hook_ss_reconcile_skipped":
+            "[teammode] Session reconcile skipped (non-fatal): {action} — {detail}",
+        "hook_ss_push_pending_no_upstream":
+            "[teammode] A push is still pending but the remote can't be judged — "
+            "restarting the worker (will use `push -u` if this is a new branch).",
+        "hook_ss_push_worker_restart_failed":
+            "[teammode] Worker restart failed — will retry on the next commit/session.",
+        "hook_ss_push_pending_ahead":
+            "[teammode] A previous session's push is still pending (ahead={ahead}) — "
+            "restarting the worker.",
+        # session-log-remind (UserPromptSubmit) — #45 pending-age 경고
+        "hook_rm_push_pending_age":
+            "[teammode] A push has been pending for {minutes} minutes — the worker "
+            "may have been lost. It will retry on the next edit commit, and a "
+            "session restart is guaranteed to retry it.",
+
+        # auto-commit (PostToolUse/file_edit) — scaffolding added from scratch
+        # (long-tail cluster). The commit message itself ("chore(teammode): ..."
+        # is a git artifact and is NOT routed — already English, stays as-is.
+        "hook_ac_push_worker_disabled":
+            "[teammode] push-worker disabled (TEAMMODE_DISABLE_PUSH_WORKER) — "
+            "push is delegated to session-start recovery.",
+        "hook_ac_push_worker_start_failed":
+            "[teammode] push-worker failed to start — the pending push will be "
+            "retried at session start.",
+        "hook_ac_prior_push_pending":
+            "[teammode] A prior auto-commit's push is still pending — "
+            "the worker will retry it.",
+        "hook_ac_pending_write_failed_marker":
+            "Committed; failed to record push-pending — push is not guaranteed "
+            "(XDG state write error)",
+        "hook_ac_pending_write_failed_print":
+            "[teammode] Failed to record push-pending — the push was not "
+            "scheduled (the commit itself is preserved). Check XDG state write "
+            "permissions.",
 
         # ── 엔진(teammode.py) 출력 — en 전용(ko 원문은 각 호출부 리터럴이 단일 소스,
         #    hook_* 와 동일 계약). auto_update_on_start(`tm on`) 이 찍는 줄들.
