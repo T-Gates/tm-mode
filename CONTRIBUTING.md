@@ -77,6 +77,16 @@ Each flag is documented by `python conformance/check.py --help`; the golden scen
 
 The full suite takes a few minutes, not seconds — budget for that rather than assuming a hang. CI tests against Python 3.9 and 3.12 (`.github/workflows/test.yml`); if you're on a much newer interpreter and see many unrelated failures, try one of those versions before assuming a product bug. If `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` is the *only* test that fails for you, that's expected on a machine with a global `git config user.name` set (see the warning comment at the top of `.github/workflows/test.yml`) — it's an environment precondition, not a product bug.
 
+Before pushing a PR, make the CI contract explicit:
+
+- If the change touches runtime syntax, annotations, test helpers, CI, packaging, or git fixture setup, verify it under Python 3.9 as well as your local default. The project supports Python 3.9+, so `str | None`, `list[str]`-adjacent runtime behavior, `match`/`case`, and newer stdlib APIs are not acceptable unless they are guarded or avoided.
+- If a test asserts "missing git config", color output, terminal behavior, `$HOME`, XDG paths, or environment variables, isolate that state inside the test. Do not rely on the developer machine being clean; contributors often have global `git user.name`, `NO_COLOR`, `TERM=dumb`, custom `HOME`, or shell-specific aliases.
+- If a test creates a fake git remote, set the branch name explicitly (`git checkout -B main` and, for bare repos, `git symbolic-ref HEAD refs/heads/main`). GitHub Actions runners do not promise the same default branch name as a local machine.
+- If a fixture needs a GitHub URL, keep it inside the allowed public vocabulary and run `tests/test_no_identity_leaks.py`. Case changes can matter: a string that looks like `USER@example.com` may still match the identity-leak guard.
+- After merging or rebasing `origin/main`, rerun the full suite before pushing again. A previously green PR can become `DIRTY` or fail on the merge commit if another PR touched the same tests, docs, workflows, or shared helpers.
+
+Release publishing is a separate gate from PR testing. `.github/workflows/publish.yml` runs only on `v*` tags and requires registry-side Trusted Publishing / package ownership for PyPI and npm. A PR is not considered broken just because an old tag publish failed, but before cutting a release tag the maintainer must confirm the PyPI publisher, npm package access, and tag/package versions match.
+
 ## 6. Code style and conventions
 
 - **stdlib-only is an iron law**: `pyproject.toml`'s `dependencies = []` is a rule, not a default — don't add a runtime pip dependency. `git`/`gh` are host prerequisites, not pip deps. If an external library seems necessary, open an issue to discuss it before writing code.
@@ -118,7 +128,8 @@ chore: switch license to Apache 2.0
 
 1. Fork → branch (`fix/...`, `feat/...`) → PR against `main` of `T-Gates/tm-mode`.
 2. Fill out `.github/PULL_REQUEST_TEMPLATE.md`: what/why, change list, test evidence (paste `python -m pytest -q` output), and the checklist (stdlib-only maintained, full suite passes). The web UI applies this template automatically; `gh pr create --body` does not, so match the same structure yourself if you file that way.
-3. A maintainer reviews and merges, per `.github/CODEOWNERS`. Respond to review comments with follow-up commits rather than force-pushing over history mid-review.
+3. Keep the PR mergeable. If GitHub shows `DIRTY`, merge or rebase `origin/main`, resolve conflicts without dropping either side's behavior, rerun the full suite, and push a normal follow-up commit.
+4. A maintainer reviews and merges, per `.github/CODEOWNERS`. Respond to review comments with follow-up commits rather than force-pushing over history mid-review.
 
 ## 11. Docs and i18n
 

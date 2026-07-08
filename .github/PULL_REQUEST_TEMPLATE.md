@@ -10,7 +10,10 @@
 
 ## 테스트
 
-<!-- 어떻게 검증했는지. `python -m pytest -q` 실행 결과를 붙여주세요 -->
+<!-- 어떻게 검증했는지. `python -m pytest -q` 실행 결과를 붙여주세요.
+CI는 Python 3.9와 3.12에서 돕니다. 문법/annotation/test helper/CI/git fixture를 건드렸다면
+Python 3.9 호환성, 환경 격리(git config, NO_COLOR/TERM, HOME/XDG), fake remote의 main branch
+고정을 같이 확인하세요. -->
 
 ```
 $ python -m pytest -q
@@ -21,3 +24,7 @@ $ python -m pytest -q
 
 - [ ] stdlib-only 유지 (Python 3.9+ 표준 라이브러리 외 의존성 없음)
 - [ ] 기존 테스트 무회귀 (`python -m pytest -q` 전체 통과)
+- [ ] Python 3.9 호환성 확인 (문법/annotation/stdlib API/test helper 변경 시 필수)
+- [ ] 테스트 fixture가 로컬 전역 설정에 의존하지 않음 (`git config`, `NO_COLOR`/`TERM`, `HOME`/XDG, 기본 branch 이름 등)
+- [ ] 공개 위생 가드 통과 또는 영향 없음 (`tests/test_no_identity_leaks.py`)
+- [ ] `origin/main` 최신 상태에서 merge 가능, 충돌 해결 후 전체 테스트 재확인
