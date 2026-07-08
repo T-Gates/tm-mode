@@ -7,8 +7,8 @@ The team's three display strings. All of them live in the `team` block of `team.
 | Field | Where it is used | Default formula |
 |---|---|---|
 | `name` | Statusline team name · greeting/farewell default formula · banner default | (git repository name at install time) |
-| `greeting` | Output immediately after the `tm on` banner | `{name} 팀모드 ON` |
-| `farewell` | Output when `tm off` exits | `수고하셨습니다 — {name}` |
+| `greeting` | Output immediately after the `tm on` banner | `{name} 팀모드 ON` (ko) / `{name} Team Mode ON` (en) — follows `team.locale` at team creation time |
+| `farewell` | Output when `tm off` exits | `수고하셨습니다 — {name}` (ko) / `Great work today — {name}` (en) — follows `team.locale` at team creation time |
 
 ## You Can Change It Freely at Any Time (Zero Impact)
 

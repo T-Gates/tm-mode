@@ -273,11 +273,15 @@ def _personality_customized(team_root: Path) -> bool:
     1. memory/banner.txt 내용이 기본 배너(default_banner_content)와 다르다 (배너 커스텀됨).
        ⚠️ '존재'가 아니라 '내용 비교' — install 이 fresh 팀에도 기본 banner.txt 를 깔기
        때문에, 존재만으로 판정하면 미커스텀 팀이 전부 커스텀으로 오판된다(#2).
-    2. team.config.json 의 greeting 이 기본 공식 `f"{name} 팀모드 ON"` 과 다르다.
-    3. team.config.json 의 farewell 이 기본 공식 `f"수고하셨습니다 — {name}"` 과 다르다.
+    2. team.config.json 의 greeting 이 기본 공식(ko/en 둘 다)과 다르다.
+    3. team.config.json 의 farewell 이 기본 공식(ko/en 둘 다)과 다르다.
 
     config 부재·파싱 실패 → False (기본값으로 간주). 판정은 비치명 — 어떤 예외도 False.
     기본 배너·greeting/farewell 공식은 install_lib.write_banner / default_banner_content 와 동기화.
+
+    i18n(적대검수 발견): install_lib.write_introducer_config 가 팀 locale 에 따라
+    ko 또는 en 기본값을 쓰게 되면서, 이 판정도 **둘 다**를 "미커스텀"으로 인정해야
+    한다 — en 팀이 자기 기본값을 그대로 두고 있어도 "커스텀됨"으로 오판하면 안 된다.
     """
     try:
         # config 먼저 — name 은 배너 fallback 비교·greeting/farewell 공식에 공용으로 쓰인다.
@@ -303,10 +307,16 @@ def _personality_customized(team_root: Path) -> bool:
         if name:
             greeting = team.get("greeting")
             farewell = team.get("farewell")
-            if isinstance(greeting, str) and greeting != f"{name} 팀모드 ON":
-                return True
-            if isinstance(farewell, str) and farewell != f"수고하셨습니다 — {name}":
-                return True
+            if isinstance(greeting, str):
+                default_greetings = (f"{name} 팀모드 ON",
+                                     _i18n.t("install_default_greeting", "en", name=name))
+                if greeting not in default_greetings:
+                    return True
+            if isinstance(farewell, str):
+                default_farewells = (f"수고하셨습니다 — {name}",
+                                     _i18n.t("install_default_farewell", "en", name=name))
+                if farewell not in default_farewells:
+                    return True
         return False
     except Exception:  # noqa: BLE001 — personality 판정은 context 동사를 막지 않는다
         return False
@@ -538,17 +548,24 @@ def cmd_on(team_root: Path, settings_path: str, member: str | None = None,
     return 0
 
 
-def _run_validation_sync(team_root: Path, dry_run: bool, force: bool) -> None:
+def _run_validation_sync(team_root: Path, dry_run: bool, force: bool,
+                         lang: str = "ko") -> None:
     """cmd_update 의 2층 — validation(conformance/·tests/) 파일 단위 동기화(#36 PR2).
 
     엔진(1층) 처리 뒤 같은 ref 로 plan→apply. 자동 commit/push 없음(엔진과 동일 계약).
     dry-run 이면 계획만. 같은 skip_hash 반복이면 skip 상세를 한 줄로 축약(skip-cache).
+
+    i18n(적대검수 — 실사용자 리포트: en 팀에도 전부 한국어 출력): lang 은 호출부
+    (cmd_update)가 한 번만 해석해 넘긴다 — 이 함수가 세 곳에서 불리므로 매번
+    team.config.json 을 다시 읽지 않기 위함. path/reason(예: local-only,
+    upstream-deleted)은 이미 영어 기술 코드라 번역 대상 아님 — 그대로 둔다.
     """
     branch = _git_ops.detect_default_branch(str(team_root), remote=UPSTREAM_REMOTE)
     ref = f"{UPSTREAM_REMOTE}/{branch}"
     plan = _git_ops.plan_validation_sync(str(team_root), ref)
     if plan.shallow:
-        print("tm-mode update — validation: shallow clone 이라 건너뜀(엔진은 정상).")
+        print(_t("cmd_update_validation_shallow_skip", lang,
+                 "tm-mode update — validation: shallow clone 이라 건너뜀(엔진은 정상)."))
         return
 
     n_safe = len(plan.safe_paths)
@@ -557,19 +574,24 @@ def _run_validation_sync(team_root: Path, dry_run: bool, force: bool) -> None:
 
     if dry_run:
         if n_safe:
-            print(f"tm-mode update [dry-run] — validation 동기화 대상 {n_safe}개:")
+            print(_t("cmd_update_validation_dry_run_targets", lang,
+                     "tm-mode update [dry-run] — validation 동기화 대상 {n_safe}개:",
+                     n_safe=n_safe))
             print("  " + "\n  ".join(plan.safe_paths))
         else:
-            print("tm-mode update [dry-run] — validation: 갱신할 파일 없음.")
+            print(_t("cmd_update_validation_dry_run_none", lang,
+                     "tm-mode update [dry-run] — validation: 갱신할 파일 없음."))
         if n_del:
-            print(f"tm-mode update [dry-run] — validation 삭제 후보 {n_del}개"
-                  f"(백업 후 staged 삭제):")
+            print(_t("cmd_update_validation_dry_run_delete_candidates", lang,
+                     "tm-mode update [dry-run] — validation 삭제 후보 {n_del}개"
+                     "(백업 후 staged 삭제):", n_del=n_del))
             for d in plan.safe_deletes:
                 arrow = f" -> {d.renamed_to}" if d.renamed_to else ""
                 print(f"  - {d.path}{arrow} ({d.reason})")
         if n_skip:
             # dry-run 은 항상 전체 출력(축약 안 함)
-            print(f"  보존(skip) {n_skip}개 — 로컬 수정/전용:")
+            print(_t("cmd_update_validation_dry_run_skip_preserved", lang,
+                     "  보존(skip) {n_skip}개 — 로컬 수정/전용:", n_skip=n_skip))
             for s in list(plan.skipped) + list(plan.local_only):
                 print(f"    - {s.path} ({s.reason})")
         return
@@ -578,30 +600,43 @@ def _run_validation_sync(team_root: Path, dry_run: bool, force: bool) -> None:
         # force 는 safe 0 이어도 동작(codex P2). v2: 삭제(n_del)도 적용 트리거.
         res = _git_ops.apply_validation_sync(str(team_root), ref, plan, force=force)
         if res.ok and res.changed:
-            parts = [f"갱신 {len(res.applied)}개"]
+            parts = [_t("cmd_update_validation_applied_updated", lang,
+                       "갱신 {n}개", n=len(res.applied))]
             if getattr(res, "deleted", ()):
-                parts.append(f"삭제 {len(res.deleted)}개")
-            msg = f"tm-mode update — validation 동기화 완료 {', '.join(parts)}(staged)."
+                parts.append(_t("cmd_update_validation_applied_deleted", lang,
+                               "삭제 {n}개", n=len(res.deleted)))
+            msg = _t("cmd_update_validation_apply_done", lang,
+                    "tm-mode update — validation 동기화 완료 {parts}(staged).",
+                    parts=", ".join(parts))
             if res.forced:
-                msg += f" 강제 덮어쓰기 {len(res.forced)}개"
+                msg += _t("cmd_update_validation_forced_overwrite", lang,
+                         " 강제 덮어쓰기 {n}개", n=len(res.forced))
             if res.backup_path:
-                msg += f" 백업: {res.backup_path}"
-                msg += (" (복원: git apply '<백업>/restore.patch' 또는 files/ 복사)"
-                        if getattr(res, "deleted", ()) else "")
+                msg += _t("cmd_update_validation_backup", lang,
+                         " 백업: {path}", path=res.backup_path)
+                if getattr(res, "deleted", ()):
+                    msg += _t("cmd_update_validation_restore_hint", lang,
+                             " (복원: git apply '<백업>/restore.patch' 또는 files/ 복사)")
             print(msg)
         elif not res.ok:
-            print(f"tm-mode update — validation 적용 실패(비치명): {res.detail}",
+            print(_t("cmd_update_validation_apply_failed", lang,
+                     "tm-mode update — validation 적용 실패(비치명): {detail}",
+                     detail=res.detail),
                   file=sys.stderr)
     else:
-        print("tm-mode update — validation: 이미 최신(갱신할 파일 없음).")
+        print(_t("cmd_update_validation_up_to_date", lang,
+                 "tm-mode update — validation: 이미 최신(갱신할 파일 없음)."))
 
     # skip 가시화 — 같은 skip_hash 반복이면 축약(skip-cache)
     if n_skip:
         if _git_ops.validation_skip_seen(str(team_root), plan.skip_hash):
-            print(f"  validation 보존(skip) {n_skip}개 — 이전과 동일(변동 없음).")
+            print(_t("cmd_update_validation_skip_same_as_before", lang,
+                     "  validation 보존(skip) {n}개 — 이전과 동일(변동 없음).",
+                     n=n_skip))
         else:
-            print(f"  validation 보존(skip) {n_skip}개 — 로컬 수정/전용이라 덮지 않음"
-                  f"(전체는 --dry-run 으로 확인, 강제는 --force):")
+            print(_t("cmd_update_validation_skip_preserved_detail", lang,
+                     "  validation 보존(skip) {n}개 — 로컬 수정/전용이라 덮지 않음"
+                     "(전체는 --dry-run 으로 확인, 강제는 --force):", n=n_skip))
             for s in (list(plan.skipped) + list(plan.local_only))[:10]:
                 print(f"    - {s.path} ({s.reason})")
             _git_ops.record_validation_skip(
@@ -627,16 +662,24 @@ def cmd_update(team_root: Path, dry_run: bool = False, force: bool = False) -> i
       - --dry-run: 변경 미리보기만 출력, 실제 변경 0(exit 0).
       - 적용 시 working tree 덮어쓰기(staged). **자동 commit·push 절대 안 함** —
         무엇이 바뀌었는지 사람이 검토 후 직접 커밋한다.
+
+    i18n(적대검수 — 실사용자 리포트: en 팀도 전체 출력이 한국어였다): lang 을 여기서
+    한 번 해석해 _run_validation_sync 에도 넘긴다. git status diff(res.diff)와
+    `git commit -m '...'` 커맨드 자체는 번역 대상 아님(그대로 둠) — 그 주변 설명문만
+    라우팅한다.
     """
+    lang = _i18n.team_lang(str(team_root))
     res = _git_ops.sync_from_upstream(
         str(team_root), remote=UPSTREAM_REMOTE, dry_run=dry_run)
     paths = ", ".join(res.paths) if res.paths else "infra"
 
     # dirty 가드 — 사람 판단 요청(추측 수리 금지)
     if res.blocked:
-        print(f"tm-mode update — 중단: {res.detail}.\n"
-              f"  동기화 대상({paths})에 커밋 안 된 변경이 있습니다. 덮어쓰면 유실됩니다.\n"
-              f"  먼저 변경을 커밋하거나 되돌린 뒤 다시 실행하세요(사람 판단 필요).",
+        print(_t("cmd_update_dirty_abort", lang,
+                 "tm-mode update — 중단: {detail}.\n"
+                 "  동기화 대상({paths})에 커밋 안 된 변경이 있습니다. 덮어쓰면 유실됩니다.\n"
+                 "  먼저 변경을 커밋하거나 되돌린 뒤 다시 실행하세요(사람 판단 필요).",
+                 detail=res.detail, paths=paths),
               file=sys.stderr)
         if res.diff:
             print(res.diff, file=sys.stderr)
@@ -644,9 +687,12 @@ def cmd_update(team_root: Path, dry_run: bool = False, force: bool = False) -> i
 
     if not res.ok:
         # upstream 미등록·오프라인·git 아님 등 — 비치명. install 이 upstream 을 등록한다.
-        print(f"tm-mode update — 건너뜀(비치명): {res.detail}.\n"
-              f"  upstream remote 가 없으면 install.py 가 등록합니다. 수동 등록:\n"
-              f"  git remote add {UPSTREAM_REMOTE} {_install_upstream_url()}",
+        print(_t("cmd_update_fetch_failed_skip", lang,
+                 "tm-mode update — 건너뜀(비치명): {detail}.\n"
+                 "  upstream remote 가 없으면 install.py 가 등록합니다. 수동 등록:\n"
+                 "  git remote add {remote} {url}",
+                 detail=res.detail, remote=UPSTREAM_REMOTE,
+                 url=_install_upstream_url()),
               file=sys.stderr)
         return 1
 
@@ -655,31 +701,40 @@ def cmd_update(team_root: Path, dry_run: bool = False, force: bool = False) -> i
     # "이미 최신"으로 잘못 출력되는 P2 버그가 난다 — 적대검수 발견.)
     if dry_run:
         if res.diff:
-            print(f"tm-mode update [dry-run] — 동기화하면 바뀔 파일({paths}):")
+            print(_t("cmd_update_dry_run_will_change", lang,
+                     "tm-mode update [dry-run] — 동기화하면 바뀔 파일({paths}):",
+                     paths=paths))
             # util 이 pathspec 으로 제외됐으면 "누락 아님 보호"임을 1줄 안내(#36).
             if any(":(exclude)" in ps for ps in res.pathspecs):
-                print("  제외: infra/skills/util (인스턴스 소유 util 스킬 — 보호)")
+                print(_t("cmd_update_dry_run_excluded_util", lang,
+                         "  제외: infra/skills/util (인스턴스 소유 util 스킬 — 보호)"))
             print(res.diff)
-            print("  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)")
+            print(_t("cmd_update_dry_run_preview_only", lang,
+                     "  (미리보기만 — 실제 변경 없음. 적용하려면 --dry-run 빼고 다시 실행.)"))
         else:
-            print("tm-mode update [dry-run] — 이미 최신입니다(변경 없음).")
+            print(_t("cmd_update_dry_run_up_to_date", lang,
+                     "tm-mode update [dry-run] — 이미 최신입니다(변경 없음)."))
         # 2층 validation(#36 PR2) — dry-run 계획도 함께 표시
-        _run_validation_sync(team_root, dry_run=True, force=force)
+        _run_validation_sync(team_root, dry_run=True, force=force, lang=lang)
         return 0
 
     if not res.changed:
-        print("tm-mode update — 엔진: 이미 최신입니다.")
+        print(_t("cmd_update_engine_up_to_date", lang,
+                 "tm-mode update — 엔진: 이미 최신입니다."))
         # 엔진이 최신이어도 validation 은 별개로 동기화 대상일 수 있다(#36 PR2).
-        _run_validation_sync(team_root, dry_run=False, force=force)
+        _run_validation_sync(team_root, dry_run=False, force=force, lang=lang)
         return 0
 
     # 적용됨(staged) — 무엇이 바뀌었나 사람이 읽는 요약. push·commit 안 함.
-    print(f"tm-mode update — 엔진 파일 동기화 완료({paths}, staged). 바뀐 파일:")
+    print(_t("cmd_update_engine_sync_done", lang,
+             "tm-mode update — 엔진 파일 동기화 완료({paths}, staged). 바뀐 파일:",
+             paths=paths))
     print(res.diff)
-    print("  변경은 스테이지됨(자동 커밋·push 안 함). 검토 후 직접 커밋하세요:\n"
-          "  git commit -m 'chore: sync teammode engine from upstream'")
+    print(_t("cmd_update_review_and_commit_hint", lang,
+             "  변경은 스테이지됨(자동 커밋·push 안 함). 검토 후 직접 커밋하세요:\n"
+             "  git commit -m 'chore: sync teammode engine from upstream'"))
     # 2층 validation(#36 PR2) — 엔진 뒤 같은 ref 로 파일 단위 동기화
-    _run_validation_sync(team_root, dry_run=False, force=force)
+    _run_validation_sync(team_root, dry_run=False, force=force, lang=lang)
     return 0
 
 
@@ -792,9 +847,15 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
                 _primary_adapter = _ag_adapter
         except Exception as _exc:  # noqa: BLE001 — 한 에이전트 실패가 나머지를 막지 않는다
             _failed_agents.append((_ag, str(_exc)))
+    # i18n(적대검수 발견 — addendum 2): "ON"/"OFF" 라벨의 대칭짝. farewell 자체는
+    # 팀 커스텀 가능 필드(tm-customize) — 있으면 그 값을 그대로 출력(번역 금지).
+    # 폴백 문구("상태 저장됨")와 아래 [warn] 은 제품 고정 어휘라 team_lang 을 따른다.
+    lang = _i18n.team_lang(str(team_root))
     # 실패 에이전트 경고 출력
     for _ag_name, _ag_err in _failed_agents:
-        print(f"[warn] {_ag_name} 에이전트 해제 실패 → skip: {_ag_err}")
+        print(_t("cmd_off_agent_uninstall_failed", lang,
+                 "[warn] {agent} 에이전트 해제 실패 → skip: {err}",
+                 agent=_ag_name, err=_ag_err))
     # 마커 정책(cmd_on 대칭): 최소 하나 성공 시 삭제. 전부 실패면 마커 유지 + rc=1.
     # 근거: 전부 실패면 실제 해제가 이뤄지지 않았으므로 active 상태가 남아 있어야 한다.
     marker = _active_marker(team_root)
@@ -804,9 +865,11 @@ def cmd_off(team_root: Path, settings_path: str, member: str | None = None,
         marker.unlink()
     # 배너는 엔진이 stdout 에 찍지 않는다(toolkit 패턴, ON 과 동일) — 에이전트가
     # memory/banner.txt 를 Read 해 farewell 앞에 코드펜스로 출력한다.
-    # 끝맺음 말(farewell): config 에 있으면 그걸, 없으면 "상태 저장됨" 폴백(§3.1).
+    # 끝맺음 말(farewell): config 에 있으면 그걸(팀 커스텀 가능 — 번역 금지), 없으면
+    # 제품 고정 폴백(§3.1, 번역 대상).
     farewell = _read_team_field(team_root, "farewell")
-    print(farewell if farewell else "tm-mode off — 상태 저장됨")
+    print(farewell if farewell else
+          _t("cmd_off_no_farewell_fallback", lang, "tm-mode off — 상태 저장됨"))
     return 0
 
 

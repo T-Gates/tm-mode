@@ -26,6 +26,7 @@ if str(_INFRA) not in sys.path:
     sys.path.insert(0, str(_INFRA))
 import providers as _providers  # noqa: E402
 import teammode as _engine  # noqa: E402
+import i18n as _i18n  # noqa: E402
 
 # ⚠️ 테스트 순서 견고성: test_cli_join_wizard 가 collection 시점에 sys.modules['teammode']
 # 를 pip 런처 패키지(src/teammode) 스텁으로 등록한다(infra/teammode.py 엔진과 이름 충돌).
@@ -749,16 +750,27 @@ def write_introducer_config(team_root: Path, *, team_name: str,
     cfg_path = team_root / "team.config.json"
     if config_is_valid(load_config(team_root)):
         return  # 이미 유효 — 무수정(멱등, 팀원 경로도 여기로 안 옴)
+    resolved_locale = locale or "ko_KR"
+    # 시작 멘트·끝맺음 말 기본값(§4.4·부록 A.3)도 이 함수가 이미 받은 locale 을 따른다
+    # (적대검수 발견 — locale="en_US" 로 새 팀을 만들어도 기본 greeting/farewell 은
+    # 늘 한국어로 굳었다). i18n.team_lang_from_config 와 동일한 ko*→ko 정규화를 그대로
+    # 적용 — 이 필드는 팀이 나중에 tm-customize 로 자유롭게 덮어쓸 수 있는 **기본값**일
+    # 뿐이다(한 번 쓰고 나면 팀 커스텀 텍스트가 되어 다시는 자동 번역 대상이 아님).
+    _lang = "ko" if str(resolved_locale).strip().lower().startswith("ko") else "en"
+    if _lang == "en":
+        greeting = _i18n.t("install_default_greeting", "en", name=team_name)
+        farewell = _i18n.t("install_default_farewell", "en", name=team_name)
+    else:
+        greeting = f"{team_name} 팀모드 ON"
+        farewell = f"수고하셨습니다 — {team_name}"
     cfg = {
         "spec_version": SPEC_VERSION,
         "team": {
             "name": team_name,
             "timezone": timezone or "Asia/Seoul",
-            "locale": locale or "ko_KR",
-            # 시작 멘트·끝맺음 말 기본값(§4.4·부록 A.3). 엔진 on/off 가 그대로 읽어
-            # 출력한다. 온보딩 opt-in 으로 교체 가능(tm-onboard). 팀 이름을 펼쳐 둠.
-            "greeting": f"{team_name} 팀모드 ON",
-            "farewell": f"수고하셨습니다 — {team_name}",
+            "locale": resolved_locale,
+            "greeting": greeting,
+            "farewell": farewell,
         },
         "admin_contact": admin_contact,
         "members_file": "memory/team/members.md",

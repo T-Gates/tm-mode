@@ -86,13 +86,25 @@ def test_off_fallback_when_no_farewell(tmp_path):
 
 
 def test_off_fallback_when_no_config(tmp_path):
+    """i18n 갱신(적대검수): config 부재는 team_lang 계약상 en 폴백(제품 기본)이라
+    폴백 문구도 영어가 된다 — "폴백이 발동한다"는 원래 의도는 그대로 유지."""
     r = _run(tmp_path, "off")
     assert r.returncode == 0, r.stderr
-    assert "상태 저장됨" in r.stdout
+    assert "tm-mode off — state saved" in r.stdout
 
 
 def test_off_broken_config_falls_back(tmp_path):
+    """i18n 갱신(적대검수): 파싱 실패도 team_lang 계약상 en 폴백."""
     (tmp_path / "team.config.json").write_text("not json {{", encoding="utf-8")
     r = _run(tmp_path, "off")
     assert r.returncode == 0, r.stderr
-    assert "상태 저장됨" in r.stdout
+    assert "tm-mode off — state saved" in r.stdout
+
+
+def test_off_fallback_english_for_en_locale_team(tmp_path):
+    """en 팀(locale=en_US, farewell 미설정)은 폴백 문구도 영어다."""
+    _write_config(tmp_path, locale="en_US")  # farewell 키 없음
+    r = _run(tmp_path, "off")
+    assert r.returncode == 0, r.stderr
+    assert "tm-mode off — state saved" in r.stdout
+    assert "상태 저장됨" not in r.stdout

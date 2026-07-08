@@ -205,14 +205,39 @@ class TestCodexStatusMessage:
         assert "팀모드 ON" in text
 
     def test_A3_statusmessage_falls_back_to_team_on_parse_failure(self, codex_env):
-        """team.config.json 파싱 실패 시 statusMessage에 'team' 폴백이 사용된다."""
+        """team.config.json 파싱 실패 시 statusMessage에 'team' 폴백이 사용된다.
+
+        i18n 갱신(적대검수 — 실사용자가 Codex 에서 이 라벨을 봄): "팀모드 ON"/
+        "Team Mode ON" 접미사도 이제 team_lang 을 따른다. team.config.json 파싱
+        실패는 team_lang 계약상 en 폴백(제품 기본)이므로, 이 테스트가 검증하려던
+        "팀명 폴백"과는 별개로 접미사도 en 이 되는 게 정책상 맞다.
+        """
         # 잘못된 JSON으로 덮어쓰기
         (codex_env.root / "team.config.json").write_text("{ invalid json }", encoding="utf-8")
         codex_env.make_adapter().sync(mode="on")
         text = codex_env.config.read_text()
         assert "statusMessage" in text
         # 팀명이 파싱 실패 → 폴백(팀루트 이름 or "team")이 들어가야 함
-        assert "팀모드 ON" in text
+        assert "Team Mode ON" in text, (
+            f"파싱 실패는 team_lang 계약상 en 폴백이어야 한다: {text!r}")
+
+    def test_A2b_statusmessage_english_for_en_locale_team(self, codex_env):
+        """en 팀(locale=en_US)은 statusMessage 접미사가 "Team Mode ON"(영어)이다.
+
+        실사용자 리포트(Codex 세션에서 "Running SessionStart hook: [T-Gates] 팀모드
+        ON"을 봄) — 이 statusMessage 는 install/sync 시점에 config.toml 에 문자열로
+        굳으므로, 팀명은 그대로(team-authored, 번역 대상 아님) 두고 고정 어휘
+        접미사만 팀 locale 을 따르는지 확인한다.
+        """
+        cfg = json.loads((codex_env.root / "team.config.json").read_text())
+        cfg["team"]["locale"] = "en_US"
+        (codex_env.root / "team.config.json").write_text(
+            json.dumps(cfg), encoding="utf-8")
+        codex_env.make_adapter().sync(mode="on")
+        text = codex_env.config.read_text()
+        assert "Acme" in text  # 팀명은 그대로(번역 대상 아님)
+        assert "Team Mode ON" in text
+        assert "팀모드 ON" not in text, f"en 팀인데 한국어 라벨이 섞임: {text!r}"
 
     def test_A4_idempotent_sync_on_twice(self, codex_env):
         """sync --on 2회 호출 = 1회와 동일 결과 (멱등)."""
