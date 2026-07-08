@@ -6,6 +6,7 @@
 
 네트워크는 /tmp 로컬 fake remote 로 모사 — 실 toolkit·실 ~/.claude 무접촉.
 """
+import json
 import os
 import subprocess
 import sys
@@ -269,6 +270,18 @@ def test_pull_verb_ff_forwards(cloned_repo):
     r = _run_engine(cloned_repo.clone, "pull")
     assert r.returncode == 0, r.stderr
     assert (cloned_repo.clone / "b.txt").exists()  # 실제로 최신화됨
+
+
+def test_pull_verb_english_for_en_locale_team(cloned_repo):
+    """i18n(적대검수 — long tail, cmd_pull): en 팀(locale=en_US)은 pull 출력이
+    영어이고 한글이 섞이지 않는다."""
+    import re
+    (cloned_repo.clone / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    r = _run_engine(cloned_repo.clone, "pull")
+    assert r.returncode == 0, r.stderr
+    assert "updated" in r.stdout
+    assert not re.search(r"[가-힣]", r.stdout), f"en 팀 출력에 한글 섞임: {r.stdout!r}"
 
 
 def test_pull_verb_non_git_graceful(tmp_path):
