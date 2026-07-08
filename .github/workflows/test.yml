@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   pytest:
+    if: github.repository == 'T-Gates/tm-mode'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

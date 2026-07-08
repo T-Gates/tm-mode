@@ -11,6 +11,7 @@ on:
 
 jobs:
   build:
+    if: github.repository == 'T-Gates/tm-mode'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +44,7 @@ jobs:
           path: dist/
 
   publish:
+    if: github.repository == 'T-Gates/tm-mode'
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
@@ -56,6 +58,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-npm:
+    if: github.repository == 'T-Gates/tm-mode'
     needs: build
     runs-on: ubuntu-latest
     environment: npm
