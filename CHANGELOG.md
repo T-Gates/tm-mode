@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- `tm on`'s auto-update summary line no longer mixes languages: the `엔진 업데이트됨:`/`Engine updated:` prefix now follows team locale via `infra/i18n.py` (was hardcoded Korean, so it always prefixed the English-canonical `NOTICE.md`'s first bullet — mixed-language output for every team). ko-locale teams with a local `NOTICE.ko.md` now read their summary from it instead of the English `NOTICE.md`. Same treatment for the sibling `auto_update_on_start` lines (dirty-skip, validation-available, commit-failed). Audited the rest of the engine/hook/launcher runtime-string surface for the same class of bug — see the tracking note below for the larger, deferred cleanup.
 - 팀 인스턴스에 제품 GitHub Actions workflow가 남지 않도록 전면 차단: ① 제품 workflow 전 job에 `if: github.repository == 'T-Gates/tm-mode'` 가드(템플릿 복사 직후 초기 커밋에서도 no-op), ② 모든 설치 경로(init/join/clone-and-go)가 지나는 install 관문에서 `.github/workflows` 제거+push(공용 `strip_template_workflows()` — dir/file/symlink 안전, timeout, push 실패 시 정직한 안내+재시도 복구), ③ sync pathspec denylist로 upstream 재유입 차단. 제품 repo/fork checkout(github.com origin이 `T-Gates/tm-mode` 또는 repo명 `tm-mode`)은 절대 건드리지 않음. 구버전 팀 repo의 `infra/git_ops.py`에 함수가 없어도 packaged CLI 폴백으로 동작.
 
 ### Added

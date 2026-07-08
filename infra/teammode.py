@@ -37,6 +37,18 @@ import git_ops as _git_ops  # noqa: E402
 import providers as _providers  # noqa: E402
 # stdout/stderr UTF-8 보장 — Windows native 인코딩(cp949 등)에서 한글 print 크래시 방지.
 from io_encoding import ensure_utf8_io  # noqa: E402
+# i18n(PR-i1 확장) — 사용자 대면 엔진 출력의 ko/en 분기. infra/hooks/*.py 의 동일 이름
+# 헬퍼와 같은 계약: ko 원문은 호출부 리터럴이 단일 소스, en 은 카탈로그(engine_* 키).
+# infra/ 는 한 단위로 동기화되므로(SYNC_PATHS) 훅과 달리 방어적 임포트는 하지 않는다.
+import i18n as _i18n  # noqa: E402
+
+
+def _t(key: str, lang: str, ko: str, **fmt) -> str:
+    """엔진 출력 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스, en 은 i18n 카탈로그
+    (infra/hooks/*.py 의 동일 이름 헬퍼와 같은 계약)."""
+    if lang == "en":
+        return _i18n.t(key, "en", **fmt)
+    return ko.format(**fmt) if fmt else ko
 
 
 def _active_marker(team_root: Path) -> Path:
@@ -304,9 +316,13 @@ UPSTREAM_REMOTE = "upstream"
 UPSTREAM_REF = "upstream/main"
 
 
-def _read_local_notice(team_root: Path) -> str:
-    """로컬 NOTICE.md 내용을 읽는다(없으면 빈 문자열). 예외 전파 없음."""
-    notice_path = team_root / "NOTICE.md"
+def _read_local_notice(team_root: Path, filename: str = "NOTICE.md") -> str:
+    """로컬 NOTICE.md(또는 filename) 내용을 읽는다(없으면 빈 문자열). 예외 전파 없음.
+
+    filename 은 하위호환 기본값 "NOTICE.md" — 기존 호출부(세션-start 훅 등)는
+    무변화. ko 팀이 NOTICE.ko.md 를 우선 읽게 하려는 호출부만 명시로 넘긴다.
+    """
+    notice_path = team_root / filename
     try:
         if notice_path.is_file():
             return notice_path.read_text(encoding="utf-8")
@@ -330,15 +346,23 @@ def auto_update_on_start(team_root: Path) -> None:
         do_commit 이 push 실패해도 커밋을 보존(ok=True·pushed=False)하고 on 은 계속 성공.
       - 적용되면 "엔진 업데이트됨: <NOTICE 첫 불릿>" 한 줄 출력.
 
+    i18n(적대검수 발견 — 치명 결함 수정): 이 함수의 모든 출력은 사용자 대면(`tm on`
+    콘솔)이므로 팀 locale 을 따른다(CONTRIBUTING §7 정책). NOTICE 첫 불릿도 ko 팀은
+    NOTICE.ko.md 를 우선 읽는다(있으면) — 없으면 NOTICE.md 로 폴백. 그전엔 ko 접두사
+    ("엔진 업데이트됨:")에 영어-정본 NOTICE.md 의 첫 불릿이 붙어 언어가 섞였다.
+
     모든 예외를 삼킨다 — on 의 핵심 경로를 자동 update 가 막아선 안 된다.
     """
     try:
+        lang = _i18n.team_lang(str(team_root))
         res = _git_ops.sync_from_upstream(str(team_root), remote=UPSTREAM_REMOTE)
 
         if res.blocked:
             # dirty 가드: 적용·커밋 둘 다 skip + 사람 알림
-            print(f"[auto-update] 대상 경로에 커밋 안 된 변경이 있어 자동 업데이트 skip — "
-                  f"검토 후 커밋하거나 되돌리면 다음 on 에서 자동 적용됩니다.")
+            print(_t(
+                "engine_auto_update_dirty_skip", lang,
+                "[auto-update] 대상 경로에 커밋 안 된 변경이 있어 자동 업데이트 skip — "
+                "검토 후 커밋하거나 되돌리면 다음 on 에서 자동 적용됩니다."))
             return
 
         if not res.ok:
@@ -356,8 +380,10 @@ def auto_update_on_start(team_root: Path) -> None:
             _n_up = len(_vplan.safe_paths)
             _n_del = len(getattr(_vplan, "safe_deletes", ()))
             if not _vplan.shallow and (_n_up or _n_del):
-                print(f"validation 업데이트 가능: 갱신 {_n_up}개, 삭제 {_n_del}개 — "
-                      f"tm-mode update 로 적용하세요.")
+                print(_t(
+                    "engine_auto_update_validation_available", lang,
+                    "validation 업데이트 가능: 갱신 {n_up}개, 삭제 {n_del}개 — "
+                    "tm-mode update 로 적용하세요.", n_up=_n_up, n_del=_n_del))
         except Exception:  # noqa: BLE001 — 알림 실패가 on 을 막지 않는다
             pass
 
@@ -377,11 +403,17 @@ def auto_update_on_start(team_root: Path) -> None:
 
         if not commit_res.ok:
             # 커밋 실패(충돌·권한 등) → on 계속 성공, staged 잔존 경고
-            print(f"[auto-update] 자동 커밋 실패(staged 잔존) — "
-                  f"검토 후 직접 커밋하세요: {commit_res.detail}")
+            print(_t(
+                "engine_auto_update_commit_failed", lang,
+                "[auto-update] 자동 커밋 실패(staged 잔존) — "
+                "검토 후 직접 커밋하세요: {detail}", detail=commit_res.detail))
         else:
-            # 적용 성공 — NOTICE 첫 불릿 표시(팀 원래 의도: 켤 때 소식 보여주기)
-            local_notice = _read_local_notice(team_root)
+            # 적용 성공 — NOTICE 첫 불릿 표시(팀 원래 의도: 켤 때 소식 보여주기).
+            # ko 팀은 NOTICE.ko.md 우선(있으면) — 영어 정본 NOTICE.md 와 섞이지 않게.
+            notice_file = "NOTICE.md"
+            if lang == "ko" and (team_root / "NOTICE.ko.md").is_file():
+                notice_file = "NOTICE.ko.md"
+            local_notice = _read_local_notice(team_root, notice_file)
             first_bullet = ""
             for line in local_notice.splitlines():
                 line = line.strip()
@@ -390,9 +422,11 @@ def auto_update_on_start(team_root: Path) -> None:
                     break
             summary = first_bullet[:80] if first_bullet else ""
             if summary:
-                print(f"엔진 업데이트됨: {summary}")
+                print(_t("engine_auto_update_engine_updated", lang,
+                         "엔진 업데이트됨: {summary}", summary=summary))
             else:
-                print("엔진 업데이트됨")
+                print(_t("engine_auto_update_engine_updated_no_summary", lang,
+                         "엔진 업데이트됨"))
 
     except Exception:  # noqa: BLE001 — 자동 update 는 on 을 절대 막지 않는다
         pass

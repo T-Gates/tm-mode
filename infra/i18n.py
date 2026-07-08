@@ -40,6 +40,24 @@ MESSAGES = {
             " (local commits not pushed)",
         "hook_ss_engine_update_available":
             "[teammode] An engine update is available upstream — run `tm-mode update` to apply it.",
+
+        # ── 엔진(teammode.py) 출력 — en 전용(ko 원문은 각 호출부 리터럴이 단일 소스,
+        #    hook_* 와 동일 계약). auto_update_on_start(`tm on`) 이 찍는 줄들.
+        "engine_auto_update_dirty_skip":
+            "[auto-update] Uncommitted changes in the target paths — skipping the "
+            "automatic update. Review it, then commit or revert to have it applied "
+            "on the next `on`.",
+        "engine_auto_update_validation_available":
+            "Validation update available: {n_up} to update, {n_del} to delete — "
+            "apply with `tm-mode update`.",
+        "engine_auto_update_commit_failed":
+            "[auto-update] Automatic commit failed (changes remain staged) — "
+            "review and commit manually: {detail}",
+        "engine_auto_update_engine_updated":
+            "Engine updated: {summary}",
+        "engine_auto_update_engine_updated_no_summary":
+            "Engine updated",
+
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":

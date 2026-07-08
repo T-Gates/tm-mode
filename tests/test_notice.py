@@ -9,6 +9,7 @@
 
 네트워크는 /tmp 로컬 fake remote 로 모사 — 실 toolkit·실 ~/.claude 무접촉.
 """
+import json
 import os
 import subprocess
 import sys
@@ -204,6 +205,11 @@ def test_on_shows_update_notice_when_upstream_has_infra(tmp_path):
 
     auto_update_on_start 가 엔진 업데이트를 적용하고 NOTICE 첫 불릿을 출력한다.
     (구 _maybe_notify_upstream 은 삭제됨.)
+
+    i18n 갱신(적대검수): 이 출력은 이제 팀 locale 을 따른다(team_lang, PR-i1 확장).
+    _make_on_fixture 는 team.config.json 을 안 만들어 en 기본(제품 기본값)이 되므로,
+    이 테스트의 원래 의도(ko 출력 검증)를 유지하려면 ko locale 을 명시해야 한다 —
+    en 기본 자체의 검증은 tests/test_i18n.py 의 신설 케이스가 맡는다.
     """
     upstream = tmp_path / "upstream.git"
     seed = tmp_path / "seed"
@@ -221,6 +227,8 @@ def test_on_shows_update_notice_when_upstream_has_infra(tmp_path):
     _git(seed, "push", "-u", "origin", "main")
 
     team = _make_on_fixture(tmp_path)
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "ko_KR"}}), encoding="utf-8")
     # team 에 infra/ 없음 → upstream sync 시 추가됨
     _git(team, "remote", "add", "upstream", str(upstream))
 
@@ -229,6 +237,82 @@ def test_on_shows_update_notice_when_upstream_has_infra(tmp_path):
     # 작업 D: 엔진 업데이트됨 출력(NOTICE 첫 불릿 포함)
     assert "엔진 업데이트됨" in (res.stdout + res.stderr), \
         f"엔진 업데이트됨 미출력, stdout={res.stdout!r}"
+
+
+def test_on_notice_fully_english_for_en_team(tmp_path):
+    """en 팀(locale=en_US)은 "tm on" 요약 줄이 접두사·본문 모두 영어다(섞이지 않음).
+
+    적대검수 발견 — 최초 버전은 접두사("엔진 업데이트됨:")가 하드코딩 한국어라, 영어
+    정본 NOTICE.md(#99 이후 기본)의 첫 불릿과 붙으면 모든 언어의 팀에 섞인 줄이
+    나갔다. 이 테스트는 en 팀에 접두사까지 영어인지 확인한다.
+    """
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+    _git(tmp_path, "init", "--bare", str(upstream))
+    _git(tmp_path, "clone", str(upstream), str(seed))
+    _git(seed, "config", "user.name", "t")
+    _git(seed, "config", "user.email", "t@t")
+    (seed / "infra").mkdir()
+    (seed / "infra" / "engine.py").write_text("v1\n")
+    (seed / "NOTICE.md").write_text(
+        "# teammode\n\n## 2026-07-08\n- New engine update\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "notice+infra")
+    _git(seed, "branch", "-M", "main")
+    _git(seed, "push", "-u", "origin", "main")
+
+    team = _make_on_fixture(tmp_path)
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "en_US"}}), encoding="utf-8")
+    _git(team, "remote", "add", "upstream", str(upstream))
+
+    res = _run_engine(team, "on")
+    out = res.stdout + res.stderr
+    assert res.returncode == 0, res.stderr
+    assert "Engine updated: New engine update" in out, f"영어 요약 미출력: {out!r}"
+    assert "엔진 업데이트됨" not in out, f"en 팀인데 한국어 접두사가 섞임: {out!r}"
+
+
+def test_on_notice_prefers_notice_ko_md_for_ko_team(tmp_path):
+    """ko 팀은 로컬 NOTICE.ko.md 가 있으면 그걸 우선 읽는다(영어 정본과 안 섞임).
+
+    upstream 이 보내는 건 NOTICE.md(영어 정본, SYNC_PATHS 대상)뿐이다 — NOTICE.ko.md
+    는 동기화 대상이 아니라 팀이 이미 갖고 있던 그대로다. ko 팀은 그 로컬
+    NOTICE.ko.md 의 첫 불릿을 보여줘야지, 방금 동기화된 영어 NOTICE.md 를 보여주면
+    (구현이 없던) 적대검수 발견 문제로 돌아간다.
+    """
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+    _git(tmp_path, "init", "--bare", str(upstream))
+    _git(tmp_path, "clone", str(upstream), str(seed))
+    _git(seed, "config", "user.name", "t")
+    _git(seed, "config", "user.email", "t@t")
+    (seed / "infra").mkdir()
+    (seed / "infra" / "engine.py").write_text("v1\n")
+    (seed / "NOTICE.md").write_text(
+        "# teammode\n\n## 2026-07-08\n- New engine update\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "notice+infra")
+    _git(seed, "branch", "-M", "main")
+    _git(seed, "push", "-u", "origin", "main")
+
+    team = _make_on_fixture(tmp_path)
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "ko_KR"}}), encoding="utf-8")
+    # 로컬 NOTICE.ko.md — 동기화 대상 아님(SYNC_PATHS=infra,NOTICE.md), 팀이 이미 가진 그대로.
+    (team / "NOTICE.ko.md").write_text(
+        "# teammode\n\n## 2026-07-08\n- 새 한국어 업데이트\n", encoding="utf-8")
+    _git(team, "add", "NOTICE.ko.md")
+    _git(team, "commit", "-m", "add local notice.ko.md")
+    _git(team, "remote", "add", "upstream", str(upstream))
+
+    res = _run_engine(team, "on")
+    out = res.stdout + res.stderr
+    assert res.returncode == 0, res.stderr
+    assert "엔진 업데이트됨: 새 한국어 업데이트" in out, (
+        f"NOTICE.ko.md 의 한국어 불릿이 우선돼야 하는데 안 나옴: {out!r}")
+    assert "New engine update" not in out, (
+        f"ko 팀인데 방금 동기화된 영어 NOTICE.md 내용이 섞여 나옴: {out!r}")
 
 
 def test_on_silent_when_notice_same_and_uptodate(tmp_path):
