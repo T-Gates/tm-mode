@@ -3051,8 +3051,11 @@ def main(argv=None) -> int:
 
     if verb not in _KNOWN_VERBS:
         if verb is None:
+            # i18n(적대검수 — long tail): 이 시점엔 --root 조차 없어 팀 locale 을
+            # 조회할 team_root 가 존재하지 않는다(구조적으로 team_lang 호출 불가) —
+            # 제품 진입점 usage 문구라 install.py 의 "en 기본" 관례를 따라 en 고정.
             print("usage: teammode.py {on|off|log|context|pull|commit|update|issue} "
-                  "--root <팀루트> ...", file=sys.stderr)
+                  "--root <team-root> ...", file=sys.stderr)
             return 2
         # 미구현 동사 — 후속 슬라이스 (시나리오 RED 유지)
         print(f"[unimplemented] {verb}", file=sys.stderr)
@@ -3061,19 +3064,24 @@ def main(argv=None) -> int:
     # 정책 A: 팀 루트는 명시 인자 --root 로만. env 폴백·cwd 추측 금지 (P1-a).
     root = opts.get("root")
     if root is None:
-        print("[error] --root <팀루트> 가 필수입니다. 엔진은 환경변수(TEAMMODE_HOME)를 "
-              "읽지 않으며 작업 폴더를 추측하지 않습니다.", file=sys.stderr)
+        # i18n: 위와 동일한 구조적 이유(team_root 미확정) — en 고정.
+        print("[error] --root <team-root> is required. The engine does not read "
+              "the TEAMMODE_HOME environment variable and does not guess the "
+              "working directory.", file=sys.stderr)
         return 2
     team_root = Path(root).resolve()
+    lang = _i18n.team_lang(str(team_root))
 
     if verb == "log":
         author = opts.get("author")
         text = opts.get("text")
         if author is None:
-            print("[error] log: --author <이름> 가 필요합니다.", file=sys.stderr)
+            print(_t("main_log_author_required", lang,
+                     "[error] log: --author <이름> 가 필요합니다."), file=sys.stderr)
             return 2
         if text is None:
-            print("[error] log: --text <내용> 가 필요합니다.", file=sys.stderr)
+            print(_t("main_log_text_required", lang,
+                     "[error] log: --text <내용> 가 필요합니다."), file=sys.stderr)
             return 2
         return cmd_log(team_root, author, text, _parse_now(opts.get("now")))
 
@@ -3086,7 +3094,8 @@ def main(argv=None) -> int:
     if verb == "commit":
         message = opts.get("message")
         if not message:
-            print("[error] commit: --message <메시지> 가 필요합니다.", file=sys.stderr)
+            print(_t("main_commit_message_required", lang,
+                     "[error] commit: --message <메시지> 가 필요합니다."), file=sys.stderr)
             return 2
         # --paths "memory/ docs/" 형태(공백 구분 문자열)를 리스트로 분리.
         # 미지정 시 None → do_commit 이 add -A(전체 워킹트리) 처리.
@@ -3146,8 +3155,9 @@ def main(argv=None) -> int:
     # on/off: P2 settings 경로도 명시로만. 둘 다 없으면 실 ~/.claude 추측 오염 거부.
     resolved_settings = _resolve_settings(opts.get("settings"), opts["install"])
     if resolved_settings is None:
-        print("[error] --settings <경로> (격리 모드) 또는 --install (실설치) 중 "
-              "하나가 필요합니다. 명시 없이 실 ~/.claude/settings.json 에 쓰지 않습니다.",
+        print(_t("main_settings_or_install_required", lang,
+                 "[error] --settings <경로> (격리 모드) 또는 --install (실설치) 중 "
+                 "하나가 필요합니다. 명시 없이 실 ~/.claude/settings.json 에 쓰지 않습니다."),
               file=sys.stderr)
         return 2
 

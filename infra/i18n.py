@@ -393,6 +393,20 @@ MESSAGES = {
         "cmd_route_push_failed":
             "[warning] memory route: push failed (local commit preserved) — {detail}",
 
+        # ── main() required-arg errors (usage/--root not-given messages stay
+        #    hardcoded English at the call site — no team_root exists yet to
+        #    resolve a locale from, so there's nothing to route) ──
+        "main_log_author_required":
+            "[error] log: --author <name> is required.",
+        "main_log_text_required":
+            "[error] log: --text <content> is required.",
+        "main_commit_message_required":
+            "[error] commit: --message <message> is required.",
+        "main_settings_or_install_required":
+            "[error] one of --settings <path> (isolated mode) or --install "
+            "(real install) is required. Without an explicit choice, this "
+            "will not write to the real ~/.claude/settings.json.",
+
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":
