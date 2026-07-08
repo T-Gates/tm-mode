@@ -369,6 +369,28 @@ def test_update_verb_syncs_infra(team_with_upstream):
     assert (team / "memory" / "team-secret.md").read_text() == "DO NOT TOUCH\n"
 
 
+def test_update_verb_english_output_for_en_team(team_with_upstream):
+    """en 팀(locale=en_US)은 `tm-mode update` 출력이 전부 영어다(적대검수 — 실사용자가
+    en 로케일에서도 전체 한국어 출력을 본 리포트).
+
+    team_with_upstream 픽스처는 team.config.json 을 만들지만 locale 필드가 없어
+    기본은 ko(구팀 무변화)다 — 여기서만 locale 을 en_US 로 덮어써 검증한다.
+    """
+    team = team_with_upstream.team
+    (team / "team.config.json").write_text(
+        '{"team":{"name":"t","locale":"en_US"}}\n', encoding="utf-8")
+    r = _run_engine(team, "update")
+    assert r.returncode == 0, r.stderr
+    out = r.stdout + r.stderr
+    assert "tm-mode update — engine file sync complete" in out
+    assert "Changes are staged" in out
+    assert "review and commit manually" not in out  # (엉뚱한 en 키 혼입 방지 스팟체크)
+    assert "동기화 완료" not in out and "검토 후 직접 커밋하세요" not in out, (
+        f"en 팀인데 한국어 문구가 섞임: {out!r}")
+    # git commit 커맨드 자체는 번역 대상 아님 — 두 언어 모두 동일 리터럴이어야 한다.
+    assert "git commit -m 'chore: sync teammode engine from upstream'" in out
+
+
 def test_update_verb_unrelated_histories_no_merge_error(team_with_upstream):
     """가장 중요한 회귀 테스트: unrelated histories 에서 update 가 성공한다."""
     r = _run_engine(team_with_upstream.team, "update")

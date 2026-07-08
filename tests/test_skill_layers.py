@@ -515,6 +515,57 @@ def test_traversal_in_util_skills_json_rejected_on_on(tmp_path):
         assert "evil" not in names, "skills_dir 안에 'evil' 생성됨"
 
 
+def test_util_skill_missing_warn_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수 — cmd_on 의 util 스킬 [warn] 계열): en 팀은 소스없음 경고가 영어로
+    나오고 한글이 한 글자도 섞이지 않는다(team-lead 요청 — 정규식 기반 검증)."""
+    import io, contextlib, re
+    root = _scaffold(tmp_path)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    alice_dir = root / "memory" / "team" / "sessions" / "alice"
+    alice_dir.mkdir(parents=True, exist_ok=True)
+    (alice_dir / "util-skills.json").write_text(
+        json.dumps({"installed": ["nonexistent"]}), encoding="utf-8")
+    settings = _settings(tmp_path)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = _run_teammode(["on", "--root", str(root),
+                             "--settings", settings, "--member", "alice"])
+    assert rc == 0
+    out = buf.getvalue()
+    assert "warn" in out.lower()
+    assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글이 섞임: {out!r}"
+
+
+def test_util_skill_traversal_warn_prose_english_for_en_locale_team(tmp_path):
+    """i18n(적대검수): traversal 경고의 새 prose 는 en 팀에 영어로 나온다.
+
+    ⚠️ known gap(적대검수 발견, PR-D 로 이연): 이 라인의 상세 사유는
+    _validate_author() 가 반환하는 한국어 문자열을 그대로 interpolate 한다 —
+    _validate_author 는 12곳 이상에서 공유되는 검증 유틸이라 lang 전파는 이
+    브랜치 범위(cmd_on/cmd_off) 밖(PR-D: cmd_memory/cmd_util/usage errors 장기
+    문자열 묶음). 그래서 이 테스트는 **새로 라우팅한 wrapper prose** 만 검증하고
+    전체 무한글 단정은 하지 않는다(다른 util 스킬 케이스는 위 missing 테스트가
+    이미 전체 무한글로 검증).
+    """
+    import io, contextlib
+    root = _scaffold(tmp_path)
+    (root / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    alice_dir = root / "memory" / "team" / "sessions" / "alice"
+    alice_dir.mkdir(parents=True, exist_ok=True)
+    (alice_dir / "util-skills.json").write_text(
+        json.dumps({"installed": ["../evil"]}), encoding="utf-8")
+    settings = _settings(tmp_path)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = _run_teammode(["on", "--root", str(root),
+                             "--settings", settings, "--member", "alice"])
+    assert rc == 0
+    out = buf.getvalue()
+    assert "invalid (traversal risk) → skipped" in out
+
+
 def test_orphan_core_preserved_after_base_reinstall(tmp_path):
     """고아 자살삭제 방지: on 으로 core 설치 후 install_skills(layer='base') 재실행해도 core 보존."""
     root = _scaffold(tmp_path)

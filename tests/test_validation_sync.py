@@ -8,6 +8,7 @@ tm on 은 validation 무적용(알림만). XDG skip-cache 로 반복 skip 축약
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -263,8 +264,15 @@ def _run_engine(root, *argv):
 
 
 def test_cmd_update_applies_validation(team_with_upstream, monkeypatch):
-    """tm-mode update: 엔진 뒤 validation safe 파일도 checkout(staged)."""
+    """tm-mode update: 엔진 뒤 validation safe 파일도 checkout(staged).
+
+    i18n 갱신(적대검수): cmd_update 출력이 이제 팀 locale 을 따른다. team_with_upstream
+    은 team.config.json 을 안 만들어 en 기본이 되므로, 이 테스트의 원래 의도(ko 문구
+    검증)를 유지하려면 ko locale 을 명시해야 한다.
+    """
     team = team_with_upstream
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "ko_KR"}}), encoding="utf-8")
     rc, out = _run_engine(team, "update")
     assert rc == 0, out
     assert "validation 동기화 완료" in out
@@ -273,8 +281,15 @@ def test_cmd_update_applies_validation(team_with_upstream, monkeypatch):
 
 
 def test_on_notifies_validation_but_does_not_apply(team_with_upstream, monkeypatch):
-    """tm on 자동 경로: validation 은 '업데이트 가능' 알림만, 파일 미적용."""
+    """tm on 자동 경로: validation 은 '업데이트 가능' 알림만, 파일 미적용.
+
+    i18n 갱신(적대검수): 이 알림은 이제 팀 locale 을 따른다(auto_update_on_start,
+    PR-i1 확장). team_with_upstream 은 team.config.json 을 안 만들어 en 기본이 되므로,
+    이 테스트의 원래 의도(ko 문구 검증)를 유지하려면 ko locale 을 명시해야 한다.
+    """
     team = team_with_upstream
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "ko_KR"}}), encoding="utf-8")
     monkeypatch.setattr("sys.modules", sys.modules)
     import io, contextlib
     mod = runpy.run_path(str(ENGINE), run_name="__on_vsync__")
@@ -499,9 +514,16 @@ def test_apply_delete_aborts_when_backup_fails(team_with_upstream_deletes, tmp_p
 
 
 def test_on_notify_includes_deletes(team_with_upstream_deletes, monkeypatch):
-    """tm on 알림: 갱신 N + 삭제 M 합산 표기, 적용은 없음."""
+    """tm on 알림: 갱신 N + 삭제 M 합산 표기, 적용은 없음.
+
+    i18n 갱신(적대검수): team_with_upstream_deletes 는 team.config.json 을 안 만들어
+    en 기본이 되므로, 이 테스트의 원래 의도(ko 문구 검증)를 유지하려면 ko locale 을
+    명시해야 한다(auto_update_on_start, PR-i1 확장).
+    """
     import io, contextlib, runpy as _rp
     team = team_with_upstream_deletes
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "ko_KR"}}), encoding="utf-8")
     mod = _rp.run_path(str(ENGINE), run_name="__on_v2__")
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -512,8 +534,14 @@ def test_on_notify_includes_deletes(team_with_upstream_deletes, monkeypatch):
 
 
 def test_cmd_update_applies_deletes(team_with_upstream_deletes):
-    """tm-mode update: 삭제까지 staged 적용 + 백업 경로 출력."""
+    """tm-mode update: 삭제까지 staged 적용 + 백업 경로 출력.
+
+    i18n 갱신(적대검수): team_with_upstream_deletes 는 team.config.json 을 안 만들어
+    en 기본이 되므로, ko 문구 검증이라는 원래 의도를 유지하려면 ko locale 을 명시한다.
+    """
     team = team_with_upstream_deletes
+    (team / "team.config.json").write_text(
+        json.dumps({"team": {"name": "t", "locale": "ko_KR"}}), encoding="utf-8")
     rc, out = _run_engine(team, "update")
     assert rc == 0, out
     assert "삭제" in out

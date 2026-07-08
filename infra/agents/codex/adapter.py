@@ -53,6 +53,15 @@ except ImportError:
     def _ensure_utf8_io() -> None:  # 모듈 부재여도 어댑터는 동작(보정만 스킵)
         return
 
+# i18n(적대검수 발견) — Codex hook statusMessage 의 "팀모드 ON" 은 팀명과 달리
+# 팀이 바꿀 수 없는 제품 고정 어휘라 team_lang 을 따라야 한다(team.config.json 의
+# greeting 커스텀 필드와는 다른 문자열 — 혼동 금지). io_encoding 과 동일한 infra/
+# sys.path 재사용 패턴. 부재 시 ko 강등(fail-safe, 종전 거동 보존).
+try:
+    import i18n as _i18n  # type: ignore
+except ImportError:
+    _i18n = None
+
 BLOCK_START = "# teammode-hooks-start"
 BLOCK_END = "# teammode-hooks-end"
 
@@ -611,11 +620,25 @@ class Adapter(BaseAdapter):
             return None
 
     def _get_status_message(self) -> str:
-        """Codex hook statusMessage 문자열 — '[<팀명>] 팀모드 ON'.
+        """Codex hook statusMessage 문자열 — '[<팀명>] 팀모드 ON'(ko) / '[<팀명>] Team Mode ON'(en).
 
-        팀명은 team.config.json team.name 에서 동적 생성(하드코딩 금지).
+        팀명은 team.config.json team.name 에서 동적 생성(하드코딩 금지). "팀모드 ON"/
+        "Team Mode ON" 은 team.config.json 의 greeting(팀 커스텀 가능 필드)과 달리
+        팀이 바꿀 수 없는 제품 고정 어휘라 team_lang 을 따른다(적대검수 발견 — 실사용자가
+        en 로케일에서도 이 라벨을 한국어로 본 문제). ⚠️ install/sync 시점에 config.toml
+        에 문자열로 굳는다 — locale 을 바꾼 팀은 재배선(`tm-mode init`/`install.py`
+        재실행 또는 `adapter.py sync`)해야 라벨이 갱신된다(기존 배선은 소급 갱신 안 됨).
         """
-        return f"[{self._get_team_name()}] 팀모드 ON"
+        lang = "ko"
+        if _i18n is not None:
+            try:
+                lang = _i18n.team_lang(str(self.team_root))
+            except Exception:  # noqa: BLE001 — locale 해석 실패는 ko 폴백(구팀 무변화)
+                pass
+        label = "팀모드 ON"
+        if lang == "en" and _i18n is not None:
+            label = _i18n.t("adapter_codex_status_team_mode_on", "en")
+        return f"[{self._get_team_name()}] {label}"
 
     def _render_block(self, entries: list, mode: Optional[str] = None) -> str:
         """teammode hooks TOML 블록을 렌더링한다.

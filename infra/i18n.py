@@ -40,6 +40,117 @@ MESSAGES = {
             " (local commits not pushed)",
         "hook_ss_engine_update_available":
             "[teammode] An engine update is available upstream — run `tm-mode update` to apply it.",
+
+        # ── 엔진(teammode.py) 출력 — en 전용(ko 원문은 각 호출부 리터럴이 단일 소스,
+        #    hook_* 와 동일 계약). auto_update_on_start(`tm on`) 이 찍는 줄들.
+        "engine_auto_update_dirty_skip":
+            "[auto-update] Uncommitted changes in the target paths — skipping the "
+            "automatic update. Review it, then commit or revert to have it applied "
+            "on the next `on`.",
+        "engine_auto_update_validation_available":
+            "Validation update available: {n_up} to update, {n_del} to delete — "
+            "apply with `tm-mode update`.",
+        "engine_auto_update_commit_failed":
+            "[auto-update] Automatic commit failed (changes remain staged) — "
+            "review and commit manually: {detail}",
+        "engine_auto_update_engine_updated":
+            "Engine updated: {summary}",
+        "engine_auto_update_engine_updated_no_summary":
+            "Engine updated",
+
+        # ── `tm-mode update`(cmd_update + _run_validation_sync) 출력 — en 전용,
+        #    같은 계약(ko 원문은 호출부 리터럴). 실사용자 리포트(전부 한국어 출력)로
+        #    발견 — git status 글자(M/A/D)·경로·git commit -m '...' 커맨드 자체는
+        #    번역 대상 아님(그대로 둠), 그 주변 설명문만 라우팅한다.
+        "cmd_update_dirty_abort":
+            "tm-mode update — aborted: {detail}.\n"
+            "  The sync target(s) ({paths}) have uncommitted changes. Overwriting "
+            "would lose them.\n"
+            "  Commit or revert first, then run again (human judgment required).",
+        "cmd_update_fetch_failed_skip":
+            "tm-mode update — skipped (non-fatal): {detail}.\n"
+            "  If the upstream remote is missing, install.py registers it. Manual "
+            "registration:\n"
+            "  git remote add {remote} {url}",
+        "cmd_update_dry_run_will_change":
+            "tm-mode update [dry-run] — files that would change on sync ({paths}):",
+        "cmd_update_dry_run_excluded_util":
+            "  excluded: infra/skills/util (instance-owned util skills — protected)",
+        "cmd_update_dry_run_preview_only":
+            "  (preview only — nothing changed. Re-run without --dry-run to apply.)",
+        "cmd_update_dry_run_up_to_date":
+            "tm-mode update [dry-run] — already up to date (no changes).",
+        "cmd_update_engine_up_to_date":
+            "tm-mode update — engine: already up to date.",
+        "cmd_update_engine_sync_done":
+            "tm-mode update — engine file sync complete ({paths}, staged). Changed files:",
+        "cmd_update_review_and_commit_hint":
+            "  Changes are staged (no automatic commit/push). Review, then commit "
+            "directly:\n"
+            "  git commit -m 'chore: sync teammode engine from upstream'",
+        "cmd_update_validation_shallow_skip":
+            "tm-mode update — validation: skipped, shallow clone (engine sync is fine).",
+        "cmd_update_validation_dry_run_targets":
+            "tm-mode update [dry-run] — validation sync targets ({n_safe}):",
+        "cmd_update_validation_dry_run_none":
+            "tm-mode update [dry-run] — validation: nothing to update.",
+        "cmd_update_validation_dry_run_delete_candidates":
+            "tm-mode update [dry-run] — validation delete candidates ({n_del}) "
+            "(staged delete after backup):",
+        "cmd_update_validation_dry_run_skip_preserved":
+            "  preserved (skip) ({n_skip}) — local modification/instance-only:",
+        "cmd_update_validation_applied_updated":
+            "{n} updated",
+        "cmd_update_validation_applied_deleted":
+            "{n} deleted",
+        "cmd_update_validation_apply_done":
+            "tm-mode update — validation sync complete: {parts} (staged).",
+        "cmd_update_validation_forced_overwrite":
+            " force-overwrote {n}",
+        "cmd_update_validation_backup":
+            " backup: {path}",
+        "cmd_update_validation_restore_hint":
+            " (restore: git apply '<backup>/restore.patch' or copy from files/)",
+        "cmd_update_validation_apply_failed":
+            "tm-mode update — validation apply failed (non-fatal): {detail}",
+        "cmd_update_validation_up_to_date":
+            "tm-mode update — validation: already up to date (nothing to update).",
+        "cmd_update_validation_skip_same_as_before":
+            "  validation preserved (skip) ({n}) — unchanged since last time.",
+        "cmd_update_validation_skip_preserved_detail":
+            "  validation preserved (skip) ({n}) — local modification/instance-only, "
+            "not overwritten (see the full list with --dry-run, force with --force):",
+
+        "adapter_codex_status_team_mode_on":
+            "Team Mode ON",
+
+        # ── install_lib.write_introducer_config 의 greeting/farewell **기본값**
+        # (§4.4·부록 A.3) — 신규 팀 생성 시점의 locale 을 따른다. 팀이 tm-customize
+        # 로 이미 바꾼 뒤에는 팀 커스텀 텍스트가 되어 이 카탈로그와 무관해진다.
+        "install_default_greeting":
+            "{name} Team Mode ON",
+        "install_default_farewell":
+            "Great work today — {name}",
+
+        # ── cmd_off 출력(엔진) — "ON" 라벨(adapter_codex_status_team_mode_on)의
+        #    OFF 대칭짝. farewell 자체(팀 커스텀 필드)는 이 카탈로그와 무관 — 폴백/
+        #    경고 문구만 라우팅한다.
+        "cmd_off_agent_uninstall_failed":
+            "[warn] {agent} agent uninstall failed → skipped: {err}",
+        "cmd_off_no_farewell_fallback":
+            "tm-mode off — state saved",
+
+        # ── cmd_on 출력(엔진) — greeting(팀 커스텀 필드)은 그대로 출력(번역 금지),
+        #    배선/util 스킬 실패 [warn] 만 제품 고정 어휘라 라우팅한다.
+        "cmd_on_agent_wiring_failed":
+            "[warn] {agent} agent wiring failed → skipped: {err}",
+        "cmd_on_util_skill_invalid":
+            "[warn] util skill '{skill}' invalid (traversal risk) → skipped: {err}",
+        "cmd_on_util_skill_missing":
+            "[warn] util skill '{skill}' source missing → skipped",
+        "cmd_on_util_skill_link_failed":
+            "[warn] util skill '{skill}' link failed ({dir}) → skipped: {err}",
+
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":
