@@ -761,11 +761,11 @@ CLI:
 python3 infra/teammode.py update --root <팀루트>
 ```
 
-`update` is the verb for applying the template upstream. It operates as **file synchronization, not merge**. The constant is `UPSTREAM_REMOTE = "upstream"`, and the synchronization target is the module constant `git_ops.SYNC_PATHS = ["infra"]` (engine path). The CLI cannot change remote/branch/paths. It accepts only one flag, `--dry-run` (preview).
+`update` is the verb for applying the template upstream. It operates as **file synchronization, not merge**. The constant is `UPSTREAM_REMOTE = "upstream"`, and the synchronization target is the module constant `git_ops.SYNC_PATHS = ["infra", "NOTICE.md"]` (engine path plus upstream-owned notice). The CLI cannot change remote/branch/paths. It accepts only one flag, `--dry-run` (preview).
 
 **Why not merge**: The adopting repository is created from a GitHub *template*, so it has **unrelated histories** with upstream (`T-Gates/tm-mode`) and zero common ancestors. Therefore `git merge`/`pull --ff-only` is permanently blocked by `fatal: refusing to merge unrelated histories`. So merge was discarded, and this is implemented as file synchronization that overwrites **only the engine path** from upstream into the working tree with `git checkout`. It works regardless of the history relationship (common ancestor).
 
-**Synchronization targets and protected targets**: Only `SYNC_PATHS` (`infra/`) is overwritten. ⚠️ `memory/`, `team.config.json`, `.git`, and other team-owned files are **never** touched (the checkout pathspec is limited to `infra/`). When adding a new engine directory, extend only `SYNC_PATHS`.
+**Synchronization targets and protected targets**: Only `SYNC_PATHS` (`infra/`, `NOTICE.md`) is overwritten. ⚠️ `memory/`, `team.config.json`, `.git`, and other team-owned files are **never** touched. Product CI/release workflows are also protected: `.github/workflows` is denied even if a future sync target expands to `.github` or a caller explicitly requests `.github/workflows`. When adding a new engine directory, extend only `SYNC_PATHS` and keep protected prefixes out of team-instance sync.
 
 Engine `cmd_update(team_root, dry_run)` delegates in one call to `git_ops.sync_from_upstream(team_root, remote="upstream", dry_run=...)`. The stages of `sync_from_upstream`:
 
@@ -780,15 +780,15 @@ Engine `cmd_update(team_root, dry_run)` delegates in one call to `git_ops.sync_f
   - Order: ① final segment of `git symbolic-ref refs/remotes/upstream/HEAD` → ② `main` if `refs/remotes/upstream/main` exists → ③ fallback `main`.
   - `ref = "upstream/<branch>"`. If the ref does not exist, `ok=False, detail="upstream 브랜치를 찾을 수 없습니다: <ref>"`.
 - Stage 3 changedness check (idempotent):
-  - If `git diff --name-status <ref> -- infra` is empty, `ok=True, changed=False, detail="이미 최신"`. The engine writes `tm-mode update — 이미 최신입니다.` to stdout and exits 0.
+  - Builds git pathspecs from existing allowed positive targets (`infra`, `NOTICE.md`) plus protected excludes such as `:(exclude)infra/skills/util` and `:(exclude).github/workflows` when an ancestor target requires them. If `git diff --name-status <ref> -- <pathspecs>` is empty, `ok=True, changed=False, detail="이미 최신"`. The engine writes `tm-mode update — 이미 최신입니다.` to stdout and exits 0.
 - Stage 4 dirty guard (required):
-  - If `git status --porcelain -- infra` is not empty (uncommitted staged/unstaged/untracked changes in the target path), it **aborts** with `ok=False, blocked=True`. This is because overwriting would lose them.
+  - If `git status --porcelain -- <pathspecs>` is not empty (uncommitted staged/unstaged/untracked changes in the allowed target paths, after excludes), it **aborts** with `ok=False, blocked=True`. This is because overwriting would lose them.
   - The engine writes to stderr: "중단: ... 먼저 변경을 커밋하거나 되돌린 뒤 다시 실행하세요(사람 판단 필요)" plus the diff, then exits 1. tm-mode principle: when blocked, do not guess-repair.
   - If status lookup fails or throws an exception, it conservatively treats the path as dirty and aborts.
 - Stage 5 dry-run:
-  - With `--dry-run`, it stops after stage 4 and fills `SyncResult.diff` with the result of `git diff --name-status <ref> -- infra`, returning `ok=True, changed=False`. **Actual changes: 0.** The engine prints `tm-mode update [dry-run] — 동기화하면 바뀔 파일(infra):` plus the diff and exits 0.
+  - With `--dry-run`, it stops after stage 4 and fills `SyncResult.diff` with the result of `git diff --name-status <ref> -- <pathspecs>`, returning `ok=True, changed=False`. **Actual changes: 0.** The engine prints `tm-mode update [dry-run] — 동기화하면 바뀔 파일(<paths>):` plus the diff and exits 0.
 - Stage 6 apply (checkout):
-  - The actual command is `git -C <team_root> checkout <ref> -- infra`. It overwrites the working tree and the changes become **staged**.
+  - The actual command is `git -C <team_root> checkout <ref> -- <pathspecs>`. It overwrites the working tree for allowed targets only and the changes become **staged**. Excluded paths are not checked out even if they are under a positive ancestor path.
   - Timeout detail is `checkout timeout`; execution exception is `checkout exec error: ...`; rc non-zero is `checkout 실패: <앞 200자>`.
   - On success, `ok=True, changed=True, detail="동기화 완료(staged)"`. The engine writes `tm-mode update — 엔진 파일 동기화 완료(infra, staged). 바뀐 파일:` plus the diff and guidance that a human should commit directly to stdout, then exits 0.
 - **Never perform automatic commit or push**: checkout only leaves changes staged. The engine also does not commit or push — a human reviews what changed and commits directly. Because update does not resolve conflicts, rebase, or merge, it is independent of unrelated histories.
