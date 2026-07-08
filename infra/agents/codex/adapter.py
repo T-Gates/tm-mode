@@ -306,10 +306,13 @@ class Adapter(BaseAdapter):
             if isinstance(match, dict) and "mcp" in match and isinstance(services, dict):
                 canonical = match["mcp"].get("server")
                 if not self._mcp_server_connected(canonical, services):
+                    # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩
+                    # 한국어. claude 형제 어댑터의 동형 문자열과 함께 이후 PR 대상.
                     infos.append(
                         f"[info] {entry['script']}: '{canonical}' 역할 슬롯 미연결 "
                         f"→ MCP 매처 생략(빈 슬롯, 슬롯 연결 후 sync 재실행)")
                     continue
+                # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩 한국어.
                 if not self._mcp_alias_guaranteed(canonical):
                     warnings.append(
                         f"[warn] {entry['script']}: '{canonical}' MCP 별칭 미보장"
@@ -321,6 +324,8 @@ class Adapter(BaseAdapter):
                 if fallback == "runtime":
                     matcher = None
                 else:
+                    # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩
+                    # 한국어. claude 형제 어댑터의 동형 문자열과 함께 이후 PR 대상.
                     warnings.append(
                         f"[warn] {entry['script']}: {self.events.get('agent')} "
                         f"매처 표현 불가 → 비활성")
@@ -355,6 +360,8 @@ class Adapter(BaseAdapter):
         except OSError:
             pass
         if changed:
+            # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): changes 는 install.py
+            # 가 그대로 사람에게 echo 하는 사람용 문구라 아직 하드코딩 한국어.
             changes.append(f"[sync] Codex 훅 {len(toml_entries)}개 등록")
 
         # #D1: 방금 쓴 teammode 훅들의 codex trust 상태 read-only 검사.
@@ -396,6 +403,7 @@ class Adapter(BaseAdapter):
         for i in infos:
             print(i)
         if not changed and not warnings and not infos:
+            # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩 한국어.
             changes.append("[ok] 변경 없음")
         return changes
 

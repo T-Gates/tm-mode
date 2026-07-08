@@ -43,6 +43,14 @@ except ImportError:
     def _ensure_utf8_io() -> None:  # 모듈 부재여도 어댑터는 동작(보정만 스킵)
         return
 
+# i18n(적대검수 — B 지적: codex 형제 어댑터의 unsupported-event [warn] 만 고치고
+# 이 base 클래스(claude 어댑터가 직접 쓰고, codex 는 자기 것으로 override)의 동형
+# 문자열은 놓쳤다). io_encoding 과 동일한 infra/ sys.path 재사용 패턴.
+try:
+    import i18n as _i18n  # type: ignore
+except ImportError:
+    _i18n = None
+
 
 # MCP 등록 파일 봉인 센티넬(N3). mcp_config_path=_SEALED 면 이 어댑터는 ~/.claude.json
 # 류 실경로를 절대 읽지/쓰지 않는다 — codex 처럼 부모 경로를 안 쓰는 서브클래스가 상속된
@@ -696,6 +704,24 @@ class Adapter:
         self.settings_path.write_text(new_text, encoding="utf-8")
         return True
 
+    def _lang(self) -> str:
+        """팀 locale → "ko"|"en". i18n 부재/실패 시 ko(구팀 무변화). codex 형제
+        어댑터의 동명 메서드와 동일 계약."""
+        if _i18n is None:
+            return "ko"
+        try:
+            return _i18n.team_lang(str(self.team_root))
+        except Exception:  # noqa: BLE001 — locale 해석 실패는 ko 폴백
+            return "ko"
+
+    def _t(self, key: str, ko: str, **fmt) -> str:
+        """어댑터 출력 문자열 선택 — ko 원문은 호출부 리터럴이 단일 소스(구팀 무변화
+        계약), en 은 i18n 카탈로그. i18n 부재 시 ko 폴백."""
+        lang = self._lang()
+        if lang == "en" and _i18n is not None:
+            return _i18n.t(key, "en", **fmt)
+        return ko.format(**fmt) if fmt else ko
+
     def sync(self, mode: Optional[str] = None) -> list:
         changes = []
         warnings = []
@@ -723,9 +749,13 @@ class Adapter:
 
             if event is None:
                 # 이벤트 미지원 → drop 동작 (+ warn). runtime이어도 이벤트 없으면 drop(§7).
-                warnings.append(
-                    f"[warn] {entry['script']}: {self.events.get('agent')} "
-                    f"미지원(이벤트 {entry['event']}) → 비활성")
+                # i18n(적대검수 — B 지적, codex 형제와 동형): 여긴 grouping 메커니즘이
+                # 없어(codex 의 warn-도배 방지 regex 문제 없음) 단순 _t() 치환으로 충분.
+                warnings.append(self._t(
+                    "adapter_claude_event_unsupported",
+                    "[warn] {script}: {agent} 미지원(이벤트 {event}) → 비활성",
+                    script=entry["script"], agent=self.events.get("agent"),
+                    event=entry["event"]))
                 continue
 
             # ── MCP 매처 전처리(B.2 / §2.9 빈 슬롯 우선 + §2.7 install-mcp 선행) ──
@@ -736,11 +766,15 @@ class Adapter:
                     # [P2 삭제] teammode 단일 서버 silent-skip 특례 폐기 — teammode 매처가
                     # manifest 에서 사라졌으므로 일반 provider 경로로 자연 처리(빈 슬롯 우선 +
                     # [info]). 벤더 provider(linear 등) 슬롯 미연결이면 매처 생략 + 안내.
+                    # i18n backlog(적대검수 — 알려진 gap, 이 브랜치 범위 밖 — CHANGELOG 참고):
+                    # 아직 하드코딩 한국어. codex 형제 어댑터의 동형 문자열과 함께 이후
+                    # PR 에서 _t() 로 라우팅 예정.
                     infos.append(
                         f"[info] {entry['script']}: '{canonical}' 역할 슬롯 미연결 "
                         f"→ MCP 매처 생략(빈 슬롯, 슬롯 연결 후 sync 재실행)")
                     continue
                 # 연결됨 → install-mcp 선행(별칭 보장) 확인. 미선행이면 [warn] 생략(§2.7).
+                # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩 한국어.
                 if not self._mcp_alias_guaranteed(canonical):
                     warnings.append(
                         f"[warn] {entry['script']}: '{canonical}' MCP 별칭 미보장"
@@ -753,6 +787,8 @@ class Adapter:
                     # 무매처 등록 + normalize 자가 필터로 의미 보존(§7)
                     matcher = None
                 else:
+                    # i18n backlog(적대검수 — 알려진 gap, CHANGELOG 참고): 아직 하드코딩
+                    # 한국어. codex 형제 어댑터의 동형 문자열과 함께 이후 PR 대상.
                     warnings.append(
                         f"[warn] {entry['script']}: {self.events.get('agent')} "
                         f"매처 표현 불가 → 비활성")
