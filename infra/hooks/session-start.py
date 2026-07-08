@@ -30,8 +30,15 @@
 - 엔진 업데이트 알림 추가(계속 켜둔 인스턴스 갭 메움): `tm on`을 계속 켜둔 상태로
   두는 인스턴스는 auto_update_on_start(cmd_on 전용)를 다시 타지 않아 엔진이
   뒤처져도 알림이 없었다. 이 훅에서 로컬 NOTICE.md 와 upstream/main 의 NOTICE.md
-  (로컬 git 오브젝트 조회 — fetch 아님)를 비교해 다르면 `tm-mode update` 안내를
-  한 줄 추가한다. 새 네트워크 호출·상태변경 없음(read-only, advisory).
+  를 비교해 다르면 `tm-mode update` 안내를 한 줄 추가한다.
+- upstream 캐시 최신화 추가(적대검수 발견 — 최초 버전의 치명 결함 수정): 위 비교는
+  로컬에 캐시된 upstream/main 오브젝트만 읽는데, 그 캐시를 최신화하는 유일한 경로
+  (sync_from_upstream)가 cmd_on/cmd_update 안에만 있어 계속 켜둔 인스턴스에서는
+  fetch 시점 이후의 새 upstream 변화를 영원히 못 봤다(바로 위 항목이 고치려던 갭이
+  최초 구현에선 실제로 안 막혔던 것). 이제 세션 시작마다(스로틀 적용, 기본 24h,
+  auto_pull.should_pull 재사용) `git_ops.fetch_upstream` 로 fetch 만(merge·checkout
+  없음) 짧게 새로 고친다. 무raise·타임아웃(killpg)은 fetch_upstream 자체 계약을
+  그대로 물려받고, 호출부도 한 번 더 감싼다 — 오프라인이면 그냥 스킵, 세션은 안 막힘.
 """
 from __future__ import annotations
 
@@ -230,6 +237,56 @@ def _maybe_auto_pull(team_root: str) -> None:
         pass
 
 
+def _upstream_fetch_state_path() -> str:
+    """마지막 upstream(제품) fetch 시각 상태 파일 — _pull_state_path 와 같은 디렉터리,
+    다른 파일명(last-upstream-fetch). origin pull 스로틀과는 독립적으로 관리한다 —
+    upstream(제품) 은 origin(팀 공유)보다 훨씬 느리게 움직이므로 훨씬 긴 주기가 맞다.
+    """
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "teammode", "last-upstream-fetch")
+
+
+_UPSTREAM_FETCH_THROTTLE_SECONDS = 86400  # 기본 24h — 엔진 릴리스 빈도에 맞춘 보수적 기본
+
+
+def _maybe_fetch_upstream(team_root: str) -> None:
+    """세션 시작마다(스로틀 적용) upstream(제품)을 **fetch 만** 한다 — merge·checkout 없음.
+
+    왜 필요한가(적대검수 발견 — 치명 설계 결함): 엔진 업데이트 알림(_build_context 의
+    read_upstream_notice 비교)은 **로컬에 캐시된** upstream/main 오브젝트만 읽는다
+    (그 자체는 의도된 설계 — 훅에서 새 네트워크 호출을 만들지 않으려던 것). 문제는 그
+    캐시를 누가 최신화하냐다: upstream 을 실제로 fetch 하는 sync_from_upstream 은
+    cmd_on/cmd_update 안에서만 돈다. `tm on`을 한 번 켠 뒤 계속 켜둔 채(이 알림이
+    존재하는 이유 그 자체인 시나리오) cmd_on 을 다시 안 타는 인스턴스는 upstream/main
+    캐시가 fetch 시점에 영원히 멈춘다 — 즉 알림이 "그 이후의" 새 upstream 변경을
+    **영원히** 못 본다. 그래서 세션 시작마다(단, 스로틀) 짧게 fetch 만 해서 캐시를
+    새로 고친다. merge/checkout 은 여전히 안 한다(적용은 여전히 `tm-mode update` 몫 —
+    이 훅은 감지만, 사람 승인 있는 적용 경로와 분리 유지).
+
+    스로틀·상태파일 재사용: auto_pull.should_pull/_record_pull_time 은 remote 무관한
+    범용 함수라 그대로 재사용한다(중복 구현 금지) — origin pull 스로틀과는 별도의
+    state 파일(_upstream_fetch_state_path)을 써서 서로 간섭하지 않는다.
+    fetch_upstream 자체가 이미 무raise·타임아웃(killpg, git_ops.run_git 공유)이지만,
+    호출부도 한 번 더 감싼다(기존 _maybe_auto_pull 과 동형 — 철칙: 어떤 예외도 세션을
+    막지 않는다).
+    """
+    if _git_ops is None or _auto_pull is None:
+        return
+    try:
+        throttle = int(os.environ.get(
+            "TEAMMODE_UPSTREAM_FETCH_THROTTLE", _UPSTREAM_FETCH_THROTTLE_SECONDS))
+        state = _upstream_fetch_state_path()
+        now = time.time()
+        if not _auto_pull.should_pull(state, now, throttle):
+            return
+        # 시도 단위 기록 — 오프라인/원격 무등록이어도 스로틀 창당 1회만 비용(무raise).
+        _record_pull_time(state, now)
+        _git_ops.fetch_upstream(team_root)
+    except Exception:  # noqa: BLE001 — 철칙: 어떤 예외도 세션을 막지 않는다
+        pass
+
+
 def _recover_push_pending(team_root: str) -> None:
     """#45 pending recovery — worker 유실(머신 슬립·Windows detach 실패·크래시) 복원.
 
@@ -366,13 +423,15 @@ def _build_context(root: Path, lang: str = "ko") -> str | None:
 
     # ── 엔진 업데이트 알림(upstream 템플릿, 위 origin 상태와 별개) ──
     # `tm on` 을 계속 켜둔 인스턴스는 auto_update_on_start(cmd_on 전용)를 다시 타지
-    # 않아 엔진이 뒤처져도 아무도 알려주지 않는다(갭). 여기서 새로 fetch 하지 않고
+    # 않아 엔진이 뒤처져도 아무도 알려주지 않는다(갭). 이 비교 자체는 fetch 하지 않고
     # — 이미 로컬에 캐시된 upstream/main 오브젝트만 읽는 두 read-only 함수를 재사용:
     #   _engine._read_local_notice(로컬 NOTICE.md 파일 읽기) 와
     #   _git_ops.read_upstream_notice(`git show upstream/main:NOTICE.md` — 로컬 git
-    #   오브젝트 DB 조회, fetch 아님. detect_default_branch 도 로컬 ref 전용— 네트워크
-    #   없음, infra/git_ops.py 의 두 함수 docstring 참고). 내용이 다르면(=새 엔진
-    #   업데이트가 upstream 에 있으면) tm-mode update 안내 한 줄만 덧붙인다.
+    #   오브젝트 DB 조회. detect_default_branch 도 로컬 ref 전용, infra/git_ops.py 의
+    #   두 함수 docstring 참고). **그 캐시 자체**는 이 함수 호출보다 앞서 main() 에서
+    #   부른 _maybe_fetch_upstream(스로틀 적용 fetch, 위 docstring 참고)이 새로 고친다
+    #   — 여기서는 그 결과를 read-only 로 읽기만 한다. 내용이 다르면(=새 엔진 업데이트가
+    #   upstream 에 있으면) tm-mode update 안내 한 줄만 덧붙인다.
     if _git_ops is not None and _engine is not None:
         try:
             local_notice = _engine._read_local_notice(root)
@@ -457,6 +516,9 @@ def main() -> int:
 
     # 세션당 1회 레포 최신화 — 맥락 주입 전에(최신 상태로 주입). 실패 무해(철칙).
     _maybe_auto_pull(str(root))
+    # upstream(제품) 캐시도 스로틀 적용해 새로 고침 — 안 하면 계속 켜둔 인스턴스에서
+    # 엔진 업데이트 알림이 fetch 시점 이후의 변화를 영원히 못 본다(위 함수 docstring).
+    _maybe_fetch_upstream(str(root))
 
     # 팀 locale → 주입 언어(PR-i1). config 1회 읽기 — 실패는 ko/en 폴백 계약이 흡수.
     # locale 판정용 config 1회 open — session-start 는 세션당 1회만 실행되므로

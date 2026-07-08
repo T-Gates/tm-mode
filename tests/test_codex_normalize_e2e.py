@@ -299,10 +299,11 @@ def test_session_start_engine_update_notice_via_codex_normalize(tmp_path):
     """로컬과 upstream 의 NOTICE.md 가 다르면, Codex wire 경로로도 안내가 나온다.
 
     _make_team_root 는 git 레포가 아니므로 여기서 별도로 git init 하고, 진짜
-    upstream(bare) 을 만들어 fetch 까지 마친 뒤(훅 실행 "전" 1회) codex normalize 를
-    통과시킨다 — read_upstream_notice 가 로컬 git 오브젝트만 읽는다는 계약은
+    upstream(bare) 을 만든다. 여기서도 fetch 를 미리 한 번 해두지만(결정성 목적일
+    뿐 — 훅 자신도 이제 세션마다 스로틀 적용 fetch 를 한다, 아래 last_pull 시딩과는
+    별개의 last-upstream-fetch state), 훅의 fetch 유무·스로틀 자체는
     tests/test_session_start_engine_update_notice.py 에서 이미 별도 검증했으므로,
-    여기서는 "Codex 경로로도 같은 결과가 나온다"만 좁게 확인한다.
+    여기서는 "Codex 경로로도 같은 알림 결과가 나온다"만 좁게 확인한다.
     """
     root = _make_team_root(tmp_path)
     upstream = tmp_path / "upstream.git"
@@ -328,7 +329,7 @@ def test_session_start_engine_update_notice_via_codex_normalize(tmp_path):
     _git(root, "add", ".")
     _git(root, "commit", "-m", "team init")
     _git(root, "remote", "add", "upstream", str(upstream))
-    _git(root, "fetch", "upstream")  # codex normalize 실행 "전" 1회 — 새 fetch 없음
+    _git(root, "fetch", "upstream")  # 결정성 목적의 사전 fetch(훅도 스스로 fetch 함)
 
     env = _scrubbed_env(tmp_path, {"TEAMMODE_HOME": str(root)})
     last_pull = Path(env["XDG_STATE_HOME"]) / "teammode" / "last-pull"
