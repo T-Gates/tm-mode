@@ -16,10 +16,13 @@ import hashlib
 import json
 import os
 import signal
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
 
 # git 로컬 작업의 기본 타임아웃(초) — hang 으로 작업을 막지 않게 한다.
 # 2초: 로컬 commit/checkout/rev-list 류는 2초면 충분(세션 시작 스냅함 유지).
@@ -87,6 +90,16 @@ class SyncResult:
     pathspecs: tuple = ()          # git 실행용(positive + :(exclude)... — #36).
                                    # do_commit(paths=res.pathspecs)·checkout·diff·dirty 가
                                    # 이걸 써서 infra/skills/util(인스턴스 소유)을 보존한다.
+
+
+@dataclass
+class WorkflowStripResult:
+    ok: bool
+    changed: bool = False
+    committed: bool = False
+    pushed: bool = False
+    skipped_product: bool = False
+    detail: str = ""
 
 
 def git_env() -> dict:
@@ -1072,6 +1085,259 @@ SYNC_PATHS = ["infra", "NOTICE.md"]
 # 않고(positive 존재확인용 유지) git 실행 시에만 `_sync_pathspecs()` 가 조합한다.
 SYNC_EXCLUDE_PATHS = ["infra/skills/util"]
 
+# Product CI/release workflows belong to the upstream product repository, not to
+# team instances. Keep this denylist hard even if a future sync scope expands to
+# `.github` or a caller explicitly asks for `.github/workflows`.
+SYNC_DENY_PREFIXES = (".github/workflows",)
+
+TEAM_INSTANCE_WORKFLOWS = ".github/workflows"
+PRODUCT_REPO_OWNER = "T-Gates"
+PRODUCT_REPO_NAME = "tm-mode"
+_WORKFLOW_STRIP_MESSAGE = (
+    "chore(teammode): remove product workflows from team instance")
+_WORKFLOW_STRIP_IDENTITY = (
+    "-c", "user.name=tm-mode",
+    "-c", "user.email=tm-mode@users.noreply.github.com",
+)
+
+
+def _normalize_remote_repo(url: str | None) -> tuple[str, str] | None:
+    """Git remote URL 에서 (owner, repo) 추출. 로컬 path 는 owner="" 로 반환."""
+    if not url:
+        return None
+    raw = str(url).strip()
+    if not raw:
+        return None
+    lower = raw.lower()
+    path = None
+    if "://" not in lower:
+        for marker in ("@github.com:", "@www.github.com:"):
+            idx = lower.find(marker)
+            if idx >= 0:
+                path = raw[idx + len(marker):]
+                break
+        if path is None:
+            for marker in ("github.com:", "www.github.com:"):
+                if lower.startswith(marker):
+                    path = raw[len(marker):]
+                    break
+    if path is not None:
+        pass
+    else:
+        parsed = urlparse(raw)
+        host = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0].lower()
+        if host in ("github.com", "www.github.com"):
+            path = parsed.path.lstrip("/")
+        elif not parsed.netloc:
+            repo = Path(parsed.path).name
+            if repo.lower().endswith(".git"):
+                repo = repo[:-4]
+            return "", repo
+        else:
+            return None
+    path = path.rstrip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    return parts[-2], parts[-1]
+
+
+def _is_github_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    raw = str(url).strip()
+    lower = raw.lower()
+    if "://" not in lower:
+        return (
+            "@github.com:" in lower
+            or "@www.github.com:" in lower
+            or lower.startswith("github.com:")
+            or lower.startswith("www.github.com:")
+        )
+    parsed = urlparse(raw)
+    host = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0].lower()
+    return host in ("github.com", "www.github.com")
+
+
+def _remote_url(team_root: str, remote: str, timeout: int) -> str | None:
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "remote", "get-url", remote], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    return (out or "").strip() or None
+
+
+def is_product_repo_checkout(team_root: str,
+                             timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """product repo/fork 로 보이는 checkout 은 team workflow strip 대상에서 제외.
+
+    최종 정책: preserve ⇔ origin 이 github.com 이고
+    (`T-Gates/tm-mode` exact 또는 repo 이름이 `tm-mode`). upstream 은 신호로 쓰지 않는다.
+    이유: developer fork(origin=alice/tm-mode + upstream=T-Gates/tm-mode)와 team instance 는
+    remote 만으로 구분 불가능하고, product fork workflow 삭제가 더 치명적인 방향이다.
+    따라서 repo name 이 이긴다. 잔여 fail-open(팀 인스턴스가 GitHub 에서 정확히 tm-mode 라는
+    이름을 쓴 경우)은 workflow job-level `github.repository == 'T-Gates/tm-mode'` guard 가
+    no-op 으로 막는다.
+    """
+    origin_url = _remote_url(team_root, "origin", timeout)
+    origin = _normalize_remote_repo(origin_url)
+    product = (PRODUCT_REPO_OWNER.lower(), PRODUCT_REPO_NAME.lower())
+    if not origin or not _is_github_remote(origin_url):
+        return False
+    owner, repo = origin[0].lower(), origin[1].lower()
+    if (owner, repo) == product:
+        return True
+    return repo == PRODUCT_REPO_NAME
+
+
+def _workflow_path_exists(path: Path) -> bool:
+    return os.path.lexists(str(path))
+
+
+def _remove_workflow_path(path: Path) -> tuple[bool, str]:
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        elif _workflow_path_exists(path):
+            path.unlink()
+        return True, ""
+    except OSError as exc:
+        return False, f"failed to remove {TEAM_INSTANCE_WORKFLOWS}: {exc}"
+
+
+def _push_existing_workflow_strip_commit(team_root: str,
+                                         timeout: int) -> WorkflowStripResult:
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "log", "-1", "--format=%s"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return WorkflowStripResult(ok=True, detail="no workflows")
+    if rc != 0 or (out or "").strip() != _WORKFLOW_STRIP_MESSAGE:
+        return WorkflowStripResult(ok=True, detail="no workflows")
+    try:
+        prc, pout, perr = run_git(
+            ["-C", team_root, *http_timeout_opts(NET_TIMEOUT), "push"],
+            timeout=NET_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return WorkflowStripResult(
+            ok=False, changed=True, committed=True, pushed=False,
+            detail=_workflow_remote_still_contains_message("push timeout"))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return WorkflowStripResult(
+            ok=False, changed=True, committed=True, pushed=False,
+            detail=_workflow_remote_still_contains_message(
+                f"push exec error: {exc}"))
+    if prc == 0:
+        return WorkflowStripResult(
+            ok=True, changed=False, committed=True, pushed=True,
+            detail="previous workflow removal commit pushed")
+    return WorkflowStripResult(
+        ok=False, changed=True, committed=True, pushed=False,
+        detail=_workflow_remote_still_contains_message(
+            f"push failed: {((perr or pout) or '').strip()[:200]}"))
+
+
+def _workflow_remote_still_contains_message(reason: str) -> str:
+    return (
+        f"{reason}. The remote repository still contains .github/workflows. "
+        "Fix: re-run the setup after git push works, or delete .github/workflows "
+        "from the repository on GitHub manually.")
+
+
+def strip_template_workflows(team_root: str,
+                             timeout: int = DEFAULT_TIMEOUT) -> WorkflowStripResult:
+    """팀 인스턴스에서 product CI/release workflow 를 제거하고 push 한다.
+
+    product repo/fork 는 절대 건드리지 않는다. `.github/ISSUE_TEMPLATE` 등 다른
+    GitHub 설정은 보존하고 `.github/workflows` path 의 모든 shape(dir/file/symlink/
+    broken symlink)만 제거한다. 실패는 예외 대신 정직한 결과 객체로 반환한다.
+    """
+    root = str(team_root)
+    if not is_git_worktree(root):
+        return WorkflowStripResult(ok=False, detail="not a git work tree")
+    if is_product_repo_checkout(root, timeout=timeout):
+        return WorkflowStripResult(
+            ok=True, skipped_product=True,
+            detail="product repo checkout — workflows preserved")
+
+    workflows = Path(root) / TEAM_INSTANCE_WORKFLOWS
+    if not _workflow_path_exists(workflows):
+        return _push_existing_workflow_strip_commit(root, timeout)
+
+    ok, detail = _remove_workflow_path(workflows)
+    if not ok:
+        return WorkflowStripResult(ok=False, detail=detail)
+
+    try:
+        rc, out, err = run_git(
+            ["-C", root, "add", "-A", "--", TEAM_INSTANCE_WORKFLOWS],
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return WorkflowStripResult(
+            ok=False, changed=True, detail="add timeout")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return WorkflowStripResult(
+            ok=False, changed=True, detail=f"add exec error: {exc}")
+    if rc != 0:
+        return WorkflowStripResult(
+            ok=False, changed=True,
+            detail=f"add failed: {((err or out) or '').strip()[:200]}")
+
+    if not _has_staged_changes(root, timeout):
+        return WorkflowStripResult(
+            ok=True, changed=True, committed=False, pushed=False,
+            detail="workflows removed locally; nothing to commit")
+
+    try:
+        rc, out, err = run_git(
+            ["-C", root, *_WORKFLOW_STRIP_IDENTITY, "commit", "-m",
+             _WORKFLOW_STRIP_MESSAGE, "--", TEAM_INSTANCE_WORKFLOWS],
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return WorkflowStripResult(
+            ok=False, changed=True,
+            detail=_workflow_remote_still_contains_message("commit timeout"))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return WorkflowStripResult(
+            ok=False, changed=True,
+            detail=_workflow_remote_still_contains_message(
+                f"commit exec error: {exc}"))
+    if rc != 0:
+        return WorkflowStripResult(
+            ok=False, changed=True,
+            detail=_workflow_remote_still_contains_message(
+                f"commit failed: {((err or out) or '').strip()[:200]}"))
+
+    try:
+        prc, pout, perr = run_git(
+            ["-C", root, *http_timeout_opts(NET_TIMEOUT), "push"],
+            timeout=NET_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return WorkflowStripResult(
+            ok=False, changed=True, committed=True, pushed=False,
+            detail=_workflow_remote_still_contains_message("push timeout"))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return WorkflowStripResult(
+            ok=False, changed=True, committed=True, pushed=False,
+            detail=_workflow_remote_still_contains_message(
+                f"push exec error: {exc}"))
+    if prc != 0:
+        return WorkflowStripResult(
+            ok=False, changed=True, committed=True, pushed=False,
+            detail=_workflow_remote_still_contains_message(
+                f"push failed: {((perr or pout) or '').strip()[:200]}"))
+
+    return WorkflowStripResult(
+        ok=True, changed=True, committed=True, pushed=True,
+        detail="removed and pushed .github/workflows")
+
 # ── 2층 validation 동기화(#36 PR2) ──────────────────────────────────
 # conformance/·tests/ 는 upstream 소유 검증층이지만 인스턴스가 손댈 수 있다(예약
 # 경로 tests/local·conformance/local, 강화판 check.py). 파일 단위 blob-history 판정:
@@ -1572,6 +1838,29 @@ def _write_validation_backup(team_root: str, ref: str, paths: list,
         return False, ""
 
 
+def _norm_sync_path(path: str) -> str:
+    return str(path).replace("\\", "/").strip("/").rstrip("/")
+
+
+def _under_prefix(path: str, prefix: str) -> bool:
+    path = _norm_sync_path(path)
+    prefix = _norm_sync_path(prefix)
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _allowed_sync_paths(paths: list) -> list[str]:
+    """Drop protected positive paths before building git pathspecs."""
+    allowed: list[str] = []
+    for path in paths:
+        norm = _norm_sync_path(str(path))
+        if not norm:
+            continue
+        if any(_under_prefix(norm, denied) for denied in SYNC_DENY_PREFIXES):
+            continue
+        allowed.append(norm)
+    return allowed
+
+
 def _sync_pathspecs(paths: list) -> list:
     """positive paths → git pathspec 목록(positive + 해당 exclude). #36.
 
@@ -1580,13 +1869,19 @@ def _sync_pathspecs(paths: list) -> list:
     util 을 의도적으로 sync 하려 명시하면 상쇄하지 않는다. exclude 는 절대 단독 금지
     (positive 없이 넣으면 범위가 넓어짐).
     """
-    specs = [str(p) for p in paths]
+    specs = _allowed_sync_paths(paths)
     norm = {s.rstrip("/") for s in specs}
     for ex in SYNC_EXCLUDE_PATHS:
         ex = ex.rstrip("/")
         if ex in norm:
             continue  # 명시 positive 로 들어옴 — 상쇄 금지
         # ex 의 조상 positive 가 있나(예: 'infra' 는 'infra/skills/util' 의 조상)
+        has_ancestor = any(
+            ex == p or ex.startswith(p.rstrip("/") + "/") for p in norm)
+        if has_ancestor:
+            specs.append(f":(exclude){ex}")
+    for ex in SYNC_DENY_PREFIXES:
+        ex = ex.rstrip("/")
         has_ancestor = any(
             ex == p or ex.startswith(p.rstrip("/") + "/") for p in norm)
         if has_ancestor:
@@ -1728,11 +2023,11 @@ def sync_from_upstream(team_root: str, remote: str = "upstream",
         return SyncResult(ok=False, paths=tuple(paths),
                           detail=f"upstream 브랜치를 찾을 수 없습니다: {ref}")
 
-    # 2.5) upstream 에 실재하는 경로만 동기화 — NOTICE.md 등은 옛 upstream 에 없을 수
+    # 2.5) 보호 경로를 제거한 뒤 upstream 에 실재하는 경로만 동기화 — NOTICE.md 등은 옛 upstream 에 없을 수
     #      있고, 없는 pathspec 으로 checkout 하면 매칭 0 에러가 난다. 존재 경로만 골라
     #      옛 upstream 과도 호환(infra 는 받고, 없는 NOTICE 는 조용히 건너뜀).
     # 존재 필터는 **positive 만**(_path_in_ref 는 cat-file 존재확인 — pathspec 아님, #36).
-    paths = [p for p in paths if _path_in_ref(team_root, ref, p, timeout)]
+    paths = [p for p in _allowed_sync_paths(paths) if _path_in_ref(team_root, ref, p, timeout)]
     if not paths:
         return SyncResult(ok=True, changed=False, paths=(), pathspecs=(),
                           detail="이미 최신")
