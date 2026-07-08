@@ -78,6 +78,8 @@ In normal entry paths, you should not call this directly — `tm-mode init/join`
 
 Every verb receives the team root explicitly through `--root` (environment variables are not trusted — safety).
 
+For `update` specifically, the installed launcher also has a thin shortcut so you don't need to spell out the full engine invocation: `tm-mode update [path] [--dry-run] [--force]` (path defaults to the current directory; it must be a team repo root — no parent-directory search). It's exactly equivalent to `python3 infra/teammode.py update --root <path> [--dry-run] [--force]`.
+
 ### Removal
 The `tm-mode` CLI has no uninstall command. To remove host-side setup, run this inside the team repo:
 ```bash

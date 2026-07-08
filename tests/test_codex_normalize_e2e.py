@@ -272,3 +272,79 @@ def test_malformed_wire_fails_open_quietly(tmp_path, script, wire_text):
         f"stdout={proc.stdout!r}")
     assert "Traceback" not in proc.stderr, (
         f"변형 wire 가 traceback 을 내면 안 된다:\n{proc.stderr}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 5. session-start 엔진 업데이트 알림 — Codex 경로에도 동일하게 흐르는지
+# ═══════════════════════════════════════════════════════════════════════
+#
+# session-start.py 의 _build_context() 는 에이전트를 모른다 — 정규 스키마만 보고
+# 같은 additionalContext 문자열을 만든다. normalize.py 는 그 stdout 을 그대로
+# 재전파(passthrough, 위 main() 참고)하므로, Claude 직접 호출로 검증한
+# tests/test_session_start_engine_update_notice.py 의 결과가 Codex wire 경로에도
+# 동일하게 나오는지를 여기서 별도로 증명한다(스코프 추가 2 — "Codex 도 되는지 확인").
+
+def _git(cwd, *args, check=True):
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    return subprocess.run(["git", "-C", str(cwd), *args],
+                          capture_output=True, text=True, env=env, check=check)
+
+
+def test_session_start_engine_update_notice_via_codex_normalize(tmp_path):
+    """로컬과 upstream 의 NOTICE.md 가 다르면, Codex wire 경로로도 안내가 나온다.
+
+    _make_team_root 는 git 레포가 아니므로 여기서 별도로 git init 하고, 진짜
+    upstream(bare) 을 만든다. 여기서도 fetch 를 미리 한 번 해두지만(결정성 목적일
+    뿐 — 훅 자신도 이제 세션마다 스로틀 적용 fetch 를 한다, 아래 last_pull 시딩과는
+    별개의 last-upstream-fetch state), 훅의 fetch 유무·스로틀 자체는
+    tests/test_session_start_engine_update_notice.py 에서 이미 별도 검증했으므로,
+    여기서는 "Codex 경로로도 같은 알림 결과가 나온다"만 좁게 확인한다.
+    """
+    root = _make_team_root(tmp_path)
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+
+    _git(tmp_path, "init", "--bare", str(upstream))
+    _git(tmp_path, "clone", str(upstream), str(seed))
+    _git(seed, "config", "user.name", "t")
+    _git(seed, "config", "user.email", "t@t")
+    (seed / "NOTICE.md").write_text(
+        "# teammode\n\n## 2026-07-08\n- 새 upstream 업데이트\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "new notice")
+    _git(seed, "branch", "-M", "main")
+    _git(seed, "push", "-u", "origin", "main")
+
+    _git(root, "init")
+    _git(root, "config", "user.name", "t")
+    _git(root, "config", "user.email", "t@t")
+    _git(root, "checkout", "-b", "main", check=False)
+    (root / "NOTICE.md").write_text(
+        "# teammode\n\n## 2026-06-17\n- 옛 로컬 상태\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "team init")
+    _git(root, "remote", "add", "upstream", str(upstream))
+    _git(root, "fetch", "upstream")  # 결정성 목적의 사전 fetch(훅도 스스로 fetch 함)
+
+    env = _scrubbed_env(tmp_path, {"TEAMMODE_HOME": str(root)})
+    last_pull = Path(env["XDG_STATE_HOME"]) / "teammode" / "last-pull"
+    last_pull.parent.mkdir(parents=True, exist_ok=True)
+    last_pull.write_text(repr(time.time()), encoding="utf-8")
+
+    wire = {"hook_event_name": "SessionStart", "session_id": "codex-e2e-notice"}
+    proc = _run_codex_normalize(root, "session-start.py", json.dumps(wire), env)
+
+    assert proc.returncode == 0, (
+        f"SessionStart 훅은 exit 0: exit={proc.returncode}\nstderr={proc.stderr!r}")
+    out = json.loads(proc.stdout)
+    context = out["hookSpecificOutput"]["additionalContext"]
+    # team.config.json 이 없는 이 픽스처는 en 폴백(PR-i1) — i18n 카탈로그의 영어
+    # 문구가 나온다. ko 팀이면 ko 리터럴이 나오므로 양쪽 다 인정한다.
+    assert ("엔진 업데이트가 upstream" in context
+            or "engine update is available upstream" in context), (
+        f"Codex wire 경로로도 엔진 업데이트 안내가 나와야 한다: {context[:300]}")

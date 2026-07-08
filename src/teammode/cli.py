@@ -7,11 +7,14 @@
 
   tm-mode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
   tm-mode join <clone-url>    합류: 팀 레포 clone → 셋업
+  tm-mode update [path]      기존 팀 레포의 엔진을 upstream 과 동기화(`infra/teammode.py
+                              update` 로 위임). --dry-run/--force 통과. path 생략 시 cwd.
 
 설계(얇은 런처): 스킬·훅·엔진을 패키지에 번들하지 않는다. clone 된 팀 레포의
-`infra/install.py` 를 **subprocess 로 실행**(import 아님) → 모든 `__file__` 기반
-리소스 참조가 팀 레포의 실파일을 가리킨다. 패키지 의존성 0(stdlib + git[+gh]).
-설치는 결정적, 활성화·검증·브리핑은 들어가서 `tm-onboard`(에이전트)가 맡는다.
+`infra/install.py`(또는 `infra/teammode.py`) 를 **subprocess 로 실행**(import 아님) →
+모든 `__file__` 기반 리소스 참조가 팀 레포의 실파일을 가리킨다. 패키지 의존성 0
+(stdlib + git[+gh]). 설치는 결정적, 활성화·검증·브리핑은 들어가서 `tm-onboard`(에이전트)가
+맡는다.
 """
 from __future__ import annotations
 
@@ -894,6 +897,40 @@ def _strip_template_workflows(repo_dir: Path):
     return mod.strip_template_workflows(str(repo_dir))
 
 
+# 팀 레포 표식 — infra/install_lib.py 의 _TEAM_MARKERS(§2.2, §10)와 동일 계약.
+# 얇은 런처 설계(파일 상단 docstring)상 infra/ 를 import 하지 않으므로 여기 인라인
+# 재선언한다 — 표식 목록을 바꿀 땐 두 곳 다 고칠 것(단일 소스 아님, 의도적 중복).
+_TEAM_MARKERS = (".git", "team.config.json", "memory")
+
+
+def cmd_update(args) -> int:
+    """`infra/teammode.py update` 로의 얇은 위임 — 이미 셋업된 팀 레포 안에서 실행.
+
+    루트 결정은 install.py:_resolve_root(§10, infra/install.py 참고)와 같은 계약을
+    따른다: 위치 인자(경로) 명시 우선, 없으면 **cwd 자체만** 표식 검사 — 부모 디렉터리
+    walk-up 은 하지 않는다. 엔진 자신도 "정책 A: 팀 루트는 명시 인자로만, 추측 금지"
+    (infra/teammode.py main() 주석)이므로, 런처가 cwd 밖을 뒤져 루트를 "추측"하면
+    같은 정책과 어긋난다 — 표식 없으면 추측 대신 명확한 에러로 중단한다.
+    """
+    root = Path(args.path).resolve() if args.path else Path.cwd()
+    if not any((root / m).exists() for m in _TEAM_MARKERS):
+        _err(f"Not a team repo (no .git/team.config.json/memory found in {root}) — "
+             f"run this from inside a team repo, or pass the path: `tm-mode update <path>`.")
+        return 2
+
+    engine = root / "infra" / "teammode.py"
+    if not engine.is_file():
+        _err(f"The repo has no infra/teammode.py: {engine}")
+        return 3
+
+    argv = [sys.executable, str(engine), "update", "--root", str(root)]
+    if args.dry_run:
+        argv.append("--dry-run")
+    if args.force:
+        argv.append("--force")
+    return subprocess.run(argv).returncode
+
+
 def _default_dest_from_url(url: str) -> Path:
     """--dir 미지정 시 기본 설치 위치 — TTY wizard 1단계 기본값과 동일(#6).
 
@@ -1517,6 +1554,16 @@ def main(argv=None) -> int:
     pj.add_argument("--role", help="Role (for non-TTY)")
     pj.add_argument("--obsidian", action="store_true", help="Link the Obsidian vault (for non-TTY)")
     pj.set_defaults(func=cmd_join)
+
+    pu = sub.add_parser(
+        "update", help="Sync the team repo's engine from the upstream product "
+                       "(passthrough to `infra/teammode.py update`)")
+    pu.add_argument("path", nargs="?", default=None,
+                    help="Team repo root (defaults to the current directory)")
+    pu.add_argument("--dry-run", action="store_true", help="Preview changes only, apply nothing")
+    pu.add_argument("--force", action="store_true",
+                    help="Force-overwrite files the sync would otherwise skip")
+    pu.set_defaults(func=cmd_update)
 
     args = p.parse_args(argv)
     try:

@@ -81,6 +81,7 @@ def test_no_color_suppresses_cursor_highlight(monkeypatch):
 
 def test_rail_done_uses_green_symbol_and_bold_value_when_color(monkeypatch):
     monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
     m = _mod()
     # isatty 강제
     monkeypatch.setattr(m["sys"].stdout, "isatty", lambda: True, raising=False)

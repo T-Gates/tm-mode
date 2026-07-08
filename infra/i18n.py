@@ -38,6 +38,8 @@ MESSAGES = {
             "behind {behind}",
         "hook_ss_sync_ahead_suffix":
             " (local commits not pushed)",
+        "hook_ss_engine_update_available":
+            "[teammode] An engine update is available upstream — run `tm-mode update` to apply it.",
         "hook_ss_index_header":
             "--- Team memory INDEX ---",
         "hook_ss_members_header":

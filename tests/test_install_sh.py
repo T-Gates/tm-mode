@@ -41,7 +41,7 @@ def test_install_sh_help_delegates_to_cli():
     r = _run(["--help"])
     assert r.returncode == 0, r.stderr
     assert "tm-mode" in r.stdout
-    assert "{init,join}" in r.stdout
+    assert "{init,join,update}" in r.stdout
 
 
 def test_install_sh_passes_args_to_cli():

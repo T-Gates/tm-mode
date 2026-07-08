@@ -1158,3 +1158,160 @@ def test_join_without_url_tty_asks_first(tmp_path, capsys, monkeypatch):
     assert "Team repo URL" in out.out
     assert calls["cmd"][:2] == ["git", "clone"]
     assert "git@github.com:acme/team.git" in calls["cmd"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# `update` 서브커맨드 — infra/teammode.py update 로의 얇은 위임
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 이 클래스들은 파일 상단의 teammode.cli 스텁 로딩(모듈 스코프, 이 파일 단일
+# 소스)을 그대로 재사용한다 — 별도 테스트 파일에서 같은 스텁 등록/복구 dance 를
+# 중복하면 sys.modules["teammode"]/["teammode.cli"] 를 서로 덮어써 교차 오염이
+# 난다(실측: 별도 파일로 뒀다가 test_cli_join_wizard 와 함께 돌리면 양쪽 다
+# `ModuleNotFoundError: No module named 'teammode'` 로 깨짐 — 그래서 여기 둔다).
+
+def _make_team_repo_for_update(root, marker=".git"):
+    """팀 표식 + infra/teammode.py 를 갖춘 가짜 팀 레포(update 테스트 전용)."""
+    if marker == ".git":
+        (root / ".git").mkdir(parents=True)
+    elif marker == "team.config.json":
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "team.config.json").write_text("{}")
+    elif marker == "memory":
+        (root / "memory").mkdir(parents=True)
+    (root / "infra").mkdir(parents=True, exist_ok=True)
+    (root / "infra" / "teammode.py").write_text("# fake engine")
+
+
+def _run_update(monkeypatch, cwd, argv_tail=None):
+    monkeypatch.chdir(cwd)
+    with patch("teammode.cli.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        rc = cli.main(["update", *(argv_tail or [])])
+    return rc, mock_run
+
+
+class TestUpdateTeamMarkerDetection:
+    """표식(.git/team.config.json/memory) 판정 — install.py:_resolve_root(§10)와 동일 계약."""
+
+    def test_no_marker_exits_2_no_subprocess(self, tmp_path, monkeypatch):
+        empty = tmp_path / "not-a-repo"
+        empty.mkdir()
+        rc, mock_run = _run_update(monkeypatch, empty)
+        assert rc == 2
+        mock_run.assert_not_called()
+
+    def test_no_walk_up_even_if_parent_has_marker(self, tmp_path, monkeypatch):
+        """부모에 .git 이 있어도 cwd 자체엔 없으면 exit 2 — walk-up 없음(의도적 설계).
+
+        install.py:_resolve_root 와 동일 계약 — 명시 경로 없으면 cwd 자체만 본다.
+        엔진도 "정책 A: 팀 루트는 명시 인자로만, 추측 금지"이므로 launcher 가 부모를
+        뒤져 루트를 추측하면 같은 정책과 어긋난다(cli.py cmd_update 주석 참고).
+        """
+        _make_team_repo_for_update(tmp_path)
+        nested = tmp_path / "memory" / "team" / "sessions" / "alice"
+        nested.mkdir(parents=True)
+        rc, mock_run = _run_update(monkeypatch, nested)
+        assert rc == 2
+        mock_run.assert_not_called()
+
+    def test_team_config_json_marker_alone_is_sufficient(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo, marker="team.config.json")
+        rc, mock_run = _run_update(monkeypatch, repo)
+        assert rc == 0
+        mock_run.assert_called_once()
+
+    def test_memory_marker_alone_is_sufficient(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo, marker="memory")
+        rc, mock_run = _run_update(monkeypatch, repo)
+        assert rc == 0
+        mock_run.assert_called_once()
+
+    def test_marker_present_but_no_engine_exits_3(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        (repo / ".git").mkdir(parents=True)
+        rc, mock_run = _run_update(monkeypatch, repo)
+        assert rc == 3
+        mock_run.assert_not_called()
+
+
+class TestUpdatePathResolution:
+    def test_no_path_arg_uses_cwd(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        rc, mock_run = _run_update(monkeypatch, repo)
+        assert rc == 0
+        argv = mock_run.call_args[0][0]
+        assert str(repo) in argv
+
+    def test_explicit_path_arg_overrides_cwd(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        rc, mock_run = _run_update(monkeypatch, elsewhere, [str(repo)])
+        assert rc == 0
+        argv = mock_run.call_args[0][0]
+        assert str(repo) in argv
+
+
+class TestUpdateEngineDelegation:
+    def test_base_argv_shape(self, tmp_path, monkeypatch):
+        """[sys.executable, <root>/infra/teammode.py, 'update', '--root', <root>]."""
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        rc, mock_run = _run_update(monkeypatch, repo)
+        assert rc == 0
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == sys.executable
+        assert argv[1] == str(repo / "infra" / "teammode.py")
+        assert argv[2] == "update"
+        assert "--root" in argv
+        assert argv[argv.index("--root") + 1] == str(repo)
+
+    def test_dry_run_forwarded(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        rc, mock_run = _run_update(monkeypatch, repo, ["--dry-run"])
+        assert rc == 0
+        argv = mock_run.call_args[0][0]
+        assert "--dry-run" in argv
+        assert "--force" not in argv
+
+    def test_force_forwarded(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        rc, mock_run = _run_update(monkeypatch, repo, ["--force"])
+        assert rc == 0
+        argv = mock_run.call_args[0][0]
+        assert "--force" in argv
+
+    def test_both_flags_forwarded_together(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        rc, mock_run = _run_update(monkeypatch, repo, ["--dry-run", "--force"])
+        assert rc == 0
+        argv = mock_run.call_args[0][0]
+        assert "--dry-run" in argv
+        assert "--force" in argv
+
+    def test_no_flags_means_no_extra_argv(self, tmp_path, monkeypatch):
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        rc, mock_run = _run_update(monkeypatch, repo)
+        assert rc == 0
+        argv = mock_run.call_args[0][0]
+        assert "--dry-run" not in argv
+        assert "--force" not in argv
+
+    def test_engine_exit_code_propagates(self, tmp_path, monkeypatch):
+        """엔진(subprocess)이 비0 종료하면 launcher 도 같은 코드를 돌려준다."""
+        repo = tmp_path / "team"
+        _make_team_repo_for_update(repo)
+        monkeypatch.chdir(repo)
+        with patch("teammode.cli.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            rc = cli.main(["update"])
+        assert rc == 1
