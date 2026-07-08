@@ -64,6 +64,16 @@ MESSAGES = {
             "may have been lost. It will retry on the next edit commit, and a "
             "session restart is guaranteed to retry it.",
 
+        # push-worker.py (detach push process, #45) — sync-warning marker content.
+        # These get read back later into hook_ss_sync_warn's {warn} slot, so they
+        # must render in the target locale (same class of bug as the
+        # session-start/auto-commit marker fixes).
+        "push_worker_non_ff_marker":
+            "push pending; non-fast-forward — delegated to session-start reconcile",
+        "push_worker_drain_limit_marker":
+            "push pending; worker drain limit reached — commit burst or repeated "
+            "rewrite (session-start recovery will retry)",
+
         # auto-commit (PostToolUse/file_edit) — scaffolding added from scratch
         # (long-tail cluster). The commit message itself ("chore(teammode): ..."
         # is a git artifact and is NOT routed — already English, stays as-is.
@@ -181,6 +191,11 @@ MESSAGES = {
             "disabled{extra}",
         "adapter_codex_event_unsupported_grouped_block_lost":
             " — block enforcement disabled",
+
+        # ── infra/agents/claude/adapter.py 의 sync() 경고 (B 지적 — codex 형제와
+        #    동형이지만 grouping 메커니즘은 없음, 단순 치환) ──
+        "adapter_claude_event_unsupported":
+            "[warn] {script}: {agent} does not support event {event} — disabled",
 
         # ── install_lib.write_introducer_config 의 greeting/farewell **기본값**
         # (§4.4·부록 A.3) — 신규 팀 생성 시점의 locale 을 따른다. 팀이 tm-customize

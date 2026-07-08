@@ -223,6 +223,38 @@ def test_worker_non_ff_keeps_pending_writes_marker(xdg, tmp_path):
     assert head_after == head_before, "worker 가 로컬 히스토리를 건드렸다(계약 위반)"
 
 
+def test_worker_non_ff_marker_content_english_for_en_locale_team(xdg, tmp_path):
+    """i18n(적대검수 — B 지적, FIX-REQUIRED 항목1): push-worker.py 의 sync-warning
+    마커도 session-start 의 hook_ss_sync_warn(en-locale) 의 {warn} 자리에 그대로
+    삽입되므로, 마커 CONTENT 자체가 en 팀에선 영어여야 한다(session-start/auto-commit
+    마커 수정과 동일 클래스의 함정 — test_conflict_marker_content_english_for_en_locale_team
+    패턴 미러).
+    """
+    import json as _json
+    import re
+    origin, work = _clone_pair(tmp_path)
+    (work / "team.config.json").write_text(
+        _json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.email", "o@o.com"],
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.name", "O"],
+                   capture_output=True)
+    _commit_file(other, "theirs.md")
+    subprocess.run(["git", "-C", str(other), "push", "-q"], capture_output=True)
+
+    _commit_file(work, "mine.md")
+    git_ops.write_push_pending(str(work))
+    r = _run_worker(work, {"XDG_STATE_HOME": str(xdg)})
+    assert r.returncode == 0
+    marker = git_ops.read_sync_warning(str(work))
+    assert "non-fast-forward" in marker
+    assert "delegated to session-start reconcile" in marker
+    assert not re.search(r"[가-힣]", marker), f"en 팀 마커 내용에 한글 섞임: {marker!r}"
+
+
 def test_worker_drains_new_pending_written_during_push(xdg, tmp_path):
     """drain: push 성공 후 ahead 가 남아 있으면(새 커밋) 이어서 push — 잔여 0 까지."""
     _, work = _clone_pair(tmp_path)
