@@ -210,7 +210,7 @@ def test_install_sanitizes_workflow_bearing_clone(tmp_path, monkeypatch):
     "https://GitHub.com/T-Gates/tm-mode.git",
     "git@GitHub.com:T-Gates/tm-mode.git",
     "git@github.com:t-gates/TM-MODE.GIT",
-    "ssh://GIT@www.github.com/T-Gates/tm-mode.git",
+    "ssh://git@www.github.com/T-Gates/tm-mode.git",
 ])
 def test_product_origin_variants_preserve_workflows(tmp_path, origin_url):
     product = tmp_path / "product"
