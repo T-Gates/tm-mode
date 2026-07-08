@@ -123,6 +123,82 @@ def test_pretooluse_registered_with_codex_mcp_matcher(env, capsys):
     assert "PostToolUse" in text
 
 
+def test_home_unpinnable_newline_warns_english(env, capsys):
+    """i18n(적대검수 — long tail): team_root 경로에 개행이 있으면 핀을 포기하고 [warn]
+    1회를 낸다. 개행 있는 경로는 실존하는 team.config.json 을 가질 수 없어(구조적으로
+    stale-home 경고와 동형) team_lang 이 항상 en 으로 강등되므로 en 텍스트로 검증한다.
+    """
+    import re
+    Adapter = _load_codex_adapter()
+    broken_root = str(env.root) + "\nevil"
+    a = Adapter(
+        agent_dir=str(env.agent_dir),
+        manifest_path=str(Path(env.agent_dir).parent.parent / "hooks" / "manifest.json"),
+        settings_path=str(env.config),
+        python="python3",
+        team_root=broken_root,
+    )
+    env.write_manifest([
+        {"event": "PostToolUse", "match": {"action": "file_edit"},
+         "script": "auto-commit.py", "fallback": "runtime"},
+    ])
+    a.sync(mode="on")
+    out = capsys.readouterr().out
+    assert "[warn]" in out
+    assert "TEAMMODE_HOME" in out
+    assert not re.search(r"[가-힣]", out), f"출력에 한글 섞임: {out!r}"
+    # 한 번만 경고(같은 인스턴스에서 반복 호출 시 중복 경고 억제) — 기존 거동 불변.
+    a._home_prefix_value()
+    out2 = capsys.readouterr().out
+    assert out2 == ""
+
+
+# ── 미지원 이벤트 warn — i18n(적대검수 — long tail) ──
+# 예전엔 렌더된 문자열을 regex 로 되읽어 그룹핑했는데, en 팀 문구가 그 regex 와 안
+# 맞아 "도배 방지" 그룹핑이 en 팀에서만 조용히 깨지는 함정이 있었다(구조화 데이터로
+# 리팩터 — 아래 두 테스트가 en 경로에서 grouping 자체가 살아있는지 검증한다).
+
+def test_unsupported_event_single_warns_english_for_en_locale_team(env, capsys):
+    """미지원 이벤트 1건 → 단건 [warn]. en 팀 config 면 영어로, 한글 미섞임."""
+    import json
+    import re
+    (Path(env.root) / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    env.write_manifest([
+        {"event": "Stop", "match": None,
+         "script": "some-hook.py", "fallback": "runtime"},
+    ])
+    env.make_adapter().sync(mode="on")
+    out = capsys.readouterr().out
+    assert "[warn]" in out
+    assert "some-hook.py" in out and "Stop" in out
+    assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글 섞임: {out!r}"
+
+
+def test_unsupported_event_grouped_warns_english_for_en_locale_team(env, capsys):
+    """같은 (script, event) 미지원이 여러 건이면 1줄 요약(N개) — en 팀에서도 그룹핑이
+    깨지지 않고 영어로 나온다(구조화 데이터 리팩터 회귀 테스트)."""
+    import json
+    import re
+    (Path(env.root) / "team.config.json").write_text(
+        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
+    env.write_manifest([
+        {"event": "Stop", "match": {"action": "a"},
+         "script": "some-hook.py", "fallback": "runtime"},
+        {"event": "Stop", "match": {"action": "b"},
+         "script": "some-hook.py", "fallback": "runtime"},
+        {"event": "Stop", "match": {"action": "c"},
+         "script": "some-hook.py", "fallback": "runtime", "enforcement": "block"},
+    ])
+    env.make_adapter().sync(mode="on")
+    out = capsys.readouterr().out
+    # 1줄 요약(3개)이지 3줄 개별 출력이 아니어야 한다(그룹핑 생존 확인).
+    assert out.count("[warn]") == 1, f"그룹핑이 깨져 여러 줄로 출력됨: {out!r}"
+    assert "3" in out
+    assert "block" in out.lower()
+    assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글 섞임: {out!r}"
+
+
 # ── 3. enforcement 유지: block 훅도 Codex PreToolUse 로 등록 ──
 
 def test_block_enforcement_registered_on_pretooluse(env, capsys):

@@ -167,6 +167,21 @@ MESSAGES = {
         "adapter_codex_status_team_mode_on":
             "Team Mode ON",
 
+        # ── infra/agents/codex/adapter.py 의 sync() 경고(long tail, task 4) ──
+        "adapter_codex_home_unpinnable_warn":
+            "[warn] TEAMMODE_HOME could not be pinned into the hook command "
+            "because the team root path has a newline character (falling back "
+            "to shell profile): {home!r}",
+        "adapter_codex_event_unsupported":
+            "[warn] {script}: {agent} does not support event {event} — disabled{extra}",
+        "adapter_codex_event_unsupported_block_lost":
+            " (block enforcement lost)",
+        "adapter_codex_event_unsupported_grouped":
+            "[warn] {script}: {agent} does not support {event} for {n} entries — "
+            "disabled{extra}",
+        "adapter_codex_event_unsupported_grouped_block_lost":
+            " — block enforcement disabled",
+
         # ── install_lib.write_introducer_config 의 greeting/farewell **기본값**
         # (§4.4·부록 A.3) — 신규 팀 생성 시점의 locale 을 따른다. 팀이 tm-customize
         # 로 이미 바꾼 뒤에는 팀 커스텀 텍스트가 되어 이 카탈로그와 무관해진다.
