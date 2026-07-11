@@ -3,6 +3,12 @@
 이 파일은 tm-mode의 주요 변경 사항을 기록합니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
 
+## 0.1.4 — 2026-07-11
+
+- Restored reliable session-log auto publication: non-fast-forward pushes now use bounded foreground fetch/rebase/re-push recovery, with exact-autostash rollback and durable branch-bound retry state on failure.
+- Hardened session startup and shutdown publication gates: shared hook deadlines preserve context output, and `tm off` waits for both `ahead=0` and an empty readable pending ledger.
+- Made npm publication explicitly opt-in. This release publishes to PyPI while the npm job remains skipped unless `NPM_PUBLISH_ENABLED=true` is deliberately configured.
+
 ## 0.1.3 — 2026-07-08
 
 - `tm-mode update [path]` launcher subcommand: existing team repos can now run the PyPI/pipx launcher to sync the repo engine from upstream (`--dry-run` and `--force` pass through to `infra/teammode.py update`).
