@@ -303,7 +303,7 @@ do not create an empty follow-up commit.
 Find the `auto-commit.py` manifest entry and assert:
 
 ```python
-assert entry["timeout"] >= 35
+assert entry["timeout"] >= 70
 assert "foreground" in entry["_timeout_note"].lower()
 assert "PUSH_TOTAL_BUDGET" in entry["_timeout_note"]
 ```
@@ -318,12 +318,15 @@ Expected RED: timeout is 20 seconds and the note declares async-only behavior.
 
 ### Step 3: Update the manifest
 
-Set the auto-commit timeout to 40 seconds (the test enforces a 35-second minimum).
+Set the auto-commit timeout to 70 seconds (the test enforces that exact minimum).
 Explain that the retry path can consume
-a first local attempt, one second of backoff, and then a fresh 22-second
+a first local attempt including branch/HEAD identity probes, one second of backoff, and then a fresh 35-second
 push/recovery transaction plus cleanup; the additional headroom keeps runner
 termination from racing the fallback marker write. Update the stale `git_ops.py` comment that
-names the old 30-second manifest cap; do not change the 22-second runtime budget.
+names the old 30-second manifest cap. The larger runtime budget preserves a real rebase window
+after normal GitHub SSH push+fetch latency while reserving the cross-platform timeout rollback tail;
+the runner headroom also covers Windows taskkill/drain during pending identity validation plus
+the fallback warning's lock and fsync.
 
 ### Step 4: Run GREEN and commit
 

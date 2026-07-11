@@ -122,6 +122,39 @@ _WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "push-worker.py")
 
 
+def _literal_repo_pathspecs(root: str, files) -> list[str]:
+    """정규 hook 파일을 repo 내부 Git literal pathspec 으로 제한한다.
+
+    ``--`` 는 option 만 막고 ``:(top,glob)**`` 같은 Git pathspec magic 은 막지 못한다.
+    따라서 절대경로 또는 hook cwd 기준 상대경로를 repo 내부·비디렉터리로 검증한 뒤
+    ``:(literal)`` 로 전달한다.
+    삭제된 파일도 realpath/relpath 만으로 허용해 deletion auto-commit 을 보존한다.
+    """
+    root_real = os.path.realpath(root)
+    paths: list[str] = []
+    seen: set[str] = set()
+    for raw in files if isinstance(files, list) else []:
+        if not isinstance(raw, str) or not raw or "\0" in raw:
+            continue
+        candidate = os.path.realpath(
+            raw if os.path.isabs(raw) else os.path.join(os.getcwd(), raw))
+        try:
+            if os.path.commonpath((root_real, candidate)) != root_real:
+                continue
+        except (OSError, ValueError):
+            continue
+        if candidate == root_real or os.path.isdir(candidate):
+            continue
+        relative = os.path.relpath(candidate, root_real)
+        if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+            continue
+        literal = ":(literal)" + relative.replace(os.sep, "/")
+        if literal not in seen:
+            seen.add(literal)
+            paths.append(literal)
+    return paths
+
+
 def _kick_push_worker(root: str) -> None:
     """push-worker detach kick(#45) — 공용 git_ops.kick_push_worker 위임(드리프트 방지).
 
@@ -178,8 +211,8 @@ def main() -> int:
     try:
         # ── 3. 정규스키마가 지목한 파일만 스테이징 (add -A 금지) ──
         files = data.get("files") or []
-        # 절대경로 문자열만 신뢰. 없으면 스테이징할 게 없으니 우아하게 종료.
-        paths = [f for f in files if isinstance(f, str) and f]
+        # 정규화된 절대/상대경로 중 repo 내부 파일만 literal pathspec 으로 바꾼다.
+        paths = _literal_repo_pathspecs(root, files)
         if not paths:
             return 0
 
@@ -190,11 +223,25 @@ def main() -> int:
         # ── 3.5 잔존 pending 즉시 가시화(#45) — '한 편집 늦은' 경고 1줄 ──
         # 이전 편집의 push 가 아직 미완이면(worker 지연/실패) 조용히 묻지 않는다.
         # 비차단: 경고만 남기고 이번 전경 commit/push 복구는 정상 진행한다.
-        pending_snapshot = _git_ops.read_push_pending(root)
-        if pending_snapshot:
+        pending_state = _git_ops.read_push_pending_state(root)
+        pending_snapshot = (
+            _git_ops.bind_legacy_pending_to_current_checkout(
+                root, pending_state.content)
+            if pending_state.available else "")
+        pending_target_key = (
+            _git_ops.pending_entry_key_for_current_checkout(root, pending_snapshot)
+            if pending_snapshot else "")
+        if pending_target_key:
             print(_t("hook_ac_prior_push_pending", lang,
                      "[teammode] 이전 auto-commit 의 push 미완(pending) — "
-                     "worker 가 재시도합니다."), file=sys.stderr)
+                     "전경 publication 이 재시도하고 worker 는 fallback 으로 "
+                     "대기합니다."), file=sys.stderr)
+        elif pending_snapshot:
+            targets = _git_ops.pending_target_summary(pending_snapshot, root)
+            print(_t("hook_ac_prior_push_other_checkout", lang,
+                     "[teammode] 다른 checkout의 push pending을 보존합니다. "
+                     "현재 편집은 별도로 publication합니다: {targets}",
+                     targets=targets), file=sys.stderr)
 
         # ── 4. paths 만 스테이징 + bounded foreground push/non-ff recovery(#19) ──
         # rebase 는 blocking 훅 안에서만 수행해 다음 편집과 겹치지 않게 한다. 실패 시
@@ -213,27 +260,27 @@ def main() -> int:
             if getattr(result, "pushed", False):
                 # 시작 때 본 pending 만 compare-and-delete 한다. 그 사이 다른 훅이 새
                 # nonce 를 썼다면 절대 지우지 않는다(#45 clear race 차단).
-                if pending_snapshot:
-                    _git_ops.clear_push_pending_if_unchanged(root, pending_snapshot)
-                pending_now = _git_ops.read_push_pending(root)
-                ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
-                    root, _git_ops.DEFAULT_TIMEOUT)
-                if has_upstream and ahead == 0 and not pending_now:
-                    _git_ops.clear_sync_warning(root)
+                if (pending_target_key
+                        and _git_ops.pending_entry_key_for_current_checkout(
+                            root, pending_snapshot) == pending_target_key):
+                    _git_ops.clear_push_pending_if_unchanged(
+                        root, pending_snapshot, pending_target_key)
+                _git_ops.clear_sync_warning_if_fully_published(root)
             else:
-                detail = (getattr(result, "detail", "") or
-                          "unknown auto-commit push failure")
-                _git_ops.write_sync_warning(
-                    root, _t("hook_ac_push_failed_marker", lang,
-                             "auto-commit push 실패(커밋 보존): {detail}",
-                             detail=detail))
-                print(_t(
-                    "hook_ac_push_failed_print", lang,
-                    "[teammode] auto-commit push 실패 — 커밋은 보존했고 "
-                    "pending 재시도를 예약합니다: {detail}", detail=detail),
-                    file=sys.stderr)
-
-                if _git_ops.write_push_pending(root):
+                detail = _git_ops.sanitize_git_detail(
+                    getattr(result, "detail", "") or
+                    "unknown auto-commit push failure")
+                if _git_ops.write_push_pending(
+                        root, getattr(result, "pending_identity", None) or {}):
+                    _git_ops.write_sync_warning(
+                        root, _t("hook_ac_push_failed_marker", lang,
+                                 "auto-commit push 실패(커밋 보존): {detail}",
+                                 detail=detail))
+                    print(_t(
+                        "hook_ac_push_failed_print", lang,
+                        "[teammode] auto-commit push 실패 — 커밋은 보존했고 "
+                        "pending 재시도를 기록했습니다: {detail}", detail=detail),
+                        file=sys.stderr)
                     _kick_push_worker(root)
                 else:
                     # codex P1: ledger 기록 실패를 삼키면 "커밋됨·push 안 됨·pending

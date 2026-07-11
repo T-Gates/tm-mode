@@ -50,6 +50,10 @@ class _FakeGitOps:
         self.cleared += 1
         self.cleared_root = team_root
 
+    def clear_sync_warning_if_fully_published(self, team_root):
+        self.clear_sync_warning(team_root)
+        return True
+
 
 def _run(result, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))  # 실 상태 무접촉
@@ -103,6 +107,56 @@ def test_rebased_with_unpushed_ahead_preserves_marker(tmp_path, monkeypatch):
     res = go.ReconcileResult(ok=True, action="rebased", ahead=1, behind=2, diverged=True)
     fake = _run(res, tmp_path, monkeypatch)
     assert fake.cleared == 0
+
+
+def test_pending_worker_restarts_after_reconcile(tmp_path, monkeypatch):
+    """pending worker 는 non-ff 정합이 끝난 뒤 재기동해야 한다.
+
+    정합 전에 worker 를 시작하면 worker 의 push 가 non-ff 로 먼저 실패하고,
+    이어진 rebase 뒤에는 재기동 기회가 없어 ahead 커밋이 다음 세션까지 남는다.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    mod = _load_session_start()
+
+    class _OrderingGitOps(_FakeGitOps):
+        DEFAULT_TIMEOUT = 2
+
+        def __init__(self):
+            super().__init__(
+                go.ReconcileResult(ok=True, action="rebased", ahead=1, behind=1,
+                                   diverged=True))
+            self.events = []
+
+        def do_reconcile(self, team_root):
+            self.events.append("reconcile")
+            return super().do_reconcile(team_root)
+
+        def read_push_pending_state(self, team_root):
+            return go.PushPendingRead("pending", True)
+
+        def bind_legacy_pending_to_current_checkout(self, team_root, snapshot):
+            return snapshot
+
+        def pending_entry_key_for_current_checkout(self, team_root, snapshot):
+            return "branch:main"
+
+        def pending_target_summary(self, snapshot, team_root=None):
+            return "branch main"
+
+        def _ahead_behind_raw(self, team_root, timeout):
+            return 1, 0, True
+
+        def kick_push_worker(self, team_root, worker):
+            self.events.append("kick")
+            return True
+
+    fake = _OrderingGitOps()
+    monkeypatch.setattr(mod, "_git_ops", fake)
+    monkeypatch.setattr(mod, "_auto_pull", _FakeAutoPull)
+
+    mod._maybe_auto_pull(str(tmp_path))
+
+    assert fake.events == ["reconcile", "kick"]
 
 
 # ── 충돌은 마커 기록(가시화) ──

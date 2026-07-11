@@ -2635,21 +2635,58 @@ def cmd_commit(team_root: Path, message: str, push: bool,
                paths: list | None = None) -> int:
     """git add/commit/(push) 묶음 — git_ops 공통 안전장치 재사용(V.4).
 
-    실패 무해(우아한 축소): 변경 없음·git 아님·push 실패 모두 비치명. push 실패는
-    로컬 커밋을 되돌리지 않는다(커밋 보존). exit code 로 결과를 구분하되 크래시 0.
+    실패 무해(우아한 축소): 변경 없음·git 아님·push 실패에도 크래시하지 않는다.
+    push 실패는 로컬 커밋을 되돌리지 않고 pending/warning을 기록해 rc0을 유지한다.
+    단, pending ledger 기록까지 실패하면 복구 미예약을 stderr + rc1로 표면화한다.
 
     paths: 스테이징 범위 한정 경로 목록. None이면 git add -A(전체), 지정하면 해당
     경로만 stage(세션로그 단독 커밋 등 안전 모드). do_commit 의 paths 인자로 그대로 전달.
     """
     lang = _i18n.team_lang(str(team_root))
     result = _git_ops.do_commit(str(team_root), message=message, push=push, paths=paths)
+    display_detail = result.detail
+    recovery_state_failed = False
+
+    # tm OFF의 scoped fallback도 auto-commit 훅과 같은 publication 복구 계약을
+    # 가져야 한다. do_commit은 로컬 커밋 성공·push 실패를 ok=True로 반환하므로,
+    # ok만 보고 rc0으로 끝내면 SessionStart가 재시도할 pending trigger가 사라진다.
+    if push and result.committed and not result.pushed:
+        safe_detail = _git_ops.sanitize_git_detail(
+            result.detail or "unknown commit push failure")
+        display_detail = safe_detail
+        if _git_ops.write_push_pending(
+                str(team_root), getattr(result, "pending_identity", None) or {}):
+            _git_ops.write_sync_warning(
+                str(team_root),
+                _t("cmd_commit_push_pending_marker", lang,
+                   "tm-mode commit push 실패(커밋 보존): {detail}",
+                   detail=safe_detail))
+            # detach worker는 최적화일 뿐 correctness는 ledger + SessionStart가 맡는다.
+            _git_ops.kick_push_worker(
+                str(team_root), str(INFRA / "hooks" / "push-worker.py"))
+        else:
+            # ledger를 못 쓰면 rc0이 "복구 예약됨"으로 오해된다. warning도 best-effort로
+            # 남기되 stderr + rc1을 확정 신호로 제공한다.
+            failed_detail = _t(
+                "cmd_commit_pending_write_failed_marker", lang,
+                "커밋됨; push-pending 기록 실패 — push 미보장"
+                "(XDG state 쓰기 오류); 원래 push 실패: {detail}",
+                detail=safe_detail)
+            _git_ops.write_sync_warning(str(team_root), failed_detail)
+            print(_t(
+                "cmd_commit_pending_write_failed", lang,
+                "[warning] tm-mode commit: push-pending 기록 실패 — "
+                "커밋은 보존됐지만 push 복구가 예약되지 않았습니다: {detail}",
+                detail=safe_detail), file=sys.stderr)
+            recovery_state_failed = True
+
     if result.ok:
         suffix = " (pushed)" if result.pushed else (
             _t("cmd_commit_push_failed_suffix", lang, " (push 실패·커밋은 보존)")
             if push else "")
         print(_t("cmd_commit_done", lang, "tm-mode commit — 커밋됨{suffix}: {detail}",
-                 suffix=suffix, detail=result.detail))
-        return 0
+                 suffix=suffix, detail=display_detail))
+        return 1 if recovery_state_failed else 0
     # 변경 없음/git 아님 등 — 비치명. 작업을 막지 않되 사유를 알린다.
     print(_t("cmd_commit_skipped", lang, "tm-mode commit — 건너뜀(비치명): {detail}",
              detail=result.detail), file=sys.stderr)

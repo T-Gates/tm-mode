@@ -86,15 +86,44 @@ def test_skill_md_contains_keyword(keyword):
     )
 
 
-def test_skill_md_no_push():
-    """tm 은 push 금지 — --push 플래그를 절차 명령으로 쓰지 않는다."""
+def test_skill_md_off_fallback_push_is_scoped():
+    """OFF fallback publish도 memory/ pathspec을 유지하고 force-push를 금지한다."""
     text = SKILL_MD.read_text(encoding="utf-8")
-    # commit 명령에 --push 플래그가 들어가면 안 됨
     import re
-    # "teammode.py commit ... --push" 형태 탐지
-    assert not re.search(r"teammode\.py commit[^\n]*--push", text), (
-        "SKILL.md 의 commit 명령에 --push 가 포함되어 있다 — tm 은 push 금지"
-    )
+    assert re.search(r"teammode\.py commit[^\n]*--paths[^\n]*--push", text)
+    assert "Do not force-push" in text
+
+
+def test_skill_md_off_checks_publication_and_pending_before_removing_hooks():
+    """OFF는 exact fallback 뒤 ahead=0 + usable empty ledger를 확인해야 한다."""
+    text = SKILL_MD.read_text(encoding="utf-8")
+    fallback = text.index(
+        'teammode.py commit --root . --paths '
+        '"memory/team/sessions/<name>/<date>.md"')
+    ahead_check = text.index(
+        "git rev-list --count --left-right '@{u}...HEAD'", fallback)
+    pending_check = text.index("read_push_pending_state", ahead_check)
+    absolute_root = text.index('os.path.abspath(".")', pending_check)
+    turn_off = text.index("teammode.py off --root . --install", absolute_root)
+
+    assert fallback < ahead_check < pending_check < absolute_root < turn_off
+    assert "ahead=0" in text[ahead_check:turn_off]
+    assert "available=1 pending=0" in text[pending_check:turn_off]
+
+
+def test_skill_md_off_keeps_team_mode_active_when_publication_is_unresolved():
+    """ahead/pending 판정 실패 시 off를 실행하지 않고 복구 훅을 유지해야 한다."""
+    text = SKILL_MD.read_text(encoding="utf-8")
+    gate = text.index("git rev-list --count --left-right '@{u}...HEAD'")
+    turn_off = text.index("teammode.py off --root . --install", gate)
+    gate_text = text[gate:turn_off].lower()
+
+    assert "do not run step 3" in gate_text
+    assert "keep the hooks" in gate_text
+    assert ".teammode-active" in gate_text
+    for unresolved in ("missing upstream", "ahead > 0", "ledger unavailable",
+                       "pending content"):
+        assert unresolved in gate_text
 
 
 def test_skill_md_has_off_confirmation():
@@ -190,16 +219,14 @@ def test_skill_md_off_commit_has_paths_flag():
     )
 
 
-def test_skill_md_off_commit_paths_includes_memory():
-    """OFF 절차 commit 명령의 --paths 값이 memory/ 를 포함한다(세션로그 디렉터리)."""
+def test_skill_md_off_commit_paths_names_exact_session_log():
+    """OFF fallback은 memory 전체가 아니라 정확한 세션로그 파일만 지정한다."""
     import re
     text = SKILL_MD.read_text(encoding="utf-8")
     m = re.search(r"teammode\.py commit[^\n]*--paths\s+[\"']?(\S+)[\"']?", text)
     assert m, "SKILL.md 의 commit --paths 값을 파싱하지 못했다"
     paths_val = m.group(1).strip("\"'")
-    assert "memory" in paths_val, (
-        f"commit --paths 값이 memory/ 를 포함하지 않는다: {paths_val!r}"
-    )
+    assert "memory/team/sessions/<name>/<date>.md" in paths_val, paths_val
 
 
 # ── commit --paths 엔진·git_ops 단위 테스트 ──

@@ -8,6 +8,7 @@ do_reconcile(fetch + ff/rebase)로 실제 정합하고, 상태를 표면화한�
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -117,6 +118,101 @@ def test_reconcile_diverged_rebases(remote_clone):
     assert res.ahead == 1   # 미push 로컬 커밋 1개 남음
 
 
+def test_reconcile_shared_deadline_clamps_rebase_timeout(tmp_path, monkeypatch):
+    """fetch와 local probes가 쓴 시간을 빼고 rebase가 총예산의 남은 몫만 받는다."""
+    now = {"value": 100.0}
+    calls = []
+    rev_list_calls = 0
+
+    def fake_run_git(args, timeout):
+        nonlocal rev_list_calls
+        calls.append((list(args), timeout, now["value"]))
+        now["value"] += 2.0
+        if "--is-inside-work-tree" in args:
+            return 0, "true\n", ""
+        if "fetch" in args:
+            return 0, "", ""
+        if "rev-list" in args:
+            rev_list_calls += 1
+            return 0, ("1 1\n" if rev_list_calls == 1 else "0 1\n"), ""
+        if "status" in args:
+            return 0, "", ""
+        if "symbolic-ref" in args:
+            return 0, "main\n", ""
+        if "refs/stash" in args:
+            return 1, "", ""
+        if "rev-parse" in args:
+            return 0, "a" * 40 + "\n", ""
+        if "rebase" in args:
+            return 0, "", ""
+        if "diff" in args:
+            return 0, "", ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(go, "run_git", fake_run_git)
+    monkeypatch.setattr(
+        go, "time", types.SimpleNamespace(monotonic=lambda: now["value"]))
+    started = now["value"]
+
+    res = go.do_reconcile(str(tmp_path))
+
+    assert res.ok is True and res.action == "rebased"
+    rebase_timeout = next(timeout for args, timeout, _at in calls if "rebase" in args)
+    assert rebase_timeout < go.NET_TIMEOUT
+    assert now["value"] - started <= go.RECONCILE_TOTAL_BUDGET
+
+
+def test_reconcile_defers_when_dirty_path_overlaps_upstream(remote_clone):
+    """autostash apply 충돌 예상 시 사용자 dirty 파일을 건드리지 않고 보류한다."""
+    _push_new_upstream_commit(remote_clone, name="a.txt", content="UPSTREAM\n")
+    _local_commit(remote_clone, name="local.txt")
+    dirty = remote_clone.clone / "a.txt"
+    dirty.write_text("LOCAL DIRTY\n")
+
+    res = go.do_reconcile(str(remote_clone.clone))
+
+    assert res.ok is False
+    assert res.action == "conflict"
+    assert "rebase deferred" in res.detail
+    assert dirty.read_text() == "LOCAL DIRTY\n"
+    assert " M a.txt" in _git(remote_clone.clone, "status", "--short").stdout
+    assert _git(remote_clone.clone, "stash", "list").stdout == ""
+    assert not (remote_clone.clone / ".git" / "rebase-merge").exists()
+
+
+def test_reconcile_rolls_back_autostash_conflict_from_dirty_toctou(
+        remote_clone, monkeypatch):
+    """preflight/rebase 사이 dirty edit도 성공으로 오판하거나 conflict로 남기지 않는다."""
+    _push_new_upstream_commit(remote_clone, name="a.txt", content="UPSTREAM\n")
+    _local_commit(remote_clone, name="local.txt")
+    pre_head = _git(remote_clone.clone, "rev-parse", "HEAD").stdout.strip()
+    real_run_git = go.run_git
+    injected = False
+
+    def racing_run_git(args, timeout):
+        nonlocal injected
+        if not injected and "rebase" in args and "--autostash" in args:
+            injected = True
+            (remote_clone.clone / "a.txt").write_text("LOCAL DIRTY\n")
+            _rc, out, err = real_run_git(args, timeout)
+            # 실제 rebase mutation/rc0 출력 직후 timeout이 표면화되는 경로.
+            raise subprocess.TimeoutExpired(
+                cmd="git rebase", timeout=timeout, output=out, stderr=err)
+        return real_run_git(args, timeout)
+
+    monkeypatch.setattr(go, "run_git", racing_run_git)
+    res = go.do_reconcile(str(remote_clone.clone))
+
+    assert injected is True
+    assert res.ok is False
+    assert res.action == "conflict"
+    assert "timeout" in res.detail
+    assert _git(remote_clone.clone, "rev-parse", "HEAD").stdout.strip() == pre_head
+    assert (remote_clone.clone / "a.txt").read_text() == "LOCAL DIRTY\n"
+    assert "UU" not in _git(remote_clone.clone, "status", "--short").stdout
+    assert "<<<<<<<" not in (remote_clone.clone / "a.txt").read_text()
+
+
 def test_reconcile_conflict_aborts_and_surfaces(remote_clone):
     # 같은 파일을 upstream·로컬이 충돌하게 수정 → rebase 충돌 → abort + conflict.
     _push_new_upstream_commit(remote_clone, name="a.txt", content="UP\n")
@@ -169,6 +265,31 @@ def test_sync_warning_roundtrip(tmp_path, monkeypatch):
     assert "GH007" in go.read_sync_warning(root)
     go.clear_sync_warning(root)
     assert go.read_sync_warning(root) == ""
+
+
+def test_sync_warning_writer_redacts_common_http_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    root = "/team/alpha"
+    go.write_sync_warning(
+        root, "client_secret=oauth api_key=key Authorization: Bearer bearer")
+    marker = go.read_sync_warning(root)
+    assert "oauth" not in marker and "api_key=key" not in marker
+    assert "bearer" not in marker.lower()
+    assert "[redacted]" in marker
+
+
+def test_sync_warning_reader_scrubs_legacy_raw_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    root = "/team/alpha"
+    marker_path = Path(go.sync_warning_path(root))
+    marker_path.parent.mkdir(parents=True, mode=0o700)
+    marker_path.write_text(
+        "https://alice:password@example.com Authorization: Bearer old-token",
+        encoding="utf-8")
+    marker_path.chmod(0o600)
+    marker = go.read_sync_warning(root)
+    assert "password" not in marker and "old-token" not in marker
+    assert "[redacted]" in marker
 
 
 def test_sync_warning_per_team_paths_differ():

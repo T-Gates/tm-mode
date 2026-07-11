@@ -12,13 +12,18 @@ killpg·`--ff-only`·subprocess+git 양쪽 타임아웃·자격증명/SSH 프롬
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import re
 import signal
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,16 +41,38 @@ DEFAULT_TIMEOUT = 2
 # subprocess killpg(run_git)가 SSH 의 **유일한** hang 가드다.
 NET_TIMEOUT = 10
 
+# SessionStart do_reconcile 전체 벽시계 예산. manifest(60s)의 hook hard budget(50s)
+# 안에서 정상 SSH fetch 뒤 rebase 기회를 살리면서, context용 10s를 별도로 남긴다.
+RECONCILE_TOTAL_BUDGET = 35
+
+# reconcile rebase timeout 뒤 cross-platform kill/drain(최대 7s) + exact autostash
+# 확인/abort/최악 rollback postcondition(12s)을 끝내기 위한 꼬리 예약.
+_RECONCILE_REBASE_RECOVERY_RESERVE = 19
+
 # do_commit(push=True)의 **진입 앵커 벽시계 총예산**(초) — 데드라인은 함수 **진입**
-# 시점에 시작돼 로컬 단계(rev-parse·add·staged-diff·commit, 최악 ~8s)도 벽시계 예산을
+# 시점에 시작돼 로컬 단계(worktree/add/diff/commit + commit identity, 최악 ~16s)도 예산을
 # 소모하고, 네트워크 단계(push·복구 체인 push→push -u→fetch→rebase→push -u, 최악
 # NET_TIMEOUT 10s ×5 순차 ~50s)는 **남은 예산만** 쓴다. 로컬 하위호출 자체는 예산으로
 # 개별 클램프/중단하지 않는다(로컬 커밋은 항상 완주·보존 — 건너뛸 수 있는 건 네트워크뿐).
-# 22 인 이유: NET_TIMEOUT(10s) 두 다리 + rebase 의 복구 체인은 살리면서(20 이면 fetch+
-# rebase+재push 복구가 굶는다), 22 + 드문 kill-drain/abort 꼬리(~6s) + 훅 기동이 훅
-# manifest 캡(40s) 아래 머문다 — 초과 시 hook runner 가 프로세스를 죽여 로컬 커밋/rebase
+# 35 인 이유: 정상 GitHub SSH 왕복(첫 non-ff push + fetch 약 5s) 뒤에도 rebase와 그
+# 최악 rollback 꼬리를 모두 허용한다. 느린 네트워크 경로는 남은 예산만 주고 안전하게
+# pending으로 전환한다. 35 + 첫 index.lock 실패/재시도 + abort/ledger 꼬리가 훅
+# manifest 캡(70s)
+# 아래 머문다 — 초과 시 hook runner 가 프로세스를 죽여 로컬 커밋/rebase
 # 뒤의 sync-warning 마커가 유실된다(codex 재리뷰 P1·A1).
-PUSH_TOTAL_BUDGET = 22
+PUSH_TOTAL_BUDGET = 35
+
+# do_commit이 네트워크 실패 뒤 CommitResult를 만들 때 현재 checkout을 다시 읽는 두
+# 로컬 probe(symbolic-ref + rev-parse)가 각각 DEFAULT_TIMEOUT까지 쓸 수 있다. 모든
+# 네트워크 호출은 이 꼬리를 남긴 채 시작해 함수 자체가 총예산 안에서 반환하게 한다.
+_COMMIT_RESULT_RESERVE = 2 * DEFAULT_TIMEOUT
+
+# rebase는 timeout/nonzero/rc0+autostash-conflict 뒤에도 run_git의 cross-platform
+# kill/drain(Windows 최대 5+2s), exact autostash 확인(2×1s), abort(2s), 최악
+# rollback/postcondition(9×1s), CommitResult identity(2×2s)를 끝내야 한다. rebase
+# timeout에 이 24초를 실제로 차감하지 않으면 첫 index.lock 재시도까지 포함한
+# auto-commit이 manifest 70초 전에 pending ledger를 못 쓸 수 있다.
+_REBASE_RECOVERY_RESERVE = 24
 
 
 @dataclass
@@ -61,6 +88,32 @@ class CommitResult:
     committed: bool = False        # 실제 커밋이 생성됐는지(변경 없으면 False)
     pushed: bool = False           # push 까지 성공했는지(push=True 일 때만 의미)
     detail: str = ""               # 디버그용 메시지(stderr 등 요약)
+    # commit 직후 고정한 checkout identity. push 실패 뒤 다른 프로세스가 checkout을
+    # 바꿔도 pending ledger를 실패 커밋의 branch/HEAD에 묶기 위한 증거다.
+    pending_identity: dict | None = None
+
+
+@dataclass(frozen=True)
+class _RebaseGuard:
+    """autostash rebase 전 rollback 기준과 기존 stash tip."""
+
+    branch: str
+    head: str
+    stash_head: str = ""
+
+
+@dataclass(frozen=True)
+class PushPendingRead:
+    """pending ledger 읽기 결과.
+
+    ``available=False`` 는 ledger lock/state 경로를 안전하게 읽지 못했다는 뜻이다.
+    이 상태를 ``content == ''``(pending 없음)와 분리해야 호출부가 warning 을 지우는
+    fail-open 회귀를 막을 수 있다.
+    """
+
+    content: str = ""
+    available: bool = True
+    fingerprint: tuple = ()
 
 
 @dataclass
@@ -171,16 +224,36 @@ def run_git(args: list, timeout: int):
     try:
         out, err = proc.communicate(timeout=timeout)
         return proc.returncode, out, err
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         kill_group(proc)
         try:
-            proc.communicate(timeout=2)
+            final_out, final_err = proc.communicate(timeout=2)
         except (subprocess.SubprocessError, OSError):
-            pass
+            final_out, final_err = "", ""
+        # rebase가 mutation/autostash 출력을 낸 직후 timeout된 경우 caller가 exact OID로
+        # rollback할 수 있게 partial + kill-drain 출력을 예외에 보존한다.
+        def _text(value):
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return str(value or "")
+
+        exc.output = _text(getattr(exc, "output", "")) + _text(final_out)
+        exc.stderr = _text(getattr(exc, "stderr", "")) + _text(final_err)
         raise
 
 
 _run_git = run_git
+
+
+def _timeout_detail(exc: subprocess.TimeoutExpired) -> str:
+    """TimeoutExpired의 partial stdout/stderr를 문자열로 합친다."""
+    def _text(value):
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value or "")
+
+    return _text(getattr(exc, "output", "")) + "\n" + _text(
+        getattr(exc, "stderr", ""))
 
 
 def kill_group(proc: subprocess.Popen) -> None:
@@ -278,7 +351,206 @@ def ahead_behind(team_root: str, timeout: int = DEFAULT_TIMEOUT):
     return (ahead, behind)
 
 
-def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT) -> ReconcileResult:
+def _dirty_worktree_paths(team_root: str, timeout: int) -> set[str] | None:
+    """tracked/staged/untracked dirty 경로 집합. 판정 실패는 None(fail closed)."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "status", "--porcelain=v1", "-z",
+             "--untracked-files=all"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    records = (out or "").split("\0")
+    paths: set[str] = set()
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        if len(record) < 4 or record[2] != " ":
+            return None
+        status_code = record[:2]
+        paths.add(os.path.normcase(os.path.normpath(record[3:])))
+        if "R" in status_code or "C" in status_code:
+            if index >= len(records) or not records[index]:
+                return None
+            paths.add(os.path.normcase(os.path.normpath(records[index])))
+            index += 1
+    return paths
+
+
+def _rebase_dirty_safety_issue(
+        team_root: str, upstream: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+    """autostash apply conflict가 예상되면 사유를 반환하고 rebase를 시작하지 않는다."""
+    dirty = _dirty_worktree_paths(team_root, timeout)
+    if dirty is None:
+        return "dirty-worktree safety check failed"
+    if not dirty:
+        return ""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "diff", "--no-renames", "--name-only", "-z",
+             f"HEAD...{upstream}", "--"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return "upstream-change safety check failed"
+    if rc != 0:
+        return "upstream-change safety check failed"
+    remote_changed = {
+        os.path.normcase(os.path.normpath(path))
+        for path in (out or "").split("\0") if path
+    }
+    overlap = sorted(dirty & remote_changed)
+    if not overlap:
+        return ""
+    shown = ", ".join(overlap[:3])
+    suffix = " ..." if len(overlap) > 3 else ""
+    return f"dirty paths overlap upstream changes: {shown}{suffix}"
+
+
+def _read_ref_oid(
+        team_root: str, ref: str, timeout: int = DEFAULT_TIMEOUT
+        ) -> tuple[bool, str]:
+    """ref OID를 읽는다. ref 없음(rc=1)은 available empty, 그 외 실패는 unavailable."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "rev-parse", "--verify", "--quiet", ref],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False, ""
+    if rc == 0 and (out or "").strip():
+        return True, (out or "").strip()
+    if rc == 1:
+        return True, ""
+    return False, ""
+
+
+def _capture_rebase_guard(
+        team_root: str, timeout: int = DEFAULT_TIMEOUT) -> _RebaseGuard | None:
+    """rebase 직전 branch/HEAD와 기존 stash tip을 fail-closed로 캡처한다."""
+    identity = _checkout_identity(team_root, timeout)
+    if not identity.get("branch") or not identity.get("head"):
+        return None
+    stash_available, stash_head = _read_ref_oid(team_root, "refs/stash", timeout)
+    if not stash_available:
+        return None
+    return _RebaseGuard(
+        branch=identity["branch"], head=identity["head"], stash_head=stash_head)
+
+
+def _unmerged_paths(
+        team_root: str, timeout: int = DEFAULT_TIMEOUT) -> list[str] | None:
+    """현재 unmerged 경로. 판정 실패는 None으로 fail closed."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "diff", "--name-only", "--diff-filter=U", "-z",
+             "--"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    return [path for path in (out or "").split("\0") if path]
+
+
+def _is_autostash_commit(
+        team_root: str, oid: str, timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """새 stash OID가 Git rebase가 남긴 autostash인지 확인한다."""
+    if not oid:
+        return False
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "show", "-s", "--format=%s", oid],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return rc == 0 and "autostash" in (out or "").lower()
+
+
+_CREATED_AUTOSTASH_RE = re.compile(
+    r"(?im)^Created autostash:\s*([0-9a-f]{4,64})\s*$")
+
+
+def _created_autostash_oid(
+        team_root: str, output: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+    """C-locale rebase 출력에서 Git이 실제 생성한 autostash OID를 full OID로 푼다."""
+    matches = _CREATED_AUTOSTASH_RE.findall(output or "")
+    # TimeoutExpired partial output + kill-drain communicate가 같은 줄을 중복 제공할 수
+    # 있다. 서로 다른 OID는 거부하되 동일 OID 반복은 하나의 증거로 정규화한다.
+    unique_matches = {match.lower() for match in matches}
+    if len(unique_matches) != 1:
+        return ""
+    short_oid = unique_matches.pop()
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "rev-parse", "--verify", f"{short_oid}^{{commit}}"],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    full_oid = (out or "").strip() if rc == 0 else ""
+    if (not re.fullmatch(r"[0-9a-fA-F]{40,64}", full_oid)
+            or not _is_autostash_commit(team_root, full_oid, timeout)):
+        return ""
+    return full_oid.lower()
+
+
+def _restore_failed_autostash(
+        team_root: str, guard: _RebaseGuard, autostash_oid: str,
+        timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """rc=0 뒤 autostash apply 충돌을 pre-rebase HEAD+dirty/index 상태로 복원한다.
+
+    새 autostash OID가 검증된 경우에만 hard reset을 허용한다. apply 후 stash entry는
+    의도적으로 남겨 추가 복구 사본으로 보존한다(동시 stash를 selector로 오삭제 금지).
+    """
+    current = _checkout_identity(team_root, timeout)
+    if current.get("branch") != guard.branch:
+        return False
+    try:
+        rrc, _, _ = run_git(
+            ["-C", team_root, "reset", "--hard", guard.head],
+            timeout=timeout)
+        if rrc != 0:
+            return False
+        arc, _, _ = run_git(
+            ["-C", team_root, "stash", "apply", "--index", autostash_oid],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    unmerged = _unmerged_paths(team_root, timeout)
+    restored = _checkout_identity(team_root, timeout)
+    return (arc == 0 and unmerged == []
+            and restored.get("branch") == guard.branch
+            and restored.get("head") == guard.head)
+
+
+def _verify_rebase_postcondition(
+        team_root: str, guard: _RebaseGuard,
+        created_autostash_oid: str = "",
+        timeout: int = DEFAULT_TIMEOUT) -> tuple[bool, str]:
+    """rebase 후 conflict 없음+autostash 정상 적용을 확인하고 실패 시 rollback한다."""
+    unmerged = _unmerged_paths(team_root, timeout)
+    stash_available, stash_head = _read_ref_oid(
+        team_root, "refs/stash", timeout)
+    if unmerged is None or not stash_available:
+        return False, "rebase postcondition check failed"
+    if not unmerged and stash_head == guard.stash_head:
+        return True, ""
+
+    # autostash apply 실패 시 Git은 rc=0이어도 새 entry와 UU를 남긴다. linked worktree의
+    # 동시 `git stash -m autostash`가 refs/stash top을 바꿀 수 있으므로 subject/top 추론은
+    # 금지하고, rebase C-locale 출력의 `Created autostash: <oid>`만 복원 증거로 쓴다.
+    if created_autostash_oid:
+        if _restore_failed_autostash(
+                team_root, guard, created_autostash_oid, timeout):
+            return False, "autostash apply conflict restored; backup kept in stash"
+        return False, "autostash apply conflict; rollback incomplete — backup kept in stash"
+    if unmerged:
+        return False, "rebase left unmerged paths; automatic rollback not proven"
+    return False, "stash changed during rebase; publication deferred"
+
+
+def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT,
+                 deadline=None) -> ReconcileResult:
     """fetch 후 추적 upstream 과 **실제 정합**(ff 또는 rebase --autostash). 무raise(철칙).
 
     do_pull 의 `pull --ff-only` 는 로컬이 diverge(ahead>0 & behind>0)면 조용히 실패해
@@ -293,15 +565,31 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT) -> ReconcileResult:
       - ahead>0 & behind>0(diverge) → `rebase --autostash @{u}`.
           성공 → rebased(남은 ahead 재계산). 충돌/실패 → abort 후 conflict(ok=False).
     """
+    own_deadline = time.monotonic() + RECONCILE_TOTAL_BUDGET
+    deadline = own_deadline if deadline is None else min(own_deadline, deadline)
+
+    def _remaining(cap: int, reserve: int = 0) -> int:
+        remaining = int(deadline - time.monotonic() - reserve)
+        if remaining < 1:
+            return 0
+        return min(max(1, cap), remaining)
+
+    def _budget_ok(reserve: int = 1) -> bool:
+        return deadline - time.monotonic() >= reserve
+
     if not is_git_worktree(team_root):
         return ReconcileResult(ok=False, action="not-worktree",
                                detail="not a git work tree")
 
     # 1) fetch — push/pull 과 동일 안전장치(http 타임아웃·killpg·자격증명 차단) 재사용.
+    fetch_timeout = _remaining(timeout)
+    if not fetch_timeout:
+        return ReconcileResult(
+            ok=False, action="error", detail="reconcile budget exhausted before fetch")
     try:
         frc, _, ferr = run_git(
-            ["-C", team_root, *http_timeout_opts(timeout), "fetch"],
-            timeout=timeout)
+            ["-C", team_root, *http_timeout_opts(fetch_timeout), "fetch"],
+            timeout=fetch_timeout)
     except subprocess.TimeoutExpired:
         return ReconcileResult(ok=False, action="fetch-failed", detail="fetch timeout")
     except (OSError, subprocess.SubprocessError) as exc:
@@ -312,7 +600,11 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT) -> ReconcileResult:
                                detail=(ferr or "").strip()[:200])
 
     # 2) ahead/behind 측정 — 추적 upstream 유무 판정 포함.
-    ahead, behind, has_up = _ahead_behind_raw(team_root, timeout)
+    probe_timeout = _remaining(DEFAULT_TIMEOUT)
+    if not probe_timeout:
+        return ReconcileResult(
+            ok=False, action="error", detail="reconcile budget exhausted after fetch")
+    ahead, behind, has_up = _ahead_behind_raw(team_root, probe_timeout)
     if not has_up:
         return ReconcileResult(ok=True, action="no-upstream",
                                detail="추적 upstream 없음(정합 불필요)")
@@ -324,9 +616,15 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT) -> ReconcileResult:
 
     # 4) 순수 behind → fast-forward
     if ahead == 0:
+        merge_timeout = _remaining(DEFAULT_TIMEOUT)
+        if not merge_timeout:
+            return ReconcileResult(
+                ok=False, action="error", behind=behind,
+                detail="reconcile budget exhausted before ff merge")
         try:
             rc, _, err = run_git(
-                ["-C", team_root, "merge", "--ff-only", "@{u}"], timeout=timeout)
+                ["-C", team_root, "merge", "--ff-only", "@{u}"],
+                timeout=merge_timeout)
         except subprocess.TimeoutExpired:
             return ReconcileResult(ok=False, action="error", behind=behind,
                                    detail="ff merge timeout")
@@ -338,30 +636,80 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT) -> ReconcileResult:
         return ReconcileResult(ok=False, action="error", behind=behind,
                                detail=(err or "").strip()[:200])
 
-    # 5) diverge(ahead>0 & behind>0) → rebase --autostash. 실패 시 반드시 abort.
+    # 5) diverge(ahead>0 & behind>0) → rebase --autostash. dirty 파일과 upstream
+    # 변경이 겹치면 autostash 적용이 충돌 상태를 남길 수 있으므로 시작 전에 보류한다.
+    if not _budget_ok(reserve=8):
+        return ReconcileResult(
+            ok=False, action="error", ahead=ahead, behind=behind, diverged=True,
+            detail="reconcile budget exhausted before rebase safety checks")
+    safety_issue = _rebase_dirty_safety_issue(
+        team_root, "@{u}", _remaining(1))
+    if safety_issue:
+        return ReconcileResult(
+            ok=False, action="conflict", ahead=ahead, behind=behind,
+            diverged=True, detail=f"rebase deferred: {safety_issue}")
+    rebase_guard = _capture_rebase_guard(team_root, _remaining(1))
+    if rebase_guard is None:
+        return ReconcileResult(
+            ok=False, action="conflict", ahead=ahead, behind=behind,
+            diverged=True, detail="rebase deferred: rollback guard unavailable")
+    if not _budget_ok(reserve=_RECONCILE_REBASE_RECOVERY_RESERVE + 1):
+        return ReconcileResult(
+            ok=False, action="error", ahead=ahead, behind=behind, diverged=True,
+            detail="reconcile budget exhausted before rebase")
+    rebase_timeout = _remaining(
+        timeout, reserve=_RECONCILE_REBASE_RECOVERY_RESERVE)
     try:
-        rc, _, rerr = run_git(
-            ["-C", team_root, "rebase", "--autostash", "@{u}"], timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _abort_rebase(team_root, timeout)
+        rc, rout, rerr = run_git(
+            ["-C", team_root, "rebase", "--autostash", "@{u}"],
+            timeout=rebase_timeout)
+    except subprocess.TimeoutExpired as exc:
+        created_autostash = _created_autostash_oid(
+            team_root, _timeout_detail(exc), timeout=1)
+        _abort_rebase(team_root, 1)
+        _post_ok, post_detail = _verify_rebase_postcondition(
+            team_root, rebase_guard, created_autostash, timeout=1)
         return ReconcileResult(ok=False, action="conflict", ahead=ahead,
                                behind=behind, diverged=True,
-                               detail="rebase timeout(aborted)")
+                               detail="rebase timeout(aborted)" +
+                               (f"; {post_detail}" if post_detail else ""))
     except (OSError, subprocess.SubprocessError) as exc:
-        _abort_rebase(team_root, timeout)
+        _abort_rebase(team_root, 1)
+        _post_ok, post_detail = _verify_rebase_postcondition(
+            team_root, rebase_guard, timeout=1)
         return ReconcileResult(ok=False, action="conflict", ahead=ahead,
                                behind=behind, diverged=True,
-                               detail=f"rebase exec error(aborted): {exc}")
+                               detail=f"rebase exec error(aborted): {exc}" +
+                               (f"; {post_detail}" if post_detail else ""))
     if rc == 0:
+        created_autostash = _created_autostash_oid(
+            team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+        post_ok, post_detail = _verify_rebase_postcondition(
+            team_root, rebase_guard, created_autostash, timeout=1)
+        if not post_ok:
+            return ReconcileResult(
+                ok=False, action="conflict", ahead=ahead, behind=behind,
+                diverged=True, detail=f"rebase postcondition failed: {post_detail}")
         # 정합 후 남은 ahead(미push 로컬 커밋) 재계산.
-        a2, _, _ = _ahead_behind_raw(team_root, timeout)
+        final_probe_timeout = _remaining(DEFAULT_TIMEOUT)
+        if not final_probe_timeout:
+            return ReconcileResult(
+                ok=False, action="error", ahead=ahead, behind=behind,
+                diverged=True,
+                detail="reconciled but budget exhausted before final status")
+        a2, _, _ = _ahead_behind_raw(team_root, final_probe_timeout)
         return ReconcileResult(ok=True, action="rebased", ahead=a2,
                                behind=behind, diverged=True,
                                detail="rebased onto upstream")
-    _abort_rebase(team_root, timeout)
+    _abort_rebase(team_root, 1)
+    created_autostash = _created_autostash_oid(
+        team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+    _post_ok, post_detail = _verify_rebase_postcondition(
+        team_root, rebase_guard, created_autostash, timeout=1)
     return ReconcileResult(ok=False, action="conflict", ahead=ahead,
                            behind=behind, diverged=True,
-                           detail=(rerr or "").strip()[:200])
+                           detail=(rerr or "").strip()[:200] +
+                           (f"; {post_detail}" if post_detail else ""))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -386,6 +734,201 @@ def _state_dir() -> str:
     return os.path.join(base, "teammode")
 
 
+def _owned_regular(st: os.stat_result) -> bool:
+    """현재 사용자 소유 regular file 인지 확인한다(POSIX 외에는 ownership 생략)."""
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return not hasattr(os, "getuid") or st.st_uid == os.getuid()
+
+
+def _ensure_private_state_dir() -> bool:
+    """XDG teammode state dir 를 실제 디렉터리·0700으로 보장한다. 무raise.
+
+    마지막 경로가 symlink 이면 따라가지 않는다. 상태 경로는 머신 로컬 correctness
+    ledger 와 실패 상세를 담으므로, world-readable 기본 umask 에 맡기지 않는다.
+    """
+    path = _state_dir()
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        st = os.lstat(path)
+        is_junction = getattr(os.path, "isjunction", lambda _path: False)
+        if (not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode)
+                or os.path.islink(path) or is_junction(path)):
+            return False
+        if hasattr(os, "getuid") and st.st_uid != os.getuid():
+            return False
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            if os.name != "nt":
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def _secure_open_regular(path: str, flags: int, mode: int = 0o600) -> int:
+    """symlink 을 따라가지 않고 owner-only regular file descriptor 를 연다."""
+    try:
+        if os.path.islink(path):
+            raise OSError(errno.ELOOP, "state path is a symlink")
+        before = os.lstat(path)
+        if not _owned_regular(before):
+            raise OSError(errno.EPERM, "state path is not an owned regular file")
+    except FileNotFoundError:
+        if not (flags & os.O_CREAT):
+            raise
+    safe_flags = flags | getattr(os, "O_CLOEXEC", 0)
+    safe_flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, safe_flags, mode)
+    try:
+        st = os.fstat(fd)
+        if not _owned_regular(st):
+            raise OSError(errno.EPERM, "state path is not an owned regular file")
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _read_private_text(path: str) -> PushPendingRead:
+    """owner-only state 파일을 안전하게 읽는다. 없음은 available empty 상태다."""
+    if not _ensure_private_state_dir():
+        return PushPendingRead(available=False)
+    try:
+        fd = _secure_open_regular(
+            path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return PushPendingRead(fingerprint=("missing",))
+    except OSError:
+        return PushPendingRead(available=False)
+    try:
+        st = os.fstat(fd)
+        fingerprint = (
+            st.st_dev, st.st_ino, st.st_size,
+            getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)),
+        )
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            return PushPendingRead(handle.read().strip(), True, fingerprint)
+    except (OSError, UnicodeError, ValueError):
+        return PushPendingRead(available=False)
+
+
+def _fsync_parent_dir(path: str) -> bool:
+    """atomic rename의 directory entry까지 durable하게 만든다(지원 불가 FS는 허용)."""
+    if os.name == "nt":  # os.replace durability is handled by the platform API.
+        return True
+    fd = -1
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(os.path.dirname(path), flags)
+        os.fsync(fd)
+        return True
+    except OSError as exc:
+        unsupported = {
+            errno.EINVAL,
+            getattr(errno, "ENOTSUP", errno.EINVAL),
+            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+        }
+        return exc.errno in unsupported
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _write_private_text(path: str, content: str) -> bool:
+    """같은 디렉터리의 고유 0600 임시파일을 원자 replace 한다. 무raise."""
+    if not _ensure_private_state_dir():
+        return False
+    try:
+        try:
+            existing = os.lstat(path)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and not _owned_regular(existing):
+            return False
+
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=_state_dir())
+        try:
+            st = os.fstat(fd)
+            if not _owned_regular(st):
+                return False
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            tmp = ""
+            return _fsync_parent_dir(path)
+        finally:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    except (OSError, TypeError, UnicodeError, ValueError):
+        return False
+
+
+def _remove_private_file(path: str) -> bool:
+    """owned regular state 파일만 제거한다. symlink/FIFO 는 보존하며 무raise."""
+    if not _ensure_private_state_dir():
+        return False
+    try:
+        st = os.lstat(path)
+        if not _owned_regular(st):
+            return False
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_URL_USERINFO_RE = re.compile(
+    r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s@]+)@")
+_SECRET_TOKEN_RE = re.compile(
+    r"(?i)\b(?:gh[pousr]_[a-z0-9_]{10,}|github_pat_[a-z0-9_]{10,}|"
+    r"glpat-[a-z0-9_-]{10,})\b")
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b(token|access[_-]?token|oauth[_-]?token|password|passwd|secret|"
+    r"client[_-]?secret|api[_-]?key|private[_-]?token)\b"
+    r"(\s*[:=]\s*)([^\s&,;]+)")
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)\b(authorization\s*:\s*)(?:bearer|basic|token)\s+[^\s,;]+")
+
+
+def sanitize_git_detail(detail: str, limit: int = 400) -> str:
+    """사용자에게 노출·영속해도 되는 bounded Git 실패 상세로 정제한다."""
+    text = _ANSI_ESCAPE_RE.sub("", str(detail or ""))
+    text = _URL_USERINFO_RE.sub(r"\1[redacted]@", text)
+    text = _SECRET_TOKEN_RE.sub("[redacted]", text)
+    text = _AUTH_HEADER_RE.sub(r"\1[redacted]", text)
+    text = _SECRET_VALUE_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
+    text = "".join(
+        ch if not unicodedata.category(ch).startswith("C") else " " for ch in text)
+    text = " ".join(text.split())
+    return text[:limit] or "unknown git failure"
+
+
 def _team_key(team_root: str) -> str:
     """team_root 의 안정 해시(파일명용). normpath 로 정규화해 raw env('/x/')·str(Path)
     ('/x') 표기차를 흡수한 뒤 sha1 앞 16 hex — 팀별 마커 파일을 결정적으로 가른다."""
@@ -404,21 +947,28 @@ def sync_warning_path(team_root: str) -> str:
 
 def write_sync_warning(team_root: str, detail: str) -> None:
     """push/정합 실패를 team_root 전용 마커로 남긴다(session-start 가 읽어 표면화). 무raise."""
-    try:
-        os.makedirs(_state_dir(), exist_ok=True)
-        with open(sync_warning_path(team_root), "w", encoding="utf-8") as f:
-            f.write(detail)
-    except OSError:
-        pass  # 마커 기록 실패는 작업을 막지 않는다(가시화는 best-effort)
+    safe_detail = sanitize_git_detail(detail)
+    with _push_pending_ledger_lock(team_root) as locked:
+        if locked:
+            _write_private_text(sync_warning_path(team_root), safe_detail)
+
+
+def write_sync_warning_if_empty(team_root: str, detail: str) -> bool:
+    """기존 actionable warning이 없을 때만 generic detail을 원자 기록한다."""
+    safe_detail = sanitize_git_detail(detail)
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return False
+        current = _read_private_text(sync_warning_path(team_root))
+        if not current.available or current.content:
+            return False
+        return _write_private_text(sync_warning_path(team_root), safe_detail)
 
 
 def read_sync_warning(team_root: str) -> str:
     """team_root 전용 sync-warning 마커 내용(없으면 ''). 무raise."""
-    try:
-        with open(sync_warning_path(team_root), encoding="utf-8") as f:
-            return f.read().strip()
-    except (OSError, ValueError):
-        return ""
+    content = _read_private_text(sync_warning_path(team_root)).content
+    return sanitize_git_detail(content) if content else ""
 
 
 def clear_sync_warning(team_root: str) -> None:
@@ -426,10 +976,9 @@ def clear_sync_warning(team_root: str) -> None:
 
     자기 팀 파일만 지우므로 같은 머신의 다른 팀 레포 마커를 건드리지 않는다(P2 수정 핵심).
     """
-    try:
-        os.remove(sync_warning_path(team_root))
-    except OSError:
-        pass
+    with _push_pending_ledger_lock(team_root) as locked:
+        if locked:
+            _remove_private_file(sync_warning_path(team_root))
 
 
 # ── push-pending ledger (#45 async push) ───────────────────────────
@@ -445,7 +994,11 @@ def push_pending_path(team_root: str) -> str:
 
 _PUSH_PENDING_LOCK_WAIT_SECONDS = 1.0
 _PUSH_PENDING_LOCK_POLL_SECONDS = 0.01
-_PUSH_PENDING_LOCK_UNAVAILABLE = "<pending-ledger-lock-unavailable>"
+_LOCK_CONTENTION_ERRNOS = {
+    errno.EACCES,
+    errno.EAGAIN,
+    getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+}
 
 
 @contextmanager
@@ -462,11 +1015,17 @@ def _push_pending_ledger_lock(team_root: str):
     unlock = None
     try:
         try:
-            os.makedirs(_state_dir(), exist_ok=True)
-            handle = open(push_pending_path(team_root) + ".state.lock", "a+b")
-            deadline = time.monotonic() + _PUSH_PENDING_LOCK_WAIT_SECONDS
+            if _ensure_private_state_dir():
+                lock_fd = _secure_open_regular(
+                    push_pending_path(team_root) + ".state.lock",
+                    os.O_RDWR | os.O_CREAT,
+                )
+                handle = os.fdopen(lock_fd, "r+b", buffering=0)
+                deadline = time.monotonic() + _PUSH_PENDING_LOCK_WAIT_SECONDS
+            else:
+                deadline = time.monotonic()
 
-            if os.name == "nt":  # pragma: no cover — Windows CI 부재, stdlib 경로
+            if handle is not None and os.name == "nt":  # pragma: no cover — Windows CI 부재
                 import msvcrt
                 handle.seek(0, os.SEEK_END)
                 if handle.tell() == 0:
@@ -481,7 +1040,7 @@ def _push_pending_ledger_lock(team_root: str):
                 def unlock():
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
+            elif handle is not None:
                 import fcntl
 
                 def try_lock():
@@ -490,12 +1049,14 @@ def _push_pending_ledger_lock(team_root: str):
                 def unlock():
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-            while True:
+            while handle is not None:
                 try:
                     try_lock()
                     acquired = True
                     break
-                except OSError:
+                except OSError as exc:
+                    if exc.errno not in _LOCK_CONTENTION_ERRNOS:
+                        break
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(_PUSH_PENDING_LOCK_POLL_SECONDS)
@@ -516,92 +1077,500 @@ def _push_pending_ledger_lock(team_root: str):
                 pass
 
 
-def write_push_pending(team_root: str) -> bool:
-    """pending 마커 원자 기록(임시파일 + os.replace — 부분 쓰기 상태 방지). 무raise.
+_PENDING_LEDGER_VERSION = 2
 
-    root·기록시각은 진단용이고 nonce 는 compare-and-delete 동시성 판별자다.
+
+def _checkout_identity(
+        team_root: str, timeout: int = DEFAULT_TIMEOUT) -> dict[str, str]:
+    """현재 checkout을 pending entry key로 바꾼다. git 실패도 안정 key를 반환한다."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "symbolic-ref", "--quiet", "--short", "HEAD"],
+            timeout=timeout)
+        branch = (out or "").strip() if rc == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        branch = ""
+
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "rev-parse", "--verify", "HEAD"],
+            timeout=timeout)
+        head = (out or "").strip() if rc == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        head = ""
+    if branch:
+        # branch 이름은 rename될 수 있으므로 실패 시점의 immutable HEAD도 함께 저장한다.
+        # worker는 옛 branch ref가 사라지고 새 branch가 같은 HEAD일 때만 key를 옮긴다.
+        return {"key": f"branch:{branch}", "branch": branch, "head": head}
+    if head:
+        return {"key": f"detached:{head}", "branch": "", "head": head}
+    # Non-git roots exist in unit callers; production push failure in a git repo resolves above.
+    return {"key": "checkout:unknown", "branch": "", "head": ""}
+
+
+def _pending_entries(snapshot_content: str) -> dict[str, dict]:
+    """v2 ledger entries를 파싱한다. legacy/malformed payload는 빈 dict로 보수 처리."""
+    try:
+        payload = json.loads(snapshot_content or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if (not isinstance(payload, dict)
+            or payload.get("version") != _PENDING_LEDGER_VERSION
+            or not isinstance(payload.get("entries"), dict)):
+        return {}
+    return {
+        str(key): value for key, value in payload["entries"].items()
+        if isinstance(key, str) and isinstance(value, dict)
+    }
+
+
+def _serialize_pending_entries(team_root: str, entries: dict[str, dict]) -> str:
+    return json.dumps(
+        {"version": _PENDING_LEDGER_VERSION,
+         "root": os.path.normpath(str(team_root)),
+         "entries": entries},
+        ensure_ascii=False, sort_keys=True)
+
+
+def _legacy_pending_key(snapshot_content: str) -> str:
+    """v1 payload면 안정 legacy key를 반환한다. 임의 malformed text는 대상 아님."""
+    try:
+        payload = json.loads(snapshot_content or "{}")
+    except (TypeError, ValueError):
+        return ""
+    if (not isinstance(payload, dict) or payload.get("version") == 2
+            or not isinstance(payload.get("nonce"), str)):
+        return ""
+    digest = hashlib.sha256(
+        snapshot_content.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"legacy:{digest}"
+
+
+def _unique_local_ahead_branch(team_root: str) -> str:
+    """origin/upstream보다 앞선 local branch가 정확히 하나일 때만 그 이름을 반환."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "for-each-ref",
+             "--format=%(refname:short)\t%(upstream:short)", "refs/heads"],
+            timeout=DEFAULT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if rc != 0:
+        return ""
+    ahead_branches = []
+    for line in (out or "").splitlines():
+        branch, _, upstream = line.partition("\t")
+        branch, upstream = branch.strip(), upstream.strip()
+        if not branch:
+            continue
+        try:
+            if upstream:
+                arc, counts, _ = run_git(
+                    ["-C", team_root, "rev-list", "--left-right", "--count",
+                     f"{upstream}...refs/heads/{branch}"],
+                    timeout=DEFAULT_TIMEOUT)
+                parts = (counts or "").strip().split()
+                if arc != 0 or len(parts) != 2:
+                    return ""
+                ahead = int(parts[1])
+            else:
+                arc, count, _ = run_git(
+                    ["-C", team_root, "rev-list", "--count",
+                    f"refs/heads/{branch}", "--not", "--remotes"],
+                    timeout=DEFAULT_TIMEOUT)
+                if arc != 0:
+                    return ""
+                ahead = int((count or "0").strip())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return ""
+        if ahead > 0:
+            ahead_branches.append(branch)
+    return ahead_branches[0] if len(ahead_branches) == 1 else ""
+
+
+def _legacy_safe_session_branch(team_root: str) -> str:
+    """v1 marker를 bind해도 안전한 유일한 session-log-only branch를 반환한다.
+
+    v1 ledger에는 branch 정보가 없으므로 ``unique ahead``만으로는 증거가 부족하다.
+    stale marker 뒤에 만든 private branch를 자동 publish하지 않도록, ahead commit 전부가
+    과거 auto-commit subject를 쓰고 canonical session log만 변경한 경우로 제한한다.
+    어떤 git 판정이라도 실패하거나 일반 파일이 하나라도 섞이면 빈 문자열(fail closed).
+    """
+    branch = _unique_local_ahead_branch(team_root)
+    if not branch:
+        return ""
+    try:
+        rc, upstream_out, _ = run_git(
+            ["-C", team_root, "for-each-ref", "--format=%(upstream:short)",
+             f"refs/heads/{branch}"], timeout=DEFAULT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if rc != 0:
+        return ""
+    upstream_lines = (upstream_out or "").splitlines()
+    if len(upstream_lines) > 1:
+        return ""
+    upstream = upstream_lines[0].strip() if upstream_lines else ""
+    if upstream:
+        rev_args = ["-C", team_root, "rev-list", "--reverse",
+                    f"{upstream}..refs/heads/{branch}"]
+    else:
+        rev_args = ["-C", team_root, "rev-list", "--reverse",
+                    f"refs/heads/{branch}", "--not", "--remotes"]
+    try:
+        rc, commits_out, _ = run_git(rev_args, timeout=DEFAULT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    commits = [line.strip() for line in (commits_out or "").splitlines()
+               if line.strip()]
+    if rc != 0 or not commits:
+        return ""
+
+    prefix = "memory/team/sessions/"
+    for commit in commits:
+        try:
+            src, subject, _ = run_git(
+                ["-C", team_root, "show", "-s", "--format=%s", commit],
+                timeout=DEFAULT_TIMEOUT)
+            prc, paths_out, _ = run_git(
+                ["-C", team_root, "diff-tree", "--root", "--no-commit-id",
+                 "--no-renames", "--name-only", "-r", "-z", commit],
+                timeout=DEFAULT_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if (src != 0 or prc != 0
+                or not (subject or "").strip().startswith(
+                    "chore(teammode): auto-commit ")):
+            return ""
+        paths = [path for path in (paths_out or "").split("\0") if path]
+        if not paths:
+            return ""
+        for path in paths:
+            if not path.startswith(prefix) or not path.endswith(".md"):
+                return ""
+            tail_parts = path[len(prefix):].split("/")
+            if (len(tail_parts) < 2
+                    or any(part in {"", ".", ".."} for part in tail_parts)):
+                return ""
+    return branch
+
+
+def _bind_renamed_pending_to_current_checkout(
+        team_root: str, snapshot_content: str) -> str:
+    """사라진 old branch entry를 동일 HEAD의 현재 branch key로 CAS 이동한다."""
+    entries = _pending_entries(snapshot_content)
+    if not entries:
+        return snapshot_content
+    current = _checkout_identity(team_root)
+    if (not current.get("branch") or not current.get("head")
+            or current["key"] in entries):
+        return snapshot_content
+    candidates = []
+    for key, entry in entries.items():
+        old_branch = str(entry.get("branch") or "")
+        if (not old_branch or key != f"branch:{old_branch}"
+                or entry.get("head") != current["head"]):
+            continue
+        try:
+            rc, _, _ = run_git(
+                ["-C", team_root, "show-ref", "--verify", "--quiet",
+                 f"refs/heads/{old_branch}"], timeout=DEFAULT_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            return snapshot_content
+        if rc == 1:  # old ref가 실제로 사라졌을 때만 rename으로 인정한다.
+            candidates.append((key, entry, old_branch))
+        elif rc not in (0, 1):
+            return snapshot_content
+    if len(candidates) != 1:
+        return snapshot_content
+
+    old_key, old_entry, old_branch = candidates[0]
+    migrated_entries = dict(entries)
+    migrated_entries.pop(old_key)
+    migrated_entry = dict(old_entry)
+    migrated_entry["branch"] = current["branch"]
+    migrated_entry["head"] = current["head"]
+    migrated_entry["renamed_from"] = old_branch
+    migrated_entries[current["key"]] = migrated_entry
+    migrated = _serialize_pending_entries(team_root, migrated_entries)
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return snapshot_content
+        current_state = _read_private_text(push_pending_path(team_root))
+        if (not current_state.available
+                or current_state.content != snapshot_content.strip()):
+            return current_state.content if current_state.available else snapshot_content
+        return migrated if _write_private_text(
+            push_pending_path(team_root), migrated) else snapshot_content
+
+
+def bind_legacy_pending_to_current_checkout(
+        team_root: str, snapshot_content: str) -> str:
+    """검증된 rename 또는 safe-session legacy entry를 현재 checkout에 CAS bind한다.
+
+    raw v1뿐 아니라 새 failure와 함께 v2에 보존된 ``legacy:true`` entry도 처리한다.
+    v1은 branch 정보가 없으므로 유일한 ahead branch의 commit 전부가 canonical session-log
+    auto-commit이라는 증거가 있을 때만 bind한다. git 판정은 ledger lock 밖에서 끝내고,
+    lock 안에서는 원래 snapshot CAS + atomic replace만 수행한다.
+    """
+    snapshot_content = _bind_renamed_pending_to_current_checkout(
+        team_root, snapshot_content)
+    entries = _pending_entries(snapshot_content)
+    raw_legacy_key = _legacy_pending_key(snapshot_content)
+    if raw_legacy_key:
+        try:
+            raw_legacy = json.loads(snapshot_content)
+        except (TypeError, ValueError):
+            return snapshot_content
+        legacy_items = [(raw_legacy_key, raw_legacy)]
+    else:
+        legacy_items = [
+            (key, entry) for key, entry in entries.items()
+            if key.startswith("legacy:") and entry.get("legacy") is True
+        ]
+    if len(legacy_items) != 1:
+        return snapshot_content
+    legacy_key, legacy = legacy_items[0]
+    unique_branch = _legacy_safe_session_branch(team_root)
+    current = _checkout_identity(team_root)
+    if not unique_branch or current.get("branch") != unique_branch:
+        return snapshot_content
+    migrated_entries = dict(entries)
+    migrated_entries.pop(legacy_key, None)
+    if current["key"] in migrated_entries:
+        # 현재 entry의 push는 이 branch의 모든 선행 commit을 포함한다. legacy가
+        # 이미 수동 publish된 다른 branch였든 현재 branch였든 이 publication에
+        # 흡수해도 안전하므로, 영구 unknown entry 대신 existing target에 병합한다.
+        entry = dict(migrated_entries[current["key"]])
+        entry["absorbed_legacy"] = True
+    else:
+        entry = {
+            "branch": unique_branch,
+            "head": current.get("head", ""),
+            "written_at": str(legacy.get("written_at") or
+                              datetime.now().isoformat(timespec="seconds")),
+            "nonce": str(legacy.get("nonce") or os.urandom(8).hex()),
+            "migrated_from": 1,
+        }
+    migrated_entries[current["key"]] = entry
+    migrated = _serialize_pending_entries(team_root, migrated_entries)
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return snapshot_content
+        current_state = _read_private_text(push_pending_path(team_root))
+        if (not current_state.available
+                or current_state.content != snapshot_content.strip()):
+            return current_state.content if current_state.available else snapshot_content
+        return migrated if _write_private_text(
+            push_pending_path(team_root), migrated) else snapshot_content
+
+
+def pending_entry_key_for_current_checkout(
+        team_root: str, snapshot_content: str) -> str:
+    """snapshot에 현재 branch/detached HEAD entry가 있으면 그 immutable key를 반환."""
+    current = _checkout_identity(team_root)
+    entries = _pending_entries(snapshot_content)
+    if current["key"] in entries:
+        return current["key"]
+    return ""
+
+
+def pending_targets_current_checkout(team_root: str, snapshot_content: str) -> bool:
+    """현재 checkout이 이 pending ledger의 publication 대상 중 하나인지 판정."""
+    return bool(pending_entry_key_for_current_checkout(team_root, snapshot_content))
+
+
+def pending_target_summary(snapshot_content: str, team_root: str = "") -> str:
+    """경고용 pending target 요약(credential/control-code 정제 포함)."""
+    targets = []
+    for key, entry in _pending_entries(snapshot_content).items():
+        if entry.get("branch"):
+            targets.append(f"branch {entry['branch']}")
+        elif entry.get("head"):
+            targets.append(f"detached {str(entry['head'])[:12]}")
+        elif key.startswith("legacy:"):
+            targets.append("legacy checkout (unknown branch)")
+        else:
+            targets.append("unknown checkout")
+    if not targets and _legacy_pending_key(snapshot_content):
+        branch = _legacy_safe_session_branch(team_root) if team_root else ""
+        targets.append(f"legacy checkout ({branch or 'unknown branch'})")
+    return sanitize_git_detail(", ".join(targets) or "unknown checkout", limit=200)
+
+
+def _validated_pending_identity(
+        team_root: str, identity: dict | None) -> dict[str, str] | None:
+    """명시 identity를 검증하거나, 생략 시 현재 checkout identity를 반환한다."""
+    if identity is None:
+        return _checkout_identity(team_root)
+    if not isinstance(identity, dict):
+        return None
+    key = identity.get("key")
+    branch = identity.get("branch")
+    head = identity.get("head")
+    if not all(isinstance(value, str) for value in (key, branch, head)):
+        return None
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head or ""):
+        return None
+    if branch:
+        if key != f"branch:{branch}":
+            return None
+        try:
+            rc, _, _ = run_git(
+                ["-C", team_root, "check-ref-format", "--branch", branch],
+                timeout=DEFAULT_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0:
+            return None
+    elif key != f"detached:{head}":
+        return None
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "cat-file", "-e", f"{head}^{{commit}}"],
+            timeout=DEFAULT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    return {"key": key, "branch": branch, "head": head.lower()}
+
+
+def write_push_pending(team_root: str, identity: dict | None = None) -> bool:
+    """현재 checkout pending entry를 원자 upsert한다. 다른 branch entry는 보존. 무raise.
+
+    branch/detached HEAD binding은 worker가 다른 branch를 성공으로 오판해 ledger를
+    지우는 것을 막는다. nonce는 같은 checkout 재기록의 compare-and-delete 판별자다.
     반환: 기록 성공 여부(codex P1 — 실패를 호출부가 모르면 "커밋됨·push 안 됨·
     pending 없음·마커 없음" 무음 유실 상태가 된다. 호출부는 False 에 fallback 가시화).
     """
+    identity = _validated_pending_identity(team_root, identity)
+    if identity is None:
+        return False
     with _push_pending_ledger_lock(team_root) as locked:
         if not locked:
             return False
         try:
-            payload = json.dumps(
-                {"root": os.path.normpath(str(team_root)),
-                 "written_at": datetime.now().isoformat(timespec="seconds"),
-                 # nonce: compare-and-delete 식별자 — coarse mtime FS(1s 해상도)에서
-                 # 같은 초 내 재기록을 mtime 으로 구분 못 하는 문제의 해법(codex 재검수).
-                 "nonce": os.urandom(8).hex()},
-                ensure_ascii=False)
-            tmp = push_pending_path(team_root) + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(payload)
-            os.replace(tmp, push_pending_path(team_root))
-            return True
-        except OSError:
+            current = _read_private_text(push_pending_path(team_root))
+            if not current.available:
+                return False
+            entries = _pending_entries(current.content)
+            if current.content and not entries:
+                # v1/legacy ledger는 branch가 없어 자동 처리할 수 없다. 새 entry를
+                # 추가하되 legacy 자체도 보존해 업그레이드 중 retry state를 잃지 않는다.
+                legacy_key = _legacy_pending_key(current.content)
+                if not legacy_key:
+                    return False
+                entries[legacy_key] = {
+                    "branch": "", "head": "", "legacy": True,
+                    "written_at": datetime.now().isoformat(timespec="seconds"),
+                    "nonce": legacy_key.removeprefix("legacy:"),
+                }
+            entries[identity["key"]] = {
+                "branch": identity["branch"],
+                "head": identity["head"],
+                "written_at": datetime.now().isoformat(timespec="seconds"),
+                # coarse mtime FS에서도 같은 초 재기록을 구분하는 고유 판별자.
+                "nonce": os.urandom(8).hex(),
+            }
+            payload = _serialize_pending_entries(team_root, entries)
+            return _write_private_text(push_pending_path(team_root), payload)
+        except (OSError, ValueError):
             return False  # ledger 기록 실패는 커밋을 막지 않는다 — 가시화는 호출부 몫
 
 
+def read_push_pending_state(team_root: str) -> PushPendingRead:
+    """pending 내용과 ledger 가용성을 분리해 반환한다. 무raise."""
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return PushPendingRead(available=False)
+        return _read_private_text(push_pending_path(team_root))
+
+
 def read_push_pending(team_root: str) -> str:
-    """pending 마커 내용(없으면 ''). 무raise."""
-    with _push_pending_ledger_lock(team_root) as locked:
-        if not locked:
-            # 잠금 실패를 "pending 없음"으로 오판하면 warning/ledger 를 지울 수 있다.
-            return _PUSH_PENDING_LOCK_UNAVAILABLE
-        try:
-            with open(push_pending_path(team_root), encoding="utf-8") as f:
-                return f.read().strip()
-        except (OSError, ValueError):
-            return ""
+    """호환용 content-only reader. lock 불가도 빈 문자열이므로 삭제 판정에 쓰지 않는다."""
+    return read_push_pending_state(team_root).content
 
 
-def clear_push_pending(team_root: str) -> None:
-    """pending 마커 제거(멱등·무raise). push 성공 + ahead==0 확인 후에만 호출할 것 —
-    push 도중 새 커밋이 생겼으면 pending 을 유지해야 유실이 없다(#45 정정)."""
-    with _push_pending_ledger_lock(team_root) as locked:
-        if not locked:
-            return
-        try:
-            os.remove(push_pending_path(team_root))
-        except OSError:
-            pass
-
-
-def clear_push_pending_if_unchanged(team_root: str, snapshot_content: str) -> bool:
-    """스냅샷 이후 pending 이 재기록되지 않았을 때만 clear (codex P1 — clear race 차단).
+def clear_push_pending_if_unchanged(
+        team_root: str, snapshot_content: str, target_key: str | None = None) -> bool:
+    """스냅샷이 그대로일 때 지정 checkout entry만 clear한다.
 
     worker 가 push 성공 → ahead==0 확인 → clear 직전에 auto-commit 이 새 커밋의
     pending 을 재기록하면, 무조건 clear 는 그 새 pending 을 삼켜 "ahead 인데 pending
-    없음" 유실 상태를 만든다. 판별자는 **파일 내용**(payload 에 매 기록 고유 nonce
-    포함) — mtime(_ns) 비교는 coarse mtime FS(1s 해상도)에서 같은 초 내 재기록을
-    놓친다(codex 재검수). 내용이 스냅샷과 같을 때만 지운다(다르면 False —
-    호출부 drain loop 가 이어서 push).
+    없음" 유실 상태를 만든다. branch별 entry를 두어 다른 checkout의 retry state도
+    보존하고, 전체 파일 내용(nonce 포함)이 스냅샷과 같을 때만 대상 entry를 지운다.
     짧은 ledger OS lock 안에서 compare+remove 를 한 임계구역으로 묶어, 비교 직후
     writer 가 새 nonce 를 replace 한 뒤 old clear 가 삭제하는 TOCTOU 를 막는다.
-    반환: 실제로 지웠으면 True.
+    target_key를 생략하면 호출 시점의 현재 checkout entry를 대상으로 한다.
     """
     if not snapshot_content:
         return False
+    key = target_key or _checkout_identity(team_root)["key"]
     path = push_pending_path(team_root)
     with _push_pending_ledger_lock(team_root) as locked:
         if not locked:
             return False
-        try:
-            with open(path, encoding="utf-8") as f:
-                if f.read().strip() != snapshot_content.strip():
-                    return False
-            os.remove(path)
-            return True
-        except OSError:
+        current = _read_private_text(path)
+        if not current.available or current.content != snapshot_content.strip():
             return False
+        entries = _pending_entries(current.content)
+        if not entries:
+            legacy_key = _legacy_pending_key(current.content)
+            if key == legacy_key and legacy_key:
+                return _remove_private_file(path)
+            return False
+        if key not in entries:
+            return False
+        del entries[key]
+        if not entries:
+            return _remove_private_file(path)
+        return _write_private_text(path, _serialize_pending_entries(team_root, entries))
+
+
+def clear_sync_warning_if_fully_published(
+        team_root: str, timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """origin publication 과 empty pending 을 함께 입증한 경우에만 warning 을 지운다.
+
+    ahead 판정은 네트워크/하위 프로세스가 없어도 ledger lock 밖에서 수행한다. 이후
+    pending 확인과 warning clear 를 같은 ledger 임계구역에 묶는다. 실패 경로가
+    ``pending 기록 -> warning 기록`` 순서를 지키면 새 실패 warning 을 성공 경로가
+    지우는 경합이 없다.
+    """
+    warning_before = _read_private_text(sync_warning_path(team_root))
+    if not warning_before.available:
+        return False
+    ahead, _behind, has_upstream = _ahead_behind_raw(team_root, timeout)
+    if not has_upstream or ahead != 0:
+        return False
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return False
+        pending = _read_private_text(push_pending_path(team_root))
+        if not pending.available or pending.content:
+            return False
+        warning_now = _read_private_text(sync_warning_path(team_root))
+        if (not warning_now.available
+                or warning_now.fingerprint != warning_before.fingerprint
+                or warning_now.content != warning_before.content):
+            return False
+        return _remove_private_file(sync_warning_path(team_root))
 
 
 def push_pending_age_seconds(team_root: str):
     """pending 마커 나이(초). 없으면 None. UserPromptSubmit 초경량 검사용 —
-    stat 1회만 수행한다(장수 세션에서 매 발화 비용 최소화)."""
+    state dir + marker lstat 만 수행한다(장수 세션에서 매 발화 비용 최소화)."""
     try:
-        return max(0.0, float(time.time() - os.stat(push_pending_path(team_root)).st_mtime))
+        state_dir = os.lstat(_state_dir())
+        if (not stat.S_ISDIR(state_dir.st_mode) or stat.S_ISLNK(state_dir.st_mode)
+                or os.path.islink(_state_dir())
+                or getattr(os.path, "isjunction", lambda _path: False)(_state_dir())
+                or (hasattr(os, "getuid") and state_dir.st_uid != os.getuid())):
+            return None
+        st = os.lstat(push_pending_path(team_root))
+        if not _owned_regular(st):
+            return None
+        return max(0.0, float(time.time() - st.st_mtime))
     except OSError:
         return None
 
@@ -707,7 +1676,7 @@ def _is_non_fast_forward(text: str) -> bool:
 
 
 def _is_no_upstream(text: str) -> bool:
-    """push 출력(stderr/stdout)이 **upstream 미설정 거부**인지 판정. 무raise.
+    """push 출력이 upstream 미설정/현재 branch명 불일치 거부인지 판정. 무raise.
 
     새 브랜치(`checkout -b`)에서 평문 `git push` 는 push.default=simple 아래
     "fatal: The current branch X has no upstream branch. ... use
@@ -718,7 +1687,10 @@ def _is_no_upstream(text: str) -> bool:
     if not text:
         return False
     low = text.lower()
-    return "no upstream branch" in low or "--set-upstream" in low
+    return ("no upstream branch" in low
+            or "--set-upstream" in low
+            or ("upstream branch of your current branch" in low
+                and "does not match" in low))
 
 
 def _abort_rebase(team_root: str, timeout: int) -> None:
@@ -754,12 +1726,12 @@ def do_commit(team_root: str, message: str, push: bool = False,
     전용**이다. 내부 로컬 하위호출(add·staged-diff·commit)은 DEFAULT_TIMEOUT 고정 —
     함수 timeout 을 그대로 쓰면 push=False(네트워크 0) 경로까지 10s 로 승격돼
     "로컬 동사는 2s(세션 스냅함)" 선언이 깨진다(codex 리뷰 P2-2).
-    또한 push=True 흐름 전체는 **진입 앵커** 벽시계 예산 PUSH_TOTAL_BUDGET(22s)로
-    캡된다 — 데드라인이 함수 진입에서 시작돼 로컬 단계(최악 ~8s)도 예산을 소모하고
+    또한 push=True 흐름 전체는 **진입 앵커** 벽시계 예산 PUSH_TOTAL_BUDGET(35s)로
+    캡된다 — 데드라인이 함수 진입에서 시작돼 로컬 단계(최악 ~16s)도 예산을 소모하고
     네트워크 단계는 남은 만큼만 쓴다(로컬 하위호출은 개별 클램프 없음 — 로컬 커밋은
-    항상 완주·보존). 복구 체인(최악 네트워크 5회 순차)이 훅 manifest 캡(40s)을 넘기
+    항상 완주·보존). 복구 체인(최악 네트워크 5회 순차)이 훅 manifest 캡(70s)을 넘기
     전에 **항상** 스스로 반환해, 호출부가 sync-warning 마커를 쓸 수 있게 한다
-    (codex 재리뷰 P1 — 종전엔 데드라인이 push 직전 시작이라 로컬 최악 8s + 25s 가
+    (codex 재리뷰 P1 — 종전엔 데드라인이 push 직전 시작이라 로컬 시간 + 25s 가
     캡을 넘을 수 있었다: A1).
     - 변경 없음 → committed=False, ok=False (비치명: 레포 무손상).
     - push=True 이고 원격 없음/오프라인 → **커밋은 보존**, push 만 실패(ok 은 commit 성공
@@ -807,6 +1779,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
                             detail="nothing to commit")
 
     # 3) commit — paths 지정 시 pathspec partial commit(미리 staged 된 다른 경로 제외).
+    commit_start_identity = _checkout_identity(team_root)
     commit_args = ["-C", team_root, "commit", "-m", message]
     if paths:
         commit_args += ["--", *[str(p) for p in paths]]
@@ -820,9 +1793,29 @@ def do_commit(team_root: str, message: str, push: bool = False,
         return CommitResult(ok=False, committed=False,
                             detail=f"commit failed: {((err or out) or '').strip()[:200]}")
 
+    commit_identity = _checkout_identity(team_root)
+    if (not commit_identity.get("head")
+            or commit_identity.get("head") == commit_start_identity.get("head")
+            or commit_identity.get("branch") != commit_start_identity.get("branch")):
+        # commit 전후 checkout 일관성을 입증하지 못하면 later-current checkout에
+        # pending을 오바인딩하지 않는다. 호출부가 ledger 실패를 즉시 표면화한다.
+        commit_identity = None
+
+    def _committed_result(pushed: bool, detail: str) -> CommitResult:
+        identity = commit_identity
+        if identity is not None:
+            current = _checkout_identity(team_root)
+            # 같은 branch에서 rebase로 commit SHA가 바뀐 경우 최신 HEAD를 고정한다.
+            # 반환 직전 checkout이 바뀌었다면 원래 commit 직후 identity를 유지한다.
+            if (current.get("branch") == identity.get("branch")
+                    and current.get("head")):
+                identity = current
+        return CommitResult(
+            ok=True, committed=True, pushed=pushed, detail=detail,
+            pending_identity=identity)
+
     if not push:
-        return CommitResult(ok=True, committed=True, pushed=False,
-                            detail=(out or "").strip()[:200])
+        return _committed_result(False, (out or "").strip()[:200])
 
     # 4) push (선택). 실패해도 **커밋은 보존** — ok 은 commit 성공 기준으로 유지.
     #
@@ -830,34 +1823,39 @@ def do_commit(team_root: str, message: str, push: bool = False,
     # _deadline 하나를 이 지점 이후의 **모든** 네트워크 호출(push·push -u·fetch·
     # rebase·재push)이 나눠 쓴다 — 로컬 단계가 이미 소모한 벽시계만큼 네트워크
     # 몫이 준다. 개별 호출마다 NET_TIMEOUT 을 새로 주면 복구 체인이 최악 ~50s 까지
-    # 늘어져 훅 manifest 캡(40s)이 프로세스를 먼저 죽이고, 그러면 호출부가
+    # 늘어져 훅 manifest 캡(70s)이 프로세스를 먼저 죽이고, 그러면 호출부가
     # CommitResult 를 받지 못해 sync-warning 마커를 못 쓴다. 예산이 바닥나면 즉시
     # 비차단 반환한다(커밋은 이미 보존됨 — push 미완만 detail 로 표면화).
 
-    def _net_t() -> int:
-        """남은 예산으로 클램프한 네트워크 타임아웃(하한 1s — 0/음수 방지).
+    def _net_t(reserve: int = _COMMIT_RESULT_RESERVE) -> int:
+        """정리 꼬리를 뺀 남은 예산으로 네트워크 timeout을 클램프한다.
+
+        기본 reserve는 반환 identity probe 두 개 몫이다. rebase는 autostash
+        rollback/postcondition까지 필요하므로 더 큰 _REBASE_RECOVERY_RESERVE를
+        명시한다. 호출 직전 _budget_ok(reserve + 1)로 최소 1초 실행 몫을 확인한다.
 
         하한(max)은 **바깥**에서 강제한다(codex A1): 종전
         min(timeout, max(1, 남은예산)) 은 caller 가 timeout<=0 을 주면 min 이
         그 0/음수를 그대로 통과시켜 '하한 1s' 문서 계약이 깨졌다 — 커밋만 남고
         push 가 즉시 TimeoutExpired 로 죽는다.
         """
-        return max(1, min(timeout, int(_deadline - time.monotonic())))
+        remaining = int(_deadline - time.monotonic() - reserve)
+        return max(1, min(timeout, remaining))
 
-    def _budget_ok(reserve: int = 1) -> bool:
+    def _budget_ok(reserve: int = _COMMIT_RESULT_RESERVE + 1) -> bool:
         """남은 예산 검사. rebase 같은 다단계 진입 전엔 reserve 를 크게 줘
         '1초 남기고 rebase 시작 → abort 까지 캡 초과' 경로를 차단한다(#codex-P1)."""
         return (_deadline - time.monotonic()) >= reserve
 
     def _budget_stop(step: str) -> CommitResult:
-        return CommitResult(ok=True, committed=True, pushed=False,
-                            detail=f"committed; push budget exhausted ({step})")
+        return _committed_result(
+            False, f"committed; push budget exhausted ({step})")
 
     # preflight(A1): 로컬 단계가 예산을 이미 소진했으면 push 를 아예 시작하지 않는다 —
     # _net_t 의 하한(1s) 때문에 소진 상태에서도 1s 짜리 헛 push 가 나가는 걸 차단.
     # 이 결과 모양(committed=True/pushed=False)이 auto-commit 훅의 sync-warning
     # 마커 기록 조건이다.
-    if not _budget_ok(reserve=2):
+    if not _budget_ok():
         return _budget_stop("before push")
 
     try:
@@ -865,14 +1863,11 @@ def do_commit(team_root: str, message: str, push: bool = False,
             ["-C", team_root, *http_timeout_opts(timeout), "push"],
             timeout=_net_t())
     except subprocess.TimeoutExpired:
-        return CommitResult(ok=True, committed=True, pushed=False,
-                            detail="committed; push timeout")
+        return _committed_result(False, "committed; push timeout")
     except (OSError, subprocess.SubprocessError) as exc:
-        return CommitResult(ok=True, committed=True, pushed=False,
-                            detail=f"committed; push exec error: {exc}")
+        return _committed_result(False, f"committed; push exec error: {exc}")
     if prc == 0:
-        return CommitResult(ok=True, committed=True, pushed=True,
-                            detail="committed and pushed")
+        return _committed_result(True, "committed and pushed")
 
     # 4-0) upstream 미설정 거부면 자동 복구: `push -u origin HEAD` 1회 재시도(이슈 #34).
     #      새 브랜치에서 평문 push 는 영원히 실패하므로 upstream 을 심으며 push 한다.
@@ -890,14 +1885,12 @@ def do_commit(team_root: str, message: str, push: bool = False,
                  "push", "-u", "origin", "HEAD"],
                 timeout=_net_t())
         except subprocess.TimeoutExpired:
-            return CommitResult(ok=True, committed=True, pushed=False,
-                                detail="committed; push -u timeout")
+            return _committed_result(False, "committed; push -u timeout")
         except (OSError, subprocess.SubprocessError) as exc:
-            return CommitResult(ok=True, committed=True, pushed=False,
-                                detail=f"committed; push -u exec error: {exc}")
+            return _committed_result(
+                False, f"committed; push -u exec error: {exc}")
         if urc == 0:
-            return CommitResult(ok=True, committed=True, pushed=True,
-                                detail="committed and pushed (set upstream)")
+            return _committed_result(True, "committed and pushed (set upstream)")
         # 4-0-1) -u 재시도가 non-ff 거부 → fetch → origin/<현재 브랜치> 위로 rebase →
         #        `push -u origin HEAD` 1회 더. rebase 는 --autostash(partial-commit 의
         #        dirty 워킹트리 흡수·충돌 시 자동 원복 — 4-1 과 동일 사유).
@@ -909,16 +1902,14 @@ def do_commit(team_root: str, message: str, push: bool = False,
                     ["-C", team_root, *http_timeout_opts(timeout), "fetch"],
                     timeout=_net_t())
             except subprocess.TimeoutExpired:
-                return CommitResult(ok=True, committed=True, pushed=False,
-                                    detail="committed; push -u rebase fetch timeout")
+                return _committed_result(
+                    False, "committed; push -u rebase fetch timeout")
             except (OSError, subprocess.SubprocessError) as exc:
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail=f"committed; push -u rebase fetch exec error: {exc}")
+                return _committed_result(
+                    False, f"committed; push -u rebase fetch exec error: {exc}")
             if frc != 0:
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail=f"committed; push -u rebase fetch failed: "
+                return _committed_result(
+                    False, f"committed; push -u rebase fetch failed: "
                            f"{(ferr or '').strip()[:200]}")
             # rebase 기준은 @{u}(없음)가 아니라 origin/<현재 브랜치> — 브랜치명은
             # 로컬 동사(rev-parse)로 해석. detached HEAD 면 복구 불가(비차단 반환).
@@ -932,31 +1923,64 @@ def do_commit(team_root: str, message: str, push: bool = False,
             except (OSError, subprocess.SubprocessError):
                 branch = ""
             if not branch or branch == "HEAD":
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail="committed; push -u rejected (non-ff) and current "
+                return _committed_result(
+                    False, "committed; push -u rejected (non-ff) and current "
                            "branch unresolvable — manual sync needed")
-            if not _budget_ok(reserve=4):
+            if not _budget_ok(reserve=8):
+                return _budget_stop("before push -u rebase safety checks")
+            safety_issue = _rebase_dirty_safety_issue(
+                team_root, f"origin/{branch}", 1)
+            if safety_issue:
+                return _committed_result(
+                    False, f"committed; push -u rebase deferred: {safety_issue}")
+            if not _budget_ok(reserve=6):
+                return _budget_stop("before push -u rollback guard")
+            rebase_guard = _capture_rebase_guard(team_root, 1)
+            if rebase_guard is None:
+                return _committed_result(
+                    False, "committed; push -u rebase deferred: "
+                           "rollback guard unavailable")
+            if not _budget_ok(reserve=_REBASE_RECOVERY_RESERVE + 1):
                 return _budget_stop("before push -u rebase")
             try:
-                rrc, _, rerr = run_git(
+                rrc, rout, rerr = run_git(
                     ["-C", team_root, "rebase", "--autostash",
-                     f"origin/{branch}"], timeout=_net_t())
-            except subprocess.TimeoutExpired:
+                     f"origin/{branch}"],
+                    timeout=_net_t(reserve=_REBASE_RECOVERY_RESERVE))
+            except subprocess.TimeoutExpired as exc:
+                created_autostash = _created_autostash_oid(
+                    team_root, _timeout_detail(exc), timeout=1)
                 _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                return CommitResult(ok=True, committed=True, pushed=False,
-                                    detail="committed; push -u rebase timeout")
+                _post_ok, post_detail = _verify_rebase_postcondition(
+                    team_root, rebase_guard, created_autostash, timeout=1)
+                return _committed_result(
+                    False, "committed; push -u rebase timeout" +
+                    (f"; {post_detail}" if post_detail else ""))
             except (OSError, subprocess.SubprocessError) as exc:
                 _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail=f"committed; push -u rebase exec error: {exc}")
+                _post_ok, post_detail = _verify_rebase_postcondition(
+                    team_root, rebase_guard, timeout=1)
+                return _committed_result(
+                    False, f"committed; push -u rebase exec error: {exc}" +
+                    (f"; {post_detail}" if post_detail else ""))
             if rrc != 0:
                 _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail=f"committed; push -u rebase failed (aborted): "
-                           f"{(rerr or '').strip()[:200]}")
+                created_autostash = _created_autostash_oid(
+                    team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+                _post_ok, post_detail = _verify_rebase_postcondition(
+                    team_root, rebase_guard, created_autostash, timeout=1)
+                return _committed_result(
+                    False, f"committed; push -u rebase failed (aborted): "
+                    f"{(rerr or '').strip()[:200]}" +
+                    (f"; {post_detail}" if post_detail else ""))
+            created_autostash = _created_autostash_oid(
+                team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+            post_ok, post_detail = _verify_rebase_postcondition(
+                team_root, rebase_guard, created_autostash, timeout=1)
+            if not post_ok:
+                return _committed_result(
+                    False, f"committed; push -u rebase postcondition failed: "
+                    f"{post_detail}")
             if not _budget_ok():
                 return _budget_stop("before push -u after rebase")
             try:
@@ -965,24 +1989,20 @@ def do_commit(team_root: str, message: str, push: bool = False,
                      "push", "-u", "origin", "HEAD"],
                     timeout=_net_t())
             except subprocess.TimeoutExpired:
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail="committed; rebased but push -u timeout")
+                return _committed_result(
+                    False, "committed; rebased but push -u timeout")
             except (OSError, subprocess.SubprocessError) as exc:
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail=f"committed; rebased but push -u exec error: {exc}")
+                return _committed_result(
+                    False, f"committed; rebased but push -u exec error: {exc}")
             if u2rc == 0:
-                return CommitResult(
-                    ok=True, committed=True, pushed=True,
-                    detail="committed and pushed (set upstream after rebase)")
-            return CommitResult(
-                ok=True, committed=True, pushed=False,
-                detail=f"committed; rebased but push -u failed: "
-                       f"{((u2err or u2out) or '').strip()[:200]}")
-        return CommitResult(
-            ok=True, committed=True, pushed=False,
-            detail=f"committed; push failed: {((uerr or uout) or '').strip()[:200]}")
+                return _committed_result(
+                    True, "committed and pushed (set upstream after rebase)")
+            return _committed_result(
+                False, f"committed; rebased but push -u failed: "
+                f"{((u2err or u2out) or '').strip()[:200]}")
+        return _committed_result(
+            False, f"committed; push failed: "
+            f"{((uerr or uout) or '').strip()[:200]}")
 
     # 4-1) non-ff 거부면 자동 복구: fetch → rebase → 재push 1회.
     #      다른 기기가 먼저 push 해 로컬이 behind 일 때 발생. non-ff 가 아닌 실패(인증·
@@ -1000,27 +2020,56 @@ def do_commit(team_root: str, message: str, push: bool = False,
                 ["-C", team_root, *http_timeout_opts(timeout), "fetch"],
                 timeout=_net_t())
         except subprocess.TimeoutExpired:
-            return CommitResult(ok=True, committed=True, pushed=False,
-                                detail="committed; rebase fetch timeout")
+            return _committed_result(False, "committed; rebase fetch timeout")
         except (OSError, subprocess.SubprocessError) as exc:
-            return CommitResult(ok=True, committed=True, pushed=False,
-                                detail=f"committed; rebase fetch exec error: {exc}")
+            return _committed_result(
+                False, f"committed; rebase fetch exec error: {exc}")
         if frc == 0:
-            # rebase (추적 upstream 위로). 충돌 등 실패 시 반드시 --abort 로 원상복구.
-            if not _budget_ok(reserve=4):
+            # rebase (추적 upstream 위로). dirty 파일이 upstream 변경과 겹치면
+            # autostash apply가 성공 rc 뒤에도 conflict를 남길 수 있어 선제 보류한다.
+            if not _budget_ok(reserve=8):
+                return _budget_stop("before rebase safety checks")
+            safety_issue = _rebase_dirty_safety_issue(
+                team_root, "@{u}", 1)
+            if safety_issue:
+                return _committed_result(
+                    False, f"committed; rebase deferred: {safety_issue}")
+            if not _budget_ok(reserve=6):
+                return _budget_stop("before rollback guard")
+            rebase_guard = _capture_rebase_guard(team_root, 1)
+            if rebase_guard is None:
+                return _committed_result(
+                    False, "committed; rebase deferred: rollback guard unavailable")
+            if not _budget_ok(reserve=_REBASE_RECOVERY_RESERVE + 1):
                 return _budget_stop("before rebase")
             try:
-                rrc, _, rerr = run_git(
-                    ["-C", team_root, "rebase", "--autostash"], timeout=_net_t())
-            except subprocess.TimeoutExpired:
+                rrc, rout, rerr = run_git(
+                    ["-C", team_root, "rebase", "--autostash"],
+                    timeout=_net_t(reserve=_REBASE_RECOVERY_RESERVE))
+            except subprocess.TimeoutExpired as exc:
+                created_autostash = _created_autostash_oid(
+                    team_root, _timeout_detail(exc), timeout=1)
                 _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                return CommitResult(ok=True, committed=True, pushed=False,
-                                    detail="committed; rebase timeout")
+                _post_ok, post_detail = _verify_rebase_postcondition(
+                    team_root, rebase_guard, created_autostash, timeout=1)
+                return _committed_result(
+                    False, "committed; rebase timeout" +
+                    (f"; {post_detail}" if post_detail else ""))
             except (OSError, subprocess.SubprocessError) as exc:
                 _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                return CommitResult(ok=True, committed=True, pushed=False,
-                                    detail=f"committed; rebase exec error: {exc}")
+                _post_ok, post_detail = _verify_rebase_postcondition(
+                    team_root, rebase_guard, timeout=1)
+                return _committed_result(
+                    False, f"committed; rebase exec error: {exc}" +
+                    (f"; {post_detail}" if post_detail else ""))
             if rrc == 0:
+                created_autostash = _created_autostash_oid(
+                    team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+                post_ok, post_detail = _verify_rebase_postcondition(
+                    team_root, rebase_guard, created_autostash, timeout=1)
+                if not post_ok:
+                    return _committed_result(
+                        False, f"committed; rebase postcondition failed: {post_detail}")
                 # rebase 성공 → 재push 1회.
                 if not _budget_ok():
                     return _budget_stop("before re-push")
@@ -1029,25 +2078,29 @@ def do_commit(team_root: str, message: str, push: bool = False,
                         ["-C", team_root, *http_timeout_opts(timeout), "push"],
                         timeout=_net_t())
                 except subprocess.TimeoutExpired:
-                    return CommitResult(ok=True, committed=True, pushed=False,
-                                        detail="committed; rebased but re-push timeout")
+                    return _committed_result(
+                        False, "committed; rebased but re-push timeout")
                 except (OSError, subprocess.SubprocessError) as exc:
-                    return CommitResult(ok=True, committed=True, pushed=False,
-                                        detail=f"committed; rebased but re-push exec error: {exc}")
+                    return _committed_result(
+                        False, f"committed; rebased but re-push exec error: {exc}")
                 if p2rc == 0:
-                    return CommitResult(ok=True, committed=True, pushed=True,
-                                        detail="committed; rebased and pushed")
-                return CommitResult(
-                    ok=True, committed=True, pushed=False,
-                    detail=f"committed; rebased but re-push failed: {((p2err or p2out) or '').strip()[:200]}")
+                    return _committed_result(True, "committed; rebased and pushed")
+                return _committed_result(
+                    False, f"committed; rebased but re-push failed: "
+                    f"{((p2err or p2out) or '').strip()[:200]}")
             # rebase 실패(충돌 등) → abort 로 원상복구 후 비차단 반환.
             _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-            return CommitResult(
-                ok=True, committed=True, pushed=False,
-                detail=f"committed; rebase failed (aborted): {(rerr or '').strip()[:200]}")
+            created_autostash = _created_autostash_oid(
+                team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+            _post_ok, post_detail = _verify_rebase_postcondition(
+                team_root, rebase_guard, created_autostash, timeout=1)
+            return _committed_result(
+                False, f"committed; rebase failed (aborted): "
+                f"{(rerr or '').strip()[:200]}" +
+                (f"; {post_detail}" if post_detail else ""))
 
-    return CommitResult(ok=True, committed=True, pushed=False,
-                        detail=f"committed; push failed: {((perr or pout) or '').strip()[:200]}")
+    return _committed_result(
+        False, f"committed; push failed: {((perr or pout) or '').strip()[:200]}")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1074,7 +2127,9 @@ def fetch_upstream(team_root: str, remote: str = "upstream",
     """
     if not is_git_worktree(team_root):
         return FetchResult(ok=False, detail="not a git work tree")
-    if not _has_remote(team_root, remote, timeout):
+    # remote 목록은 로컬 probe다. 네트워크 fetch용 timeout(최대 10s)을 그대로 주면
+    # SessionStart shared deadline에서 로컬 한 번이 10s를 별도로 소비할 수 있다.
+    if not _has_remote(team_root, remote, DEFAULT_TIMEOUT):
         return FetchResult(ok=False, detail=f"no '{remote}' remote")
     try:
         rc, out, err = run_git(
