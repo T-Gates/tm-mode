@@ -88,7 +88,8 @@ Foreground publication reactivates `PUSH_TOTAL_BUDGET` in `do_commit`. The
 auto-commit manifest timeout must therefore return from the async-only value to a
 value that covers the 22-second push budget, a possible first local attempt before
 an index-lock result, the one-second retry delay, and cleanup. The implementation
-will use 35 seconds; 30 seconds does not safely cover the retry path.
+will use 40 seconds, with 35 seconds as the tested minimum; 30 seconds does not
+safely cover the retry path and 40 leaves termination/cleanup headroom.
 
 ## Tests
 

@@ -310,9 +310,11 @@ Expected RED: timeout is 20 seconds and the note declares async-only behavior.
 
 ### Step 3: Update the manifest
 
-Set the auto-commit timeout to 35 seconds. Explain that the retry path can consume
+Set the auto-commit timeout to 40 seconds (the test enforces a 35-second minimum).
+Explain that the retry path can consume
 a first local attempt, one second of backoff, and then a fresh 22-second
-push/recovery transaction plus cleanup. Update the stale `git_ops.py` comment that
+push/recovery transaction plus cleanup; the additional headroom keeps runner
+termination from racing the fallback marker write. Update the stale `git_ops.py` comment that
 names the old 30-second manifest cap; do not change the 22-second runtime budget.
 
 ### Step 4: Run GREEN and commit
