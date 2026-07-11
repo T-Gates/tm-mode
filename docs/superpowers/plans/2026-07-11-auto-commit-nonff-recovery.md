@@ -114,6 +114,8 @@ Do not edit production code until those failures are observed and recorded.
 
 - Modify: `infra/hooks/auto-commit.py`
 - Modify: `infra/i18n.py`
+- Modify: `infra/git_ops.py`
+- Modify: `infra/hooks/session-start.py`
 - Test: `tests/test_auto_commit_sync_warning.py`
 - Test: `tests/test_hooks_l2g.py`
 
@@ -152,6 +154,13 @@ For `committed and pushed`:
 5. Never write a fresh pending ledger or kick the worker on this path.
 
 An absent pre-existing snapshot is valid; do not call compare-and-delete with an empty string.
+
+Protect pending read, write, and compare-and-delete with a short team-scoped OS
+advisory lock that is separate from the worker's network-duration lock. Add a
+forced cross-process interleaving test where a writer starts between comparison
+and removal; the new nonce must remain. Change session-start's stale cleanup to
+capture the pending content and use the same conditional delete instead of an
+unconditional clear.
 
 ### Step 4: Preserve the failed-publication fallback
 
@@ -195,7 +204,7 @@ Run the Task 1 command again. Expected: all pass.
 ### Step 7: Commit the state-machine slice
 
 ```bash
-git add infra/hooks/auto-commit.py infra/i18n.py tests/test_auto_commit_sync_warning.py tests/test_hooks_l2g.py
+git add infra/hooks/auto-commit.py infra/i18n.py infra/git_ops.py infra/hooks/session-start.py tests/test_auto_commit_sync_warning.py tests/test_hooks_l2g.py tests/test_async_push.py
 git commit -m "fix(hooks): restore foreground auto-commit recovery"
 ```
 
@@ -275,12 +284,11 @@ The first three were observed failing in Task 1. They must now pass without modi
 python -m pytest -q tests/test_async_push.py tests/test_git_ops.py
 ```
 
-### Step 7: Commit the integration tests
+### Step 7: Confirm the integration tests are in the state-machine commit
 
-```bash
-git add tests/test_async_push.py
-git commit -m "test(hooks): cover auto-commit non-ff recovery"
-```
+The real-Git tests and atomic-ledger regression belong in the same reviewed
+state-machine slice as the hook wiring. Verify they are present in that commit;
+do not create an empty follow-up commit.
 
 ## Task 4: Restore the hook timeout contract with RED/GREEN coverage
 

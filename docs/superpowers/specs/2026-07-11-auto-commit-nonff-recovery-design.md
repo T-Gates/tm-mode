@@ -77,6 +77,9 @@ can overlap the next file edit.
   on non-fast-forward rejection.
 - Pending cleanup must use the existing content snapshot and nonce. Unconditional
   deletion could erase a pending record written by another hook invocation.
+- Pending reads, writes, and compare-and-delete cleanup share a short team-scoped
+  OS advisory lock distinct from the worker's network-duration lock. This closes
+  the read/remove TOCTOU without making file-edit hooks wait for network I/O.
 - A successful push can include older pending commits as ancestors. Cleanup is
   valid only after `ahead == 0` and the observed ledger has not changed.
 - `--autostash` remains required because the hook stages only the files named by
@@ -107,6 +110,8 @@ Add or update tests that prove:
 8. The plain worker still refuses to rebase and leaves `HEAD` unchanged.
 9. Korean and English warning content remains locale-correct.
 10. The manifest timeout matches the foreground push budget.
+11. A forced writer between pending comparison and deletion cannot lose the new
+    nonce, and session-start stale cleanup also uses snapshot-based deletion.
 
 Run focused tests first, then the full pytest suite, static conformance lint, and
 all five dynamic conformance scenarios. Verify Python 3.9 compatibility in CI.
