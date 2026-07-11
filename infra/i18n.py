@@ -86,13 +86,18 @@ MESSAGES = {
         "hook_ac_prior_push_pending":
             "[teammode] A prior auto-commit's push is still pending — "
             "the worker will retry it.",
+        "hook_ac_push_failed_marker":
+            "Auto-commit push failed (commit preserved): {detail}",
+        "hook_ac_push_failed_print":
+            "[teammode] Auto-commit push failed — the commit was preserved and "
+            "a pending retry is being scheduled: {detail}",
         "hook_ac_pending_write_failed_marker":
             "Committed; failed to record push-pending — push is not guaranteed "
-            "(XDG state write error)",
+            "(XDG state write error); original push failure: {detail}",
         "hook_ac_pending_write_failed_print":
             "[teammode] Failed to record push-pending — the push was not "
             "scheduled (the commit itself is preserved). Check XDG state write "
-            "permissions.",
+            "permissions. Original push failure: {detail}",
 
         # ── 엔진(teammode.py) 출력 — en 전용(ko 원문은 각 호출부 리터럴이 단일 소스,
         #    hook_* 와 동일 계약). auto_update_on_start(`tm on`) 이 찍는 줄들.

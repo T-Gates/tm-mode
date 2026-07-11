@@ -1,8 +1,8 @@
-"""#45 — async push: pending ledger + plain push + worker drain 테스트.
+"""foreground auto-commit recovery + async fallback worker tests.
 
-확정 스펙(이슈 #45 + plain-push-only 정정):
-  - auto-commit 은 do_commit(push=False) 까지만 동기 → 커밋 성공 시 XDG pending 원자 기록
-    + push-worker detach kick.
+확정 스펙(#19 recovery + #45 plain-push-only fallback):
+  - auto-commit 은 do_commit(push=True) 로 전경 push/non-ff 복구까지 시도한다.
+  - 전경 publication 실패만 XDG pending 원자 기록 + push-worker detach kick.
   - push-worker: per-team lock 단일 실행, drain loop(최대 3), **plain push only** —
     로컬 히스토리 무접촉(rebase 복구 없음 — index.lock 경합으로 편집 커밋 유실 방지).
     non-ff 는 복구 없이 sync-warning 마커만(정합은 session-start reconcile 에 위임).
@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,26 @@ def _commit_file(repo: Path, name: str, content: str = "x") -> None:
     subprocess.run(["git", "-C", str(repo), "add", name], capture_output=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", f"add {name}"],
                    capture_output=True)
+
+
+def _clone_other(origin: Path, path: Path) -> Path:
+    subprocess.run(["git", "clone", "-q", str(origin), str(path)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "o@o.com"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "O"],
+                   check=True, capture_output=True)
+    return path
+
+
+def _git_text(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _bare_git_text(origin: Path, *args: str) -> str:
+    return subprocess.run(["git", "--git-dir", str(origin), *args], check=True,
+                          capture_output=True, text=True).stdout.strip()
 
 
 # ── pending ledger ──────────────────────────────────────────────────
@@ -285,7 +306,7 @@ def test_worker_lock_single_instance(xdg, tmp_path):
     assert ahead == 1
 
 
-# ── auto-commit 재배선 (동기=커밋까지, push=worker 위임) ─────────────
+# ── auto-commit 전경 publication + worker fallback ──────────────────
 
 AUTO_COMMIT = REPO / "infra" / "hooks" / "auto-commit.py"
 
@@ -300,34 +321,105 @@ def _run_auto_commit(root: Path, files: list, xdg: Path, extra_env: dict | None 
                            "files": [str(f) for f in files]})
     return subprocess.run([sys.executable, str(AUTO_COMMIT)],
                           input=payload, capture_output=True, text=True,
-                          env=env, timeout=30)
+                          env=env, timeout=60)
 
 
 def _activate(root: Path) -> None:
     (root / ".teammode-active").write_text("on", encoding="utf-8")
 
 
-def test_auto_commit_writes_pending_and_commits_sync(xdg, tmp_path):
-    """커밋은 동기 완료 + pending 기록. push 는 훅 안에서 기다리지 않는다.
-
-    (worker kick 은 detach 라 race — 이 테스트는 '커밋 즉시성+ledger'만 고정하고
-    worker 무력화(TEAMMODE_DISABLE_PUSH_WORKER=1)로 push 를 관찰가능하게 남긴다.)
-    """
-    _, work = _clone_pair(tmp_path)
+def test_auto_commit_pushes_origin_without_pending(xdg, tmp_path):
+    """정상 경로는 전경에서 origin publication 을 끝내고 fallback 상태를 남기지 않는다."""
+    origin, work = _clone_pair(tmp_path)
     _activate(work)
     f = work / "memory-note.md"
     f.write_text("메모", encoding="utf-8")
     r = _run_auto_commit(work, [f], xdg,
                          {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
     assert r.returncode == 0, r.stderr
-    # 커밋은 동기 완료
     log = subprocess.run(["git", "-C", str(work), "log", "--oneline", "-1"],
                          capture_output=True, text=True).stdout
     assert "auto-commit" in log
-    # push 는 훅이 직접 하지 않음(worker 몫) → ahead 1 + pending 기록
-    ahead, _ = git_ops.ahead_behind(str(work))
-    assert ahead == 1
+    ahead, behind = git_ops.ahead_behind(str(work))
+    assert (ahead, behind) == (0, 0)
+    assert _bare_git_text(origin, "show", "HEAD:memory-note.md") == "메모"
+    assert git_ops.read_push_pending(str(work)) == ""
+    assert git_ops.read_sync_warning(str(work)) == ""
+
+
+def test_auto_commit_recovers_non_ff_and_preserves_dirty_file(xdg, tmp_path):
+    """다른 clone 선행 push 를 fetch/rebase/autostash/re-push 하고 dirty 파일을 보존한다."""
+    origin, work = _clone_pair(tmp_path)
+    _commit_file(work, "unrelated.txt", "baseline\n")
+    subprocess.run(["git", "-C", str(work), "push", "-q"],
+                   check=True, capture_output=True)
+    other = _clone_other(origin, tmp_path / "other")
+    _commit_file(other, "theirs.md", "remote first\n")
+    subprocess.run(["git", "-C", str(other), "push", "-q"],
+                   check=True, capture_output=True)
+
+    _activate(work)
+    dirty = work / "unrelated.txt"
+    dirty.write_text("local dirty edit\n", encoding="utf-8")
+    session_log = work / "session-log.md"
+    session_log.write_text("local session\n", encoding="utf-8")
+
+    r = _run_auto_commit(work, [session_log], xdg,
+                         {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+    assert r.returncode == 0, r.stderr
+    assert _bare_git_text(origin, "show", "HEAD:theirs.md") == "remote first"
+    assert _bare_git_text(origin, "show", "HEAD:session-log.md") == "local session"
+    assert git_ops.ahead_behind(str(work)) == (0, 0)
+    assert dirty.read_text(encoding="utf-8") == "local dirty edit\n"
+    assert "unrelated.txt" in _git_text(work, "status", "--short")
+    assert git_ops.read_push_pending(str(work)) == ""
+    assert git_ops.read_sync_warning(str(work)) == ""
+    assert not (work / ".git" / "rebase-merge").exists()
+    assert not (work / ".git" / "rebase-apply").exists()
+    assert _git_text(work, "stash", "list") == ""
+
+
+def test_auto_commit_conflict_preserves_local_commit_and_pending(xdg, tmp_path):
+    """rebase 충돌은 abort하고 local commit/dirty edit/pending/detail을 모두 보존한다."""
+    origin, work = _clone_pair(tmp_path)
+    (work / "shared.md").write_text("base\n", encoding="utf-8")
+    (work / "dirty.md").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(work), "add", "shared.md", "dirty.md"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-qm", "add conflict fixtures"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(work), "push", "-q"],
+                   check=True, capture_output=True)
+    other = _clone_other(origin, tmp_path / "other")
+    (other / "shared.md").write_text("remote version\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(other), "commit", "-qam", "remote conflict"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(other), "push", "-q"],
+                   check=True, capture_output=True)
+    remote_head = _git_text(other, "rev-parse", "HEAD")
+
+    _activate(work)
+    (work / "dirty.md").write_text("local dirty edit\n", encoding="utf-8")
+    shared = work / "shared.md"
+    shared.write_text("local version\n", encoding="utf-8")
+    r = _run_auto_commit(work, [shared], xdg,
+                         {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+
+    assert r.returncode == 0, r.stderr
+    local_head = _git_text(work, "rev-parse", "HEAD")
+    assert local_head != remote_head
+    assert _bare_git_text(origin, "rev-parse", "HEAD") == remote_head
+    assert _git_text(work, "show", "HEAD:shared.md") == "local version"
+    ahead, behind = git_ops.ahead_behind(str(work))
+    assert ahead >= 1 and behind >= 1
+    assert (work / "dirty.md").read_text(encoding="utf-8") == "local dirty edit\n"
+    assert "dirty.md" in _git_text(work, "status", "--short")
     assert git_ops.read_push_pending(str(work)) != ""
+    marker = git_ops.read_sync_warning(str(work))
+    assert "rebase failed" in marker and "aborted" in marker
+    assert not (work / ".git" / "rebase-merge").exists()
+    assert not (work / ".git" / "rebase-apply").exists()
+    assert _git_text(work, "stash", "list") == ""
 
 
 def test_auto_commit_leftover_pending_warns_stderr(xdg, tmp_path):
@@ -343,8 +435,8 @@ def test_auto_commit_leftover_pending_warns_stderr(xdg, tmp_path):
     assert "push" in r.stderr and "pending" in r.stderr.lower() or "미완" in r.stderr
 
 
-def test_auto_commit_kicks_worker_end_to_end(xdg, tmp_path):
-    """실제 detach kick: 훅 종료 후 worker 가 push 를 완료(폴링 최대 15s)."""
+def test_auto_commit_publishes_end_to_end(xdg, tmp_path):
+    """정상 remote 에서는 훅 종료 시점 또는 fallback 직후 publication 이 완료된다."""
     import time as _t
     _, work = _clone_pair(tmp_path)
     _activate(work)
@@ -377,6 +469,7 @@ class _FakeGo:
         self._has = has_upstream
         self.kicked = 0
         self.cleared = 0
+        self.conditional_clears = []
         self.DEFAULT_TIMEOUT = 2
 
     def read_push_pending(self, root):
@@ -391,6 +484,10 @@ class _FakeGo:
 
     def clear_push_pending(self, root):
         self.cleared += 1
+
+    def clear_push_pending_if_unchanged(self, root, snapshot):
+        self.conditional_clears.append((root, snapshot))
+        return True
 
 
 def _load_session_start():
@@ -432,7 +529,8 @@ def test_recover_stale_pending_auto_cleared(tmp_path, capsys, monkeypatch):
     fake = _FakeGo("pending", ahead=0, has_upstream=True)
     monkeypatch.setattr(mod, "_git_ops", fake)
     mod._recover_push_pending(str(tmp_path))
-    assert fake.cleared == 1
+    assert fake.cleared == 0
+    assert fake.conditional_clears == [(str(tmp_path), "pending")]
     assert fake.kicked == 0
     assert capsys.readouterr().err == ""
 
@@ -512,6 +610,68 @@ def test_clear_pending_if_unchanged_guard(xdg, tmp_path):
     assert git_ops.clear_push_pending_if_unchanged(root, "") is False
 
 
+def test_clear_pending_if_unchanged_is_atomic_against_writer(
+        xdg, tmp_path, monkeypatch):
+    """compare-read 와 remove 사이 writer 를 강제해도 새 nonce 는 살아남는다.
+
+    별도 프로세스 writer 는 clear 가 pending 파일을 지우기 직전 시작한다. 짧은
+    ledger lock 이 있으면 writer 는 clear 완료 뒤 새 nonce 를 기록한다. lock 없는
+    TOCTOU 구현은 writer 가 교체한 새 파일을 old clear 가 삭제해 이 테스트가 실패한다.
+    """
+    root = str(tmp_path / "team")
+    assert git_ops.write_push_pending(root) is True
+    snapshot = git_ops.read_push_pending(root)
+    pending_path = git_ops.push_pending_path(root)
+    gate = tmp_path / "writer-gate"
+    attempted = tmp_path / "writer-attempted"
+    done = tmp_path / "writer-done"
+    writer_code = (
+        "import sys,time\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import git_ops\n"
+        "root, gate, attempted, done = sys.argv[2:]\n"
+        "while not Path(gate).exists(): time.sleep(0.005)\n"
+        "Path(attempted).write_text('1', encoding='utf-8')\n"
+        "ok = git_ops.write_push_pending(root)\n"
+        "Path(done).write_text('1' if ok else '0', encoding='utf-8')\n"
+    )
+    env = {**os.environ, "XDG_STATE_HOME": str(xdg)}
+    writer = subprocess.Popen(
+        [sys.executable, "-c", writer_code, str(REPO / "infra"), root,
+         str(gate), str(attempted), str(done)], env=env)
+    real_remove = git_ops.os.remove
+    opened_window = False
+
+    def remove_with_writer_window(path):
+        nonlocal opened_window
+        if os.fspath(path) == pending_path and not opened_window:
+            opened_window = True
+            gate.write_text("go", encoding="utf-8")
+            deadline = time.monotonic() + 3
+            while not attempted.exists() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert attempted.exists(), "writer process did not reach ledger write"
+            # unlocked implementation finishes inside this window; locked writer waits.
+            deadline = time.monotonic() + 0.2
+            while not done.exists() and time.monotonic() < deadline:
+                time.sleep(0.005)
+        return real_remove(path)
+
+    monkeypatch.setattr(git_ops.os, "remove", remove_with_writer_window)
+    try:
+        assert git_ops.clear_push_pending_if_unchanged(root, snapshot) is True
+        writer.wait(timeout=5)
+    finally:
+        if writer.poll() is None:
+            writer.kill()
+            writer.wait(timeout=2)
+    assert writer.returncode == 0
+    assert done.read_text(encoding="utf-8") == "1"
+    current = git_ops.read_push_pending(root)
+    assert current and current != snapshot, "concurrent writer's pending nonce was deleted"
+
+
 def test_write_push_pending_returns_bool(xdg, tmp_path, monkeypatch):
     """[P1] ledger 기록 성공 여부를 호출부가 알 수 있다(bool 반환)."""
     root = str(tmp_path / "team")
@@ -530,6 +690,9 @@ def test_auto_commit_ledger_failure_leaves_sync_warning(xdg, tmp_path):
     _activate(work)
     f = work / "note-lf.md"
     f.write_text("x", encoding="utf-8")
+    subprocess.run(["git", "-C", str(work), "remote", "set-url", "origin",
+                    str(tmp_path / "missing-origin.git")], check=True,
+                   capture_output=True)
     # write 는 막고 sync-warning 은 살리기: pending 파일 자리를 디렉토리로 선점
     Path(git_ops.push_pending_path(str(work))).parent.mkdir(parents=True, exist_ok=True)
     Path(git_ops.push_pending_path(str(work))).mkdir()
@@ -557,6 +720,9 @@ def test_auto_commit_ledger_failure_english_for_en_locale_team(xdg, tmp_path):
         _json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
     f = work / "note-lf-en.md"
     f.write_text("x", encoding="utf-8")
+    subprocess.run(["git", "-C", str(work), "remote", "set-url", "origin",
+                    str(tmp_path / "missing-origin.git")], check=True,
+                   capture_output=True)
     Path(git_ops.push_pending_path(str(work))).parent.mkdir(parents=True, exist_ok=True)
     Path(git_ops.push_pending_path(str(work))).mkdir()
     r = _run_auto_commit(work, [f], xdg, {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})

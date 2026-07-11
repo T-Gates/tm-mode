@@ -118,8 +118,10 @@ def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
 
 
 def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
-    """#45 async push 계약: auto-commit 의 동기 구간은 do_commit(push=False) 커밋까지 —
-    push 는 pending ledger + detach worker 몫이다. 훅은 비차단(exit 0)·커밋 보존.
+    """전경 push 실패도 비차단이며 로컬 커밋 + pending fallback 을 보존한다.
+
+    fake_repo 에 remote 가 없으므로 do_commit(push=True)의 push 는 실패해야 한다.
+    훅은 exit 0 을 유지하고 커밋을 롤백하지 않은 채 worker ledger 를 남긴다.
     """
     (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "p.md").write_text("x\n")
@@ -148,12 +150,12 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
         "files": [str(fake_repo / "p.md")], "agent": "claude"})))
     rc = mod.main()
     assert rc == 0
-    # #45: 훅의 동기 push 는 폐기 — do_commit 은 push=False 로만 호출된다.
-    assert calls.get("push") is False
+    # #19 non-ff recovery 경로를 실제로 호출하는 전경 push 계약.
+    assert calls.get("push") is True
     # 로컬 커밋은 동기 완주·보존(p.md 가 HEAD 에 들어감)
     committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
     assert "p.md" in committed
-    # 커밋 성공 → pending ledger 기록(worker/recovery 의 correctness 소스)
+    # push 실패 → pending ledger 기록(worker/recovery 의 fallback 소스)
     assert go.read_push_pending(str(fake_repo)) != ""
 
 
@@ -340,6 +342,15 @@ def test_manifest_includes_both_l2g_hooks():
     scripts = {e.get("script") for e in entries}
     assert "auto-commit.py" in scripts
     assert "confirm-action.py" in scripts
+
+
+def test_auto_commit_manifest_covers_foreground_push_budget():
+    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(e for e in entries if e.get("script") == "auto-commit.py")
+    assert entry["timeout"] >= 35
+    note = entry.get("_timeout_note", "")
+    assert "foreground" in note.lower()
+    assert "PUSH_TOTAL_BUDGET" in note
 
 
 def test_manifest_no_duplicate_event_script_pairs():

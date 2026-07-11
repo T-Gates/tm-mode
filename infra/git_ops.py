@@ -19,6 +19,7 @@ import signal
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -42,7 +43,7 @@ NET_TIMEOUT = 10
 # 개별 클램프/중단하지 않는다(로컬 커밋은 항상 완주·보존 — 건너뛸 수 있는 건 네트워크뿐).
 # 22 인 이유: NET_TIMEOUT(10s) 두 다리 + rebase 의 복구 체인은 살리면서(20 이면 fetch+
 # rebase+재push 복구가 굶는다), 22 + 드문 kill-drain/abort 꼬리(~6s) + 훅 기동이 훅
-# manifest 캡(30s) 아래 머문다 — 초과 시 hook runner 가 프로세스를 죽여 로컬 커밋/rebase
+# manifest 캡(40s) 아래 머문다 — 초과 시 hook runner 가 프로세스를 죽여 로컬 커밋/rebase
 # 뒤의 sync-warning 마커가 유실된다(codex 재리뷰 P1·A1).
 PUSH_TOTAL_BUDGET = 22
 
@@ -432,57 +433,139 @@ def clear_sync_warning(team_root: str) -> None:
 
 
 # ── push-pending ledger (#45 async push) ───────────────────────────
-# auto-commit 훅은 커밋까지만 동기이고 push 는 detach 된 push-worker 몫이다.
-# 이 ledger 가 correctness 의 단일 소스 — "커밋됐지만 아직 push 안 됨" 상태를
-# 팀별 파일로 남겨, worker 유실(머신 슬립·Windows detach 실패·크래시)에도
-# session-start recovery 가 상태를 복원한다. detach 생존은 신뢰 대상이 아니다.
+# auto-commit 훅의 foreground publication 이 실패했을 때 detach push-worker 가 fallback
+# 을 맡는다. 이 ledger 가 "커밋됐지만 아직 push 안 됨" 상태의 correctness 소스 —
+# 팀별 파일로 남겨 worker 유실(머신 슬립·Windows detach 실패·크래시)에도 session-start
+# recovery 가 상태를 복원한다. detach 생존은 신뢰 대상이 아니다.
 
 def push_pending_path(team_root: str) -> str:
     """team_root 별 push-pending ledger 경로(sync-warning 과 동일 팀별 격리 규약)."""
     return os.path.join(_state_dir(), f"push-pending-{_team_key(team_root)}")
 
 
+_PUSH_PENDING_LOCK_WAIT_SECONDS = 1.0
+_PUSH_PENDING_LOCK_POLL_SECONDS = 0.01
+_PUSH_PENDING_LOCK_UNAVAILABLE = "<pending-ledger-lock-unavailable>"
+
+
+@contextmanager
+def _push_pending_ledger_lock(team_root: str):
+    """pending ledger 의 짧은 read/write/conditional-delete 임계구역.
+
+    worker 의 장기 네트워크 lock(`.lock`)과 분리된 OS advisory lock이다. 파일은
+    남아도 descriptor close/crash 때 OS lock 은 자동 해제되므로 stale lock 회수로
+    살아 있는 임계구역을 깨지 않는다. 획득은 최대 1초만 재시도해 훅 비차단 계약을
+    지킨다. 획득 실패 시 호출부는 보수적으로 pending 을 보존한다.
+    """
+    handle = None
+    acquired = False
+    unlock = None
+    try:
+        try:
+            os.makedirs(_state_dir(), exist_ok=True)
+            handle = open(push_pending_path(team_root) + ".state.lock", "a+b")
+            deadline = time.monotonic() + _PUSH_PENDING_LOCK_WAIT_SECONDS
+
+            if os.name == "nt":  # pragma: no cover — Windows CI 부재, stdlib 경로
+                import msvcrt
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+
+                def try_lock():
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+                def unlock():
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                def try_lock():
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+                def unlock():
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+            while True:
+                try:
+                    try_lock()
+                    acquired = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_PUSH_PENDING_LOCK_POLL_SECONDS)
+        except (OSError, ImportError):
+            acquired = False
+
+        yield acquired
+    finally:
+        if acquired and unlock is not None:
+            try:
+                unlock()
+            except OSError:
+                pass
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
 def write_push_pending(team_root: str) -> bool:
     """pending 마커 원자 기록(임시파일 + os.replace — 부분 쓰기 상태 방지). 무raise.
 
-    내용은 진단용(root·기록시각)일 뿐 계약이 아니다 — 판정은 파일 존재+mtime 만 쓴다.
+    root·기록시각은 진단용이고 nonce 는 compare-and-delete 동시성 판별자다.
     반환: 기록 성공 여부(codex P1 — 실패를 호출부가 모르면 "커밋됨·push 안 됨·
     pending 없음·마커 없음" 무음 유실 상태가 된다. 호출부는 False 에 fallback 가시화).
     """
-    try:
-        os.makedirs(_state_dir(), exist_ok=True)
-        payload = json.dumps(
-            {"root": os.path.normpath(str(team_root)),
-             "written_at": datetime.now().isoformat(timespec="seconds"),
-             # nonce: compare-and-delete 식별자 — coarse mtime FS(1s 해상도)에서
-             # 같은 초 내 재기록을 mtime 으로 구분 못 하는 문제의 해법(codex 재검수).
-             "nonce": os.urandom(8).hex()},
-            ensure_ascii=False)
-        tmp = push_pending_path(team_root) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(payload)
-        os.replace(tmp, push_pending_path(team_root))
-        return True
-    except OSError:
-        return False  # ledger 기록 실패는 커밋을 막지 않는다 — 가시화는 호출부 몫
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return False
+        try:
+            payload = json.dumps(
+                {"root": os.path.normpath(str(team_root)),
+                 "written_at": datetime.now().isoformat(timespec="seconds"),
+                 # nonce: compare-and-delete 식별자 — coarse mtime FS(1s 해상도)에서
+                 # 같은 초 내 재기록을 mtime 으로 구분 못 하는 문제의 해법(codex 재검수).
+                 "nonce": os.urandom(8).hex()},
+                ensure_ascii=False)
+            tmp = push_pending_path(team_root) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp, push_pending_path(team_root))
+            return True
+        except OSError:
+            return False  # ledger 기록 실패는 커밋을 막지 않는다 — 가시화는 호출부 몫
 
 
 def read_push_pending(team_root: str) -> str:
     """pending 마커 내용(없으면 ''). 무raise."""
-    try:
-        with open(push_pending_path(team_root), encoding="utf-8") as f:
-            return f.read().strip()
-    except (OSError, ValueError):
-        return ""
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            # 잠금 실패를 "pending 없음"으로 오판하면 warning/ledger 를 지울 수 있다.
+            return _PUSH_PENDING_LOCK_UNAVAILABLE
+        try:
+            with open(push_pending_path(team_root), encoding="utf-8") as f:
+                return f.read().strip()
+        except (OSError, ValueError):
+            return ""
 
 
 def clear_push_pending(team_root: str) -> None:
     """pending 마커 제거(멱등·무raise). push 성공 + ahead==0 확인 후에만 호출할 것 —
     push 도중 새 커밋이 생겼으면 pending 을 유지해야 유실이 없다(#45 정정)."""
-    try:
-        os.remove(push_pending_path(team_root))
-    except OSError:
-        pass
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return
+        try:
+            os.remove(push_pending_path(team_root))
+        except OSError:
+            pass
 
 
 def clear_push_pending_if_unchanged(team_root: str, snapshot_content: str) -> bool:
@@ -494,19 +577,24 @@ def clear_push_pending_if_unchanged(team_root: str, snapshot_content: str) -> bo
     포함) — mtime(_ns) 비교는 coarse mtime FS(1s 해상도)에서 같은 초 내 재기록을
     놓친다(codex 재검수). 내용이 스냅샷과 같을 때만 지운다(다르면 False —
     호출부 drain loop 가 이어서 push).
+    짧은 ledger OS lock 안에서 compare+remove 를 한 임계구역으로 묶어, 비교 직후
+    writer 가 새 nonce 를 replace 한 뒤 old clear 가 삭제하는 TOCTOU 를 막는다.
     반환: 실제로 지웠으면 True.
     """
-    path = push_pending_path(team_root)
-    try:
-        if not snapshot_content:
-            return False
-        with open(path, encoding="utf-8") as f:
-            if f.read().strip() != snapshot_content.strip():
-                return False
-        os.remove(path)
-        return True
-    except OSError:
+    if not snapshot_content:
         return False
+    path = push_pending_path(team_root)
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return False
+        try:
+            with open(path, encoding="utf-8") as f:
+                if f.read().strip() != snapshot_content.strip():
+                    return False
+            os.remove(path)
+            return True
+        except OSError:
+            return False
 
 
 def push_pending_age_seconds(team_root: str):
@@ -669,7 +757,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
     또한 push=True 흐름 전체는 **진입 앵커** 벽시계 예산 PUSH_TOTAL_BUDGET(22s)로
     캡된다 — 데드라인이 함수 진입에서 시작돼 로컬 단계(최악 ~8s)도 예산을 소모하고
     네트워크 단계는 남은 만큼만 쓴다(로컬 하위호출은 개별 클램프 없음 — 로컬 커밋은
-    항상 완주·보존). 복구 체인(최악 네트워크 5회 순차)이 훅 manifest 캡(30s)을 넘기
+    항상 완주·보존). 복구 체인(최악 네트워크 5회 순차)이 훅 manifest 캡(40s)을 넘기
     전에 **항상** 스스로 반환해, 호출부가 sync-warning 마커를 쓸 수 있게 한다
     (codex 재리뷰 P1 — 종전엔 데드라인이 push 직전 시작이라 로컬 최악 8s + 25s 가
     캡을 넘을 수 있었다: A1).
@@ -742,7 +830,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
     # _deadline 하나를 이 지점 이후의 **모든** 네트워크 호출(push·push -u·fetch·
     # rebase·재push)이 나눠 쓴다 — 로컬 단계가 이미 소모한 벽시계만큼 네트워크
     # 몫이 준다. 개별 호출마다 NET_TIMEOUT 을 새로 주면 복구 체인이 최악 ~50s 까지
-    # 늘어져 훅 manifest 캡(30s)이 프로세스를 먼저 죽이고, 그러면 호출부가
+    # 늘어져 훅 manifest 캡(40s)이 프로세스를 먼저 죽이고, 그러면 호출부가
     # CommitResult 를 받지 못해 sync-warning 마커를 못 쓴다. 예산이 바닥나면 즉시
     # 비차단 반환한다(커밋은 이미 보존됨 — push 미완만 detail 로 표면화).
 

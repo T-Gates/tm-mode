@@ -316,7 +316,8 @@ def _recover_push_pending(team_root: str, lang: str = "ko") -> None:
     if _git_ops is None:
         return
     try:
-        if not _git_ops.read_push_pending(team_root):
+        pending_snapshot = _git_ops.read_push_pending(team_root)
+        if not pending_snapshot:
             return
         ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
             team_root, _git_ops.DEFAULT_TIMEOUT)
@@ -345,7 +346,7 @@ def _recover_push_pending(team_root: str, lang: str = "ko") -> None:
                          "재시도됩니다."), file=sys.stderr)
             return
         # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.
-        _git_ops.clear_push_pending(team_root)
+        _git_ops.clear_push_pending_if_unchanged(team_root, pending_snapshot)
     except Exception:  # noqa: BLE001 — 철칙
         pass
 

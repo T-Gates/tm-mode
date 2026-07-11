@@ -3,7 +3,7 @@
 
 스펙 §2.10: 이 스크립트는 **정규 입력 스키마(§2.10)만 인지**하며 특정 에이전트를 모른다.
 normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다. file_edit 발동 시,
-정규스키마가 **지목한 파일만** 스테이징해 팀 레포에 자동 커밋한다(로컬만, push 금지).
+정규스키마가 **지목한 파일만** 스테이징해 팀 레포에 자동 커밋하고 전경 push 한다.
 
 정규 입력(stdin):
   { "event": "PostToolUse", "action": "file_edit",
@@ -22,10 +22,12 @@ normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다
   - **자동 push(6/23 철학)**: do_commit(push=True) — "원격 동기화는 사람 결정" 폐기.
     팀 레포는 공유 자산이라 매 자동 커밋 즉시 push 한다. **push 실패는 비차단** —
     do_commit 이 push 실패해도 로컬 커밋을 보존(ok=True·pushed=False)하고 hook 은 exit 0.
+  - **foreground recovery + fallback(#19·#45)**: do_commit 의 bounded push 가 non-ff 를
+    fetch → rebase --autostash → re-push 로 복구한다. 실패하면 상세 sync-warning + pending
+    ledger 를 기록하고 plain-push-only worker 를 kick 한다. worker 는 히스토리를 안 건드린다.
   - **push 실패 가시화(이슈 #23)**: 비차단은 유지하되 **조용히 묻지 않는다**. push 못 한
-    채 커밋만 쌓이면(committed & not pushed) sync-warning 마커 기록 + stderr 경고를 남겨
-    다음 세션 시작(session-start)이 크게 표면화한다. push 성공 시 마커를 지운다.
-    **커밋 거동 자체는 불변** — 가시화만 추가.
+    채 커밋만 쌓이면(committed & not pushed) 상세 sync-warning 마커 + stderr 경고를 남겨
+    다음 세션 시작(session-start)이 크게 표면화한다. 확인된 push 성공 시에만 지운다.
   - **add -A 금지(P1-4)**: do_commit 에 paths= 로 정규스키마가 지목한 `files` 만 넘긴다.
     무차별 스테이징(add -A)은 토큰패턴 파일·무관 변경까지 끌어와 오염·유출 위험.
   - **실패 비차단**: 어떤 예외도 삼키고 항상 exit 0. 자동 커밋·push 실패가 작업을 막지 않는다.
@@ -187,46 +189,68 @@ def main() -> int:
 
         # ── 3.5 잔존 pending 즉시 가시화(#45) — '한 편집 늦은' 경고 1줄 ──
         # 이전 편집의 push 가 아직 미완이면(worker 지연/실패) 조용히 묻지 않는다.
-        # 비차단: 경고만 남기고 커밋은 정상 진행(worker 가 이번 것까지 drain).
-        if _git_ops.read_push_pending(root):
+        # 비차단: 경고만 남기고 이번 전경 commit/push 복구는 정상 진행한다.
+        pending_snapshot = _git_ops.read_push_pending(root)
+        if pending_snapshot:
             print(_t("hook_ac_prior_push_pending", lang,
                      "[teammode] 이전 auto-commit 의 push 미완(pending) — "
                      "worker 가 재시도합니다."), file=sys.stderr)
 
-        # ── 4. paths 만 스테이징 + 커밋(동기는 여기까지 — push 는 worker 위임, #45) ──
-        # 종전 push=True 동기 push 는 훅 지연(statusMessage 고정 ~26s)·manifest 캡
-        # 경합의 원인이었다. 이제 훅은 로컬 커밋만 완주하고, push 는 pending ledger +
-        # detach worker(plain-push-only)가 담당한다. correctness 는 ledger 가 단일
-        # 소스 — worker 유실(슬립·Windows detach 실패)에도 session-start 가 복원한다.
-        result = _git_ops.do_commit(root, message=message, push=False, paths=paths)
+        # ── 4. paths 만 스테이징 + bounded foreground push/non-ff recovery(#19) ──
+        # rebase 는 blocking 훅 안에서만 수행해 다음 편집과 겹치지 않게 한다. 실패 시
+        # pending ledger + plain-push-only worker(#45)가 비차단 fallback 을 담당한다.
+        result = _git_ops.do_commit(root, message=message, push=True, paths=paths)
 
         # index.lock 경합(다른 git 프로세스와 겹침)은 1s 후 1회만 재시도(#45).
         if (not getattr(result, "committed", False)
                 and "index.lock" in (getattr(result, "detail", "") or "")):
             _time.sleep(1)
-            result = _git_ops.do_commit(root, message=message, push=False,
+            result = _git_ops.do_commit(root, message=message, push=True,
                                         paths=paths)
 
-        # ── 5. 커밋 성공 → pending 원자 기록 + worker detach kick(#45) ──
-        # push 실패 가시화(이슈 #23)는 이제 worker(sync-warning)와 session-start
-        # (pending×ahead 판정)가 담당한다 — 훅은 ledger 기록까지만.
+        # ── 5. 커밋 성공 → foreground 성공 정리 또는 worker fallback(#45) ──
         if getattr(result, "committed", False):
-            if not _git_ops.write_push_pending(root):
-                # codex P1: ledger 기록 실패를 삼키면 "커밋됨·push 안 됨·pending
-                # 없음·마커 없음" 무음 유실 — sync-warning fallback + stderr 1줄.
-                # ⚠️ write_sync_warning 의 내용은 나중에 hook_ss_sync_warn(이미 i18n
-                # 라우팅)의 {warn} 자리에 그대로 삽입된다 — lang 에 안 맞게 쓰면 en
-                # 래퍼 안에 ko 상세가 섞인다(적대검수 발견, session-start 클러스터와 동일 패턴).
-                _git_ops.write_sync_warning(
-                    root, _t("hook_ac_pending_write_failed_marker", lang,
-                            "커밋됨; push-pending 기록 실패 — push 미보장"
-                            "(XDG state 쓰기 오류)"))
-                print(_t("hook_ac_pending_write_failed_print", lang,
-                         "[teammode] push-pending 기록 실패 — push 가 예약되지 "
-                         "않았습니다(커밋은 보존). XDG state 쓰기 권한을 확인하세요."),
-                      file=sys.stderr)
+            if getattr(result, "pushed", False):
+                # 시작 때 본 pending 만 compare-and-delete 한다. 그 사이 다른 훅이 새
+                # nonce 를 썼다면 절대 지우지 않는다(#45 clear race 차단).
+                if pending_snapshot:
+                    _git_ops.clear_push_pending_if_unchanged(root, pending_snapshot)
+                pending_now = _git_ops.read_push_pending(root)
+                ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
+                    root, _git_ops.DEFAULT_TIMEOUT)
+                if has_upstream and ahead == 0 and not pending_now:
+                    _git_ops.clear_sync_warning(root)
             else:
-                _kick_push_worker(root)
+                detail = (getattr(result, "detail", "") or
+                          "unknown auto-commit push failure")
+                _git_ops.write_sync_warning(
+                    root, _t("hook_ac_push_failed_marker", lang,
+                             "auto-commit push 실패(커밋 보존): {detail}",
+                             detail=detail))
+                print(_t(
+                    "hook_ac_push_failed_print", lang,
+                    "[teammode] auto-commit push 실패 — 커밋은 보존했고 "
+                    "pending 재시도를 예약합니다: {detail}", detail=detail),
+                    file=sys.stderr)
+
+                if _git_ops.write_push_pending(root):
+                    _kick_push_worker(root)
+                else:
+                    # codex P1: ledger 기록 실패를 삼키면 "커밋됨·push 안 됨·pending
+                    # 없음·마커 없음" 무음 유실 — sync-warning fallback + stderr 1줄.
+                    # 마커는 나중에 session-start 의 locale wrapper 안에 삽입되므로
+                    # marker content 자체도 현재 팀 locale 로 렌더링한다.
+                    _git_ops.write_sync_warning(
+                        root, _t("hook_ac_pending_write_failed_marker", lang,
+                                "커밋됨; push-pending 기록 실패 — push 미보장"
+                                "(XDG state 쓰기 오류); 원래 push 실패: {detail}",
+                                detail=detail))
+                    print(_t(
+                        "hook_ac_pending_write_failed_print", lang,
+                        "[teammode] push-pending 기록 실패 — push 가 예약되지 "
+                        "않았습니다(커밋은 보존). XDG state 쓰기 권한을 "
+                        "확인하세요. 원래 push 실패: {detail}", detail=detail),
+                        file=sys.stderr)
     except Exception:  # noqa: BLE001 — 철칙: 자동 커밋·push 실패가 작업을 막지 않는다
         return 0
 
