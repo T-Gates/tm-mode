@@ -38,7 +38,11 @@ def xdg(tmp_path, monkeypatch):
 
 def _init_repo(path: Path, *, bare: bool = False) -> Path:
     path.mkdir(parents=True, exist_ok=True)
-    args = ["git", "init", "-q"] + (["--bare"] if bare else []) + [str(path)]
+    # 전역 init.defaultBranch에 기대면 개발자 Mac(main)에서는 통과하고 깨끗한
+    # GitHub runner(master)에서는 origin/main fixture가 사라진다. fixture 자체가
+    # branch 계약을 결정해 환경과 무관하게 만든다.
+    args = ["git", "init", "-q", "--initial-branch=main"] \
+        + (["--bare"] if bare else []) + [str(path)]
     subprocess.run(args, check=True, capture_output=True)
     if not bare:
         subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t.com"],
