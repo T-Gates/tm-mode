@@ -58,6 +58,12 @@ MESSAGES = {
         "hook_ss_push_pending_ahead":
             "[teammode] A previous session's push is still pending (ahead={ahead}) — "
             "restarting the worker.",
+        "hook_ss_push_pending_checkout_mismatch":
+            "Push pending targets a different checkout; preserving it on the "
+            "current branch: {targets}",
+        "hook_ss_push_pending_checkout_mismatch_print":
+            "[teammode] Preserved push pending for another checkout. Switch to "
+            "that branch to retry: {targets}",
         # session-log-remind (UserPromptSubmit) — #45 pending-age 경고
         "hook_rm_push_pending_age":
             "[teammode] A push has been pending for {minutes} minutes — the worker "
@@ -73,6 +79,9 @@ MESSAGES = {
         "push_worker_drain_limit_marker":
             "push pending; worker drain limit reached — commit burst or repeated "
             "rewrite (session-start recovery will retry)",
+        "push_worker_checkout_mismatch_marker":
+            "push pending targets a different checkout; preserved on the current "
+            "branch: {targets}",
 
         # auto-commit (PostToolUse/file_edit) — scaffolding added from scratch
         # (long-tail cluster). The commit message itself ("chore(teammode): ..."
@@ -85,14 +94,22 @@ MESSAGES = {
             "retried at session start.",
         "hook_ac_prior_push_pending":
             "[teammode] A prior auto-commit's push is still pending — "
-            "the worker will retry it.",
+            "foreground publication will retry it; the worker remains fallback.",
+        "hook_ac_prior_push_other_checkout":
+            "[teammode] Preserving push pending for another checkout while "
+            "publishing this edit separately: {targets}",
+        "hook_ac_push_failed_marker":
+            "Auto-commit push failed (commit preserved): {detail}",
+        "hook_ac_push_failed_print":
+            "[teammode] Auto-commit push failed — the commit was preserved and "
+            "a pending retry was recorded: {detail}",
         "hook_ac_pending_write_failed_marker":
             "Committed; failed to record push-pending — push is not guaranteed "
-            "(XDG state write error)",
+            "(XDG state write error); original push failure: {detail}",
         "hook_ac_pending_write_failed_print":
             "[teammode] Failed to record push-pending — the push was not "
             "scheduled (the commit itself is preserved). Check XDG state write "
-            "permissions.",
+            "permissions. Original push failure: {detail}",
 
         # ── 엔진(teammode.py) 출력 — en 전용(ko 원문은 각 호출부 리터럴이 단일 소스,
         #    hook_* 와 동일 계약). auto_update_on_start(`tm on`) 이 찍는 줄들.
@@ -239,6 +256,14 @@ MESSAGES = {
             "tm-mode pull — skipped (non-fatal): {detail}",
         "cmd_commit_push_failed_suffix":
             " (push failed — commit preserved)",
+        "cmd_commit_push_pending_marker":
+            "tm-mode commit push failed (commit preserved): {detail}",
+        "cmd_commit_pending_write_failed_marker":
+            "Committed; failed to record push-pending — publication is not "
+            "guaranteed (XDG state write error); original push failure: {detail}",
+        "cmd_commit_pending_write_failed":
+            "[warning] tm-mode commit: failed to record push-pending — the "
+            "commit was preserved but push recovery was not scheduled: {detail}",
         "cmd_commit_done":
             "tm-mode commit — committed{suffix}: {detail}",
         "cmd_commit_skipped":

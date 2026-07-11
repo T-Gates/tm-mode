@@ -77,3 +77,47 @@ def test_publish_workflow_has_npm_oidc_job():
     assert "registry.npmjs.org" in t, "npm 발행 잡 없음"
     assert "NPM_TOKEN" not in t and "NODE_AUTH_TOKEN" not in t, \
         "시크릿 토큰 금지 — npm OIDC Trusted Publishing 계약"
+
+
+def _publish_npm_if_scalar(text):
+    """publish-npm job 의 실제 YAML if scalar 만 stdlib 로 추출한다."""
+    match = re.search(
+        r"(?ms)^  publish-npm:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
+        text)
+    assert match, "publish-npm job block 없음"
+    lines = match.group("body").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("    if:"):
+            continue
+        inline = line.split(":", 1)[1].strip()
+        if inline not in ("|", "|-", ">", ">-"):
+            return inline.split(" #", 1)[0].strip()
+        parts = []
+        for continuation in lines[index + 1:]:
+            if not continuation.startswith("      "):
+                break
+            value = continuation.strip()
+            if value and not value.startswith("#"):
+                parts.append(value.split(" #", 1)[0].rstrip())
+        return " ".join(parts)
+    raise AssertionError("publish-npm.if 조건 없음")
+
+
+def test_npm_publish_requires_explicit_repository_opt_in():
+    """npm job 의 실제 if 식에 opt-in 이 있어야 v* 태그 기본 실행을 막는다."""
+    text = (REPO / ".github" / "workflows" / "publish.yml").read_text(
+        encoding="utf-8")
+    actual_if = _publish_npm_if_scalar(text)
+    assert "vars.NPM_PUBLISH_ENABLED == 'true'" in actual_if
+
+
+def test_npm_opt_in_token_in_comment_does_not_count():
+    text = """jobs:
+  publish-npm:
+    if: >-
+      github.repository == 'T-Gates/tm-mode'
+      # vars.NPM_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+"""
+    actual_if = _publish_npm_if_scalar(text)
+    assert "vars.NPM_PUBLISH_ENABLED == 'true'" not in actual_if

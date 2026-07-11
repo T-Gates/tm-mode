@@ -129,6 +129,33 @@ def _team_root() -> str:
 # 팀 레포 표식 — install_lib.has_team_marker(_TEAM_MARKERS)와 동일 규약(드리프트 주의).
 _TEAM_MARKERS = (".git", "team.config.json", "memory")
 
+# Manifest 60s보다 먼저 맥락 JSON을 내보내기 위한 hook 전체 hard budget. 앞 40s는
+# origin reconcile/pending recovery/upstream refresh가 공유하고, 마지막 10s는 로컬
+# memory context + 선택적 Git 장식에 예약한다. 남은 시간이 없으면 optional Git 작업은
+# 새 1s floor subprocess를 시작하지 않고 건너뛴다.
+_SESSION_START_TOTAL_BUDGET = 50
+_SESSION_CONTEXT_RESERVE = 10
+
+
+def _remaining_timeout(deadline, cap: int, reserve: int = 0) -> int:
+    """absolute deadline에서 reserve를 뺀 호출 timeout. 예산 없음은 0(skip)."""
+    if deadline is None:
+        return max(1, cap)
+    remaining = int(deadline - time.monotonic() - reserve)
+    if remaining < 1:
+        return 0
+    return min(max(1, cap), remaining)
+
+
+def _split_timeout(deadline, calls: int, cap: int, reserve: int = 0) -> int:
+    """연속 로컬 Git calls가 deadline 안에 들도록 균등한 per-call timeout을 계산."""
+    if deadline is None:
+        return max(1, cap)
+    available = int(deadline - time.monotonic() - reserve)
+    if calls < 1 or available < calls:
+        return 0
+    return min(max(1, cap), max(1, available // calls))
+
 
 def _warn_if_stale_home(root: str) -> None:
     """TEAMMODE_HOME 이 설정됐는데 유효한 팀 루트가 아니면 stderr 한 줄 경고 (이슈 #9a).
@@ -179,7 +206,7 @@ def _record_pull_time(state_path: str, now: float) -> None:
         pass
 
 
-def _maybe_auto_pull(team_root: str) -> None:
+def _maybe_auto_pull(team_root: str, deadline=None) -> None:
     """맥락 주입 **이전에** 팀 레포를 세션당 1회 정합(최신 상태로 맥락 주입).
 
     이슈 #23: 종전엔 auto_pull(`pull --ff-only`)만 했는데, 로컬이 diverge(ahead&behind)
@@ -195,22 +222,16 @@ def _maybe_auto_pull(team_root: str) -> None:
     # 먼저 도므로 여기서 한 번 독자적으로 해석해 _recover_push_pending 에도 넘긴다
     # (session-start 는 세션당 1회라 재해석 비용 무해 — _hook_lang 자체의 문서 근거).
     lang = _hook_lang(team_root)
-    # #45 pending recovery — pull 스로틀과 **독립**(codex P2: 스로틀에 막혀 복구가
-    # 안 도는 구멍 차단). push recovery 는 pull 비용과 별개의 correctness 경로다.
-    _recover_push_pending(team_root, lang)
-
-    # 폴백: 새 정합 경로의 의존(git_ops·auto_pull)이 없으면 종전 ff-only auto_pull.
-    if _git_ops is None or _auto_pull is None:
-        if _auto_pull is not None:
-            try:
+    try:
+        # 폴백: 새 정합 경로의 의존(git_ops·auto_pull)이 없으면 종전 ff-only auto_pull.
+        if _git_ops is None or _auto_pull is None:
+            if _auto_pull is not None:
                 throttle = int(os.environ.get(
                     "TEAMMODE_PULL_THROTTLE", _auto_pull.DEFAULT_THROTTLE_SECONDS))
                 _auto_pull.auto_pull(team_root, _pull_state_path(),
                                      now=time.time(), throttle_seconds=throttle)
-            except Exception:  # noqa: BLE001 — 철칙: 세션을 막지 않는다
-                pass
-        return
-    try:
+            return
+
         throttle = int(os.environ.get("TEAMMODE_PULL_THROTTLE",
                                       _auto_pull.DEFAULT_THROTTLE_SECONDS))
         state = _pull_state_path()
@@ -221,7 +242,13 @@ def _maybe_auto_pull(team_root: str) -> None:
         # 시도 단위 기록: 원격 장애 시에도 throttle 창당 1회만 비용(do_reconcile 은 무raise).
         _record_pull_time(state, now)
 
-        res = _git_ops.do_reconcile(team_root)
+        if deadline is not None:
+            if not _remaining_timeout(
+                    deadline, _git_ops.DEFAULT_TIMEOUT):
+                return
+            res = _git_ops.do_reconcile(team_root, deadline=deadline)
+        else:
+            res = _git_ops.do_reconcile(team_root)
 
         # ── 표면화: diverge/충돌/실패는 마커 + stderr(조용히 넘기지 않음) ──
         # ⚠️ write_sync_warning 의 detail 은 나중에 hook_ss_sync_warn(이미 i18n 라우팅)의
@@ -247,9 +274,21 @@ def _maybe_auto_pull(team_root: str) -> None:
             # ok=True·ahead=0 을 주지만(추적 upstream 없음), 그건 직전 push 실패가 미해결인
             # 채로 정합을 못 한 상태다 — 여기서 지우면 #23 의 push 실패 가시성이 깨진다.
             # ahead-only/fetch-failed/conflict/error 도 미해결이므로 마커를 보존한다.
-            _git_ops.clear_sync_warning(team_root)
+            if deadline is None:
+                _git_ops.clear_sync_warning_if_fully_published(team_root)
+            else:
+                clear_timeout = _remaining_timeout(
+                    deadline, _git_ops.DEFAULT_TIMEOUT)
+                if clear_timeout:
+                    _git_ops.clear_sync_warning_if_fully_published(
+                        team_root, timeout=clear_timeout)
     except Exception:  # noqa: BLE001 — 철칙: 무슨 일이 있어도 세션·주입을 막지 않는다
         pass
+    finally:
+        # #45 pending recovery 는 pull 스로틀과 **독립**이지만, reconcile 과는 직렬화한다.
+        # 먼저 worker 를 시작하면 non-ff 로 실패한 뒤 이어진 rebase 결과를 다시 push 할
+        # 기회가 없다. 폴백·스로틀·예외 경로를 포함해 정합 시도 뒤 마지막에 항상 재kick.
+        _recover_push_pending(team_root, lang, deadline=deadline)
 
 
 def _upstream_fetch_state_path() -> str:
@@ -265,7 +304,7 @@ def _upstream_fetch_state_path() -> str:
 _UPSTREAM_FETCH_THROTTLE_SECONDS = 86400  # 기본 24h — 엔진 릴리스 빈도에 맞춘 보수적 기본
 
 
-def _maybe_fetch_upstream(team_root: str) -> None:
+def _maybe_fetch_upstream(team_root: str, deadline=None) -> None:
     """세션 시작마다(스로틀 적용) upstream(제품)을 **fetch 만** 한다 — merge·checkout 없음.
 
     왜 필요한가(적대검수 발견 — 치명 설계 결함): 엔진 업데이트 알림(_build_context 의
@@ -297,12 +336,21 @@ def _maybe_fetch_upstream(team_root: str) -> None:
             return
         # 시도 단위 기록 — 오프라인/원격 무등록이어도 스로틀 창당 1회만 비용(무raise).
         _record_pull_time(state, now)
-        _git_ops.fetch_upstream(team_root)
+        if deadline is None:
+            _git_ops.fetch_upstream(team_root)
+        else:
+            # fetch_upstream 내부의 is-worktree + remote-list 두 로컬 probe 몫을 먼저
+            # 남기고, 실제 network fetch만 shared deadline의 나머지로 clamp한다.
+            fetch_timeout = _remaining_timeout(
+                deadline, _git_ops.NET_TIMEOUT,
+                reserve=2 * _git_ops.DEFAULT_TIMEOUT)
+            if fetch_timeout:
+                _git_ops.fetch_upstream(team_root, timeout=fetch_timeout)
     except Exception:  # noqa: BLE001 — 철칙: 어떤 예외도 세션을 막지 않는다
         pass
 
 
-def _recover_push_pending(team_root: str, lang: str = "ko") -> None:
+def _recover_push_pending(team_root: str, lang: str = "ko", deadline=None) -> None:
     """#45 pending recovery — worker 유실(머신 슬립·Windows detach 실패·크래시) 복원.
 
     ledger 가 correctness 의 단일 소스: pending 존재 시 age 무관 ahead 조합 판정 —
@@ -316,10 +364,40 @@ def _recover_push_pending(team_root: str, lang: str = "ko") -> None:
     if _git_ops is None:
         return
     try:
-        if not _git_ops.read_push_pending(team_root):
+        # legacy bind/current-checkout/ahead 판정과 state lock 꼬리를 위한 최소 여유.
+        # 부족하면 ledger를 그대로 보존해 다음 auto-commit/세션이 재시도하게 한다.
+        if (deadline is not None
+                and not _remaining_timeout(
+                    deadline, _git_ops.DEFAULT_TIMEOUT,
+                    reserve=2 * _git_ops.DEFAULT_TIMEOUT + 2)):
+            return
+        pending_state = _git_ops.read_push_pending_state(team_root)
+        if not pending_state.available:
+            return  # lock/state 판정불가 — 보수적으로 pending/warning 을 보존
+        pending_snapshot = _git_ops.bind_legacy_pending_to_current_checkout(
+            team_root, pending_state.content)
+        if not pending_snapshot:
+            return
+        pending_target_key = _git_ops.pending_entry_key_for_current_checkout(
+            team_root, pending_snapshot)
+        if not pending_target_key:
+            targets = _git_ops.pending_target_summary(pending_snapshot, team_root)
+            _git_ops.write_sync_warning(
+                team_root, _t("hook_ss_push_pending_checkout_mismatch", lang,
+                             "push pending 대상 checkout 불일치 — 현재 branch에서는 "
+                             "자동 처리하지 않음: {targets}", targets=targets))
+            print(_t("hook_ss_push_pending_checkout_mismatch_print", lang,
+                     "[teammode] 다른 checkout의 push pending을 보존했습니다. "
+                     "해당 branch로 전환해 재시도하세요: {targets}", targets=targets),
+                  file=sys.stderr)
+            return
+        ahead_timeout = _remaining_timeout(
+            deadline, _git_ops.DEFAULT_TIMEOUT) if deadline is not None \
+            else _git_ops.DEFAULT_TIMEOUT
+        if not ahead_timeout:
             return
         ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
-            team_root, _git_ops.DEFAULT_TIMEOUT)
+            team_root, ahead_timeout)
         worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "push-worker.py")
         if not has_upstream:
@@ -345,7 +423,16 @@ def _recover_push_pending(team_root: str, lang: str = "ko") -> None:
                          "재시도됩니다."), file=sys.stderr)
             return
         # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.
-        _git_ops.clear_push_pending(team_root)
+        if _git_ops.clear_push_pending_if_unchanged(
+                team_root, pending_snapshot, pending_target_key):
+            if deadline is None:
+                _git_ops.clear_sync_warning_if_fully_published(team_root)
+            else:
+                clear_timeout = _remaining_timeout(
+                    deadline, _git_ops.DEFAULT_TIMEOUT)
+                if clear_timeout:
+                    _git_ops.clear_sync_warning_if_fully_published(
+                        team_root, timeout=clear_timeout)
     except Exception:  # noqa: BLE001 — 철칙
         pass
 
@@ -399,7 +486,7 @@ def _persist_session_relay(data: dict) -> None:
         pass
 
 
-def _build_context(root: Path, lang: str = "ko") -> str | None:
+def _build_context(root: Path, lang: str = "ko", deadline=None) -> str | None:
     """INDEX + 멤버별 최근 세션로그 summary 를 주입 문자열로 조립.
 
     엔진 _collect_members/_read_index 재사용. 수집 결과가 비어도(빈 팀) 유효 구조의
@@ -429,7 +516,10 @@ def _build_context(root: Path, lang: str = "ko") -> str | None:
                     "⚠️ [동기화 경고] 로컬 커밋이 origin 에 push 되지 않았습니다 "
                     "— 팀원과 분기(divergence) 위험. 확인 후 `teammode pull`/수동 "
                     "정리 필요: {warn}", warn=warn))
-            ahead, behind = _git_ops.ahead_behind(str(root))
+            ahead_timeout = _remaining_timeout(deadline, _git_ops.DEFAULT_TIMEOUT)
+            ahead, behind = ((0, 0) if not ahead_timeout else
+                             _git_ops.ahead_behind(
+                                 str(root), timeout=ahead_timeout))
             if ahead or behind:
                 lines.append("")
                 lines.append(_t(
@@ -455,7 +545,13 @@ def _build_context(root: Path, lang: str = "ko") -> str | None:
     if _git_ops is not None and _engine is not None:
         try:
             local_notice = _engine._read_local_notice(root)
-            upstream_notice = _git_ops.read_upstream_notice(str(root))
+            # is-worktree + default-branch(symbolic-ref 실패 시 rev-parse fallback까지
+            # 2회) + show의 최대 4개 로컬 Git call이 context deadline을 각각 새로
+            # 받지 않도록 균등 분할한다. 출력 1s는 남긴다.
+            notice_timeout = _split_timeout(
+                deadline, calls=4, cap=_git_ops.DEFAULT_TIMEOUT, reserve=1)
+            upstream_notice = (_git_ops.read_upstream_notice(
+                str(root), timeout=notice_timeout) if notice_timeout else "")
             if upstream_notice and upstream_notice != local_notice:
                 lines.append("")
                 lines.append(_t(
@@ -515,6 +611,7 @@ def _build_context(root: Path, lang: str = "ko") -> str | None:
 
 
 def main() -> int:
+    deadline = time.monotonic() + _SESSION_START_TOTAL_BUDGET
     _ensure_utf8_io()  # 한글 json 출력이 Windows cp949 stdout 에서 크래시 방지
     try:
         data = json.loads(sys.stdin.read() or "{}")
@@ -535,10 +632,11 @@ def main() -> int:
     _persist_session_relay(data)
 
     # 세션당 1회 레포 최신화 — 맥락 주입 전에(최신 상태로 주입). 실패 무해(철칙).
-    _maybe_auto_pull(str(root))
+    sync_deadline = deadline - _SESSION_CONTEXT_RESERVE
+    _maybe_auto_pull(str(root), deadline=sync_deadline)
     # upstream(제품) 캐시도 스로틀 적용해 새로 고침 — 안 하면 계속 켜둔 인스턴스에서
     # 엔진 업데이트 알림이 fetch 시점 이후의 변화를 영원히 못 본다(위 함수 docstring).
-    _maybe_fetch_upstream(str(root))
+    _maybe_fetch_upstream(str(root), deadline=sync_deadline)
 
     # 팀 locale → 주입 언어(PR-i1). config 1회 읽기 — 실패는 ko/en 폴백 계약이 흡수.
     # locale 판정용 config 1회 open — session-start 는 세션당 1회만 실행되므로
@@ -546,7 +644,7 @@ def main() -> int:
     lang = _hook_lang(str(root))
 
     try:
-        context = _build_context(root, lang)
+        context = _build_context(root, lang, deadline=deadline)
     except Exception:  # noqa: BLE001 — 수집 실패가 세션을 막지 않는다
         return 0
 
@@ -556,7 +654,7 @@ def main() -> int:
                 "hookEventName": "SessionStart",
                 "additionalContext": context,
             }
-        }, ensure_ascii=False))
+        }, ensure_ascii=False), flush=True)
     return 0
 
 

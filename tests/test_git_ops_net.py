@@ -17,7 +17,9 @@ codex 리뷰 후속(PR #35):
 
 네트워크는 /tmp 로컬 fake remote(bare) 로 모사 — 실 원격·실 ~/.claude 무접촉.
 """
+import importlib.util
 import inspect
+import io
 import json
 import os
 import subprocess
@@ -288,7 +290,7 @@ def test_do_commit_push_uses_function_timeout(tmp_path, monkeypatch):
 #
 # do_commit(push=True)의 복구 체인은 push→push -u→fetch→rebase→push -u 로
 # NET_TIMEOUT(10s) 네트워크 호출을 최대 5회 순차 수행할 수 있다(최악 ~50s).
-# 훅 manifest 캡(30s)이 먼저 프로세스를 죽이면 로컬 커밋/rebase 뒤에 써야 할
+# 훅 manifest 캡(70s)이 먼저 프로세스를 죽이면 로컬 커밋/rebase 뒤에 써야 할
 # sync-warning 마커가 유실된다. 엔진은 공유 총예산 안에서 **스스로** 반환해야 한다.
 
 def test_push_total_budget_exists_and_below_net_worst_case():
@@ -385,7 +387,7 @@ def test_do_commit_push_fast_path_unaffected_by_budget(tmp_path, monkeypatch):
 #
 # 종전엔 _deadline 이 로컬 commit **이후**(push 직전)에 시작돼, 로컬 단계
 # (rev-parse·add·staged-diff·commit, 최악 ~8s)가 예산 밖이었다 — 최악 로컬 8s +
-# 네트워크 25s = 33s 로 훅 manifest 캡(30s)을 넘길 수 있었다. A1: 데드라인을
+# 네트워크 25s = 33s 로 당시 훅 manifest 캡(30s)을 넘길 수 있었다. A1: 데드라인을
 # do_commit 진입에 앵커해 로컬 단계가 예산을 소모하고 네트워크는 남은 만큼만 쓴다.
 # 로컬 하위호출 자체는 예산으로 클램프/중단하지 않는다(로컬 커밋은 항상 완주·보존).
 
@@ -417,11 +419,12 @@ def test_do_commit_slow_local_phases_shrink_first_push_timeout(
         tmp_path, monkeypatch):
     """로컬 단계가 벽시계를 많이 먹으면 첫 push 의 timeout 이 남은 예산으로 준다.
 
-    로컬 4회(rev-parse·add·diff·commit) × 5s = 20s 소모 → 남은 예산 2s → 첫 push
+    로컬 8회(worktree·add·diff·pre-identity×2·commit·post-identity×2) × 3s =
+    24s 소모 → 반환 identity 4s를 예약하고 남은 약 7s → 첫 push
     timeout 은 NET_TIMEOUT(10s)이 아니라 그 이하로 클램프돼야 한다. 데드라인이
     push 직전에 시작되면(종전) push 가 10s 를 그대로 받아 총 30s 를 넘긴다.
     """
-    calls, fake_now = _fake_wall_clock(monkeypatch, per_call=5.0)
+    calls, fake_now = _fake_wall_clock(monkeypatch, per_call=3.0)
     entry = fake_now["t"]
     res = git_ops.do_commit(str(tmp_path), "m", push=True)
     assert res.ok is True and res.committed is True
@@ -431,10 +434,10 @@ def test_do_commit_slow_local_phases_shrink_first_push_timeout(
     push_t, push_at = push_calls[0]
     # 핵심(A1): 첫 push timeout 이 남은 예산으로 클램프됐다(종전엔 NET_TIMEOUT 그대로).
     assert push_t < git_ops.NET_TIMEOUT, (
-        f"push timeout={push_t} — 로컬 단계 20s 소모 후에도 클램프 안 됨(예산이 "
+        f"push timeout={push_t} — 로컬 단계 24s 소모 후에도 클램프 안 됨(예산이 "
         f"진입 앵커가 아님)")
     # 예산 수식 불변식: (진입~push 경과) + push timeout ≤ PUSH_TOTAL_BUDGET —
-    # 총 벽시계가 훅 manifest 캡(30s)에서 kill-drain/abort 꼬리 슬랙을 뺀 값 아래.
+    # 총 벽시계가 훅 manifest 캡(70s)에서 kill-drain/abort 꼬리 슬랙을 뺀 값 아래.
     assert (push_at - entry) + push_t <= git_ops.PUSH_TOTAL_BUDGET
     # 로컬 하위호출은 예산으로 클램프하지 않는다(로컬 커밋 완주 보장).
     for verb in ("add", "commit"):
@@ -448,11 +451,11 @@ def test_do_commit_budget_gone_after_local_commit_skips_push(
         tmp_path, monkeypatch):
     """로컬 커밋 성공 후 예산이 이미 바닥이면 push 를 아예 시도하지 않는다.
 
-    로컬 4회 × 6s = 24s > 예산 → preflight 가 1s 짜리(하한 floor) 헛 push 를
+    로컬 8회 × 5s = 40s > 예산 → preflight 가 1s 짜리(하한 floor) 헛 push 를
     쏘는 대신 즉시 반환한다. 결과 모양(committed=True/pushed=False + 'budget')은
     auto-commit 훅이 sync-warning 마커를 쓰는 그 모양이어야 한다.
     """
-    calls, _fake_now = _fake_wall_clock(monkeypatch, per_call=6.0)
+    calls, _fake_now = _fake_wall_clock(monkeypatch, per_call=5.0)
     res = git_ops.do_commit(str(tmp_path), "m", push=True)
     assert res.ok is True
     assert res.committed is True           # 커밋은 보존(철칙)
@@ -462,20 +465,81 @@ def test_do_commit_budget_gone_after_local_commit_skips_push(
         f"예산 소진 후에도 push 시도: {calls}")
 
 
+def test_do_commit_normal_remote_rtt_still_attempts_non_ff_rebase(
+        tmp_path, monkeypatch):
+    """GitHub SSH의 정상 RTT 수준에서도 foreground non-ff 복구를
+    budget exhaustion으로 생략하지 않아야 한다.
+
+    첫 push 거부와 fetch가 각 2.5s를 쓰고, 로컬 probe는 0.01s인
+    경로를 실제 do_commit으로 통과시킨다. #33에서 NET_TIMEOUT을
+    늘린 근거 자체가 실 GitHub SSH 왕복이 2.5s+라는 것이었다.
+    """
+    clock = {"now": 0.0}
+    state = {"head": "1" * 40, "pushes": 0, "rebases": 0}
+    monkeypatch.setattr(
+        git_ops.time, "monotonic", lambda: clock["now"])
+
+    def fake_run_git(args, timeout):
+        argv = list(args)
+        if "push" in argv:
+            clock["now"] += 2.5
+            state["pushes"] += 1
+            if state["pushes"] == 1:
+                return 1, "", (
+                    "error: failed to push some refs\n"
+                    "hint: Updates were rejected because the remote contains "
+                    "work that you do not have locally.")
+            return 0, "", ""
+        if "fetch" in argv:
+            clock["now"] += 2.5
+            return 0, "", ""
+
+        clock["now"] += 0.01
+        if "--is-inside-work-tree" in argv:
+            return 0, "true\n", ""
+        if "symbolic-ref" in argv and "--short" in argv:
+            return 0, "main\n", ""
+        if "rev-parse" in argv:
+            if "refs/stash" in argv:
+                return 1, "", ""
+            return 0, state["head"] + "\n", ""
+        if "add" in argv:
+            return 0, "", ""
+        if "diff" in argv and "--cached" in argv:
+            return 1, "", ""
+        if "diff" in argv:
+            return 0, "", ""
+        if "status" in argv:
+            return 0, "", ""
+        if "commit" in argv:
+            state["head"] = "2" * 40
+            return 0, "committed\n", ""
+        if "rebase" in argv:
+            state["rebases"] += 1
+            state["head"] = "3" * 40
+            return 0, "", ""
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(git_ops, "run_git", fake_run_git)
+
+    res = git_ops.do_commit(str(tmp_path), "m", push=True)
+
+    assert state["rebases"] == 1, (
+        f"normal 2.5s push + 2.5s fetch skipped rebase: {res.detail}")
+    assert res.pushed is True, res.detail
+
+
 # ──────────────────────────────────────────────────────────────────
 # codex P1 — 네트워크 훅의 manifest timeout 이 NET_TIMEOUT 설계를 덮는지
 # ──────────────────────────────────────────────────────────────────
 
 def test_manifest_network_hooks_timeout_covers_net_flow():
-    """#45 이후 네트워크 훅은 session-start(do_reconcile: fetch+ff/rebase+push)뿐이다 —
-    auto-commit 의 동기 구간은 로컬 커밋까지(push 는 훅 캡 밖 detach worker 몫).
+    """session-start 와 foreground auto-commit 의 네트워크 예산을 훅 캡이 덮는다.
 
     불변식 2개:
-      ① session-start: manifest timeout > PUSH_TOTAL_BUDGET — 엔진 총예산이 훅 캡보다
-        작아야 엔진이 스스로 먼저 반환해 sync-warning 마커를 쓸 수 있다(관계가 본질).
-      ② auto-commit: manifest timeout 이 **로컬 worst-case** 를 덮는다 —
-        add/staged/commit 각 DEFAULT_TIMEOUT + index.lock 1s 재시도(로컬 2단계 재수행)
-        + ledger/kick 여유. 네트워크 여유(NET_TIMEOUT 배수)는 더 이상 불필요."""
+      ① session-start: reconcile 총예산 + 후속 upstream fetch + cleanup 여유를 덮는다.
+      ② auto-commit: 첫 로컬 시도의 index.lock 실패 worst-case + 1s backoff +
+        재시도 do_commit 의 PUSH_TOTAL_BUDGET + abort/ledger cleanup 여유를 덮는다."""
     manifest = json.loads(
         (REPO / "infra" / "hooks" / "manifest.json").read_text(encoding="utf-8"))
     entries = {e.get("script"): e for e in manifest if e.get("script")}
@@ -483,21 +547,443 @@ def test_manifest_network_hooks_timeout_covers_net_flow():
     ss = entries.get("session-start.py")
     assert ss is not None
     assert ss.get("_timeout_unit") == "seconds"
-    assert ss.get("timeout", 0) > git_ops.PUSH_TOTAL_BUDGET, (
-        f"session-start: manifest timeout={ss.get('timeout')} ≤ "
-        f"PUSH_TOTAL_BUDGET={git_ops.PUSH_TOTAL_BUDGET} — 훅 러너가 "
+    session_required = (
+        git_ops.RECONCILE_TOTAL_BUDGET + git_ops.NET_TIMEOUT + 8)
+    assert ss.get("timeout", 0) >= session_required, (
+        f"session-start: manifest timeout={ss.get('timeout')} < "
+        f"reconcile+upstream+cleanup={session_required} — 훅 러너가 "
         f"엔진 반환 전에 죽여 sync-warning 마커가 유실됨")
 
     ac = entries.get("auto-commit.py")
     assert ac is not None
     assert ac.get("_timeout_unit") == "seconds"
-    # 로컬 worst(codex P1): 시도당 하위호출 4개(rev-parse/add/staged/commit) —
-    # full retry 는 시도 전체를 재수행하므로 2x(4xDEFAULT_TIMEOUT) + sleep 1s.
-    local_worst = 2 * (4 * git_ops.DEFAULT_TIMEOUT) + 1
-    assert ac.get("timeout", 0) >= local_worst + 1, (
-        f"auto-commit: manifest timeout={ac.get('timeout')} < 로컬 worst "
-        f"{local_worst}+1 — 커밋 완주 전에 훅이 죽으면 ledger 를 못 쓴다")
-    # push 동기화 폐기의 회귀 방지: 네트워크 훅 수준(> PUSH_TOTAL_BUDGET)으로
-    # 되돌아가면 #45 의 훅 지연 문제가 재발한다.
-    assert ac.get("timeout", 0) <= git_ops.PUSH_TOTAL_BUDGET, (
-        "auto-commit timeout 이 push 예산 이상 — 동기 push 회귀 신호")
+    # 첫 시도가 commit의 index.lock에서 끝나는 최장 경로:
+    # worktree/add/diff + pre-commit checkout identity 2회 + commit = 6 local calls.
+    first_local_worst = 6 * git_ops.DEFAULT_TIMEOUT
+    retry_and_push_worst = 1 + git_ops.PUSH_TOTAL_BUDGET
+    # do_commit은 반환 identity를 자체 예산에 예약한다. 호출부는 branch/HEAD 검증
+    # 2회(최대 4s), ledger/warning lock(최대 2s), worker/출력 여유가 별도로 필요하다.
+    cleanup_headroom = 8
+    required = first_local_worst + retry_and_push_worst + cleanup_headroom
+    assert ac.get("timeout", 0) >= required, (
+        f"auto-commit: manifest timeout={ac.get('timeout')} < foreground worst "
+        f"{required} — runner kill 이 pending/sync-warning 기록보다 먼저 발생")
+
+
+def test_auto_commit_retry_records_pending_before_manifest_timeout(
+        tmp_path, monkeypatch):
+    """첫 commit의 index.lock 재시도 + rebase timeout 복구도 훅 cap 안에서
+    반환해 pending을 써야 한다.
+
+    실제 벽시계 대신 첫 index.lock 경로와 rollback 하위호출은 선언 timeout 거의
+    전부를 쓰고, retry fetch는 정상 GitHub SSH 수준(2.5s)을 쓰는 경로를 모사한다.
+    rebase timeout은 run_git의 kill/drain 2s까지 포함하고, Created autostash 복원
+    경로를 실제 do_commit 코드로 통과시킨다.
+    """
+    manifest = json.loads(
+        (REPO / "infra" / "hooks" / "manifest.json").read_text(
+            encoding="utf-8"))
+    cap = next(
+        e["timeout"] for e in manifest if e.get("script") == "auto-commit.py")
+
+    spec = importlib.util.spec_from_file_location(
+        "auto_commit_deadline_regression",
+        REPO / "infra" / "hooks" / "auto-commit.py")
+    hook = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(hook)
+
+    clock = {"now": 0.0}
+    state = {
+        "commit_attempt": 0,
+        "after_rebase": False,
+        "restored": False,
+        "head": "1" * 40,
+    }
+    autostash = "a" * 40
+
+    monkeypatch.setattr(
+        git_ops.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        hook._time, "sleep",
+        lambda seconds: clock.__setitem__(
+            "now", clock["now"] + float(seconds)))
+
+    def fake_run_git(args, timeout):
+        argv = list(args)
+        retry = state["commit_attempt"] >= 1
+        duration = (
+            0.01 if retry and not state["after_rebase"]
+            else 0.99 * timeout)
+        if retry and "fetch" in argv:
+            duration = 2.5
+        if retry and "rebase" in argv and "--autostash" in argv:
+            # subprocess timeout + run_git.kill_group() 후 communicate drain.
+            clock["now"] += timeout + 2.0
+            state["after_rebase"] = True
+            state["head"] = "2" * 40
+            raise subprocess.TimeoutExpired(
+                cmd="git rebase", timeout=timeout,
+                output=f"Created autostash: {autostash[:12]}\n",
+                stderr="Applying autostash resulted in conflicts.\n")
+
+        clock["now"] += duration
+        if "--is-inside-work-tree" in argv:
+            return 0, "true\n", ""
+        if "symbolic-ref" in argv and "--short" in argv:
+            return 0, "main\n", ""
+        if "rev-parse" in argv:
+            joined = " ".join(argv)
+            if "refs/stash" in argv:
+                if state["after_rebase"]:
+                    return 0, autostash + "\n", ""
+                return 1, "", ""
+            if autostash[:12] in joined:
+                return 0, autostash + "\n", ""
+            return 0, state["head"] + "\n", ""
+        if "show" in argv and "-s" in argv:
+            return 0, "On main: autostash\n", ""
+        if "add" in argv:
+            return 0, "", ""
+        if "diff" in argv and "--cached" in argv:
+            return 1, "", ""
+        if "status" in argv:
+            return 0, "", ""  # preflight 직후 TOCTOU dirty edit
+        if "diff" in argv and "--diff-filter=U" in argv:
+            return 0, ("" if state["restored"] else "dirty.md\0"), ""
+        if "diff" in argv:
+            return 0, "", ""
+        if "commit" in argv:
+            state["commit_attempt"] += 1
+            if state["commit_attempt"] == 1:
+                return 1, "", (
+                    "fatal: Unable to create .git/index.lock: File exists")
+            state["head"] = "3" * 40
+            return 0, "committed\n", ""
+        if "push" in argv:
+            return 1, "", (
+                "error: failed to push some refs\n"
+                "hint: Updates were rejected because the remote contains work "
+                "that you do not have locally.")
+        if "fetch" in argv:
+            return 0, "", ""
+        if "rebase" in argv and "--abort" in argv:
+            return 0, "", ""
+        if "reset" in argv and "--hard" in argv:
+            state["head"] = "3" * 40
+            return 0, "", ""
+        if "stash" in argv and "apply" in argv:
+            state["restored"] = True
+            return 0, "", ""
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(git_ops, "run_git", fake_run_git)
+    pending_write_at = []
+    warning_write_at = []
+
+    def timed_pending_write(_root, _identity=None):
+        # 실제 writer tail의 branch/ref 검증 4s + ledger lock/fsync 2s.
+        clock["now"] += 6.0
+        pending_write_at.append(clock["now"])
+        return True
+
+    def timed_warning_write(*_args, **_kwargs):
+        # warning lock + atomic fsync 여유. 호출 시작이 아니라 durable 완료 시각을 잰다.
+        clock["now"] += 2.0
+        warning_write_at.append(clock["now"])
+        return True
+
+    monkeypatch.setattr(git_ops, "write_push_pending", timed_pending_write)
+    monkeypatch.setattr(git_ops, "write_sync_warning", timed_warning_write)
+    monkeypatch.setattr(
+        git_ops, "clear_sync_warning_if_fully_published",
+        lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        git_ops, "read_push_pending_state",
+        lambda _root: types.SimpleNamespace(available=True, content=""))
+    monkeypatch.setattr(
+        git_ops, "bind_legacy_pending_to_current_checkout",
+        lambda _root, snapshot: snapshot)
+    monkeypatch.setattr(
+        git_ops, "pending_entry_key_for_current_checkout",
+        lambda _root, _snapshot: "")
+    monkeypatch.setattr(git_ops, "sanitize_git_detail", lambda detail: detail)
+    monkeypatch.setattr(hook, "_kick_push_worker", lambda _root: None)
+
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / ".teammode-active").write_text("", encoding="utf-8")
+    edited = root / "edited.md"
+    edited.write_text("edited\n", encoding="utf-8")
+    monkeypatch.setenv("TEAMMODE_HOME", str(root))
+    monkeypatch.setattr(
+        hook.sys, "stdin",
+        io.StringIO(json.dumps({
+            "event": "PostToolUse",
+            "action": "file_edit",
+            "files": [str(edited)],
+        })))
+
+    assert hook.main() == 0
+    assert state["commit_attempt"] == 2
+    assert state["after_rebase"] is True, "deadline 경로가 rebase timeout을 통과해야 함"
+    assert state["restored"] is True, "exact autostash rollback 경로가 실행돼야 함"
+    assert pending_write_at, "push failure must reach pending ledger write"
+    assert warning_write_at, "push failure must persist a sync warning"
+    assert pending_write_at[0] < cap, (
+        f"pending write at {pending_write_at[0]:.2f}s >= hook cap {cap}s; "
+        "runner can kill the committed session-log path before recovery is durable")
+    assert warning_write_at[0] < cap, (
+        f"warning write at {warning_write_at[0]:.2f}s >= hook cap {cap}s; "
+        "runner can kill the hook before publication failure is visible")
+
+
+def test_auto_commit_windows_writer_fallback_finishes_before_manifest_timeout(
+        tmp_path, monkeypatch):
+    """Windows에서 pending identity 재검증이 timeout되어도 fallback
+    warning의 durable write가 auto-commit manifest cap 전에 끝나야 한다.
+
+    첫 index.lock 경로 12s + 1s backoff + retry do_commit 총예산 35s 후,
+    실제 write_push_pending의 check-ref/cat-file 검증과 실제 fallback
+    write_sync_warning을 통과시킨다. cat-file은 Windows run_git의
+    timeout 2s + taskkill 5s + drain 2s 상한을 모사한다.
+    """
+    manifest = json.loads(
+        (REPO / "infra" / "hooks" / "manifest.json").read_text(
+            encoding="utf-8"))
+    cap = next(
+        e["timeout"] for e in manifest if e.get("script") == "auto-commit.py")
+
+    spec = importlib.util.spec_from_file_location(
+        "auto_commit_windows_writer_deadline_regression",
+        REPO / "infra" / "hooks" / "auto-commit.py")
+    hook = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(hook)
+
+    clock = {"now": 0.0}
+    attempts = {"count": 0}
+    identity = {
+        "key": "branch:main", "branch": "main", "head": "a" * 40,
+    }
+    monkeypatch.setattr(
+        git_ops.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        hook._time, "sleep",
+        lambda seconds: clock.__setitem__(
+            "now", clock["now"] + float(seconds)))
+
+    def timed_do_commit(*_args, **_kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            clock["now"] += 12.0
+            return git_ops.CommitResult(
+                ok=False, committed=False,
+                detail="fatal: .git/index.lock exists")
+        clock["now"] += git_ops.PUSH_TOTAL_BUDGET
+        return git_ops.CommitResult(
+            ok=True, committed=True, pushed=False,
+            detail="committed; push timeout", pending_identity=identity)
+
+    def writer_validation_run_git(args, timeout):
+        if "check-ref-format" in args:
+            clock["now"] += git_ops.DEFAULT_TIMEOUT
+            return 0, "", ""
+        if "cat-file" in args:
+            # Windows kill_group: taskkill timeout 5s + communicate drain 2s.
+            clock["now"] += git_ops.DEFAULT_TIMEOUT + 5 + 2
+            raise subprocess.TimeoutExpired(cmd="git cat-file", timeout=timeout)
+        raise AssertionError(args)
+
+    monkeypatch.setattr(git_ops, "do_commit", timed_do_commit)
+    monkeypatch.setattr(git_ops, "run_git", writer_validation_run_git)
+    monkeypatch.setattr(hook, "_kick_push_worker", lambda _root: None)
+
+    warning_completed_at = []
+    real_warning_write = git_ops.write_sync_warning
+
+    def contended_warning_write(root, detail):
+        # _push_pending_ledger_lock가 규약한 최대 대기 1s.
+        clock["now"] += git_ops._PUSH_PENDING_LOCK_WAIT_SECONDS
+        real_warning_write(root, detail)
+        warning_completed_at.append(clock["now"])
+
+    monkeypatch.setattr(git_ops, "write_sync_warning", contended_warning_write)
+
+    root = tmp_path / "team"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / ".teammode-active").write_text("", encoding="utf-8")
+    edited = root / "edited.md"
+    edited.write_text("edited\n", encoding="utf-8")
+    monkeypatch.setenv("TEAMMODE_HOME", str(root))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        hook.sys, "stdin",
+        io.StringIO(json.dumps({
+            "event": "PostToolUse",
+            "action": "file_edit",
+            "files": [str(edited)],
+        })))
+
+    assert hook.main() == 0
+    assert attempts["count"] == 2
+    assert git_ops.read_push_pending(str(root)) == ""
+    assert git_ops.read_sync_warning(str(root))
+    assert warning_completed_at, "pending validation failure must persist fallback warning"
+    assert warning_completed_at[0] < cap, (
+        f"fallback warning completed at {warning_completed_at[0]:.2f}s >= "
+        f"auto hook cap {cap}s; runner can kill before failure is durable")
+
+
+def test_session_start_emits_context_before_manifest_timeout(
+        tmp_path, monkeypatch):
+    """reconcile + upstream refresh + context probes 전체가 SessionStart cap 안에
+    context JSON을 출력해야 한다.
+
+    각 Git 하위호출이 자신의 선언 timeout의 99%를 쓰고 성공하는
+    정상 경로를 가짜 벽시계로 모사한다. 훅은 실제 main 순서대로
+    do_reconcile, warning cleanup, fetch_upstream, _build_context를 전부 호출한다.
+    """
+    manifest = json.loads(
+        (REPO / "infra" / "hooks" / "manifest.json").read_text(
+            encoding="utf-8"))
+    cap = next(
+        e["timeout"] for e in manifest if e.get("script") == "session-start.py")
+
+    monkeypatch.syspath_prepend(str(REPO / "infra" / "hooks"))
+    spec = importlib.util.spec_from_file_location(
+        "session_start_deadline_regression",
+        REPO / "infra" / "hooks" / "session-start.py")
+    hook = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(hook)
+    assert hook._auto_pull is not None
+
+    clock = {"now": 0.0}
+    rev_list_calls = {"count": 0}
+    monkeypatch.setattr(
+        git_ops.time, "monotonic", lambda: clock["now"])
+
+    def fake_run_git(args, timeout):
+        argv = list(args)
+        clock["now"] += 0.99 * timeout
+        if "--is-inside-work-tree" in argv:
+            return 0, "true\n", ""
+        if "fetch" in argv:
+            return 0, "", ""
+        if "remote" in argv and "fetch" not in argv:
+            return 0, "origin\nupstream\n", ""
+        if "rev-list" in argv:
+            rev_list_calls["count"] += 1
+            if rev_list_calls["count"] == 1:
+                return 0, "1 1\n", ""
+            return 0, "0 0\n", ""
+        if "status" in argv:
+            return 0, "", ""
+        if "symbolic-ref" in argv:
+            if "--short" in argv:
+                return 0, "main\n", ""
+            # upstream/HEAD가 없는 clone fallback: detect_default_branch가
+            # refs/remotes/upstream/main rev-parse를 한 번 더 수행한다.
+            return 1, "", ""
+        if "rev-parse" in argv:
+            if "refs/stash" in argv:
+                return 1, "", ""
+            return 0, "b" * 40 + "\n", ""
+        if "rebase" in argv:
+            return 0, "", ""
+        if "diff" in argv:
+            return 0, "", ""
+        if "show" in argv:
+            return 0, "", ""
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(git_ops, "run_git", fake_run_git)
+    monkeypatch.setattr(hook, "_kb_guard", None)
+
+    root = tmp_path / "team"
+    (root / ".git").mkdir(parents=True)
+    (root / ".teammode-active").write_text("", encoding="utf-8")
+    (root / "memory" / "team" / "sessions").mkdir(parents=True)
+    (root / "memory" / "INDEX.md").write_text("", encoding="utf-8")
+    monkeypatch.setenv("TEAMMODE_HOME", str(root))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("TEAMMODE_PULL_THROTTLE", "0")
+    monkeypatch.setenv("TEAMMODE_UPSTREAM_FETCH_THROTTLE", "0")
+    monkeypatch.setattr(
+        hook.sys, "stdin", io.StringIO(json.dumps({"event": "SessionStart"})))
+
+    context_emit_at = []
+
+    def timed_print(*args, **kwargs):
+        rendered = " ".join(str(arg) for arg in args)
+        if "hookSpecificOutput" in rendered:
+            context_emit_at.append(clock["now"])
+
+    monkeypatch.setattr(hook, "print", timed_print, raising=False)
+
+    assert hook.main() == 0
+    assert context_emit_at, "SessionStart must emit hookSpecificOutput JSON"
+    assert context_emit_at[0] < hook._SESSION_START_TOTAL_BUDGET, (
+        f"context JSON emitted at {context_emit_at[0]:.2f}s >= internal hard "
+        f"budget {hook._SESSION_START_TOTAL_BUDGET}s")
+    assert context_emit_at[0] < cap, (
+        f"context JSON emitted at {context_emit_at[0]:.2f}s >= hook cap {cap}s; "
+        "the runner can kill SessionStart before its primary context output")
+
+
+def test_session_context_notice_fallback_respects_hard_deadline(
+        tmp_path, monkeypatch):
+    """upstream/HEAD가 없어서 default-branch fallback이 한 call 늘어도 context
+    decoration이 hard deadline을 전부 소비하면 안 된다."""
+    monkeypatch.syspath_prepend(str(REPO / "infra" / "hooks"))
+    spec = importlib.util.spec_from_file_location(
+        "session_start_notice_deadline_regression",
+        REPO / "infra" / "hooks" / "session-start.py")
+    hook = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(hook)
+
+    clock = {"now": 40.0}
+    monkeypatch.setattr(hook.time, "monotonic", lambda: clock["now"])
+
+    def fake_run_git(args, timeout):
+        argv = list(args)
+        clock["now"] += timeout
+        if "--is-inside-work-tree" in argv:
+            return 0, "true\n", ""
+        if "rev-list" in argv:
+            return 0, "0 0\n", ""
+        if "symbolic-ref" in argv:
+            return 1, "", ""  # upstream/HEAD 없음 → main ref fallback
+        if "rev-parse" in argv:
+            return 0, "b" * 40 + "\n", ""
+        if "show" in argv:
+            return 0, "new notice\n", ""
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(git_ops, "run_git", fake_run_git)
+
+    class FakeEngine:
+        @staticmethod
+        def _read_index(_root):
+            return ""
+
+        @staticmethod
+        def _collect_members(_root):
+            return []
+
+        @staticmethod
+        def _read_local_notice(_root):
+            return "old notice\n"
+
+    monkeypatch.setattr(hook, "_git_ops", git_ops)
+    monkeypatch.setattr(hook, "_engine", FakeEngine)
+
+    context = hook._build_context(tmp_path, deadline=50.0)
+
+    assert context is not None
+    assert clock["now"] < 50.0, (
+        f"fallback NOTICE probes consumed the context hard deadline: {clock['now']}")

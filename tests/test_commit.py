@@ -6,6 +6,7 @@
 
 네트워크는 /tmp 로컬 fake remote 로 모사 — 실 toolkit·실 ~/.claude 무접촉.
 """
+import importlib.util
 import os
 import subprocess
 import sys
@@ -16,6 +17,18 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "infra"))
 import git_ops as go  # noqa: E402
+
+
+def _load_engine():
+    """infra engine을 고유 이름으로 로드해 pip `teammode` stub 오염을 피한다."""
+    spec = importlib.util.spec_from_file_location(
+        "teammode_engine_commit", str(REPO / "infra" / "teammode.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+tm = _load_engine()
 
 ENGINE = REPO / "infra" / "teammode.py"
 
@@ -179,18 +192,134 @@ def test_commit_verb_no_changes_graceful(local_repo):
     assert "Traceback" not in r.stderr
 
 
-def test_commit_verb_push_no_remote_graceful(local_repo):
+def test_commit_verb_push_no_remote_graceful(local_repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    env = {**os.environ, "TEAMMODE_DISABLE_PUSH_WORKER": "1"}
     (local_repo / "j.txt").write_text("v\n")
-    r = _run_engine(local_repo, "commit", "--message", "p", "--push")
+    r = _run_engine(local_repo, "commit", "--message", "p", "--push", env=env)
     assert "Traceback" not in r.stderr
     # 커밋은 보존
     assert "p" in _git(local_repo, "log", "--oneline").stdout
+
+
+def test_commit_verb_push_no_remote_records_recovery_state(
+        local_repo, tmp_path, monkeypatch):
+    """OFF fallback push 실패도 pending/warning을 남겨 SessionStart가 재시도한다."""
+    state_home = tmp_path / "xdg-state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    env = {**os.environ, "TEAMMODE_DISABLE_PUSH_WORKER": "1"}
+    (local_repo / "session.md").write_text("session\n", encoding="utf-8")
+
+    r = _run_engine(local_repo, "commit", "--message", "session fallback",
+                    "--paths", "session.md", "--push", env=env)
+
+    assert r.returncode == 0, r.stderr
+    root = str(local_repo.resolve())
+    pending = go.read_push_pending_state(root)
+    assert pending.available is True
+    assert go.pending_targets_current_checkout(root, pending.content) is True
+    warning = go.read_sync_warning(root)
+    assert warning
+    assert "push" in warning.lower()
+
+
+def test_cmd_commit_push_failure_records_sanitized_warning_and_kicks_worker(
+        monkeypatch, tmp_path, capsys):
+    """복구 ledger 기록 성공 시 rc0 계약을 유지하고 worker를 kick한다."""
+    raw = ("fatal https://alice:password@example.com/repo "
+           "Authorization: Bearer bearer-secret")
+    calls = {}
+    identity = {"key": "branch:session", "branch": "session", "head": "a" * 40}
+    monkeypatch.setattr(
+        tm._git_ops, "do_commit",
+        lambda *args, **kwargs: go.CommitResult(
+            ok=True, committed=True, pushed=False, detail=raw,
+            pending_identity=identity))
+    monkeypatch.setattr(
+        tm._git_ops, "write_push_pending",
+        lambda root, seen: calls.__setitem__("pending", (root, seen)) or True)
+    monkeypatch.setattr(
+        tm._git_ops, "write_sync_warning",
+        lambda root, detail: calls.__setitem__("warning", (root, detail)))
+    monkeypatch.setattr(
+        tm._git_ops, "kick_push_worker",
+        lambda root, worker: calls.__setitem__("kick", (root, worker)) or True)
+
+    rc = tm.cmd_commit(tmp_path, "session fallback", push=True,
+                       paths=["session.md"])
+
+    rendered = calls["warning"][1] + "\n" + capsys.readouterr().out
+    assert rc == 0
+    assert calls["pending"] == (str(tmp_path), identity)
+    assert calls["kick"][0] == str(tmp_path)
+    assert calls["kick"][1].endswith("infra/hooks/push-worker.py")
+    assert "password" not in rendered
+    assert "bearer-secret" not in rendered
+    assert "[redacted]" in rendered
+
+
+def test_cmd_commit_pending_write_failure_is_nonzero_and_visible(
+        monkeypatch, tmp_path, capsys):
+    """ledger를 못 쓰면 성공처럼 끝내지 않고 sanitized 경고와 rc1을 낸다."""
+    raw = "fatal token=super-secret-value"
+    calls = {}
+    identity = {"key": "branch:session", "branch": "session", "head": "b" * 40}
+    monkeypatch.setattr(
+        tm._git_ops, "do_commit",
+        lambda *args, **kwargs: go.CommitResult(
+            ok=True, committed=True, pushed=False, detail=raw,
+            pending_identity=identity))
+    monkeypatch.setattr(
+        tm._git_ops, "write_push_pending", lambda _root, _identity: False)
+    monkeypatch.setattr(
+        tm._git_ops, "write_sync_warning",
+        lambda root, detail: calls.__setitem__("warning", detail))
+    monkeypatch.setattr(
+        tm._git_ops, "kick_push_worker",
+        lambda *_args: calls.__setitem__("kick", True) or True)
+
+    rc = tm.cmd_commit(tmp_path, "session fallback", push=True,
+                       paths=["session.md"])
+
+    captured = capsys.readouterr()
+    rendered = calls["warning"] + "\n" + captured.out + "\n" + captured.err
+    assert rc == 1
+    assert "push-pending" in captured.err
+    assert "super-secret-value" not in rendered
+    assert "[redacted]" in rendered
+    assert "kick" not in calls
+
+
+@pytest.mark.parametrize(
+    ("push", "result"),
+    [
+        (False, go.CommitResult(ok=True, committed=True, pushed=False,
+                                detail="committed")),
+        (True, go.CommitResult(ok=True, committed=True, pushed=True,
+                               detail="committed and pushed")),
+    ],
+)
+def test_cmd_commit_does_not_schedule_recovery_without_push_failure(
+        monkeypatch, tmp_path, push, result):
+    """commit-only와 push 성공 계약에는 pending/worker 부작용이 없다."""
+    monkeypatch.setattr(tm._git_ops, "do_commit", lambda *args, **kwargs: result)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("recovery state must not be touched")
+
+    monkeypatch.setattr(tm._git_ops, "write_push_pending", unexpected)
+    monkeypatch.setattr(tm._git_ops, "write_sync_warning", unexpected)
+    monkeypatch.setattr(tm._git_ops, "kick_push_worker", unexpected)
+
+    assert tm.cmd_commit(tmp_path, "normal", push=push) == 0
 
 
 @pytest.mark.skipif(os.name == "nt", reason="git-remote-sleep 셸 helper 는 POSIX 전제")
 def test_commit_verb_offline_push_no_hang(repo_with_remote, tmp_path):
     # 원격을 결정적 hang(remote helper)으로 바꿔 push 가 hang 하지 않는지(타임아웃)
     env = _hang_remote(tmp_path, repo_with_remote.clone)
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
+    env["TEAMMODE_DISABLE_PUSH_WORKER"] = "1"
     (repo_with_remote.clone / "k.txt").write_text("v\n")
     import time
     t0 = time.time()

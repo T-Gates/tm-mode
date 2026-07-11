@@ -1,4 +1,5 @@
 # 릴리스 발행 — v* 태그 push 시 build → PyPI (Trusted Publishing/OIDC, 시크릿 불필요).
+# npm 은 repository variable NPM_PUBLISH_ENABLED=true 를 명시한 경우에만 발행한다.
 # 선행 1회(사람): PyPI 프로젝트 tm-mode 에 Trusted Publisher 등록
 #   (owner T-Gates / repo tm-mode / workflow publish.yml / environment pypi).
 # 등록 전엔 publish 단계가 실패할 뿐 레포에 무해하다.
@@ -58,7 +59,9 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-npm:
-    if: github.repository == 'T-Gates/tm-mode'
+    if: >-
+      github.repository == 'T-Gates/tm-mode' &&
+      vars.NPM_PUBLISH_ENABLED == 'true'
     needs: build
     runs-on: ubuntu-latest
     environment: npm

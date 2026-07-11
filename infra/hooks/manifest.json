@@ -2,11 +2,11 @@
   {
     "event": "SessionStart",
     "script": "session-start.py",
-    "timeout": 30,
+    "timeout": 60,
     "mode": "on",
     "enforcement": "advisory",
     "_timeout_unit": "seconds",
-    "_timeout_note": "네트워크 훅(do_reconcile: fetch+ff/rebase) — NET_TIMEOUT(10s) 순차 호출 최악치 + 여유. 3s 면 훅 러너가 git_ops 반환 전에 죽여 sync-warning 기록까지 날린다(codex P1)."
+    "_timeout_note": "SessionStart hard budget 50s(동기화 cutoff 40s + context reserve 10s). do_reconcile·pending recovery·upstream fetch가 absolute deadline을 공유하고 optional Git 장식은 예산 소진 시 생략해 runner 60s kill 전에 context JSON을 출력한다."
   },
   {
     "event": "UserPromptSubmit",
@@ -20,11 +20,11 @@
     "event": "PostToolUse",
     "match": { "action": "file_edit" },
     "script": "auto-commit.py",
-    "timeout": 20,
+    "timeout": 70,
     "fallback": "runtime",
     "enforcement": "block",
     "_timeout_unit": "seconds",
-    "_timeout_note": "#45 async push: 동기 구간은 로컬 커밋까지 — push 는 detach worker 몫. 로컬 worst(codex P1 재계산) = do_commit 하위호출 4개(rev-parse/add/staged/commit) x DEFAULT_TIMEOUT 2s = 8s, index.lock 재시도 시 +1s+8s = 17s + ledger/kick 여유 = 20s. PUSH_TOTAL_BUDGET(22) 미만 유지 — 동기 push 회귀 감지선."
+    "_timeout_note": "#19 foreground push 복구: PUSH_TOTAL_BUDGET(35s) + 첫 로컬 index.lock 실패 경로(실패 commit 직전 identity probe 포함 최대 12s) + 재시도 대기 1s + Windows taskkill/drain이 포함된 branch/HEAD 검증·ledger lock·fsync·worker 정리 여유. runner 70s kill 전에 pending/sync-warning fallback을 durable 기록한다."
   },
   {
     "event": "PreToolUse",

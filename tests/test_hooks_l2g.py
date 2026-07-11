@@ -48,13 +48,14 @@ def fake_repo(tmp_path):
     return root
 
 
-def _run_hook(script, payload, root, args=None):
+def _run_hook(script, payload, root, args=None, cwd=None):
     argv = [PY, str(script)]
     if args:
         argv += args
     return subprocess.run(
         argv, input=json.dumps(payload), capture_output=True, text=True,
         env={**os.environ, "TEAMMODE_HOME": str(root)},
+        cwd=cwd,
     )
 
 
@@ -76,7 +77,7 @@ def test_auto_commit_no_marker_is_noop(fake_repo):
     before = _head(fake_repo)
     payload = {"event": "PostToolUse", "action": "file_edit",
                "files": [str(fake_repo / "edited.txt")], "agent": "claude"}
-    proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=fake_repo)
     assert proc.returncode == 0
     # HEAD 불변 = 커밋 안 생김. 워킹트리 변경은 스테이징조차 안 됨.
     assert _head(fake_repo) == before
@@ -94,6 +95,65 @@ def test_auto_commit_active_commits(fake_repo):
     assert proc.returncode == 0
     assert _commit_count(fake_repo) == before + 1
     assert "doc.md" in _git(fake_repo, "show", "--name-only", "HEAD").stdout
+
+
+def test_auto_commit_accepts_normalized_relative_file(fake_repo):
+    """Codex apply_patch normalize 가 내는 repo-relative files 도 커밋한다."""
+    (fake_repo / ".teammode-active").write_text("")
+    (fake_repo / "relative.md").write_text("normalized relative path\n")
+    before = _commit_count(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": ["relative.md"], "agent": "codex"}
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=fake_repo)
+    assert proc.returncode == 0
+    assert _commit_count(fake_repo) == before + 1
+    assert "relative.md" in _git(
+        fake_repo, "show", "--name-only", "HEAD").stdout
+
+
+def test_auto_commit_rejects_relative_parent_traversal(fake_repo, tmp_path):
+    """상대경로 지원이 team root 밖 파일로 확장되면 안 된다."""
+    (fake_repo / ".teammode-active").write_text("")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside\n")
+    before = _head(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": ["../outside.md"], "agent": "codex"}
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=fake_repo)
+    assert proc.returncode == 0
+    assert _head(fake_repo) == before
+
+
+def test_auto_commit_relative_path_uses_hook_cwd_not_team_root_alias(
+        fake_repo, tmp_path):
+    """외부 cwd의 상대경로가 team repo 동명 dirty 파일로 바뀌면 안 된다."""
+    (fake_repo / ".teammode-active").write_text("")
+    (fake_repo / "README.md").write_text("team secret dirty content\n")
+    external = tmp_path / "external-project"
+    external.mkdir()
+    (external / "README.md").write_text("external edit\n")
+    before = _head(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": ["README.md"], "agent": "codex"}
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=external)
+    assert proc.returncode == 0
+    assert _head(fake_repo) == before
+    assert "README.md" in _git(fake_repo, "status", "--short").stdout
+
+
+def test_auto_commit_commits_deleted_repo_file_with_literal_pathspec(fake_repo):
+    """literal 검증이 삭제 파일의 auto-commit 을 막지 않는다."""
+    (fake_repo / ".teammode-active").write_text("")
+    deleted = fake_repo / "init.txt"
+    deleted.unlink()
+    before = _commit_count(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": [str(deleted)], "agent": "claude"}
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
+    assert proc.returncode == 0
+    assert _commit_count(fake_repo) == before + 1
+    assert _git(fake_repo, "show", "--format=", "--name-status", "HEAD").stdout == (
+        "D\tinit.txt\n")
 
 
 def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
@@ -117,9 +177,27 @@ def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
     assert "secret.token" in status and "unrelated.txt" in status
 
 
+def test_auto_commit_rejects_pathspec_magic_without_staging_secret(fake_repo):
+    """hook payload 의 Git pathspec magic 이 repo 전체를 stage/push 하면 안 된다."""
+    (fake_repo / ".teammode-active").write_text("")
+    secret = fake_repo / "secret.env"
+    secret.write_text("TOP_SECRET=value\n")
+    before = _head(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": [":(top,glob)**"], "agent": "claude"}
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
+    assert proc.returncode == 0
+    assert _head(fake_repo) == before
+    status = _git(fake_repo, "status", "--short").stdout
+    assert "secret.env" in status
+    assert "secret.env" not in _git(fake_repo, "show", "--name-only", "HEAD").stdout
+
+
 def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
-    """#45 async push 계약: auto-commit 의 동기 구간은 do_commit(push=False) 커밋까지 —
-    push 는 pending ledger + detach worker 몫이다. 훅은 비차단(exit 0)·커밋 보존.
+    """전경 push 실패도 비차단이며 로컬 커밋 + pending fallback 을 보존한다.
+
+    fake_repo 에 remote 가 없으므로 do_commit(push=True)의 push 는 실패해야 한다.
+    훅은 exit 0 을 유지하고 커밋을 롤백하지 않은 채 worker ledger 를 남긴다.
     """
     (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "p.md").write_text("x\n")
@@ -148,12 +226,12 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
         "files": [str(fake_repo / "p.md")], "agent": "claude"})))
     rc = mod.main()
     assert rc == 0
-    # #45: 훅의 동기 push 는 폐기 — do_commit 은 push=False 로만 호출된다.
-    assert calls.get("push") is False
+    # #19 non-ff recovery 경로를 실제로 호출하는 전경 push 계약.
+    assert calls.get("push") is True
     # 로컬 커밋은 동기 완주·보존(p.md 가 HEAD 에 들어감)
     committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
     assert "p.md" in committed
-    # 커밋 성공 → pending ledger 기록(worker/recovery 의 correctness 소스)
+    # push 실패 → pending ledger 기록(worker/recovery 의 fallback 소스)
     assert go.read_push_pending(str(fake_repo)) != ""
 
 
@@ -340,6 +418,17 @@ def test_manifest_includes_both_l2g_hooks():
     scripts = {e.get("script") for e in entries}
     assert "auto-commit.py" in scripts
     assert "confirm-action.py" in scripts
+
+
+def test_auto_commit_manifest_covers_foreground_push_budget():
+    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(e for e in entries if e.get("script") == "auto-commit.py")
+    # Windows pending identity timeout(taskkill+drain) 뒤 fallback warning의
+    # lock/fsync까지 runner cap 전에 durable 해야 하므로 70s 계약을 고정한다.
+    assert entry["timeout"] >= 70
+    note = entry.get("_timeout_note", "")
+    assert "foreground" in note.lower()
+    assert "PUSH_TOTAL_BUDGET" in note
 
 
 def test_manifest_no_duplicate_event_script_pairs():

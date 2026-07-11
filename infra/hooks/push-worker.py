@@ -101,37 +101,65 @@ def main(argv: list) -> int:
             except ValueError:
                 pass
         for _ in range(max_loops):
-            if not git_ops.read_push_pending(root):
+            pending = git_ops.read_push_pending_state(root)
+            if not pending.available:
+                break  # lock/state 판정불가 — 보수적으로 ledger 와 warning 을 보존
+            snapshot = git_ops.bind_legacy_pending_to_current_checkout(
+                root, pending.content)
+            if not snapshot:
                 break  # 잔여 없음 — 정상 종료
+            target_key = git_ops.pending_entry_key_for_current_checkout(
+                root, snapshot)
+            if not target_key:
+                targets = git_ops.pending_target_summary(snapshot, root)
+                git_ops.write_sync_warning(
+                    root, _t("push_worker_checkout_mismatch_marker", lang,
+                            "push pending 대상 checkout 불일치 — 현재 branch에서는 "
+                            "보존만 함: {targets}", targets=targets))
+                break
             # clear race 가드(codex P1): push 시작 전 pending **내용** 스냅샷 —
             # clear 는 "그때 그 pending"(고유 nonce 포함) 이 그대로일 때만.
             # push 도중 auto-commit 이 재기록했으면 지우지 않고 loop 가 이어 push.
-            snapshot = git_ops.read_push_pending(root)
             pushed, detail = git_ops.push_plain(root, git_ops.NET_TIMEOUT)
             if not pushed:
                 # 실패 = sync-warning detail, pending 유지(recovery 채널이 잇는다).
                 if detail == "non-fast-forward":
-                    git_ops.write_sync_warning(
+                    # foreground rebase가 남긴 dirty-overlap/conflict/rollback 상세가
+                    # 있으면 generic worker 문구로 덮지 않는다. SessionStart가 같은
+                    # worker를 재kick해도 사람이 해결할 원인이 유지돼야 한다.
+                    git_ops.write_sync_warning_if_empty(
                         root, _t("push_worker_non_ff_marker", lang,
-                                "push pending; non-fast-forward — "
-                                "세션 시작 reconcile 에 위임"))
+                                 "push pending; non-fast-forward — "
+                                 "세션 시작 reconcile 에 위임"))
                 else:
-                    # detail 은 raw git 에러 — 그대로(번역 대상 아님). 앞의 "push
-                    # pending; " 는 이미 en 이라 별도 카탈로그 불필요.
-                    git_ops.write_sync_warning(root, f"push pending; {detail}")
+                    # 실패 상세는 credential/control-code 를 제거한 뒤 local marker 에 기록.
+                    safe_detail = git_ops.sanitize_git_detail(detail)
+                    git_ops.write_sync_warning(root, f"push pending; {safe_detail}")
                 break
-            # 판정불가(무 upstream/git 오류)를 (0,0)으로 접는 ahead_behind 대신
-            # raw 를 사용 — has_upstream 이 입증될 때만 clear(codex P1 오판 차단).
+            # push 도중 checkout 이 바뀌면 성공은 다른 branch의 성공일 수 있다.
+            # 시작 target과 현재 target이 동일할 때만 아래 clear 판정을 허용한다.
+            if (git_ops.pending_entry_key_for_current_checkout(root, snapshot)
+                    != target_key):
+                targets = git_ops.pending_target_summary(snapshot, root)
+                git_ops.write_sync_warning(
+                    root, _t("push_worker_checkout_mismatch_marker", lang,
+                            "push pending 대상 checkout 불일치 — 현재 branch에서는 "
+                            "보존만 함: {targets}", targets=targets))
+                break
+            # push 중 새 commit 이 생겨 origin 보다 ahead 가 됐으면 old pending 도
+            # 보존한다. upstream+ahead==0 이 입증될 때만 compare-and-delete 한다.
             ahead, _behind, has_upstream = git_ops._ahead_behind_raw(
                 root, git_ops.DEFAULT_TIMEOUT)
-            if has_upstream and ahead == 0 and snapshot:
-                if git_ops.clear_push_pending_if_unchanged(root, snapshot):
-                    git_ops.clear_sync_warning(root)
+            if has_upstream and ahead == 0:
+                if git_ops.clear_push_pending_if_unchanged(
+                        root, snapshot, target_key):
+                    git_ops.clear_sync_warning_if_fully_published(root)
             # clear 거부(재기록됨)·ahead>0·판정불가 → loop 가 재확인/재push.
         else:
             # drain 한도 소진(P3): pending 잔존이면 즉시 표면화 — 10분 age 경고를
             # 기다리지 않는다.
-            if git_ops.read_push_pending(root):
+            pending = git_ops.read_push_pending_state(root)
+            if pending.available and pending.content:
                 git_ops.write_sync_warning(
                     root, _t("push_worker_drain_limit_marker", lang,
                             "push pending; worker drain limit reached — "

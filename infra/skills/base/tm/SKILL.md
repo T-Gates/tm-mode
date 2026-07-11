@@ -7,7 +7,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 
 ## Overview
 
-An L1 core skill that turns team mode on or off. ON updates the repo, wires the engine, and injects team context. OFF saves the session log and commits it; push remains a human gate.
+An L1 core skill that turns team mode on or off. ON updates the repo, wires the engine, and injects team context. While team mode is active, session-log edits are scoped, committed, and published automatically; OFF verifies that save path before removing the hooks.
 
 ## When to Use
 
@@ -18,7 +18,7 @@ An L1 core skill that turns team mode on or off. ON updates the repo, wires the 
 
 - Write code, create issues, connect services, or automatically call other skills — this skill only toggles team mode.
 - Query issue trackers, calendars, or chat (L2 services) — those are outside the L1 core scope. Once L2 services are connected, other skills handle them.
-- Push — commit only. A human pushes directly.
+- Push unrelated code or force-push. Automatic publication is limited to files named by the active hook; recovery never rewrites remote history.
 
 ## Environment
 
@@ -92,12 +92,19 @@ An L1 core skill that turns team mode on or off. ON updates the repo, wires the 
    - `<name>`: the English name confirmed with the user. If it has not been confirmed, ask first, using `git config user.name` only as a suggested value.
    - Content: summarize the session work (see "Session Log Format" below).
 
-2. **Commit**: Commit only the session log (`memory/` directory) to the team repo.
+2. **Verify publication / fallback commit**: The Edit/Write in step 1 normally triggers the active auto-commit hook, which commits only the named session-log file and performs a bounded foreground push. If the session-log path is still modified or untracked after the hook returns, use this scoped fallback:
    ```bash
-   python3 infra/teammode.py commit --root . --paths "memory/" --message "session: <이름> <날짜>"
+   python3 infra/teammode.py commit --root . --paths "memory/team/sessions/<name>/<date>.md" --message "session: <이름> <날짜>" --push
    ```
-   - Limit the staging scope to the session-log directory with `--paths memory/` — do **not** sweep in the whole working tree such as `infra/` code.
-   - **Do not push** — commit only. A human decides whether to push.
+   - Limit the staging scope to the exact session-log file from step 1 — do **not** sweep in all of `memory/` or the rest of the working tree.
+   - Do not create a duplicate commit when the hook already committed the log. Do not force-push. A non-ff failure is recovered by the bounded foreground path; unresolved failures remain visible in the branch-bound pending ledger and sync warning.
+   - After the hook/fallback returns, run both publication checks:
+     ```bash
+     git rev-list --count --left-right '@{u}...HEAD'
+     python3 -c 'import os, sys; sys.path.insert(0, "infra"); import git_ops; state = git_ops.read_push_pending_state(os.path.abspath(".")); print(f"available={int(state.available)} pending={int(bool(state.content))}"); raise SystemExit(0 if state.available and not state.content else 1)'
+     ```
+     The first command must succeed and its second number must be `0` (`ahead=0`). The second command must exit successfully and print `available=1 pending=0`.
+   - Treat a missing upstream, `ahead > 0`, ledger unavailable, or pending content as unresolved publication. **Do not run step 3.** Keep the hooks and `.teammode-active` intact, report the unresolved state, and leave team mode on so SessionStart can retry safely. Never delete the marker or pending ledger manually.
 
 3. **Turn team mode off**: `python3 infra/teammode.py off --root . --install`
    - The engine performs adapter sync with `mode=off`, deletes the `.teammode-active` marker, and prints the farewell. **The banner is not in engine stdout** (toolkit pattern, same as ON).
@@ -137,7 +144,7 @@ Use the team's session-log headings in its language. For example, a Korean team 
 | ON — wiring/banner | `teammode.py on --root . --install` | banner, greeting, sync, marker |
 | ON — context | `teammode.py context --root . --json` | skill parses and summarizes |
 | OFF — session log | (skill writes directly with Read(end offset)+Edit) | `log` verb deprecated — not the engine |
-| OFF — commit | `teammode.py commit --root . --paths "memory/" --message <message>` | stage only `memory/`; never push |
+| OFF — publish fallback | `teammode.py commit --root . --paths "memory/team/sessions/<name>/<date>.md" --message <message> --push` | only if the hook left that exact log dirty |
 | OFF — remove hooks | `teammode.py off --root . --install` | sync=off, marker delete, farewell (agent reads `banner.txt` for banner) |
 | OFF — session summary | (skill reads session log and produces an LLM summary) | not an engine verb — agent step |
 
@@ -146,7 +153,7 @@ Use the team's session-log headings in its language. For example, a Korean team 
 | Mistake | Correct Method |
 |------|------------|
 | Ending OFF without a session log | Always record the session log first |
-| Using a `--push` flag | Commit only — a human pushes directly |
+| Manually force-pushing after an auto-push warning | Keep the scoped pending state; resolve/retry without rewriting remote history |
 | Inferring and fixing the name from git/account/email | `git user.name` is only a *suggested value* — confirm with the user |
 | Skipping pull on ON | Always update first, and continue even if it fails |
 | Guessing the repo path from the `TEAMMODE_HOME` environment variable | Explicit `--root .` is required (engine policy A) |
