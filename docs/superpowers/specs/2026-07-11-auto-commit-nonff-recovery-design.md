@@ -113,7 +113,12 @@ all five dynamic conformance scenarios. Verify Python 3.9 compatibility in CI.
 - Require CI success and adversarial code review before merge.
 - Release as a patch version because this restores documented behavior without
   changing the public CLI.
-- Verify every configured registry publisher before creating the release tag.
+- Publish this release to PyPI only. Gate the npm publish job behind an explicit
+  repository variable that defaults to disabled, so a tag does not attempt or
+  fail an npm publication before package ownership and Trusted Publishing are
+  configured.
+- Verify the PyPI Trusted Publisher before creating the release tag and require
+  the npm job to report skipped rather than failed.
 - After publishing, update a disposable team instance and reproduce a real
   two-clone non-fast-forward edit-to-origin flow.
 - Separately reconcile any team instance that accumulated divergence before the
