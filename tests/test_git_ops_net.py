@@ -467,15 +467,13 @@ def test_do_commit_budget_gone_after_local_commit_skips_push(
 # ──────────────────────────────────────────────────────────────────
 
 def test_manifest_network_hooks_timeout_covers_net_flow():
-    """#45 이후 네트워크 훅은 session-start(do_reconcile: fetch+ff/rebase+push)뿐이다 —
-    auto-commit 의 동기 구간은 로컬 커밋까지(push 는 훅 캡 밖 detach worker 몫).
+    """session-start 와 foreground auto-commit 의 네트워크 예산을 훅 캡이 덮는다.
 
     불변식 2개:
       ① session-start: manifest timeout > PUSH_TOTAL_BUDGET — 엔진 총예산이 훅 캡보다
         작아야 엔진이 스스로 먼저 반환해 sync-warning 마커를 쓸 수 있다(관계가 본질).
-      ② auto-commit: manifest timeout 이 **로컬 worst-case** 를 덮는다 —
-        add/staged/commit 각 DEFAULT_TIMEOUT + index.lock 1s 재시도(로컬 2단계 재수행)
-        + ledger/kick 여유. 네트워크 여유(NET_TIMEOUT 배수)는 더 이상 불필요."""
+      ② auto-commit: 첫 로컬 시도의 index.lock 실패 worst-case + 1s backoff +
+        재시도 do_commit 의 PUSH_TOTAL_BUDGET + abort/ledger cleanup 여유를 덮는다."""
     manifest = json.loads(
         (REPO / "infra" / "hooks" / "manifest.json").read_text(encoding="utf-8"))
     entries = {e.get("script"): e for e in manifest if e.get("script")}
@@ -491,13 +489,10 @@ def test_manifest_network_hooks_timeout_covers_net_flow():
     ac = entries.get("auto-commit.py")
     assert ac is not None
     assert ac.get("_timeout_unit") == "seconds"
-    # 로컬 worst(codex P1): 시도당 하위호출 4개(rev-parse/add/staged/commit) —
-    # full retry 는 시도 전체를 재수행하므로 2x(4xDEFAULT_TIMEOUT) + sleep 1s.
-    local_worst = 2 * (4 * git_ops.DEFAULT_TIMEOUT) + 1
-    assert ac.get("timeout", 0) >= local_worst + 1, (
-        f"auto-commit: manifest timeout={ac.get('timeout')} < 로컬 worst "
-        f"{local_worst}+1 — 커밋 완주 전에 훅이 죽으면 ledger 를 못 쓴다")
-    # push 동기화 폐기의 회귀 방지: 네트워크 훅 수준(> PUSH_TOTAL_BUDGET)으로
-    # 되돌아가면 #45 의 훅 지연 문제가 재발한다.
-    assert ac.get("timeout", 0) <= git_ops.PUSH_TOTAL_BUDGET, (
-        "auto-commit timeout 이 push 예산 이상 — 동기 push 회귀 신호")
+    first_local_worst = 4 * git_ops.DEFAULT_TIMEOUT
+    retry_and_push_worst = 1 + git_ops.PUSH_TOTAL_BUDGET
+    cleanup_headroom = 4
+    required = first_local_worst + retry_and_push_worst + cleanup_headroom
+    assert ac.get("timeout", 0) >= required, (
+        f"auto-commit: manifest timeout={ac.get('timeout')} < foreground worst "
+        f"{required} — runner kill 이 pending/sync-warning 기록보다 먼저 발생")
