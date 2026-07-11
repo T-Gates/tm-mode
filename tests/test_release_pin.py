@@ -25,13 +25,29 @@ def test_install_sh_cli_url_pinned_to_version_tag():
         f"CLI_URL 핀({url})이 __version__({_version()})과 불일치"
 
 
-def test_no_main_tracking_oneliners_in_user_docs():
-    """사용자용 설치 원라이너에 raw main 잔존 금지(README·INSTALL·cli 도움말·install.sh 헤더)."""
+def test_user_doc_oneliners_pinned_to_current_version():
+    """Every public curl installer example must pin the current package version."""
+    expected = f"/refs/tags/v{_version()}/"
     for rel in ("README.md", "INSTALL.md", "install.sh", "src/teammode/cli.py"):
         t = (REPO / rel).read_text(encoding="utf-8")
         for line in t.splitlines():
             if "raw.githubusercontent.com" in line and "install.sh" in line:
                 assert "/main/" not in line, f"{rel}: main 추적 원라이너 잔존 — {line.strip()}"
+                assert expected in line, (
+                    f"{rel}: installer example is not pinned to v{_version()} — "
+                    f"{line.strip()}"
+                )
+
+
+def test_changelog_unreleased_section_precedes_latest_release():
+    """Keep pending notes separate from already published release entries."""
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.index("## [Unreleased]")
+    latest_release = changelog.index(f"## {_version()}")
+
+    assert unreleased < latest_release, (
+        "CHANGELOG.md: [Unreleased] must appear before the latest release section"
+    )
 
 
 def test_template_repo_configurable():
