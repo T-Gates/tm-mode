@@ -77,3 +77,20 @@ def test_publish_workflow_has_npm_oidc_job():
     assert "registry.npmjs.org" in t, "npm 발행 잡 없음"
     assert "NPM_TOKEN" not in t and "NODE_AUTH_TOKEN" not in t, \
         "시크릿 토큰 금지 — npm OIDC Trusted Publishing 계약"
+
+
+def test_npm_publish_requires_explicit_repository_opt_in():
+    """npm job 의 실제 if 식에 opt-in 이 있어야 v* 태그 기본 실행을 막는다."""
+    text = (REPO / ".github" / "workflows" / "publish.yml").read_text(
+        encoding="utf-8")
+    match = re.search(
+        r"(?ms)^  publish-npm:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
+        text)
+    assert match, "publish-npm job block 없음"
+    job = match.group("body")
+    condition = re.search(
+        r"(?m)^    if:\s*(?P<inline>[^\n]*)(?P<continuation>(?:\n      [^\n]*)*)",
+        job)
+    assert condition, "publish-npm.if 조건 없음"
+    actual_if = condition.group(0)
+    assert "vars.NPM_PUBLISH_ENABLED == 'true'" in actual_if
