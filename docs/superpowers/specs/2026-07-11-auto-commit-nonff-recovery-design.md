@@ -47,11 +47,14 @@ Use a foreground-first hybrid:
    before starting, using the content-snapshot compare-and-delete helper. It clears
    the sync warning only after the repository reports no commits ahead and no
    pending ledger remains.
-4. If the local commit succeeds but publication does not, the hook atomically
-   records a fresh pending ledger and starts the existing detached worker. The
-   worker handles later plain-push retries and remains forbidden from rebasing.
-5. If pending-ledger persistence fails, the hook records an immediate sync warning
-   and emits a localized stderr warning. The committed data remains local.
+4. If the local commit succeeds but publication does not, the hook immediately
+   records the localized foreground failure detail in the sync-warning marker,
+   emits a localized stderr warning, atomically records a fresh pending ledger,
+   and starts the existing detached worker. The worker handles later plain-push
+   retries and remains forbidden from rebasing.
+5. If pending-ledger persistence fails, the hook replaces the marker with a more
+   severe localized warning that still includes the original push failure detail.
+   The committed data remains local.
 
 This restores correctness on the path where the agent is already blocked by the
 PostToolUse hook. It avoids moving history mutation into a detached process that
@@ -63,7 +66,7 @@ can overlap the next file edit.
 |---|---|---|---|
 | no commit | n/a | leave existing state unchanged | leave unchanged |
 | committed | pushed | compare-and-delete the pre-existing pending snapshot | clear only when ahead is zero and no pending remains |
-| committed | not pushed | atomically write new pending state and kick worker | preserve detailed failure; fallback warning if ledger write fails |
+| committed | not pushed | atomically write new pending state and kick worker | immediately preserve localized detailed failure; worker clears it after confirmed recovery; strengthen it if ledger write fails |
 | commit failed | n/a | leave existing state unchanged | hook remains non-fatal |
 
 ## Concurrency Safety
@@ -83,9 +86,9 @@ can overlap the next file edit.
 
 Foreground publication reactivates `PUSH_TOTAL_BUDGET` in `do_commit`. The
 auto-commit manifest timeout must therefore return from the async-only value to a
-value that covers the 22-second push budget, local commit work, an index-lock retry,
-and cleanup. The implementation plan will use 30 seconds unless a measured test
-shows that 35 seconds is required.
+value that covers the 22-second push budget, a possible first local attempt before
+an index-lock result, the one-second retry delay, and cleanup. The implementation
+will use 35 seconds; 30 seconds does not safely cover the retry path.
 
 ## Tests
 
@@ -117,8 +120,12 @@ all five dynamic conformance scenarios. Verify Python 3.9 compatibility in CI.
   repository variable that defaults to disabled, so a tag does not attempt or
   fail an npm publication before package ownership and Trusted Publishing are
   configured.
-- Verify the PyPI Trusted Publisher before creating the release tag and require
-  the npm job to report skipped rather than failed.
+- Immediately before creating the release tag, verify that the live npm opt-in
+  repository variable is absent or not `true`; abort tagging otherwise. Also
+  verify the workflow at the exact tag candidate SHA still contains that guard.
+- Verify the PyPI Trusted Publisher from live settings or recent successful
+  publishing evidence before creating the release tag and require the npm job to
+  report skipped rather than failed.
 - After publishing, update a disposable team instance and reproduce a real
   two-clone non-fast-forward edit-to-origin flow.
 - Separately reconcile any team instance that accumulated divergence before the
