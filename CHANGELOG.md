@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+- Prevented repeated Codex `SessionStart(resume)` reconstruction events for the same root turn from replaying session relay, pull, and context-injection side effects; new turns and Claude sessions remain fail-open.
+
 ## 0.1.5 — 2026-07-11
 
 - Corrected every public curl installer example to pin the current immutable release tag, and added a regression gate that prevents documentation, launcher, and package pins from drifting apart again.

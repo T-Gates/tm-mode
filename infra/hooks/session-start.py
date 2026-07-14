@@ -20,8 +20,14 @@
   killpg·타임아웃·자격증명 차단). 의도가 "상시 최신화(매 프롬프트)"에서 "세션 시작
   1회"로 바뀐 것 — UserPromptSubmit 동기 블로킹 훅의 매 프롬프트 pull 이 hang
   트리거였다(session-log-remind 에서 제거). 세션 중 최신화는 `teammode pull` 수동.
-  SessionStart 가 세션당 1회 발화하고 auto_pull 의 스로틀이 급격한 세션 재시작도 가드.
+  SessionStart 재진입은 auto_pull 스로틀이 급격한 세션 재시작도 가드한다.
   실패는 절대 세션·주입을 막지 않는다(철칙).
+- resume 중복 억제(2026-07-14): Codex가 같은 root turn을 복구하면서 동일
+  SessionStart(resume)를 짧은 간격으로 재실행할 수 있다. transcript에 먼저 기록되는
+  Codex turn_context row를 세대 키로 삼아
+  running lease→owner CAS→완료 cooldown으로 원자 claim한다. timeout은 lease 뒤 복구,
+  startup/compact/clear와 새 row는 즉시 통과하며 식별·state 실패는 fail-open한다.
+  Claude는 동등한 invocation 표식이 없어 정상 reopen을 막지 않도록 기존대로 실행한다.
 - 정합 강화(2026-06-29, 이슈 #23): 종전 `pull --ff-only` 는 로컬 diverge 시 조용히
   실패해 멀티유저 환경에서 로컬 커밋만 쌓였다. 이제 git_ops.do_reconcile 로 fetch +
   ff/rebase 까지 실제 정합하고, diverge·충돌·push 실패는 sync-warning 마커 + 주입
@@ -42,10 +48,13 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # 엔진 맥락 수집 재사용 — 같은 INFRA 루트의 teammode.py. 경로 추가 후 import.
@@ -135,6 +144,198 @@ _TEAM_MARKERS = (".git", "team.config.json", "memory")
 # 새 1s floor subprocess를 시작하지 않고 건너뛴다.
 _SESSION_START_TOTAL_BUDGET = 50
 _SESSION_CONTEXT_RESERVE = 10
+_SESSION_START_RUNNING_LEASE_SECONDS = 70
+_SESSION_START_COMPLETED_COOLDOWN_SECONDS = 300
+_SESSION_START_CLAIM_RETENTION_SECONDS = 86_400
+_SESSION_START_TRANSCRIPT_TAIL_BYTES = 1_048_576
+
+
+def _recent_transcript_generation(raw: dict) -> tuple[str, str, str] | None:
+    """현재 Codex resume 세대와 canonical transcript 경로를 제한적으로 읽는다.
+
+    Codex 0.144는 hook stdin에 turn_id를 주지 않지만 turn_context를 transcript에 먼저
+    기록한 뒤 SessionStart를 실행한다. 마지막 1MiB만 역스캔하며 경로, 형식,
+    식별자 중 하나라도 불명확하면 None으로 fail-open한다. Claude transcript에는
+    invocation 세대를 안전하게 구분할 표식이 없으므로 억제하지 않아 정상 reopen을
+    가리지 않는다.
+    """
+    transcript = raw.get("transcript_path")
+    if not isinstance(transcript, str) or not transcript.strip():
+        return None
+    try:
+        path = Path(transcript).expanduser().resolve(strict=True)
+        if not path.is_file():
+            return None
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            start = max(0, size - _SESSION_START_TRANSCRIPT_TAIL_BYTES)
+            stream.seek(start)
+            tail = stream.read(_SESSION_START_TRANSCRIPT_TAIL_BYTES)
+        if start:
+            newline = tail.find(b"\n")
+            if newline < 0:
+                return None
+            tail = tail[newline + 1:]
+        for encoded in reversed(tail.splitlines()):
+            try:
+                row = json.loads(encoded.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            if row.get("type") == "turn_context":
+                payload = row.get("payload")
+                turn_id = payload.get("turn_id") if isinstance(payload, dict) else None
+                if isinstance(turn_id, str) and turn_id.strip():
+                    row_hash = hashlib.sha256(encoded).hexdigest()
+                    return ("codex-turn-record",
+                            f"{turn_id.strip()}:{row_hash}", str(path))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+def _resume_claim_key(data: dict) -> str | None:
+    """동일 resume generation만 묶는 안정 해시. 다른 lifecycle source는 우회한다."""
+    raw = data.get("raw")
+    if not isinstance(raw, dict) or raw.get("source") != "resume":
+        return None
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    generation = _recent_transcript_generation(raw)
+    if generation is None:
+        return None
+    material = json.dumps(
+        [session_id.strip(), *generation], ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _claim_state_path(team_root: str) -> str:
+    return os.path.join(
+        _git_ops._state_dir(),
+        f"session-start-resume-{_git_ops._team_key(team_root)}.json",
+    )
+
+
+def _read_claims(state_path: str) -> tuple[bool, dict]:
+    snapshot = _git_ops._read_private_text(state_path)
+    if not snapshot.available:
+        return False, {}
+    if not snapshot.content:
+        return True, {}
+    try:
+        parsed = json.loads(snapshot.content)
+        claims = parsed.get("claims") if isinstance(parsed, dict) else None
+        return True, claims if isinstance(claims, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return True, {}
+
+
+def _write_claims(state_path: str, claims: dict) -> bool:
+    payload = json.dumps({
+        "schema": "session-start-resume-claims/2",
+        "claims": claims,
+    }, sort_keys=True, separators=(",", ":")) + "\n"
+    return _git_ops._write_private_text(state_path, payload)
+
+
+def _valid_claim_age(entry: dict, field: str, current: float) -> float | None:
+    stamp = entry.get(field)
+    if not isinstance(stamp, (int, float)):
+        return None
+    age = current - float(stamp)
+    if not math.isfinite(age) or age < 0:
+        return None
+    return age
+
+
+def _begin_resume_generation(
+        data: dict, team_root: str,
+        now: float | None = None) -> tuple[bool, tuple[str, str] | None]:
+    """원자 begin: 실행 여부와 owner CAS token을 반환한다.
+
+    running lease는 SIGKILL/runner timeout 뒤 재claim을 허용하고, completed cooldown은
+    성공한 동일 세대만 억제한다. duplicate는 어느 시각도 연장하지 않는다. state
+    실패는 ``(True, None)``으로 fail-open한다.
+    """
+    key = _resume_claim_key(data)
+    if key is None or _git_ops is None:
+        return True, None
+    required = (
+        "_push_pending_ledger_lock", "_read_private_text", "_write_private_text",
+        "_state_dir", "_team_key",
+    )
+    if any(not hasattr(_git_ops, name) for name in required):
+        return True, None
+    current = time.time() if now is None else now
+    state_path = _claim_state_path(team_root)
+    try:
+        with _git_ops._push_pending_ledger_lock(team_root) as acquired:
+            if not acquired:
+                return True, None
+            available, claims = _read_claims(state_path)
+            if not available:
+                return True, None
+            retained = {}
+            for claim, entry in claims.items():
+                if not isinstance(claim, str) or not isinstance(entry, dict):
+                    continue
+                field = ("started_at" if entry.get("status") == "running"
+                         else "completed_at")
+                age = _valid_claim_age(entry, field, current)
+                if age is not None and age <= _SESSION_START_CLAIM_RETENTION_SECONDS:
+                    retained[claim] = entry
+            existing = retained.get(key)
+            if isinstance(existing, dict):
+                if existing.get("status") == "running":
+                    age = _valid_claim_age(existing, "started_at", current)
+                    if age is not None and age < _SESSION_START_RUNNING_LEASE_SECONDS:
+                        return False, None
+                elif existing.get("status") == "completed":
+                    age = _valid_claim_age(existing, "completed_at", current)
+                    if age is not None and age < _SESSION_START_COMPLETED_COOLDOWN_SECONDS:
+                        return False, None
+            owner = uuid.uuid4().hex
+            retained[key] = {
+                "status": "running", "owner": owner, "started_at": current,
+            }
+            if not _write_claims(state_path, retained):
+                return True, None
+            return True, (key, owner)
+    except Exception:  # noqa: BLE001 — lifecycle hook은 어떤 state 오류도 막지 않는다
+        return True, None
+
+
+def _settle_resume_generation(
+        team_root: str, token: tuple[str, str] | None,
+        *, completed: bool, now: float | None = None) -> None:
+    """owner CAS로 running claim을 완료하거나 해제한다. 실패는 advisory."""
+    if token is None or _git_ops is None:
+        return
+    key, owner = token
+    current = time.time() if now is None else now
+    try:
+        with _git_ops._push_pending_ledger_lock(team_root) as acquired:
+            if not acquired:
+                return
+            state_path = _claim_state_path(team_root)
+            available, claims = _read_claims(state_path)
+            if not available:
+                return
+            entry = claims.get(key)
+            if (not isinstance(entry, dict) or entry.get("status") != "running"
+                    or entry.get("owner") != owner):
+                return
+            if completed:
+                claims[key] = {"status": "completed", "completed_at": current}
+            else:
+                claims.pop(key, None)
+            _write_claims(state_path, claims)
+    except Exception:  # noqa: BLE001 — settle 실패도 세션을 막지 않는다
+        return
 
 
 def _remaining_timeout(deadline, cap: int, reserve: int = 0) -> int:
@@ -627,6 +828,12 @@ def main() -> int:
     if not (root / ".teammode-active").is_file():
         return 0
 
+    # Codex resume/reconstruction이 같은 root turn의 SessionStart를 여러 번 발행해도
+    # relay·pull·context 전체는 첫 claimant만 수행한다. 새 turn/compact/clear는 우회.
+    should_run, claim_token = _begin_resume_generation(data, str(root))
+    if not should_run:
+        return 0
+
     # A2: 세션 id relay 영속 — env 없는 에이전트(Codex)도 엔진 `memory unlock` 이
     # 세션 id 를 알 수 있게 한다. advisory(실패 무해).
     _persist_session_relay(data)
@@ -646,15 +853,21 @@ def main() -> int:
     try:
         context = _build_context(root, lang, deadline=deadline)
     except Exception:  # noqa: BLE001 — 수집 실패가 세션을 막지 않는다
+        _settle_resume_generation(str(root), claim_token, completed=False)
         return 0
 
     if context:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }, ensure_ascii=False), flush=True)
+        try:
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": context,
+                }
+            }, ensure_ascii=False), flush=True)
+        except (OSError, UnicodeError, ValueError):
+            _settle_resume_generation(str(root), claim_token, completed=False)
+            return 0
+    _settle_resume_generation(str(root), claim_token, completed=True)
     return 0
 
 
