@@ -5,12 +5,14 @@ manifest 에 등록됐으나 부재했던 파일 — L1 진짜 payoff. normalize
 호스트 무접촉: TEAMMODE_HOME 을 tmp 로 주입, 전부 tmp_path.
 """
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -174,6 +176,19 @@ def _run_codex_start(team: Path, transcript: Path, state: Path,
         env=_hook_env(team, {"XDG_STATE_HOME": str(state)}))
 
 
+def _communicate_concurrently(procs, payloads, timeout=10):
+    """모든 child가 stdin을 같은 시점에 받아 실제 claim 경합을 만들게 한다."""
+    barrier = threading.Barrier(len(procs))
+
+    def communicate(proc_and_payload):
+        proc, payload = proc_and_payload
+        barrier.wait(timeout=timeout)
+        return proc.communicate(payload, timeout=timeout)
+
+    with ThreadPoolExecutor(max_workers=len(procs)) as executor:
+        return list(executor.map(communicate, zip(procs, payloads)))
+
+
 def test_codex_duplicate_session_start_same_turn_emits_context_once(tmp_path):
     """같은 root turn을 재구성한 SessionStart 3회 중 첫 1회만 맥락을 주입한다."""
     team = tmp_path / "team"
@@ -209,7 +224,7 @@ def test_concurrent_codex_duplicate_session_start_has_one_winner(tmp_path, sourc
         text=True, env=_hook_env(team, {"XDG_STATE_HOME": str(state)}))
         for _ in range(3)]
 
-    results = [proc.communicate(raw, timeout=10) for proc in procs]
+    results = _communicate_concurrently(procs, [raw] * len(procs))
 
     assert all(proc.returncode == 0 for proc in procs)
     assert sum(bool(stdout.strip()) for stdout, _stderr in results) == 1
@@ -228,12 +243,13 @@ def test_concurrent_resume_and_compact_share_one_winner(tmp_path):
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, env=_hook_env(team, {"XDG_STATE_HOME": str(state)}),
     ) for _source in sources]
-    results = [proc.communicate(json.dumps({
+    payloads = [json.dumps({
         "hook_event_name": "SessionStart",
         "session_id": "root-session",
         "transcript_path": str(transcript),
         "source": source,
-    })) for proc, source in zip(procs, sources)]
+    }) for source in sources]
+    results = _communicate_concurrently(procs, payloads)
 
     assert all(proc.returncode == 0 for proc in procs)
     assert sum(bool(stdout.strip()) for stdout, _stderr in results) == 1

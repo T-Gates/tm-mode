@@ -281,12 +281,12 @@ def _begin_resume_generation(
     )
     if any(not hasattr(_git_ops, name) for name in required):
         return True, None
-    current = time.time() if now is None else now
     state_path = _claim_state_path(team_root)
     try:
         with _git_ops._push_pending_ledger_lock(team_root) as acquired:
             if not acquired:
                 return True, None
+            current = time.time() if now is None else now
             available, claims = _read_claims(state_path)
             if not available:
                 return True, None
