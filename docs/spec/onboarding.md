@@ -1,6 +1,6 @@
 # Install · Bootstrap
 
-tm-mode SPEC v0.3 — install · bootstrap
+tm-mode SPEC v0.4 — install · bootstrap
 
 ## §4. Install · Bootstrap (install.py)
 
@@ -164,7 +164,7 @@ Introducer path:
 - The new config is written in the following shape.
   ```json
   {
-    "spec_version": "0.2",
+    "spec_version": "0.4",
     "team": {
       "name": "<team_name>",
       "timezone": "Asia/Seoul",
@@ -300,7 +300,7 @@ In the current implementation, uninstall calls `Adapter(...).uninstall()` and `u
 
 | # | Scenario | Acceptance |
 |---|---|---|
-| I1 | `--yes` or `--settings` install in an empty/engine-only repo (no config) | Completes introducer path → memory/·minimal config (`spec_version: "0.2"`, empty services)·sessions/·members·banner·wire·env (real install only)·verify. First log not created |
+| I1 | `--yes` or `--settings` install in an empty/engine-only repo (no config) | Completes introducer path → memory/·minimal config (`spec_version: "0.4"`, empty services)·sessions/·members·banner·wire·env (real install only)·verify. First log not created |
 | I1b | install in an empty/engine-only repo without `--yes`/`--settings` | Completes scaffold, skips wire/env/verify, and exits 0 |
 | I2 | install in a repo with valid config | member path → preserve team/services/admin fields, register in members.md, upsert only own config.members entry, wire. context reads existing logs |
 | I2b | New session immediately after I1/I2 | SessionStart hook **actually injects** context (here, not during install) |

@@ -8,6 +8,12 @@ When `tm on` detects that upstream's `NOTICE.md` differs from your local copy, t
 
 ---
 
+## 2026-07-15
+
+- **Safer automatic sync**: session-log auto-commit now reconciles concurrent teammate pushes before publishing, retries within a bounded window, and records recoverable pending state instead of blocking hooks.
+- **Single SessionStart side-effect pass**: repeated Codex `resume` reconstruction and queued `compact` events for the same root turn no longer replay pull, relay, or context injection; Claude sessions and genuinely new turns continue to run normally.
+- **Concurrent-start race fix**: SessionStart claim locking now admits one winner under real simultaneous starts, preventing duplicate hook output without disabling fail-open recovery.
+
 ## 2026-06-18
 
 - **Three-tier skill layers (base/core/util)** + `tm-manage-utils`: choose and manage util skills per member. On `tm on`, core skills auto-install and registered util skills are symlinked in; on `off`, they're removed (base skills stay).

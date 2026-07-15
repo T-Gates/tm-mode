@@ -1,11 +1,11 @@
 # Overview
 
-tm-mode SPEC v0.3 - Overview, terminology, notation, and versioning
+tm-mode SPEC v0.4 - Overview, terminology, notation, and versioning
 
 | | |
 |---|---|
-| spec_version | **0.3** |
-| Status | Official single edition (reconciled with build, 2026-06-15; 0.3 - memory and util verbs made explicit + dynamically allowed folders) |
+| spec_version | **0.4** |
+| Status | Official single edition (reconciled with build, 2026-07-15; 0.4 - seven-event lifecycle, correlation IDs, exact publication, and SessionStart dedupe made explicit) |
 | Scope | Team memory standard · hook/adapter standard · engine verbs · install/bootstrap · onboarding skills · conformance declarations · service slots |
 | Supersedes | This document **integrates and replaces** the scattered `spec/01` through `spec/05` documents (see the repoint list in Appendix D). |
 | Notation | **Required / Recommended / Reserved** (§0.3) |
@@ -45,11 +45,11 @@ tm-mode is designed along two orthogonal axes: the **agent axis** (§2 - one cop
 
 - **Required** - noncompliance if not followed. Subject to conformance checks.
 - **Recommended** - not noncompliant if omitted, but there should be a justified reason.
-- **Reserved** - an item whose place is defined in the current spec_version (0.3), but whose meaning is not finalized. Do not use arbitrarily.
+- **Reserved** - an item whose place is defined in the current spec_version (0.4), but whose meaning is not finalized. Do not use arbitrarily.
 
 ### 0.4 Versioning (common to all areas)
 
-- Every area of this SPEC (§1-§7) **shares a single `spec_version`**, currently **0.3**. If any area has a normative change, the version rises together. A team repo's `team.config.json` top-level `spec_version` field declares the version followed by that team data.
+- Every area of this SPEC (§1-§7) **shares a single `spec_version`**, currently **0.4**. If any area has a normative change, the version rises together. A team repo's `team.config.json` top-level `spec_version` field declares the version followed by that team data.
 - **Minor bump targets (required + CHANGELOG entry)**: additions or semantic changes to session-log format fields, folder-structure changes, canonical events (§2.4), action classes (§2.5), canonical input schema (§2.10), adapter contract (§2.7), engine verb contract (§3), and conformance check items (§6.4). Meaning-preserving fixes such as typos or explanation improvements do not change the version.
 - **During the 0.x period, backward compatibility may break.** Once two or more independent implementations are listed, freeze 1.0 and introduce an RFC-lite change process (proposal issue -> implementation impact review -> merge after agreement).
 - The single source for supported versions in the reference implementation is `infra/install_lib.py::SPEC_VERSION`. Current reference adapter `events.json` files do not have a separate `spec_version` field. Independent implementations must state their supported `spec_version` in listing applications, badges, and result logs (§6).

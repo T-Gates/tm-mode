@@ -1,6 +1,6 @@
 # Skill System
 
-tm-mode SPEC v0.3 — skill layers (base/core) + legacy migration roadmap + onboarding skill spec (§5)
+tm-mode SPEC v0.4 — skill layers (base/core) + legacy migration roadmap + onboarding skill spec (§5)
 
 ## Skill Layers (base / core)
 
@@ -55,7 +55,7 @@ Migrate proven legacy toolkit skills into general-purpose tm-mode. Legacy-specif
 
 ---
 
-tm-mode SPEC v0.3 — tm-onboard · tm-connect (§5)
+tm-mode SPEC v0.4 — tm-onboard · tm-connect (§5)
 
 ## §5. Onboarding Skill (tm-onboard)
 

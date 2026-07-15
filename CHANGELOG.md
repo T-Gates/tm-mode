@@ -5,7 +5,12 @@
 
 ## [Unreleased]
 
-- Prevented repeated Codex `SessionStart(resume)` reconstruction events for the same root turn from replaying session relay, pull, and context-injection side effects; new turns and Claude sessions remain fail-open.
+## 0.1.6 — 2026-07-15
+
+- Made automatic session-log publication safe under concurrent teammate pushes: auto-commit now performs a bounded reconcile and exact push, preserves unrelated work, and records recoverable pending state instead of blocking agent hooks.
+- Prevented repeated Codex `SessionStart(resume)` reconstruction and queued `compact` events for the same root turn from replaying session relay, pull, and context-injection side effects; Claude sessions and genuine new turns continue normally.
+- Closed a lock-timing race that could admit two simultaneous SessionStart winners, and replaced sequential process tests with real concurrent claim contention coverage.
+- Advanced the hook and adapter specification to 0.4 for lifecycle events and exact session, tool-use, turn, and agent correlation fields.
 
 ## 0.1.5 — 2026-07-11
 
