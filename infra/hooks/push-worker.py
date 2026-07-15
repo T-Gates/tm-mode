@@ -2,17 +2,18 @@
 """push-worker — auto-commit 이 detach 로 띄우는 단발 push 프로세스 (#45).
 
 철칙:
-  - **plain-push-only**: 로컬 히스토리 무접촉(rebase/fetch 복구 금지). worker 가
+  - **immutable-target-only**: ledger에 저장된 full OID·remote·destination만 push하고
+    로컬 히스토리 무접촉(rebase/fetch 복구 금지). worker 가
     rebase 복구 중일 때 사용자가 편집하면 다음 auto-commit 훅의 add/commit 이
     index.lock 으로 실패하고 훅은 예외를 삼켜 exit 0 → **편집 커밋 조용한 유실**.
     push 지연보다 명백히 나쁜 회귀라 경합 표면을 push 로 한정한다.
-    non-ff 정합 복구는 기존 채널(session-start do_reconcile·teammode pull)에 위임.
+    non-ff 정합 복구는 session-start의 pending ancestry-preserving reconcile에 위임.
   - **per-team lock 단일 실행**: 같은 팀 루트에 worker 1개만(중복 push·경합 방지).
     lock 은 pending ledger 경로 + ".lock" (O_CREAT|O_EXCL). 120s 넘은 잔재는
     stale 로 간주해 1회 회수(크래시 잔재 자기치유).
-  - **drain loop(최대 3)**: push 성공 후 pending 재확인 — push 도중 auto-commit 이
-    새 커밋+pending 을 썼으면 이어서 push(연타 커밋 자연 배칭). pending clear 는
-    **push 성공 + ahead==0 확인 후에만**(push 중 새 커밋 유실 방지).
+  - **drain loop(최대 3)**: exact push 성공 후 pending 재확인 — push 도중
+    auto-commit 이 새 커밋+pending 을 썼으면 snapshot CAS clear가 거부되고 다음
+    loop가 새 immutable entry를 처리한다.
   - **훅 캡 밖**: detach 프로세스라 manifest timeout 의 지배를 받지 않는다 —
     PUSH_TOTAL_BUDGET 클램프 불필요, 호출당 NET_TIMEOUT 만.
   - correctness 는 ledger 가 담당: detach 생존(특히 Windows)은 신뢰 대상이 아니다 —
@@ -120,7 +121,8 @@ def main(argv: list) -> int:
             # clear race 가드(codex P1): push 시작 전 pending **내용** 스냅샷 —
             # clear 는 "그때 그 pending"(고유 nonce 포함) 이 그대로일 때만.
             # push 도중 auto-commit 이 재기록했으면 지우지 않고 loop 가 이어 push.
-            pushed, detail = git_ops.push_plain(root, git_ops.NET_TIMEOUT)
+            pushed, detail = git_ops.push_pending_entry(
+                root, snapshot, target_key, git_ops.NET_TIMEOUT)
             if not pushed:
                 # 실패 = sync-warning detail, pending 유지(recovery 채널이 잇는다).
                 if detail == "non-fast-forward":
@@ -136,25 +138,18 @@ def main(argv: list) -> int:
                     safe_detail = git_ops.sanitize_git_detail(detail)
                     git_ops.write_sync_warning(root, f"push pending; {safe_detail}")
                 break
-            # push 도중 checkout 이 바뀌면 성공은 다른 branch의 성공일 수 있다.
-            # 시작 target과 현재 target이 동일할 때만 아래 clear 판정을 허용한다.
-            if (git_ops.pending_entry_key_for_current_checkout(root, snapshot)
-                    != target_key):
-                targets = git_ops.pending_target_summary(snapshot, root)
-                git_ops.write_sync_warning(
-                    root, _t("push_worker_checkout_mismatch_marker", lang,
-                            "push pending 대상 checkout 불일치 — 현재 branch에서는 "
-                            "보존만 함: {targets}", targets=targets))
-                break
-            # push 중 새 commit 이 생겨 origin 보다 ahead 가 됐으면 old pending 도
-            # 보존한다. upstream+ahead==0 이 입증될 때만 compare-and-delete 한다.
-            ahead, _behind, has_upstream = git_ops._ahead_behind_raw(
-                root, git_ops.DEFAULT_TIMEOUT)
-            if has_upstream and ahead == 0:
-                if git_ops.clear_push_pending_if_unchanged(
-                        root, snapshot, target_key):
-                    git_ops.clear_sync_warning_if_fully_published(root)
-            # clear 거부(재기록됨)·ahead>0·판정불가 → loop 가 재확인/재push.
+            # Exact stored OID/refspec push succeeded.  The whole ledger snapshot
+            # (nonce included) is still the CAS guard: a concurrent newer pending
+            # write prevents this clear and the drain loop retries that new entry.
+            if git_ops.clear_push_pending_if_unchanged(
+                    root, snapshot, target_key):
+                if ("upstream setup skipped:" in detail
+                        or "tracking update skipped:" in detail):
+                    git_ops.write_sync_warning(
+                        root, git_ops.sanitize_git_detail(detail))
+                else:
+                    git_ops.clear_sync_warning_after_pending_publication(
+                        root, snapshot, target_key)
         else:
             # drain 한도 소진(P3): pending 잔존이면 즉시 표면화 — 10분 age 경고를
             # 기다리지 않는다.

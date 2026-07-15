@@ -19,6 +19,24 @@ sys.path.insert(0, str(REPO / "infra"))
 import git_ops as go  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_git_env(tmp_path_factory, monkeypatch):
+    """Keep helper and product Git subprocesses off host configuration."""
+    for name in list(os.environ):
+        if (name in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+                or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))):
+            monkeypatch.delenv(name, raising=False)
+    iso = tmp_path_factory.mktemp("git-iso")
+    empty_cfg = iso / "empty-gitconfig"
+    empty_cfg.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(iso))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(iso / "xdg"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
 def _load_engine():
     """infra engine을 고유 이름으로 로드해 pip `teammode` stub 오염을 피한다."""
     spec = importlib.util.spec_from_file_location(
@@ -42,6 +60,19 @@ def _git(cwd, *args, check=True):
     }
     return subprocess.run(["git", "-C", str(cwd), *args],
                           capture_output=True, text=True, env=env, check=check)
+
+
+def _git_subcommand(args):
+    """Return the command after run_git's global -C/-c options."""
+    iterator = iter(args)
+    for arg in iterator:
+        if arg in ("-C", "-c"):
+            next(iterator, None)
+            continue
+        if str(arg).startswith("-"):
+            continue
+        return str(arg)
+    return ""
 
 
 @pytest.fixture
@@ -77,6 +108,26 @@ def repo_with_remote(tmp_path):
     r = R()
     r.upstream, r.clone = upstream, clone
     return r
+
+
+def _prepare_tracking_other_with_local_commit(repo_with_remote):
+    """Create tracking `other` with one local-only commit, then return to main."""
+    clone = repo_with_remote.clone
+    _git(clone, "checkout", "-b", "other", "main")
+    (clone / "other-base.txt").write_text("remote other base\n", encoding="utf-8")
+    _git(clone, "add", "other-base.txt")
+    _git(clone, "commit", "-m", "add remote other base")
+    _git(clone, "push", "-u", "origin", "other")
+    remote_head = _git(
+        repo_with_remote.upstream, "rev-parse", "refs/heads/other").stdout.strip()
+
+    (clone / "other-local-only.txt").write_text(
+        "must stay local\n", encoding="utf-8")
+    _git(clone, "add", "other-local-only.txt")
+    _git(clone, "commit", "-m", "local-only other commit")
+    local_head = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    _git(clone, "checkout", "main")
+    return remote_head, local_head
 
 
 def _run_engine(root, *argv, env=None):
@@ -140,6 +191,278 @@ def test_do_commit_with_push(repo_with_remote):
     # ref 없이 log 하면 unborn 오류; push 한 main 을 명시한다)
     log = _git(repo_with_remote.upstream, "log", "--oneline", "main").stdout
     assert "pushme" in log
+
+
+def test_do_commit_opt_in_fetches_before_push(repo_with_remote, monkeypatch):
+    clone = repo_with_remote.clone
+    (clone / "ordered.txt").write_text("ordered\n", encoding="utf-8")
+    calls = []
+    real_run_git = go.run_git
+
+    def recording_run_git(args, timeout):
+        subcommand = _git_subcommand(args)
+        if subcommand in {"commit", "fetch", "push"}:
+            calls.append(subcommand)
+        return real_run_git(args, timeout)
+
+    monkeypatch.setattr(go, "run_git", recording_run_git)
+    result = go.do_commit(
+        str(clone), "ordered publication", push=True,
+        reconcile_before_push=True)
+
+    assert result.committed is True and result.pushed is True
+    assert calls.count("commit") == 1
+    assert calls.count("fetch") == 1
+    assert calls.count("push") == 1
+    assert calls.index("commit") < calls.index("fetch") < calls.index("push")
+
+
+def test_do_commit_opt_in_disables_bound_worktree_mutation(
+        repo_with_remote, monkeypatch):
+    """PostToolUse publication may fetch, but must not reset/rebase the checkout."""
+    clone = repo_with_remote.clone
+    (clone / "safe-preflight.txt").write_text("safe\n", encoding="utf-8")
+    observed = []
+
+    def preflight_only(*_args, **kwargs):
+        observed.append(kwargs.get("_allow_bound_mutation"))
+        identity = kwargs["expected_identity"]
+        return go.ReconcileResult(
+            ok=True, action="ahead-only", ahead=1,
+            final_identity=identity)
+
+    monkeypatch.setattr(go, "do_reconcile", preflight_only)
+
+    result = go.do_commit(
+        str(clone), "safe publication", push=True,
+        reconcile_before_push=True)
+
+    assert observed == [False]
+    assert result.committed is True and result.pushed is True
+
+
+def test_do_commit_opt_in_without_push_skips_reconcile_network(
+        local_repo, monkeypatch):
+    (local_repo / "local-only.txt").write_text(
+        "local only\n", encoding="utf-8")
+    calls = []
+    real_run_git = go.run_git
+
+    def recording_run_git(args, timeout):
+        subcommand = _git_subcommand(args)
+        if subcommand in {"commit", "fetch", "push"}:
+            calls.append(subcommand)
+        return real_run_git(args, timeout)
+
+    def unexpected_reconcile(*_args, **_kwargs):
+        raise AssertionError("push=False must ignore reconcile_before_push")
+
+    monkeypatch.setattr(go, "run_git", recording_run_git)
+    monkeypatch.setattr(go, "do_reconcile", unexpected_reconcile)
+    result = go.do_commit(
+        str(local_repo), "local opt-in ignored", push=False,
+        reconcile_before_push=True)
+
+    assert result.ok is True and result.committed is True
+    assert result.pushed is False
+    assert calls == ["commit"]
+    assert "local opt-in ignored" in _git(
+        local_repo, "log", "-1", "--format=%s").stdout
+
+
+@pytest.mark.parametrize(
+    "commit_kwargs", ({}, {"reconcile_before_push": False}),
+    ids=("default", "explicit-opt-out"))
+def test_do_commit_push_opt_out_does_not_fetch(
+        repo_with_remote, monkeypatch, commit_kwargs):
+    clone = repo_with_remote.clone
+    (clone / "default.txt").write_text("default\n", encoding="utf-8")
+    calls = []
+    real_run_git = go.run_git
+
+    def recording_run_git(args, timeout):
+        if "fetch" in args:
+            calls.append("fetch")
+        if "push" in args:
+            calls.append("push")
+        return real_run_git(args, timeout)
+
+    monkeypatch.setattr(go, "run_git", recording_run_git)
+    result = go.do_commit(
+        str(clone), "opt-out publication", push=True, **commit_kwargs)
+
+    assert result.committed is True and result.pushed is True
+    assert "push" in calls
+    assert "fetch" not in calls
+
+
+def test_do_commit_opt_in_reconcile_failure_preserves_pending_identity(
+        repo_with_remote, monkeypatch):
+    clone = repo_with_remote.clone
+    (clone / "deferred.txt").write_text("deferred\n", encoding="utf-8")
+    push_attempts = []
+    real_run_git = go.run_git
+
+    def recording_run_git(args, timeout):
+        if "push" in args:
+            push_attempts.append(list(args))
+        return real_run_git(args, timeout)
+
+    monkeypatch.setattr(go, "run_git", recording_run_git)
+    monkeypatch.setattr(
+        go, "do_reconcile",
+        lambda *_args, **_kwargs: go.ReconcileResult(
+            ok=False, action="conflict", detail="simulated reconcile conflict"))
+
+    result = go.do_commit(
+        str(clone), "deferred publication", push=True,
+        reconcile_before_push=True)
+    committed_head = _git(clone, "rev-parse", "HEAD").stdout.strip()
+
+    assert push_attempts == []
+    assert result.ok is True
+    assert result.committed is True
+    assert result.pushed is False
+    assert result.pending_identity == {
+        "key": "branch:main", "branch": "main", "head": committed_head,
+    }
+    assert result.pending_target == {
+        "remote": "origin",
+        "destination": "refs/heads/main",
+        "reconcile_ref": "refs/remotes/origin/main",
+        "set_upstream": False,
+        "remote_fingerprint": go._remote_push_fingerprint(
+            str(clone), "origin"),
+    }
+    assert "pre-push reconcile conflict" in result.detail
+    assert "simulated reconcile conflict" in result.detail
+
+
+def test_do_commit_reconcile_stops_when_checkout_switches_after_fetch(
+        repo_with_remote, tmp_path, monkeypatch):
+    """A post-fetch checkout switch must not mutate or publish either branch."""
+    clone = repo_with_remote.clone
+    upstream = repo_with_remote.upstream
+    _remote_other_base, local_other_head = (
+        _prepare_tracking_other_with_local_commit(repo_with_remote))
+
+    # Make `other` diverged so a reconcile that silently follows the switched
+    # checkout would rebase and publish it, not merely perform a harmless push.
+    peer = tmp_path / "other-peer"
+    _git(tmp_path, "clone", "-b", "other", str(upstream), str(peer))
+    _git(peer, "config", "user.name", "t")
+    _git(peer, "config", "user.email", "t@t")
+    (peer / "other-remote-only.txt").write_text(
+        "remote peer change\n", encoding="utf-8")
+    _git(peer, "add", "other-remote-only.txt")
+    _git(peer, "commit", "-m", "remote-only other commit")
+    _git(peer, "push")
+    remote_other_before = _git(
+        upstream, "rev-parse", "refs/heads/other").stdout.strip()
+    assert remote_other_before != local_other_head
+
+    remote_main_before = _git(
+        upstream, "rev-parse", "refs/heads/main").stdout.strip()
+    edited = clone / "main-after-fetch.txt"
+    edited.write_text("main publication\n", encoding="utf-8")
+    real_run_git = go.run_git
+    switched = False
+    main_head_at_fetch = ""
+    reconcile_mutations = []
+    push_commands = []
+
+    def racing_run_git(args, timeout):
+        nonlocal switched, main_head_at_fetch
+        subcommand = _git_subcommand(args)
+        if subcommand == "fetch" and not switched:
+            main_head_at_fetch = _git(
+                clone, "rev-parse", "refs/heads/main").stdout.strip()
+            result = real_run_git(args, timeout)
+            _git(clone, "checkout", "other")
+            switched = True
+            return result
+        if switched and subcommand in {"merge", "rebase"}:
+            reconcile_mutations.append(list(args))
+        if switched and subcommand == "push":
+            push_commands.append(list(args))
+        return real_run_git(args, timeout)
+
+    monkeypatch.setattr(go, "run_git", racing_run_git)
+    result = go.do_commit(
+        str(clone), "publish captured main", push=True,
+        paths=[edited.name], reconcile_before_push=True)
+
+    assert switched is True
+    assert _git(
+        clone, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip() == "other"
+    assert main_head_at_fetch != ""
+    assert _git(
+        clone, "rev-parse", "refs/heads/main").stdout.strip() == main_head_at_fetch
+    assert _git(
+        clone, "rev-parse", "refs/heads/other").stdout.strip() == local_other_head
+    assert reconcile_mutations == []
+    assert push_commands == []
+    assert result.committed is True and result.pushed is False
+    assert result.pending_identity == {
+        "key": "branch:main", "branch": "main", "head": main_head_at_fetch,
+    }
+    assert _git(
+        upstream, "rev-parse", "refs/heads/main").stdout.strip() == remote_main_before
+    assert _git(
+        upstream, "cat-file", "-e", "refs/heads/main:main-after-fetch.txt",
+        check=False).returncode != 0
+    assert _git(
+        upstream, "rev-parse", "refs/heads/other").stdout.strip() == remote_other_before
+
+
+def test_do_commit_push_uses_captured_main_refspec_after_checkout_switch(
+        repo_with_remote, monkeypatch):
+    """A switch at push invocation must still publish main, never current other."""
+    clone = repo_with_remote.clone
+    upstream = repo_with_remote.upstream
+    remote_other_before, _local_other_head = (
+        _prepare_tracking_other_with_local_commit(repo_with_remote))
+    edited = clone / "main-at-push.txt"
+    edited.write_text("captured main publication\n", encoding="utf-8")
+    real_run_git = go.run_git
+    push_commands = []
+    main_head_at_push = ""
+
+    def racing_run_git(args, timeout):
+        nonlocal main_head_at_push
+        if _git_subcommand(args) == "push":
+            push_commands.append(list(args))
+            if len(push_commands) == 1:
+                main_head_at_push = _git(
+                    clone, "rev-parse", "refs/heads/main").stdout.strip()
+                _git(clone, "checkout", "other")
+        return real_run_git(args, timeout)
+
+    monkeypatch.setattr(go, "run_git", racing_run_git)
+    result = go.do_commit(
+        str(clone), "publish main across checkout race", push=True,
+        paths=[edited.name], reconcile_before_push=True)
+
+    assert len(push_commands) == 1
+    push_tail = push_commands[0][push_commands[0].index("push") + 1:]
+    separator = push_tail.index("--")
+    assert push_tail[:separator] == [
+        "--no-follow-tags", "--recurse-submodules=check"]
+    endpoint_alias, refspec = push_tail[separator + 1:]
+    assert endpoint_alias.startswith("tm-mode-exact-")
+    source, destination = refspec.rsplit(":", 1)
+    assert source == main_head_at_push
+    assert destination == "refs/heads/main"
+    assert result.committed is True and result.pushed is True
+    assert result.pending_identity == {
+        "key": "branch:main", "branch": "main", "head": main_head_at_push,
+    }
+    assert _git(
+        upstream, "rev-parse", "refs/heads/main").stdout.strip() == main_head_at_push
+    assert _git(
+        upstream, "cat-file", "-e", "refs/heads/main:main-at-push.txt").returncode == 0
+    assert _git(
+        upstream, "rev-parse", "refs/heads/other").stdout.strip() == remote_other_before
 
 
 def test_do_commit_push_no_remote_commit_still_ok(local_repo):

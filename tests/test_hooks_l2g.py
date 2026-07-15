@@ -23,6 +23,20 @@ MANIFEST = HOOKS / "manifest.json"
 PY = sys.executable
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_git_env(tmp_path_factory, monkeypatch):
+    """Keep helper and hook product Git subprocesses off host configuration."""
+    iso = tmp_path_factory.mktemp("git-iso")
+    empty_cfg = iso / "empty-gitconfig"
+    empty_cfg.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(iso))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(iso / "xdg"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
 def _git(cwd, *args, check=True):
     env = {
         **os.environ,
@@ -207,9 +221,13 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
     calls = {}
     real = go.do_commit
 
-    def spy(team_root, message, push=False, timeout=go.DEFAULT_TIMEOUT, paths=None):
+    def spy(team_root, message, push=False, timeout=go.NET_TIMEOUT,
+            paths=None, reconcile_before_push=False):
         calls["push"] = push
-        return real(team_root, message, push=push, timeout=timeout, paths=paths)
+        calls["reconcile_before_push"] = reconcile_before_push
+        return real(
+            team_root, message, push=push, timeout=timeout, paths=paths,
+            reconcile_before_push=reconcile_before_push)
 
     # 서브프로세스가 아닌 in-proc 로 훅 main 을 직접 호출해 do_commit 인자를 검사한다.
     monkeypatch.setattr(go, "do_commit", spy)
@@ -228,6 +246,7 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
     assert rc == 0
     # #19 non-ff recovery 경로를 실제로 호출하는 전경 push 계약.
     assert calls.get("push") is True
+    assert calls.get("reconcile_before_push") is True
     # 로컬 커밋은 동기 완주·보존(p.md 가 HEAD 에 들어감)
     committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
     assert "p.md" in committed
@@ -258,6 +277,25 @@ def test_auto_commit_ignores_non_file_edit(fake_repo):
     proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
     assert proc.returncode == 0
     assert _commit_count(fake_repo) == before
+
+
+def test_auto_commit_non_file_post_releases_correlated_edit_lease(fake_repo):
+    """A normalization mismatch must not leave a permanent PreToolUse marker."""
+    sys.path.insert(0, str(REPO / "infra"))
+    import git_ops as go  # noqa: E402
+
+    (fake_repo / ".teammode-active").write_text("")
+    payload = {
+        "event": "PostToolUse", "action": "shell_exec", "agent": "codex",
+        "session_id": "session-release", "tool_use_id": "tool-release",
+    }
+    owner = go.hook_edit_lease_owner(payload)
+    assert go.begin_hook_edit_lease(str(fake_repo), owner)[0] is True
+
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
+
+    assert proc.returncode == 0
+    assert go.end_hook_edit_lease(str(fake_repo), owner) is False
 
 
 def test_auto_commit_no_files_is_noop(fake_repo):

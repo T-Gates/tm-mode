@@ -112,6 +112,26 @@ def test_codex_apply_patch_payload_maps_to_file_edit(env):
     assert out["files"] == ["/abs/x.md"]
 
 
+@pytest.mark.parametrize("event", ("PreToolUse", "PostToolUse"))
+def test_codex_apply_patch_preserves_exact_tool_correlation(env, event):
+    raw = {
+        "hook_event_name": event,
+        "tool_name": "apply_patch",
+        "tool_input": {"file_path": "/abs/x.md"},
+        "session_id": "codex-session-123",
+        "tool_use_id": "codex-tool-456",
+    }
+    proc = env.run("echo-stub.py", raw, [
+        {"event": event, "match": {"action": "file_edit"},
+         "script": "echo-stub.py", "fallback": "runtime"},
+    ])
+
+    assert proc.returncode == 0
+    out = json.loads(proc.stdout)
+    assert out["session_id"] == "codex-session-123"
+    assert out["tool_use_id"] == "codex-tool-456"
+
+
 def test_codex_apply_patch_patch_text_extracts_all_paths(env):
     patch = (
         "*** Begin Patch\r\n"

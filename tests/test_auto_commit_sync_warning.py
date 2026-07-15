@@ -30,7 +30,8 @@ class _FakeGitOps:
 
     def __init__(self, result, *, pending_reads=None, pending_write_ok=True,
                  conditional_clear=True, ahead=0, has_upstream=True,
-                 switch_checkout_on_commit=False):
+                 switch_checkout_on_commit=False, lease_owner="",
+                 pending_available=True):
         self._results = list(result) if isinstance(result, list) else [result]
         self._pending_reads = list(pending_reads or [""])
         self._last_pending = self._pending_reads[-1]
@@ -41,20 +42,37 @@ class _FakeGitOps:
         self.warnings = []
         self.cleared = 0
         self.push_args = []
+        self.reconcile_before_push_args = []
         self.pending_writes = 0
         self.pending_write_identities = []
+        self.pending_write_targets = []
         self.pending_clears = []
         self.kicked = 0
         self.events = []
         self.current_key = "branch:test"
         self.switch_checkout_on_commit = switch_checkout_on_commit
+        self.lease_owner = lease_owner
+        self.pending_available = pending_available
+        self.mutation_kwargs = []
+        self.released_leases = []
 
-    def do_commit(self, root, message, push=False, paths=None):
+    def do_commit(self, root, message, push=False, timeout=go.NET_TIMEOUT,
+                  paths=None,
+                  reconcile_before_push=False, **kwargs):
         self.push_args.append(push)
+        self.reconcile_before_push_args.append(reconcile_before_push)
+        self.mutation_kwargs.append(kwargs)
         result = self._results.pop(0)
         if self.switch_checkout_on_commit:
             self.current_key = "branch:other"
         return result
+
+    def hook_edit_lease_owner(self, data):
+        return self.lease_owner
+
+    def end_hook_edit_lease(self, root, owner):
+        self.released_leases.append((root, owner))
+        return True
 
     def write_sync_warning(self, root, detail):
         self.events.append("warning")
@@ -73,16 +91,23 @@ class _FakeGitOps:
         return self._next_pending()
 
     def read_push_pending_state(self, root):
-        return SimpleNamespace(content=self._next_pending(), available=True)
+        return SimpleNamespace(
+            content=self._next_pending(), available=self.pending_available)
 
     def bind_legacy_pending_to_current_checkout(self, root, snapshot):
         return snapshot
 
-    def write_push_pending(self, root, identity=None):
+    def write_push_pending(self, root, identity=None, target=None):
         self.events.append("pending")
         self.pending_writes += 1
         self.pending_write_identities.append(identity)
+        self.pending_write_targets.append(target)
         return self.pending_write_ok
+
+    def pending_entry_covered_by_publication(
+            self, root, snapshot, target_key, identity, target):
+        return bool(
+            snapshot and target_key == self.current_key and identity and target)
 
     def clear_push_pending_if_unchanged(self, root, snapshot, target_key=None):
         self.pending_clears.append((root, snapshot))
@@ -91,12 +116,23 @@ class _FakeGitOps:
     def pending_entry_key_for_current_checkout(self, root, snapshot):
         return self.current_key if snapshot else ""
 
+    def pending_allows_current_checkout_reconcile(self, root, snapshot):
+        return not snapshot
+
     def _ahead_behind_raw(self, root, timeout):
         return self.ahead, 0, self.has_upstream
 
     def clear_sync_warning_if_fully_published(self, root):
         pending = self._next_pending()
         if self.has_upstream and self.ahead == 0 and not pending:
+            self.clear_sync_warning(root)
+            return True
+        return False
+
+    def clear_sync_warning_after_exact_publication(
+            self, root, identity, target):
+        pending = self._next_pending()
+        if identity and target and not pending:
             self.clear_sync_warning(root)
             return True
         return False
@@ -132,12 +168,20 @@ def _active_root(tmp_path):
 def test_foreground_push_success_clears_unchanged_pending_and_warning(
         tmp_path, monkeypatch):
     root = _active_root(tmp_path)
-    res = go.CommitResult(ok=True, committed=True, pushed=True,
-                          detail="committed and pushed")
+    identity = {"key": "branch:test", "branch": "test", "head": "a" * 40}
+    target = {
+        "remote": "origin", "destination": "refs/heads/test",
+        "reconcile_ref": "refs/remotes/origin/test",
+        "remote_fingerprint": "b" * 64,
+    }
+    res = go.CommitResult(
+        ok=True, committed=True, pushed=True, detail="committed and pushed",
+        pending_identity=identity, pending_target=target)
     fake = _FakeGitOps(res, pending_reads=["old-nonce", ""])
     rc = _run(_load_hook(), fake, root, monkeypatch)
     assert rc == 0
     assert fake.push_args == [True]
+    assert fake.reconcile_before_push_args == [True]
     assert fake.pending_clears == [(str(root), "old-nonce")]
     assert fake.pending_writes == 0
     assert fake.kicked == 0
@@ -145,11 +189,36 @@ def test_foreground_push_success_clears_unchanged_pending_and_warning(
     assert fake.warnings == []
 
 
+def test_unavailable_pending_ledger_disables_leased_worktree_mutation(
+        tmp_path, monkeypatch):
+    """Unreadable retry evidence is fail-closed even with exact hook identity."""
+    root = _active_root(tmp_path)
+    (root / "x.md").write_text("edit\n", encoding="utf-8")
+    result = go.CommitResult(
+        ok=False, committed=False, pushed=False, detail="nothing to commit")
+    owner = "a" * 64
+    fake = _FakeGitOps(
+        result, lease_owner=owner, pending_available=False)
+
+    rc = _run(_load_hook(), fake, root, monkeypatch)
+
+    assert rc == 0
+    assert fake.mutation_kwargs == [{}]
+    assert fake.released_leases == [(str(root), owner)]
+
+
 def test_foreground_push_success_preserves_replaced_pending(
         tmp_path, monkeypatch):
     root = _active_root(tmp_path)
-    res = go.CommitResult(ok=True, committed=True, pushed=True,
-                          detail="committed and pushed")
+    identity = {"key": "branch:test", "branch": "test", "head": "a" * 40}
+    target = {
+        "remote": "origin", "destination": "refs/heads/test",
+        "reconcile_ref": "refs/remotes/origin/test",
+        "remote_fingerprint": "b" * 64,
+    }
+    res = go.CommitResult(
+        ok=True, committed=True, pushed=True, detail="committed and pushed",
+        pending_identity=identity, pending_target=target)
     fake = _FakeGitOps(res, pending_reads=["old-nonce", "new-nonce"],
                        conditional_clear=False)
     rc = _run(_load_hook(), fake, root, monkeypatch)
@@ -222,6 +291,49 @@ def test_foreground_push_failure_records_commit_identity_not_later_checkout(
     assert _run(_load_hook(), fake, root, monkeypatch) == 0
     assert fake.current_key == "branch:other"
     assert fake.pending_write_identities == [identity]
+
+
+def test_foreground_push_failure_records_exact_publication_target(
+        tmp_path, monkeypatch):
+    root = _active_root(tmp_path)
+    identity = {"key": "branch:test", "branch": "test", "head": "a" * 40}
+    target = {
+        "remote": "fork", "destination": "refs/heads/team-sync",
+        "reconcile_ref": "refs/remotes/fork/team-sync",
+        "remote_fingerprint": "b" * 64,
+    }
+    result = go.CommitResult(
+        ok=True, committed=True, pushed=False, detail="committed; push timeout",
+        pending_identity=identity, pending_target=target)
+    fake = _FakeGitOps(result)
+
+    assert _run(_load_hook(), fake, root, monkeypatch) == 0
+    assert fake.pending_write_identities == [identity]
+    assert fake.pending_write_targets == [target]
+
+
+@pytest.mark.parametrize("detail_fragment", [
+    "tracking update skipped: raced tracking ref",
+    "upstream setup skipped: remote binding changed",
+])
+def test_foreground_publication_partial_local_cleanup_stays_visible(
+        tmp_path, monkeypatch, detail_fragment):
+    root = _active_root(tmp_path)
+    identity = {"key": "branch:test", "branch": "test", "head": "a" * 40}
+    target = {
+        "remote": "origin", "destination": "refs/heads/test",
+        "reconcile_ref": "refs/remotes/origin/test",
+        "remote_fingerprint": "b" * 64,
+    }
+    result = go.CommitResult(
+        ok=True, committed=True, pushed=True,
+        detail=f"committed and pushed; {detail_fragment}",
+        pending_identity=identity, pending_target=target)
+    fake = _FakeGitOps(result, pending_reads=[""])
+
+    assert _run(_load_hook(), fake, root, monkeypatch) == 0
+    assert fake.cleared == 0
+    assert detail_fragment in fake.warnings[-1][1]
 
 
 def test_pending_write_failure_preserves_push_detail_without_worker(
@@ -297,6 +409,7 @@ def test_index_lock_retry_keeps_foreground_push(
     rc = _run(mod, fake, root, monkeypatch)
     assert rc == 0
     assert fake.push_args == [True, True]
+    assert fake.reconcile_before_push_args == [True, True]
     assert fake.pending_writes == 1
 
 

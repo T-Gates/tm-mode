@@ -166,6 +166,29 @@ def normalize(raw: dict, events: dict) -> dict:
             out["session_id"] = _sid.strip()
             break
 
+    # Pre/PostToolUse pair correlation for the shared-worktree edit lease.
+    # Session id alone is insufficient when one session has parallel tool calls:
+    # a first Post could otherwise release the second tool's reservation.
+    for _tool_id_key in ("tool_use_id", "toolUseId"):
+        _tool_id = raw.get(_tool_id_key)
+        if isinstance(_tool_id, str) and _tool_id.strip():
+            out["tool_use_id"] = _tool_id.strip()
+            break
+
+    # Turn/subagent scope is required for terminal cleanup.  session_id alone
+    # is shared by concurrent resumes and background subagents, so it is never
+    # used as a glob-delete boundary.
+    for _turn_key in ("turn_id", "turnId"):
+        _turn_id = raw.get(_turn_key)
+        if isinstance(_turn_id, str) and _turn_id.strip():
+            out["turn_id"] = _turn_id.strip()
+            break
+    for _agent_id_key in ("agent_id", "agentId"):
+        _agent_id = raw.get(_agent_id_key)
+        if isinstance(_agent_id, str) and _agent_id.strip():
+            out["agent_id"] = _agent_id.strip()
+            break
+
     if event == "UserPromptSubmit":
         out["prompt"] = raw.get("prompt", "")
 
@@ -177,7 +200,7 @@ def normalize(raw: dict, events: dict) -> dict:
         tool_input = {**tool_input}
         tool_input.setdefault("input", raw["input"])
 
-    if event in ("PreToolUse", "PostToolUse") and tool_name:
+    if event in ("PreToolUse", "PostToolUse", "PostToolUseFailure") and tool_name:
         mcp = _parse_mcp(events, tool_name)
         if mcp:
             server, tool = mcp

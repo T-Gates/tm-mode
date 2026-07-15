@@ -505,7 +505,7 @@ def main() -> int:
     # 세션 중간에 죽은 worker 를 못 본다). stat 1~2회, 리마인더 발사와 독립.
     _warn_push_pending_age(root)
 
-    # (레포 최신화는 여기서 하지 않는다 — SessionStart 훅이 세션당 1회 담당.)
+    # 레포 최신화는 여기서 하지 않는다. SessionStart와 auto-commit publication이 담당한다.
 
     # config 는 여기서 **1회만** 로드해 아래로 내려보낸다(PR-i1 — 중복 read 금지).
     # None = 부재/파싱 실패(→ locale 폴백 en), dict = 정상(locale 없으면 ko).

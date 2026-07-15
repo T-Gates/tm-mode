@@ -40,7 +40,8 @@ class _FakeGitOps:
         self.writes = []
         self.cleared = 0
 
-    def do_reconcile(self, team_root):
+    def do_reconcile(self, team_root, **kwargs):
+        assert kwargs.get("_allow_bound_mutation") is True
         return self._result
 
     def write_sync_warning(self, team_root, detail):
@@ -53,6 +54,15 @@ class _FakeGitOps:
     def clear_sync_warning_if_fully_published(self, team_root):
         self.clear_sync_warning(team_root)
         return True
+
+    def read_push_pending_state(self, team_root):
+        return go.PushPendingRead("", True)
+
+    def bind_legacy_pending_to_current_checkout(self, team_root, snapshot):
+        return snapshot
+
+    def pending_entry_key_for_current_checkout(self, team_root, snapshot):
+        return ""
 
 
 def _run(result, tmp_path, monkeypatch):
@@ -109,12 +119,9 @@ def test_rebased_with_unpushed_ahead_preserves_marker(tmp_path, monkeypatch):
     assert fake.cleared == 0
 
 
-def test_pending_worker_restarts_after_reconcile(tmp_path, monkeypatch):
-    """pending worker 는 non-ff 정합이 끝난 뒤 재기동해야 한다.
-
-    정합 전에 worker 를 시작하면 worker 의 push 가 non-ff 로 먼저 실패하고,
-    이어진 rebase 뒤에는 재기동 기회가 없어 ahead 커밋이 다음 세션까지 남는다.
-    """
+def test_pending_reconcile_runs_before_exact_worker_restart(
+        tmp_path, monkeypatch):
+    """current pending uses ancestry-preserving recovery before exact worker."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     mod = _load_session_start()
 
@@ -127,9 +134,9 @@ def test_pending_worker_restarts_after_reconcile(tmp_path, monkeypatch):
                                    diverged=True))
             self.events = []
 
-        def do_reconcile(self, team_root):
+        def do_reconcile(self, team_root, **kwargs):
             self.events.append("reconcile")
-            return super().do_reconcile(team_root)
+            return super().do_reconcile(team_root, **kwargs)
 
         def read_push_pending_state(self, team_root):
             return go.PushPendingRead("pending", True)
@@ -143,8 +150,16 @@ def test_pending_worker_restarts_after_reconcile(tmp_path, monkeypatch):
         def pending_target_summary(self, snapshot, team_root=None):
             return "branch main"
 
+        def reconcile_current_pending(
+                self, team_root, snapshot, target_key, **kwargs):
+            self.events.append("pending-reconcile")
+            return go.ReconcileResult(
+                ok=True, action="merged", ahead=1, behind=1,
+                diverged=True)
+
         def _ahead_behind_raw(self, team_root, timeout):
-            return 1, 0, True
+            raise AssertionError(
+                "current checkout state must not drive pending recovery")
 
         def kick_push_worker(self, team_root, worker):
             self.events.append("kick")
@@ -156,7 +171,7 @@ def test_pending_worker_restarts_after_reconcile(tmp_path, monkeypatch):
 
     mod._maybe_auto_pull(str(tmp_path))
 
-    assert fake.events == ["reconcile", "kick"]
+    assert fake.events == ["pending-reconcile", "kick"]
 
 
 # ── 충돌은 마커 기록(가시화) ──

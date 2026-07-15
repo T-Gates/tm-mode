@@ -39,6 +39,9 @@ def _events():
             "UserPromptSubmit": "UserPromptSubmit",
             "PreToolUse": "PreToolUse",
             "PostToolUse": "PostToolUse",
+            "PostToolUseFailure": None,
+            "Stop": "Stop",
+            "SubagentStop": "SubagentStop",
         },
         "actions": {"file_edit": "apply_patch"},
         "mcp_tool_format": "mcp__{server}__{tool}",
@@ -100,6 +103,22 @@ def test_file_edit_translated_to_apply_patch(env):
     text = env.config.read_text()
     assert "apply_patch" in text
     assert "PostToolUse" in text
+
+
+def test_terminal_cleanup_registered_but_unsupported_failure_skipped(env, capsys):
+    env.write_manifest([
+        {"event": "PostToolUseFailure", "match": {"action": "file_edit"},
+         "script": "edit-lease-cleanup.py", "fallback": "runtime"},
+        {"event": "Stop", "script": "edit-lease-cleanup.py"},
+        {"event": "SubagentStop", "script": "edit-lease-cleanup.py"},
+    ])
+    env.make_adapter().sync(mode="on")
+
+    text = env.config.read_text(encoding="utf-8")
+    assert "[[hooks.Stop]]" in text
+    assert "[[hooks.SubagentStop]]" in text
+    assert "[[hooks.PostToolUseFailure]]" not in text
+    assert "PostToolUseFailure" in capsys.readouterr().out
 
 
 # ── 2. PreToolUse 지원 → 등록 + Codex matcher ──
@@ -165,13 +184,13 @@ def test_unsupported_event_single_warns_english_for_en_locale_team(env, capsys):
     (Path(env.root) / "team.config.json").write_text(
         json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
     env.write_manifest([
-        {"event": "Stop", "match": None,
+        {"event": "UnsupportedTestEvent", "match": None,
          "script": "some-hook.py", "fallback": "runtime"},
     ])
     env.make_adapter().sync(mode="on")
     out = capsys.readouterr().out
     assert "[warn]" in out
-    assert "some-hook.py" in out and "Stop" in out
+    assert "some-hook.py" in out and "UnsupportedTestEvent" in out
     assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글 섞임: {out!r}"
 
 
@@ -183,11 +202,11 @@ def test_unsupported_event_grouped_warns_english_for_en_locale_team(env, capsys)
     (Path(env.root) / "team.config.json").write_text(
         json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
     env.write_manifest([
-        {"event": "Stop", "match": {"action": "a"},
+        {"event": "UnsupportedTestEvent", "match": {"action": "a"},
          "script": "some-hook.py", "fallback": "runtime"},
-        {"event": "Stop", "match": {"action": "b"},
+        {"event": "UnsupportedTestEvent", "match": {"action": "b"},
          "script": "some-hook.py", "fallback": "runtime"},
-        {"event": "Stop", "match": {"action": "c"},
+        {"event": "UnsupportedTestEvent", "match": {"action": "c"},
          "script": "some-hook.py", "fallback": "runtime", "enforcement": "block"},
     ])
     env.make_adapter().sync(mode="on")
