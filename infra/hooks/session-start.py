@@ -22,11 +22,12 @@
   트리거였다(session-log-remind 에서 제거). 세션 중 최신화는 `teammode pull` 수동.
   SessionStart 재진입은 auto_pull 스로틀이 급격한 세션 재시작도 가드한다.
   실패는 절대 세션·주입을 막지 않는다(철칙).
-- resume 중복 억제(2026-07-14): Codex가 같은 root turn을 복구하면서 동일
-  SessionStart(resume)를 짧은 간격으로 재실행할 수 있다. transcript에 먼저 기록되는
-  Codex turn_context row를 세대 키로 삼아
+- SessionStart 중복 억제(2026-07-14, 2026-07-15 compact 보강): Codex가 같은 root
+  turn을 복구하거나 긴 turn 동안 쌓인 compact FIFO를 비우면서 SessionStart를 짧은
+  간격으로 재실행할 수 있다. transcript에 먼저 기록되는 Codex turn_context row를
+  현재 주입 세대 키로 삼아 resume와 compact를 함께
   running lease→owner CAS→완료 cooldown으로 원자 claim한다. timeout은 lease 뒤 복구,
-  startup/compact/clear와 새 row는 즉시 통과하며 식별·state 실패는 fail-open한다.
+  startup/clear와 새 row는 즉시 통과하며 식별·state 실패는 fail-open한다.
   Claude는 동등한 invocation 표식이 없어 정상 reopen을 막지 않도록 기존대로 실행한다.
 - 정합 강화(2026-06-29, 이슈 #23): 종전 `pull --ff-only` 는 로컬 diverge 시 조용히
   실패해 멀티유저 환경에서 로컬 커밋만 쌓였다. 이제 git_ops.do_reconcile 로 fetch +
@@ -151,7 +152,7 @@ _SESSION_START_TRANSCRIPT_TAIL_BYTES = 1_048_576
 
 
 def _recent_transcript_generation(raw: dict) -> tuple[str, str, str] | None:
-    """현재 Codex resume 세대와 canonical transcript 경로를 제한적으로 읽는다.
+    """현재 Codex 주입 세대와 canonical transcript 경로를 제한적으로 읽는다.
 
     Codex 0.144는 hook stdin에 turn_id를 주지 않지만 turn_context를 transcript에 먼저
     기록한 뒤 SessionStart를 실행한다. 마지막 1MiB만 역스캔하며 경로, 형식,
@@ -196,11 +197,18 @@ def _recent_transcript_generation(raw: dict) -> tuple[str, str, str] | None:
 
 
 def _resume_claim_key(data: dict) -> str | None:
-    """동일 resume generation만 묶는 안정 해시. 다른 lifecycle source는 우회한다."""
+    """현재 turn의 resume/compact를 함께 묶는 안정 해시.
+
+    Codex는 긴 turn에서 발생한 compact source를 FIFO에 쌓았다가 다음 일반 turn에서
+    연속 drain한다. source를 key에 넣으면 같은 현재 turn에서 resume와 compact가 각각
+    한 번씩 주입될 수 있으므로 둘 다 동일 turn_context generation으로 합친다.
+    startup/clear는 새 컨텍스트가 필요한 명시 lifecycle이라 기존처럼 우회한다.
+    """
     if data.get("agent") != "codex":
         return None
     raw = data.get("raw")
-    if not isinstance(raw, dict) or raw.get("source") != "resume":
+    if (not isinstance(raw, dict)
+            or raw.get("source") not in ("resume", "compact")):
         return None
     session_id = data.get("session_id")
     if not isinstance(session_id, str) or not session_id.strip():
@@ -216,6 +224,7 @@ def _resume_claim_key(data: dict) -> str | None:
 
 
 def _claim_state_path(team_root: str) -> str:
+    # 기존 resume claim을 업그레이드 뒤에도 재사용하도록 역사적 파일명은 유지한다.
     return os.path.join(
         _git_ops._state_dir(),
         f"session-start-resume-{_git_ops._team_key(team_root)}.json",
@@ -851,8 +860,9 @@ def main() -> int:
     if not (root / ".teammode-active").is_file():
         return 0
 
-    # Codex resume/reconstruction이 같은 root turn의 SessionStart를 여러 번 발행해도
-    # relay·pull·context 전체는 첫 claimant만 수행한다. 새 turn/compact/clear는 우회.
+    # Codex resume 및 밀린 compact FIFO가 같은 root turn의 SessionStart를 여러 번
+    # 발행해도 relay·pull·context 전체는 첫 claimant만 수행한다. 새 turn과
+    # startup/clear는 우회한다.
     should_run, claim_token = _begin_resume_generation(data, str(root))
     if not should_run:
         return 0
