@@ -5,12 +5,14 @@ manifest 에 등록됐으나 부재했던 파일 — L1 진짜 payoff. normalize
 호스트 무접촉: TEAMMODE_HOME 을 tmp 로 주입, 전부 tmp_path.
 """
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -174,6 +176,19 @@ def _run_codex_start(team: Path, transcript: Path, state: Path,
         env=_hook_env(team, {"XDG_STATE_HOME": str(state)}))
 
 
+def _communicate_concurrently(procs, payloads, timeout=10):
+    """모든 child가 stdin을 같은 시점에 받아 실제 claim 경합을 만들게 한다."""
+    barrier = threading.Barrier(len(procs))
+
+    def communicate(proc_and_payload):
+        proc, payload = proc_and_payload
+        barrier.wait(timeout=timeout)
+        return proc.communicate(payload, timeout=timeout)
+
+    with ThreadPoolExecutor(max_workers=len(procs)) as executor:
+        return list(executor.map(communicate, zip(procs, payloads)))
+
+
 def test_codex_duplicate_session_start_same_turn_emits_context_once(tmp_path):
     """같은 root turn을 재구성한 SessionStart 3회 중 첫 1회만 맥락을 주입한다."""
     team = tmp_path / "team"
@@ -189,8 +204,9 @@ def test_codex_duplicate_session_start_same_turn_emits_context_once(tmp_path):
     assert "한 번만 보일 맥락" in next(run.stdout for run in runs if run.stdout.strip())
 
 
-def test_concurrent_codex_duplicate_session_start_has_one_winner(tmp_path):
-    """별도 프로세스가 동시에 같은 resume를 claim해도 정확히 하나만 실행한다."""
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_concurrent_codex_duplicate_session_start_has_one_winner(tmp_path, source):
+    """별도 프로세스가 동시에 같은 세대를 claim해도 정확히 하나만 실행한다."""
     team = tmp_path / "team"
     state = tmp_path / "state"
     transcript = tmp_path / "root.jsonl"
@@ -200,7 +216,7 @@ def test_concurrent_codex_duplicate_session_start_has_one_winner(tmp_path):
         "hook_event_name": "SessionStart",
         "session_id": "root-session",
         "transcript_path": str(transcript),
-        "source": "resume",
+        "source": source,
     })
     procs = [subprocess.Popen(
         [PY, str(CODEX_NORMALIZE), "session-start.py"],
@@ -208,43 +224,112 @@ def test_concurrent_codex_duplicate_session_start_has_one_winner(tmp_path):
         text=True, env=_hook_env(team, {"XDG_STATE_HOME": str(state)}))
         for _ in range(3)]
 
-    results = [proc.communicate(raw, timeout=10) for proc in procs]
+    results = _communicate_concurrently(procs, [raw] * len(procs))
 
     assert all(proc.returncode == 0 for proc in procs)
     assert sum(bool(stdout.strip()) for stdout, _stderr in results) == 1
 
 
-def test_codex_same_session_new_turn_and_compact_are_not_suppressed(tmp_path):
-    """중복만 거르고 다음 turn 및 같은 turn의 별도 compact generation은 살린다."""
+def test_concurrent_resume_and_compact_share_one_winner(tmp_path):
+    """동시에 온 resume/compact도 같은 현재 turn claim 하나를 공유한다."""
+    team = tmp_path / "team"
+    state = tmp_path / "state"
+    transcript = tmp_path / "root.jsonl"
+    _seed_team(team)
+    _codex_transcript(transcript, "turn-mixed-race")
+    sources = ["resume", "compact", "resume", "compact"]
+    procs = [subprocess.Popen(
+        [PY, str(CODEX_NORMALIZE), "session-start.py"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=_hook_env(team, {"XDG_STATE_HOME": str(state)}),
+    ) for _source in sources]
+    payloads = [json.dumps({
+        "hook_event_name": "SessionStart",
+        "session_id": "root-session",
+        "transcript_path": str(transcript),
+        "source": source,
+    }) for source in sources]
+    results = _communicate_concurrently(procs, payloads)
+
+    assert all(proc.returncode == 0 for proc in procs)
+    assert sum(bool(stdout.strip()) for stdout, _stderr in results) == 1
+
+
+def test_codex_duplicate_compact_same_turn_emits_context_once(tmp_path):
+    """같은 turn에서 밀린 compact SessionStart가 연속 실행돼도 첫 1회만 주입한다."""
+    team = tmp_path / "team"
+    state = tmp_path / "state"
+    transcript = tmp_path / "root.jsonl"
+    _seed_team(team, summary="compact 한 번만 보일 맥락")
+    _codex_transcript(transcript, "turn-compact")
+
+    runs = [
+        _run_codex_start(team, transcript, state, source="compact")
+        for _ in range(5)
+    ]
+
+    assert all(run.returncode == 0 for run in runs)
+    assert sum(bool(run.stdout.strip()) for run in runs) == 1
+    assert "compact 한 번만 보일 맥락" in next(
+        run.stdout for run in runs if run.stdout.strip())
+
+
+def test_codex_resume_and_compact_coalesce_once_per_current_turn(tmp_path):
+    """밀린 lifecycle source 수와 무관하게 현재 turn_context당 한 번만 주입한다."""
     team = tmp_path / "team"
     state = tmp_path / "state"
     transcript = tmp_path / "root.jsonl"
     _seed_team(team)
     _codex_transcript(transcript, "turn-1")
     first = _run_codex_start(team, transcript, state)
+    same_turn_compact = _run_codex_start(
+        team, transcript, state, source="compact")
     _codex_transcript(transcript, "turn-2")
-    next_turn = _run_codex_start(team, transcript, state)
-    compact = _run_codex_start(team, transcript, state, source="compact")
+    next_turn_compact = _run_codex_start(
+        team, transcript, state, source="compact")
+    same_turn_resume = _run_codex_start(team, transcript, state)
 
     assert first.stdout.strip()
-    assert next_turn.stdout.strip()
-    assert compact.stdout.strip()
+    assert not same_turn_compact.stdout.strip()
+    assert next_turn_compact.stdout.strip()
+    assert not same_turn_resume.stdout.strip()
 
 
-def test_codex_same_turn_id_new_context_record_is_new_generation(tmp_path):
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_codex_same_turn_id_new_context_record_is_new_generation(tmp_path, source):
     """같은 turn_id여도 새 turn_context row면 독립 reopen으로 즉시 실행한다."""
     team = tmp_path / "team"
     state = tmp_path / "state"
     transcript = tmp_path / "root.jsonl"
     _seed_team(team)
     _codex_transcript(transcript, "turn-reused", "2026-07-14T14:35:11Z")
-    first = _run_codex_start(team, transcript, state)
+    first = _run_codex_start(team, transcript, state, source=source)
+    duplicate = _run_codex_start(team, transcript, state, source=source)
     _codex_transcript(transcript, "turn-reused", "2026-07-14T14:36:11Z")
 
-    reopened = _run_codex_start(team, transcript, state)
+    reopened = _run_codex_start(team, transcript, state, source=source)
+    reopened_duplicate = _run_codex_start(team, transcript, state, source=source)
 
     assert first.stdout.strip()
+    assert not duplicate.stdout.strip()
     assert reopened.stdout.strip()
+    assert not reopened_duplicate.stdout.strip()
+
+
+@pytest.mark.parametrize("source", ["startup", "clear"])
+def test_codex_non_reconstructing_lifecycle_still_runs_each_time(tmp_path, source):
+    """startup/clear는 기존처럼 transcript claim 대상이 아니어서 우회한다."""
+    team = tmp_path / "team"
+    state = tmp_path / "state"
+    transcript = tmp_path / "root.jsonl"
+    _seed_team(team)
+    _codex_transcript(transcript, "turn-lifecycle")
+
+    first = _run_codex_start(team, transcript, state, source=source)
+    second = _run_codex_start(team, transcript, state, source=source)
+
+    assert first.stdout.strip()
+    assert second.stdout.strip()
 
 
 def test_codex_same_turn_resume_is_allowed_again_after_window(tmp_path):
@@ -269,7 +354,8 @@ def test_codex_same_turn_resume_is_allowed_again_after_window(tmp_path):
     assert after_window.stdout.strip()
 
 
-def test_two_phase_running_lease_and_stale_owner_cas(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_two_phase_running_lease_and_stale_owner_cas(tmp_path, monkeypatch, source):
     """timeout claim은 lease 뒤 복구되고 늦은 old owner settle은 새 claim을 못 덮는다."""
     hook = _load_hook_module()
     state = tmp_path / "state"
@@ -278,7 +364,7 @@ def test_two_phase_running_lease_and_stale_owner_cas(tmp_path, monkeypatch):
     _codex_transcript(transcript, "turn-lease")
     data = {
         "event": "SessionStart", "agent": "codex", "session_id": "root-session",
-        "raw": {"source": "resume", "transcript_path": str(transcript)},
+        "raw": {"source": source, "transcript_path": str(transcript)},
     }
     root = str(tmp_path / "team")
 
@@ -333,7 +419,8 @@ def test_future_claim_and_lock_contention_fail_open(tmp_path, monkeypatch):
     assert lock_run and lock_token is None
 
 
-def test_unreadable_generation_fails_open_to_context(tmp_path):
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_unreadable_generation_fails_open_to_context(tmp_path, source):
     """turn 식별 불가 때문에 정상 세션 맥락을 숨기지 않는다."""
     team = tmp_path / "team"
     state = tmp_path / "state"
@@ -341,13 +428,69 @@ def test_unreadable_generation_fails_open_to_context(tmp_path):
     _seed_team(team, summary="fail-open 맥락")
     transcript.write_text("not-json\n", encoding="utf-8")
 
-    runs = [_run_codex_start(team, transcript, state) for _ in range(2)]
+    runs = [
+        _run_codex_start(team, transcript, state, source=source)
+        for _ in range(2)
+    ]
 
     assert all("fail-open 맥락" in json.loads(run.stdout)["hookSpecificOutput"]["additionalContext"]
                for run in runs)
 
 
-def test_claude_resume_with_codex_shaped_turn_context_is_not_suppressed(tmp_path):
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_null_transcript_path_fails_open_without_claim(tmp_path, source):
+    """Codex 공식 required-but-nullable transcript_path가 null이면 주입을 숨기지 않는다."""
+    team = tmp_path / "team"
+    state = tmp_path / "state"
+    _seed_team(team, summary="null transcript fail-open 맥락")
+    raw = json.dumps({
+        "hook_event_name": "SessionStart",
+        "session_id": "root-session",
+        "transcript_path": None,
+        "source": source,
+    })
+
+    runs = [subprocess.run(
+        [PY, str(CODEX_NORMALIZE), "session-start.py"],
+        input=raw, capture_output=True, text=True,
+        env=_hook_env(team, {"XDG_STATE_HOME": str(state)}))
+        for _ in range(2)]
+
+    assert all(run.returncode == 0 for run in runs)
+    assert all("null transcript fail-open 맥락" in json.loads(
+        run.stdout)["hookSpecificOutput"]["additionalContext"] for run in runs)
+    assert not list((state / "teammode").glob("session-start-resume-*.json"))
+
+
+@pytest.mark.parametrize("source", [[], {}])
+def test_malformed_lifecycle_source_fails_open_without_claim(tmp_path, source):
+    """비정상 JSON source도 훅을 깨뜨리지 않고 기존 fail-open 동작을 보존한다."""
+    team = tmp_path / "team"
+    state = tmp_path / "state"
+    transcript = tmp_path / "root.jsonl"
+    _seed_team(team, summary="malformed source fail-open 맥락")
+    _codex_transcript(transcript, "turn-malformed-source")
+    raw = json.dumps({
+        "hook_event_name": "SessionStart",
+        "session_id": "root-session",
+        "transcript_path": str(transcript),
+        "source": source,
+    })
+
+    run = subprocess.run(
+        [PY, str(CODEX_NORMALIZE), "session-start.py"],
+        input=raw, capture_output=True, text=True,
+        env=_hook_env(team, {"XDG_STATE_HOME": str(state)}))
+
+    assert run.returncode == 0
+    assert "malformed source fail-open 맥락" in json.loads(
+        run.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert not list((state / "teammode").glob("session-start-resume-*.json"))
+
+
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_claude_resume_with_codex_shaped_turn_context_is_not_suppressed(
+        tmp_path, source):
     """Claude transcript schema drift/import must never enter Codex dedupe."""
     team = tmp_path / "team"
     state = tmp_path / "state"
@@ -370,7 +513,7 @@ def test_claude_resume_with_codex_shaped_turn_context_is_not_suppressed(tmp_path
                 "hook_event_name": "SessionStart",
                 "session_id": "claude-session",
                 "transcript_path": str(transcript),
-                "source": "resume",
+                "source": source,
             }), capture_output=True, text=True,
             env=_hook_env(team, {"XDG_STATE_HOME": str(state)}))
 
