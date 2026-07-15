@@ -51,7 +51,7 @@ python -m pytest -q         # full suite — must pass before submitting
 | `tests/` | pytest suite, one `test_*.py` per feature/fix |
 | `conformance/check.py` | The `lint` / `verify` / `conform` checker |
 | `conformance/scenarios/*.json` | 5 golden scenarios — the executable spec `verify`/`conform` run against |
-| `docs/spec/` | **Single source of truth** for behavior (SPEC v0.3, English) |
+| `docs/spec/` | **Single source of truth** for behavior (SPEC v0.4, English) |
 | `docs/BACKLOG.md`, `docs/archive/`, `docs/scenarios/` | Design backlog, archived design notes, narrative onboarding scenarios |
 | `providers/*.json` | L2 provider packs (issues/chat/docs/calendar) — data only, no code change needed to add one |
 | `npm/` | npm publish shim (`npx tm-mode`) over the pinned `cli.py` |

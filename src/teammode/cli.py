@@ -3,7 +3,7 @@
 
 진입 2종(등가 — 둘 다 이 cli.py 로 위임):
   pipx: pipx install tm-mode && tm-mode join <url>
-  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.5/install.sh | sh -s -- join <url>
+  curl: curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.6/install.sh | sh -s -- join <url>
 
   tm-mode init [OWNER/REPO]   새 팀: 레포 생성(template) → 곧바로 join(clone+셋업)
   tm-mode join <clone-url>    합류: 팀 레포 clone → 셋업
@@ -51,7 +51,7 @@ WORKFLOW_STRIP_MESSAGE = (
     "chore(teammode): remove product workflows from team instance")
 # 설치 원라이너 핀(2b) — cli.py 는 curl 로 단독 실행되므로 패키지 import 불가.
 # 릴리스마다 __init__.__version__ 과 함께 올린다(tests/test_release_pin.py 가 교차 고정).
-PIN_REF = "refs/tags/v0.1.5"
+PIN_REF = "refs/tags/v0.1.6"
 
 
 def _err(msg: str) -> None:

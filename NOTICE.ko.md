@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-07-15
+
+- **더 안전한 자동 동기화**: 세션 로그 자동 커밋이 팀원의 동시 push를 먼저 reconcile한 뒤 제한된 범위에서 재시도하고, hook을 막는 대신 복구 가능한 pending 상태를 기록합니다.
+- **SessionStart 부수효과 1회 실행**: 같은 root turn에서 반복되는 Codex `resume` 재구성과 대기 중인 `compact` 이벤트가 pull·relay·맥락 주입을 다시 실행하지 않습니다. Claude 세션과 실제 새 turn은 기존처럼 정상 실행됩니다.
+- **동시 시작 race 수정**: 실제 동시 SessionStart에서도 claim lock이 한 번만 통과시켜, fail-open 복구를 유지하면서 hook 출력 중복을 막습니다.
+
 ## 2026-06-18
 
 - **스킬 3계층(base/core/util)** 도입 + `tm-manage-utils`: util 스킬을 팀원별로 선택 설치·관리. `tm on` 시 core 자동 + 등록 util 심링크, `off` 시 제거(base 유지)

@@ -1,6 +1,6 @@
 # Internal Rules
 
-tm-mode SPEC v0.3 — Engine and Standards Rules
+tm-mode SPEC v0.4 — Engine and Standards Rules
 
 ## §1. Team Memory Standard (Team Memory)
 
@@ -119,7 +119,7 @@ At session start, implementations inject team memory into context. Injecting eve
 
 > Keep only **one copy of the content** for hooks, skills, and MCP, and let the `agents/<name>/` adapter **translate notation, registration methods, and input schemas that differ by agent**. The design goal is to attach a new agent by adding only an adapter, but the current reference has detection and wiring paths hardcoded in `install_lib._AGENT_HOME_DIRS` and `_AGENT_WIRE`, so adding a new agent also requires modifying the install_lib maps in addition to the `agents/<name>/` files.
 >
-> The ground truth for this section is `infra/agents/{claude,codex}/{adapter.py,normalize.py,events.json}`, `infra/hooks/{manifest.json,session-start.py,session-log-remind.py,auto_pull.py,auto-commit.py,confirm-action.py}`, and `infra/io_encoding.py` in the working tree as of 2026-06-16. The current working tree has uncommitted changes related to `install-skills` (`infra/agents/*/adapter.py`, `infra/install*.py`, `tests/test_install_skills_l2c.py`, etc.), and this section reflects **the current implementation regardless of commit status**.
+> The ground truth for this section is `infra/agents/{claude,codex}/{adapter.py,normalize.py,events.json}`, `infra/hooks/{manifest.json,session-start.py,session-log-remind.py,auto_pull.py,auto-commit.py,push-worker.py,edit-lease-cleanup.py,confirm-action.py,kb-write-guard.py}`, `infra/git_ops.py`, and `infra/io_encoding.py` in the working tree as of 2026-07-15. This section describes the checked-in implementation contract; historical implementation notes remain in Appendix C.
 
 ### 2.1 Directory Structure
 
@@ -132,7 +132,9 @@ infra/
 │   ├── auto_pull.py              #   manifest 엔트리 아님. session-start helper(세션당 1회)
 │   ├── auto-commit.py            #   PostToolUse/file_edit 자동 커밋 + bounded 전경 publication
 │   ├── push-worker.py            #   전경 실패 fallback — branch-bound ledger·plain-push-only
-│   └── confirm-action.py         #   PreToolUse/linear.create_issue 확인 차단
+│   ├── edit-lease-cleanup.py      #   failure/terminal exact edit-lease cleanup
+│   ├── confirm-action.py          #   PreToolUse/linear.create_issue 확인 차단
+│   └── kb-write-guard.py          #   PreToolUse/file_edit memory 직접 편집 차단
 ├── skills/
 │   └── base/<skill>/SKILL.md     # 공통 스킬 원본. 현 구현은 base만 설치(오버라이드 없음)
 ├── agents/
@@ -174,38 +176,52 @@ infra/
 - An omitted `mode` is a base entry. `"on"` is registered together with base during `sync --on`. `sync --off` registers only base. Plain `sync` **preserves the existing managed state** (self-heal): it infers the current state from teammode-owned objects in the existing settings (ON signals — Claude: an owned hook command points to a `mode:"on"` script or a managed statusLine exists / Codex: a `statusMessage` exists inside the teammode-hooks block or a `mode:"on"` script is referenced), renders with that state, and if no owned objects exist, treats it as initial off and registers only base. There is no separate state file ("remember last on/off") — the inference source is the settings file itself. Before this contract existed, plain `sync` silently downgraded the ON state to base-only, and for Codex, dropping statusMessage even caused a trust-hash mismatch (requiring re-trust).
 - The default `fallback` is `"drop"`. `"runtime"` is a mode where, when the event is supported but the matcher cannot be expressed, the hook is registered without a matcher and left to normalize self-filtering. If the event itself is `null`, it cannot be registered even with runtime and is dropped.
 - `strict` determines the exit code on normalize conversion failure. If any manifest entry with the same `script` has `strict: true`, normalize conversion failure invoked for that script exits 1. Otherwise it exits 0.
-- The default `enforcement` is `"advisory"`. In the current code, this field only strengthens the warning text on the Codex `sync()` path where `event is None`. That is, if an event is declared unsupported (`null`) in events.json and has `enforcement: "block"`, it prints `[warn] ... (block 강제 상실) → 비활성`. Codex currently supports all four event types, so the PreToolUse blocking hook in the reference manifest does not take this path. Claude `sync()` does not read `enforcement`.
+- The default `enforcement` is `"advisory"`. In the current code, this field only strengthens the warning text on the Codex `sync()` path where `event is None`. That is, if an event is declared unsupported (`null`) in events.json and has `enforcement: "block"`, it prints `[warn] ... (block 강제 상실) → 비활성`. Codex supports six of the seven canonical events; only `PostToolUseFailure` is explicitly `null`, and its reference manifest entry is advisory. Claude `sync()` does not read `enforcement`.
 - **Forbidden (required)**: writing agent-specific notation directly in the manifest — `mcp__*`-style tool names, matcher strings such as `Write|Edit`, `apply_patch`, or specific agent settings file paths. Everything must be canonical only. (Subject to lint/conformance checks — reference: `check._lint_manifest_canonical` greps for `mcp__`/`Write|Edit`/`apply_patch`.)
 
 ### 2.3 reference manifest (current build)
 
-The reference build declares four entries in `infra/hooks/manifest.json`. All four declared scripts exist under `infra/hooks/`. Including `auto_pull.py`, there are five hook-related Python files, but `auto_pull.py` is not a manifest entry; it is a helper imported and called by `session-log-remind.py`.
+The reference build declares eight entries in `infra/hooks/manifest.json`. All declared scripts exist under `infra/hooks/`. `auto_pull.py` and `push-worker.py` are helpers and are not manifest entries.
 
 | event | match | script | mode | fallback | enforcement | strict | script exists |
 |---|---|---|---|---|---|---|---|
 | `SessionStart` | (none) | `session-start.py` | on | (drop) | advisory | — | ✅ |
 | `UserPromptSubmit` | (none) | `session-log-remind.py` | on | (drop) | advisory | — | ✅ |
 | `PostToolUse` | `action: file_edit` | `auto-commit.py` | (base) | runtime | block | — | ✅ |
+| `PostToolUseFailure` | `action: file_edit` | `edit-lease-cleanup.py` | on | (drop) | advisory | — | ✅ |
+| `Stop` | (none) | `edit-lease-cleanup.py` | on | (drop) | advisory | — | ✅ |
+| `SubagentStop` | (none) | `edit-lease-cleanup.py` | on | (drop) | advisory | — | ✅ |
 | `PreToolUse` | `mcp: {server: linear, tool: create_issue}` | `confirm-action.py` | (base) | runtime | block | true | ✅ |
+| `PreToolUse` | `action: file_edit` | `kb-write-guard.py` | on | runtime | block | true | ✅ |
 
-Summary of the five hook-related files in the current build:
+Summary of the registered scripts and their directly coupled publication helpers:
 
 | file | manifest registration | input | main branches | output and exit |
 |---|---:|---|---|---|
-| `session-start.py` | ✅ `SessionStart` | canonical JSON stdin | no-op if event mismatch, JSON parse failure, `.teammode-active` missing, engine import/collection failure, or a duplicate Codex `resume` reconstruction for the same transcript `turn_context` row | when active, **auto-pull/reconcile once per logical session generation** (throttled and failure-safe), then restart any current-checkout pending worker **after** reconcile so a rebased ahead commit gets a new push attempt. Codex resume claims use a short running lease plus completed cooldown so concurrent duplicate hook processes have one winner while failed output can retry; Claude and unidentifiable inputs remain fail-open. Reconcile, pending recovery, and upstream refresh share a 40-second cutoff; the hook reserves the next 10 seconds for context and skips optional Git refresh/diagnostics when exhausted, so additionalContext JSON is emitted before the 60-second runner cap. Intended to always exit 0 |
+| `session-start.py` | ✅ `SessionStart` | canonical JSON stdin | no-op if event mismatch, JSON parse failure, `.teammode-active` missing, engine import/collection failure, or a duplicate Codex `resume`/`compact` reconstruction for the same transcript `turn_context` generation | when active, **auto-pull/reconcile once per logical session generation** (throttled and failure-safe), then restart any current-checkout pending worker **after** reconcile so a reconciled ahead commit gets a new push attempt. Codex `resume` and queued `compact` callbacks share one generation key; a short running lease plus completed cooldown gives concurrent duplicates one winner while failed output can retry. Claim timestamps are captured while the shared lock is held. Claude and unidentifiable inputs remain fail-open. Reconcile, pending recovery, and upstream refresh share a 40-second cutoff; the hook reserves the next 10 seconds for context and skips optional Git refresh/diagnostics when exhausted, so additionalContext JSON is emitted before the 60-second runner cap. Intended to always exit 0 |
 | `session-log-remind.py` | ✅ `UserPromptSubmit` | canonical JSON stdin | no-op if event mismatch, JSON parse failure, or `.teammode-active` missing. When active: member identification (TEAMMODE_MEMBER env first → single config fallback → fallback if absent) + age/counter decision based on my file mtime. check_reset: my file mtime changed or date changed (06:00 cutoff) → count=0 + return (does not nag). (**no pull** — per-prompt pull was split into one SessionStart pull by the 2026-06-17 P0 hook hang fix) | when needed, **`hookSpecificOutput.additionalContext`+`systemMessage` JSON stdout** (propagated by normalize re-emission). Emits strong(age≥1800 & 30-minute throttle) OR weak(count%5==0). Body defaults to **compact** (1-3 lines of dynamic state: Nth prompt, file path, offset + rule reference — the rule body is injected once by session-start via `_slog_rules.SESSION_LOG_RULES`) — opt back into the legacy long body (count/offset append kit) with `ux.session_log_remind.context_style:"full"`; also degrades to the long body if the rules module is missing (fail-to-verbose). Normal exit 0. State-file write failures are caught as OSError (safe). |
 | `auto_pull.py` | ❌ helper | function call | absorbs state-file throttle, git pull failure, and exceptions into a result object | no CLI main. Returns `AutoPullResult`; intended not to propagate exceptions. **Caller: session-start.py (once per session)** — moved from the previous session-log-remind (per prompt) |
-| `auto-commit.py` | ✅ `PostToolUse` | canonical JSON stdin | no-op on event/action mismatch, `.teammode-active` missing, `git_ops` missing, no valid repo-local files, or exception | validates canonical `files` as repo-local literal pathspecs and runs bounded `do_commit(push=True)` so non-ff publication can recover with fetch/rebase/re-push. Before autostash rebase, dirty paths are compared with upstream changes and overlap defers publication without mutating the dirty files. After rebase, the exact `Created autostash` object and unmerged state are verified; a conflicted apply rolls back the branch and restores that object while retaining its stash backup. On foreground failure it records the captured commit branch/HEAD in the branch-bound pending ledger, persists a redacted warning, then detaches the plain-push-only `push-worker.py` fallback. Ledger entries include the failure HEAD; branchless v0.1.3 state is bound only to session-log-only auto-commit history. Confirmed publication conditionally clears only the observed pending snapshot/warning. Retries index.lock once after 1s. Always exits 0 |
+| `auto-commit.py` | ✅ `PostToolUse` | canonical JSON stdin | no-op on event/action mismatch, `.teammode-active` missing, `git_ops` missing, no valid repo-local files, or exception | validates canonical `files` as repo-local literal pathspecs and runs bounded, path-scoped `do_commit(push=True, reconcile_before_push=True)`. It creates the scoped local commit under the publication interlock, then binds that branch/OID to a credential-safe push endpoint and destination. Any subsequent fast-forward/rebase history rewrite requires the exact edit lease to remain the sole active editor and pending state to be safe. The foreground path reconciles against the bound target and pushes the captured OID/refspec with `--no-follow-tags --recurse-submodules=check`. Checkout/branch races fail closed to a branch-bound durable pending record and warning. The detached worker can only plain-push the immutable pending OID/ref to the stored endpoint; it does not rebase or merge. Confirmed exact publication conditionally clears only the observed pending snapshot/warning. Retries index.lock once after 1s. Always exits 0 |
+| `push-worker.py` | ❌ helper | branch-bound pending ledger | validates the immutable OID, stored refspec/endpoint, checkout identity, and pending snapshot | serializes publication, performs only the stored exact push, and CAS-clears the matching ledger entry after durable publication proof. It never mutates worktree history |
+| `edit-lease-cleanup.py` | ✅ `PostToolUseFailure` / `Stop` / `SubagentStop` | canonical JSON stdin | `PostToolUseFailure` releases only the exact `session_id` + `tool_use_id` owner. Terminal cleanup requires a verifiable current runtime; Codex additionally requires `turn_id`, while Claude scopes by runtime plus optional `agent_id`. Claude `Stop` also refuses cleanup while background tasks remain. Codex does not register the unsupported failure event | cleanup is fail-open and exits 0; it never performs a session-wide wildcard release |
 | `confirm-action.py` | ✅ `PreToolUse` | canonical JSON stdin + first argv marker | passes on event mismatch, `.teammode-active` missing, target MCP mismatch, or human allow signal | without allow, deny JSON stdout + stderr, exit 2 |
+| `kb-write-guard.py` | ✅ `PreToolUse` | canonical JSON stdin | allows non-memory edits and valid engine unlocks; begins the exact edit lease for allowed file-edit tools; blocks direct governed-memory edits | blocking response + stderr, exit 2; otherwise exit 0 |
 
-### 2.4 Canonical Events (0.2)
+**SessionStart dedupe contract (0.4).** For Codex native inputs whose `source` is `resume` or `compact`, normalize must provide a non-empty `session_id`, and the raw input must identify a transcript whose latest valid `turn_context` JSONL row can be read. `session-start.py` hashes the session id, canonical transcript path, latest `turn_id`, and row digest into one generation key; `source` is deliberately excluded, so a resume callback and later-drained compact callbacks for the same logical turn collapse together. Startup/clear sources bypass this rule, and missing or malformed evidence fails open. Claim acquire, timestamp capture, owner-token settlement, running-lease expiry, and completed cooldown are serialized under the shared ledger lock. Only the owner may settle a claim; failure releases it for retry.
+
+**Exact publication contract (0.4).** Auto-commit stages and commits only normalized repo-local paths under the publication interlock. After that scoped local commit, it binds the resulting branch/OID to one publication endpoint/destination. Before any subsequent fast-forward/rebase history rewrite, it performs bounded fetch/status/reconcile against that destination and re-proves the exact edit lease and checkout identity under the publication interlock. It never silently publishes through a later Git-config change. A foreground failure preserves the local commit and records the immutable OID plus exact target for `push-worker.py`; warning/pending state is cleared only by conditional compare-and-swap after exact publication is proved.
+
+### 2.4 Canonical Events (0.4)
 
 | canonical name | meaning | meaning-preservation requirement |
 |---|---|---|
-| `SessionStart` | session start | fire once per session before the user's first input |
+| `SessionStart` | session start or harness reconstruction | fire before the user's first input; repeated native reconstruction callbacks for one logical generation must not duplicate injected context |
 | `UserPromptSubmit` | immediately after user prompt submission | fire before the agent begins generating a response |
 | `PreToolUse` | immediately before tool execution | **must be blockable** — a hook failure (nonzero exit) must be able to prevent tool execution |
 | `PostToolUse` | immediately after tool execution | fire after the tool result is finalized |
+| `PostToolUseFailure` | immediately after failed tool execution | preserve the failed tool's correlation identity so exact per-tool cleanup is possible; unsupported agents declare `null` |
+| `Stop` | main-agent turn termination | preserve exact turn identity; terminal cleanup must not broaden to the whole session |
+| `SubagentStop` | subagent turn termination | preserve exact subagent identity; terminal cleanup must not release unrelated work |
 
 - Canonical names are based on **Claude Code vocabulary** (Tier 1 Reference).
 - Adding a canonical event is allowed only with a minor bump.
@@ -233,12 +249,15 @@ Each adapter declares the translation table from canonical vocabulary to that ag
   "agent": "claude",
   "config_file": "~/.claude/settings.json",
   "events": { "SessionStart": "SessionStart", "UserPromptSubmit": "UserPromptSubmit",
-              "PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse" },
+              "PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse",
+              "PostToolUseFailure": "PostToolUseFailure", "Stop": "Stop",
+              "SubagentStop": "SubagentStop" },
   "actions": { "file_edit": "Write|Edit" },
   "mcp_tool_format": "mcp__{server}__{tool}"
 }
-// agents/codex/events.json (reference) — PreToolUse: "PreToolUse"(지원), file_edit: "apply_patch",
-//   mcp_tool_format: "mcp__{server}__{tool}"
+// agents/codex/events.json (reference) — the same seven keys are present;
+//   PostToolUseFailure: null, the other six events are supported,
+//   file_edit: "apply_patch", mcp_tool_format: "mcp__{server}__{tool}"
 ```
 
 Rules (required):
@@ -247,8 +266,8 @@ Rules (required):
 3. Do not hardcode agent-specific special handling (event skip, matcher transformation) in install code — put all of it in this file.
 4. The replacement variables for `mcp_tool_format` are `{server}` and `{tool}`. `{server}` receives the **actual registration alias** resolved by the adapter.
 5. Current reference values:
-   - Claude: all four `events` use the same names, `actions.file_edit = "Write|Edit"`, `mcp_tool_format = "mcp__{server}__{tool}"`, default settings file `~/.claude/settings.json`.
-   - Codex: all four `SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` events are supported, `actions.file_edit = "apply_patch"`, `mcp_tool_format = "mcp__{server}__{tool}"`, default config file `~/.codex/config.toml`.
+   - Claude: all seven events use the same canonical/native names, `actions.file_edit = "Write|Edit"`, `mcp_tool_format = "mcp__{server}__{tool}"`, default settings file `~/.claude/settings.json`.
+   - Codex: six events are supported with the same names; `PostToolUseFailure` is explicitly `null`. `actions.file_edit = "apply_patch"`, `mcp_tool_format = "mcp__{server}__{tool}"`, default config file `~/.codex/config.toml`.
 
 ### 2.7 adapter.py — Install-Time Contract
 
@@ -417,13 +436,17 @@ The `fallback` of a manifest entry — behavior when an adapter cannot express t
 
 **Input**: agent-native JSON (stdin) → **Output**: pass canonical JSON (stdin) to the common script.
 
-**Canonical input schema 0.2:**
+**Canonical input schema 0.4:**
 
 ```jsonc
 {
   "event": "PostToolUse",            // 필수. 정규 이벤트 (§2.4)
+  "session_id": "session-…",         // 선택. 세션 상관관계 ID
+  "tool_use_id": "tool-…",           // 선택. Pre/Post/Failure exact tool-call ID
+  "turn_id": "turn-…",               // 선택. main turn scope ID
+  "agent_id": "agent-…",             // 선택. subagent scope ID
   "action": "file_edit",             // 해당 시. 정규 행위 클래스
-  "tool": { "kind": "mcp",           //   해당 시(Pre/PostToolUse). "mcp" | "builtin"
+  "tool": { "kind": "mcp",           //   해당 시(Pre/Post/Failure). "mcp" | "builtin"
             "server": "linear",      //   kind=mcp일 때. 정규 서버명
             "name": "create_issue" },
   "files": ["path"],                 // file_edit일 때. normalize가 받은 file_path 문자열 배열
@@ -433,7 +456,7 @@ The `fallback` of a manifest entry — behavior when an adapter cannot express t
 }
 ```
 
-Current normalize always outputs `event`, `agent`, and `raw`. If stdin is empty, it treats the native input as `{}`, so `event` may become an empty string. `raw` is the native dict as-is. The other fields are attached only when applicable. Common scripts trust only this schema, and for security must not use model-controlled payloads such as `raw.tool_input` as allow signals (`confirm-action.py` follows this).
+Current normalize always outputs `event`, `agent`, and `raw`. If stdin is empty, it treats the native input as `{}`, so `event` may become an empty string. `raw` is the native dict as-is. Correlation IDs and the other fields are attached only when applicable. Common scripts trust only this schema, and for security must not use model-controlled payloads such as `raw.tool_input` as allow signals (`confirm-action.py` follows this).
 
 **normalize duties (required):**
 1. Invocation form: `normalize.py <script> [args...]`. The current implementation does not validate `<script>` and executes it by joining `HOOKS_DIR / script`. If argv is absent, it writes `[normalize] script 인자 필요` to stderr and exits 0.
@@ -442,18 +465,19 @@ Current normalize always outputs `event`, `agent`, and `raw`. If stdin is empty,
    - Native event is `raw["hook_event_name"]` first, otherwise `raw["event"]`, otherwise `""`.
    - Find the canonical event by reverse-mapping `events.json.events`. If no mapping exists, use the native event string as-is.
    - `agent` is `events.json.agent`, and the default is `"claude"` for Claude normalize. Codex normalize rebinds the Claude normalize module's path constants to Codex so it reads the Codex events.json.
-4. `UserPromptSubmit`: `prompt = raw.get("prompt", "")`.
-5. `PreToolUse`/`PostToolUse`:
-   - `tool_name = raw.get("tool_name", "")`, `tool_input = raw.get("tool_input", {}) or {}`.
+4. Correlation IDs (all events): copy the first non-empty string from each native spelling and trim surrounding whitespace. `session_id` probes `session_id` then `sessionId`; `tool_use_id` probes `tool_use_id` then `toolUseId`; `turn_id` probes `turn_id` then `turnId`; `agent_id` probes `agent_id` then `agentId`. No other identifiers (for example, `conversation_id`) are guessed. Missing or non-string values are omitted.
+5. `UserPromptSubmit`: `prompt = raw.get("prompt", "")`.
+6. `PreToolUse`/`PostToolUse`/`PostToolUseFailure`:
+   - `tool_name = raw.get("tool_name") or raw.get("name", "")`. `tool_input = raw.get("tool_input")`; only `None` becomes `{}`. When `tool_input` is an object, a top-level string `raw.input` is copied into `tool_input.input` only when that key is absent. Other non-object values remain non-objects and yield no file extraction.
    - If `tool_name` is empty, do not attach tool/action/files.
    - If `tool_name` matches `mcp_tool_format`, set `tool = {"kind": "mcp", "server": <server>, "name": <tool>}`.
    - Otherwise set `tool = {"kind": "builtin", "name": tool_name}`.
    - If the builtin tool name is equivalent to an OR string in `events.json.actions`, attach `action`. Claude `Write|Edit` is split on `|` and compared equivalently with `Write` or `Edit`. Codex is compared equivalently with `apply_patch`.
-   - If action is detected and `tool_input.file_path` is truthy, set `files = [file_path]` without absolute-path conversion or path-escape validation; otherwise set `files = []`.
-6. MCP reverse parsing:
+   - For Codex `apply_patch`, extract every `*** Add File:`, `*** Update File:`, `*** Delete File:`, and `*** Move to:` header from the first string among `tool_input.patch`, `tool_input.input`, and `tool_input.command`. Otherwise, if `tool_input.file_path` is truthy, set `files = [file_path]`; if neither yields a path, set `files = []`. Normalize does not perform absolute-path conversion or path-escape validation; consumers enforce their own path policy.
+7. MCP reverse parsing:
    - Convert the `mcp_tool_format` template to a regex and capture `{server}` and `{tool}`.
    - The captured `{server}` may be the registration alias in the actual runtime tool name (`tm-linear`), so remove the `tm-` prefix via `_canonical_server` and output the canonical server name (`linear`) (inverse of `resolve_server_alias`). This is required so self-filtering (§6.2) and `confirm-action.py` match the manifest's canonical server name (§2.5). A user server of the same name without the prefix (`linear`) is preserved as-is.
-7. Runtime self-filter:
+8. Runtime self-filter:
    - The manifest is read from `infra/hooks/manifest.json` on every call. If the file is missing or broken JSON, it is an empty list.
    - The lookup key is `(script, canonical_event)`, and the first matching entry is used. Current lint does not check duplicate `(event, script)` pairs.
    - Filtering occurs only when an entry exists and `fallback == "runtime"`.
@@ -461,22 +485,22 @@ Current normalize always outputs `event`, `agent`, and `raw`. If stdin is empty,
    - An mcp match requires `canonical.tool.kind == "mcp"` and server/name to equal the match's server/tool.
    - If there is no match, pass. Unknown match keys also currently return `True` in `_matches_filter()`.
    - If it does not match, do not execute the common script and exit 0.
-8. Common script execution:
+9. Common script execution:
    - Execute with `subprocess.run([sys.executable, str(HOOKS_DIR / script)] + extra_args, input=json.dumps(canonical), capture_output=True, text=True, encoding="utf-8", errors="replace")`. `ensure_ascii` is **intentionally left at the default (True)** — stdin is sent as pure ASCII (`\uXXXX` escapes), so it is safe even if the child decodes stdin with any locale (Windows cp949, etc.; child `json.loads` restores it). The current implementation does not separately validate whether `script` is a filename, whether it contains `..`, or whether it escapes outside `infra/hooks/`.
    - Re-emit the common script's stdout/stderr unchanged to normalize's own stdout/stderr.
    - The normalize exit code is the common script returncode. Therefore, the exit 2 block from `confirm-action.py` is preserved.
    - If the script file does not exist, the Python subprocess usually emits exit 2 and stderr, and normalize returns that returncode unchanged.
-9. Conversion failure:
+10. Conversion failure:
    - If any manifest entry with the same `script` has truthy `strict`, write `[normalize] 변환 실패: <exc>` to stderr and exit 1.
    - If there is no strict, write the same warning to stderr and exit 0.
-10. UTF-8:
+11. UTF-8:
    - Claude normalize `main()` calls `_ensure_utf8_io()` at startup.
    - Codex normalize reuses Claude normalize `main` as-is, so it follows the same correction path.
 
 ### 2.11 Cross-Agent (Claude ↔ Codex)
 
 - **Shared translation core (reference)**: the Codex adapter inherits Claude `Adapter` to reuse the translation core (events.json-based), and redefines only Codex-specific **config format (TOML block) + fallback handling**. Codex normalize imports functions from Claude normalize and rebinds only the path constants (events.json and manifest) into the Codex context.
-- **Codex PreToolUse support**: Codex supports all four event types in events.json with `PreToolUse: "PreToolUse"`. Blocking hooks with `enforcement: block`, such as `confirm-action.py` and `kb-write-guard.py`, are also registered as `[[hooks.PreToolUse]]` in `config.toml`, so exit-2 blocking takes effect. Actual Codex hook input has the shape `tool_name`/`tool_input` (or top-level `name`/`input`), and apply_patch carries the patch string in `tool_input.command` (captured 2026-06-21) — normalize converts file headers into canonical `files[]`.
+- **Codex lifecycle support**: Codex supports six of the seven canonical events in events.json. `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SubagentStop` map to the same names; `PostToolUseFailure` is explicitly `null`, so the failure cleanup entry is omitted with a warning instead of being silently registered. Blocking hooks with `enforcement: block`, such as `confirm-action.py` and `kb-write-guard.py`, are registered as `[[hooks.PreToolUse]]` in `config.toml`, so exit-2 blocking takes effect. Actual Codex hook input has the shape `tool_name`/`tool_input` (or top-level `name`/`input`), and apply_patch carries the patch string in `tool_input.command` (captured 2026-06-21) — normalize converts file headers into canonical `files[]`.
 - **Codex PreToolUse blocking semantics (verified in practice, 2026-07-03, codex-cli 0.142.5)**: Codex implements the Claude-compatible PreToolUse wire — `PreToolUsePermissionDecisionWire` parses `hookEventName`/`permissionDecision`/`permissionDecisionReason` from hook stdout JSON. **exit 2 = blocked**, and stderr is the channel for the block reason. `permissionDecision` supports only `"deny"` (`allow`/`ask` unsupported). Passing is exit 0 + no output. The output of the reference blocking hook (deny JSON stdout + nonempty stderr + exit 2) satisfies this contract as-is, so it is common to Claude and Codex.
 - Independent implementations do not need to use the `agents/` directory structure or Python as-is. What must be preserved is **the declaration format (manifest.json and events.json) and meaning**, not the implementation language or file layout (§6 C2).
 - Codex MCP registration limitations are surfaced honestly. `install-mcp` writes only comment placeholders (§2.8-3 — real blocks forbidden) to `config.toml`, and the user may need to supplement real launchable MCP server definitions.
@@ -866,10 +890,10 @@ Conformance promise: **compatible implementations can share the same team repo.*
 ### 6.1 Conformance Requirements (all three required)
 
 - **C1 — Compliance with the team memory standard (§1)**: Session log format (location, one file per day, 06:00 cutoff, frontmatter author/date/summary), core directories, INDEX updates, and injection scale (verified with the 0.2 self-check + golden scenario "context lookup"). Bidirectional: produced files comply with the format + the implementation reads a standard team repo and operates correctly.
-- **C2 — Preservation of hook and adapter standard semantics (§2)**: Semantics of the four canonical events (especially PreToolUse blocking), invocation of common scripts with the canonical input schema, fallback behavior (no silent skip), and canonical-form rules (no agent-specific notation; reference MCP semantics). **Note: an independent implementation does not need to use the `agents/` structure or Python as-is** — the preservation target is the declaration format (manifest.json and events.json) and semantics, not language or layout.
+- **C2 — Preservation of hook and adapter standard semantics (§2)**: Semantics of the seven canonical events (especially PreToolUse blocking and exact failure/terminal correlation), invocation of common scripts with the canonical input schema, fallback behavior (no silent skip), and canonical-form rules (no agent-specific notation; reference MCP semantics). **Note: an independent implementation does not need to use the `agents/` structure or Python as-is** — the preservation target is the declaration format (manifest.json and events.json) and semantics, not language or layout.
 - **C3 — Pass the conformance kit (§6.4)**: Pass the required checks + attach the result log to the listing application.
 
-**Scope limit**: A conformance declaration is tied to a specific spec_version ("tm-mode compatible (spec 0.2)"). A declaration without a version is invalid. Partial implementations can be listed with a "partial" mark (for example, memory-only covers K1~K2 and K8 + the context lookup and session log writing golden scenarios). Subset appropriateness is subject to maintainer review approval.
+**Scope limit**: A conformance declaration is tied to a specific spec_version ("tm-mode compatible (spec 0.4)"). A declaration without a version is invalid. Partial implementations can be listed with a "partial" mark (for example, memory-only covers K1~K2 and K8 + the context lookup and session log writing golden scenarios). Subset appropriateness is subject to maintainer review approval.
 
 ### 6.2 Reference Validation Tool — check.py Three Modes
 
@@ -902,7 +926,7 @@ The reference provides three modes through the single tool `conformance/check.py
 | K7 | Canonical skill body form (no `mcp__` or direct product names) | §2.12·§7.3 | Implemented as lint via `lint_skill_canonical` |
 | K8 | Core directory structure + new folders listed in INDEX | §1.1 | lint roadmap |
 
-In addition, it runs **five golden scenarios** (turn on → context lookup → issue creation → session log writing → turn off). The reference scenarios are `01-on-banner`, `02-context-injection`, `03-issue-create`, `04-log-accumulate`, and `05-off-persist`. `03-issue-create` is GREEN via the `issue` verb (§3.5) — the scenario sets up (`fs_write`) and cleans up (`fs_delete`) the connected issues fixture itself, so it does not contaminate 04/05 in the shared root. The fixture content in the current `03-issue-create.json` still contains `"spec_version":"0.1"`, but the implementation's `config_is_valid()` only checks truthiness, and the reference implementation version is `install_lib.SPEC_VERSION == "0.3"`.
+In addition, it runs **five golden scenarios** (turn on → context lookup → issue creation → session log writing → turn off). The reference scenarios are `01-on-banner`, `02-context-injection`, `03-issue-create`, `04-log-accumulate`, and `05-off-persist`. `03-issue-create` is GREEN via the `issue` verb (§3.5) — the scenario sets up (`fs_write`) and cleans up (`fs_delete`) the connected issues fixture itself, so it does not contaminate 04/05 in the shared root. The fixture content in the current `03-issue-create.json` still contains `"spec_version":"0.1"`, but the implementation's `config_is_valid()` only checks truthiness, and the reference implementation version is `install_lib.SPEC_VERSION == "0.4"`.
 
 ### 6.5 Listing Procedure and Badge
 
@@ -911,7 +935,7 @@ In addition, it runs **five golden scenarios** (turn on → context lookup → i
 3. **Listing** — Add it to the README Implementations table (implementation, agent/platform, spec_version, status, verification date).
 4. **Status transitions** — On a minor bump, listed implementations are notified. `compatible → stale`: if re-verification is not submitted by the time the next minor after the notified minor is released, the status becomes stale (the maintainer may also state an absolute deadline; partial implementations follow the same rule). `stale/partial → compatible`: submit results against the current spec_version in the existing issue → update the table (no new application required). Withdrawal is available at any time by owner request.
 
-Badge: `![tm-mode compatible](…/tm-mode-compatible%20(spec%200.2)-blue)`. **spec_version must be included** (a declaration without a version is invalid). `partial`/`stale` cannot use the compatible badge (status badges are allowed). Honor-based — false claims may be removed and announced.
+Badge: `![tm-mode compatible](…/tm-mode-compatible%20(spec%200.4)-blue)`. **spec_version must be included** (a declaration without a version is invalid). `partial`/`stale` cannot use the compatible badge (status badges are allowed). Honor-based — false claims may be removed and announced.
 
 ### 6.6 Versioning Linkage
 
@@ -1165,11 +1189,11 @@ Remaining implementation gaps:
 - **`enforcement` manifest field (§2.2)**: Not mentioned in the 02 draft; the reference adapter uses it in practice (strengthened warning on block fallback) → finalized in the body.
 - **Automatic upstream fetch notification on on (§3.1)**: No merge·fetch only. Consolidated the partial 02/04 mentions into §3.1.
 - **install dispatch mode (§4.1·§2.1)**: Compatibility interface for `install.py --<agent> sync/uninstall`.
-- **`spec_version` string in the conformance 03 fixture**: The fixture content in `03-issue-create.json` still contains `"spec_version":"0.1"`. This is not a supported-version declaration; it is a valid config fixture for the scenario, and the single source of truth for the reference-supported version is `install_lib.SPEC_VERSION == "0.3"`.
+- **`spec_version` string in the conformance 03 fixture**: The fixture content in `03-issue-create.json` still contains `"spec_version":"0.1"`. This is not a supported-version declaration; it is a valid config fixture for the scenario, and the single source of truth for the reference-supported version is `install_lib.SPEC_VERSION == "0.4"`.
 
 ### A.3 Remaining gaps (code still falls short of the spec goals — non-normative)
 
-- **Agent memory leakage in common hooks**: The design goal is to isolate agent-specific memory under `agents/<name>/`, but the current `session-start.py`/`confirm-action.py` directly know the Claude output schema and Codex limitations. `session-log-remind.py` resolved this gap in the 2026-06-21 redesign by switching to plaintext stdout output.
+- **Agent memory leakage in common hooks**: The design goal is to isolate agent-specific memory under `agents/<name>/`, but the current `session-start.py`/`session-log-remind.py`/`confirm-action.py` directly know the Claude output schema and Codex limitations. `session-log-remind.py` emits JSON `hookSpecificOutput.additionalContext` plus optional `systemMessage`; normalize re-emits that agent-shaped output unchanged.
 - ~~**Claude fixed in bootstrap verify**: wire calls the adapter for each detected agent, but verify runs `teammode.py on` regardless of the detection result, and engine `on` always loads only the Claude adapter.~~ → **Closed**: verify removed the `on` call and now uses only `context` (`auto_update_on_start` avoids the automatic commit side effect; heterogeneous adversarial review B1), so adapter loading itself disappeared.
 - ~~**Codex dispatch gate mismatch**: The Codex adapter settings option is `--config`, but the `install.py --<agent>` dispatcher gate recognizes only `--settings`/`--install`. `--codex --config <path> sync` exits 2 before reaching the adapter.~~ → **Closed**: the gate became agent-aware and recognizes `install_lib._AGENT_WIRE[agent]["flag"]` (claude=`--settings`, codex=`--config`) as isolated intent. Missing values (where the next token is a verb/option, as in `--config sync`) are a clear exit 2. Agents not registered in `_AGENT_WIRE` accept only the conservative fallback (`--settings`/`--install`).
 - **Injection scale branching not implemented (§1.6)**: The reference `session-start.py` always injects based on summary lines; there is no full-text for ~4 people / 5+ people branch. It is not a 0.2 automated-check target, so it is not non-compliant, but it remains a gap against the spec goal.
@@ -1201,6 +1225,7 @@ Remaining implementation gaps:
 
 ## Appendix C. Version History · Changes Compared to 01~05
 
+- **0.4** — **hook lifecycle and publication contract change (minor bump, §0.4)**: Expanded the canonical lifecycle from four to seven events by adding `PostToolUseFailure`, `Stop`, and `SubagentStop`; added canonical `session_id`/`tool_use_id`/`turn_id`/`agent_id` correlation fields and failure-event tool normalization. The reference manifest now has eight entries, including exact edit-lease cleanup and the KB write guard. Claude maps all seven events; Codex maps six and explicitly declares `PostToolUseFailure: null`. Formalized path-scoped bounded reconcile and exact endpoint/OID/ref publication with durable pending fallback (#111), plus Codex `resume` + queued `compact` SessionStart dedupe by logical transcript generation (#112).
 - **2026-06-16** — Implementation realignment — reflected the code ground truth in detail in §2~§5,§7 (codex dev-cycle)
 - **0.3** — **engine verb contract change (minor bump, §0.4)**: Formalized adding `memory` (write/delete/route/unlock) and `util` (add/remove/list) to the known verbs (new §3.6·§3.7 — making the verbs that landed in code first true in the spec). Added a **dynamic allow rule for top-level folders listed in the root INDEX routing map** to the memory allowed folders (exact folder rows only · blocked takes precedence · conservative fallback, #51). Reject writes to filenames named `INDEX.md` (symmetric with delete). Updated the value flag allowlist and boolean flags (`--dry-run`) against the actual code (§3). **Removed a team-specific folder from the static allowlist (breaking)** — it was a hardcoded product from a specific team domain. Team-specific folders are unified behind route registration first, and unregistered write/delete operations are rejected (+ registration command hint).
 - **0.2** — **engine verb contract change (minor bump, §0.4)**: Added the eighth engine verb, `issue` (§3.5). After checking the `issues` slot provider, only echo the canonical input schema as stdout JSON (no action_map interpretation or payload conversion — that belongs to adapters/skills). Added `--title --body --assignee --label --priority` to the value allowlist, and formalized positional subaction parsing (§3). Closed conformance 03 (RED→GREEN). Added the harness `fs_delete` action (scenario self-teardown).

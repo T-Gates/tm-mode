@@ -51,7 +51,7 @@ python -m pytest -q         # 전체 테스트 — PR 전 반드시 통과
 | `tests/` | pytest 스위트 — 기능/수정 하나당 `test_*.py` 하나 |
 | `conformance/check.py` | `lint` / `verify` / `conform` 검수 도구 |
 | `conformance/scenarios/*.json` | 5개 골든 시나리오 — `verify`/`conform`이 실행하는 실행 가능한 스펙 |
-| `docs/spec/` | 동작의 **단일 권위본**(SPEC v0.3, 영어) |
+| `docs/spec/` | 동작의 **단일 권위본**(SPEC v0.4, 영어) |
 | `docs/BACKLOG.md`, `docs/archive/`, `docs/scenarios/` | 설계 백로그, 아카이브된 설계 노트, 온보딩 시나리오 문서 |
 | `providers/*.json` | L2 provider 팩(issues/chat/docs/calendar) — 데이터만, 코드 변경 없이 추가 가능 |
 | `npm/` | npm 배포 shim(`npx tm-mode`) — 핀된 `cli.py` 위 얇은 스킨 |

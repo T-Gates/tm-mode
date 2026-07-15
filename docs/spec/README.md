@@ -1,8 +1,8 @@
 # tm-mode SPEC
 
-tm-mode SPEC v0.3 - Index
+tm-mode SPEC v0.4 - Index
 
-spec_version: **0.3**
+spec_version: **0.4**
 
 The single source of authority is this folder (`docs/spec/`).
 
