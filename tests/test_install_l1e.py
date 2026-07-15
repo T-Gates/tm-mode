@@ -347,16 +347,21 @@ def test_unreadable_generation_fails_open_to_context(tmp_path):
                for run in runs)
 
 
-def test_claude_resume_without_codex_turn_context_is_not_suppressed(tmp_path):
-    """Claude에는 안전한 invocation 세대가 없어 기존 SessionStart 동작을 보존한다."""
+def test_claude_resume_with_codex_shaped_turn_context_is_not_suppressed(tmp_path):
+    """Claude transcript schema drift/import must never enter Codex dedupe."""
     team = tmp_path / "team"
     state = tmp_path / "state"
     transcript = tmp_path / "claude.jsonl"
     _seed_team(team)
-    transcript.write_text(json.dumps({
-        "type": "assistant", "uuid": "message-1", "isSidechain": False,
-        "message": {"role": "assistant", "content": "done"},
-    }) + "\n", encoding="utf-8")
+    transcript.write_text("\n".join((
+        json.dumps({
+            "type": "assistant", "uuid": "message-1", "isSidechain": False,
+            "message": {"role": "assistant", "content": "done"},
+        }),
+        json.dumps({
+            "type": "turn_context", "payload": {"turn_id": "imported-codex-turn"},
+        }),
+    )) + "\n", encoding="utf-8")
 
     def run():
         return subprocess.run(

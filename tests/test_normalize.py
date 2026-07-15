@@ -86,6 +86,49 @@ def test_translate_post_tool_use_file_edit(env):
     assert out["agent"] == "claude"
 
 
+@pytest.mark.parametrize(
+    "event", ("PreToolUse", "PostToolUse", "PostToolUseFailure"))
+def test_translate_file_edit_preserves_exact_tool_correlation(env, event):
+    raw = {
+        "hook_event_name": event,
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "/abs/x.md"},
+        "session_id": "session-123",
+        "turn_id": "turn-123",
+        "agent_id": "subagent-123",
+        "tool_use_id": "tool-call-456",
+    }
+    proc = env.run("echo-stub.py", raw, manifest=[
+        {"event": event, "match": {"action": "file_edit"},
+         "script": "echo-stub.py"}])
+
+    assert proc.returncode == 0
+    out = json.loads(proc.stdout)
+    assert out["session_id"] == "session-123"
+    assert out["turn_id"] == "turn-123"
+    assert out["agent_id"] == "subagent-123"
+    assert out["tool_use_id"] == "tool-call-456"
+
+
+@pytest.mark.parametrize("event", ("Stop", "SubagentStop"))
+def test_translate_stop_scope_identity(env, event):
+    raw = {
+        "hook_event_name": event,
+        "session_id": "session-stop",
+        "turn_id": "turn-stop",
+        "agent_id": "subagent-stop",
+    }
+    proc = env.run("echo-stub.py", raw, manifest=[
+        {"event": event, "script": "echo-stub.py"}])
+
+    assert proc.returncode == 0
+    out = json.loads(proc.stdout)
+    assert out["event"] == event
+    assert out["session_id"] == "session-stop"
+    assert out["turn_id"] == "turn-stop"
+    assert out["agent_id"] == "subagent-stop"
+
+
 def test_translate_user_prompt_submit(env):
     raw = {"hook_event_name": "UserPromptSubmit", "prompt": "안녕"}
     proc = env.run("echo-stub.py", raw, manifest=[

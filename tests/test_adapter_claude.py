@@ -33,6 +33,9 @@ def _events_json():
             "UserPromptSubmit": "UserPromptSubmit",
             "PreToolUse": "PreToolUse",
             "PostToolUse": "PostToolUse",
+            "PostToolUseFailure": "PostToolUseFailure",
+            "Stop": "Stop",
+            "SubagentStop": "SubagentStop",
         },
         "actions": {"file_edit": "Write|Edit"},
         "mcp_tool_format": "mcp__{server}__{tool}",
@@ -111,13 +114,13 @@ def test_unsupported_event_warns_english_for_en_locale_team(env, capsys):
     (env.root / "team.config.json").write_text(
         _json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
     env.write_manifest([
-        {"event": "Stop", "match": None,
+        {"event": "UnsupportedTestEvent", "match": None,
          "script": "some-hook.py", "fallback": "runtime"},
     ])
     env.make_adapter().sync(mode="on")
     out = capsys.readouterr().out
     assert "[warn]" in out
-    assert "some-hook.py" in out and "Stop" in out
+    assert "some-hook.py" in out and "UnsupportedTestEvent" in out
     assert "does not support event" in out
     assert not re.search(r"[가-힣]", out), f"en 팀 출력에 한글 섞임: {out!r}"
 
@@ -133,6 +136,24 @@ def test_action_translated_to_matcher(env):
     cmds = _all_commands(_load(env.settings))
     matchers = [m for e, m, c in cmds if e == "PostToolUse"]
     assert "Write|Edit" in matchers
+
+
+def test_failure_and_terminal_cleanup_hooks_registered(env):
+    env.write_manifest([
+        {"event": "PostToolUseFailure", "match": {"action": "file_edit"},
+         "script": "edit-lease-cleanup.py", "fallback": "runtime"},
+        {"event": "Stop", "script": "edit-lease-cleanup.py"},
+        {"event": "SubagentStop", "script": "edit-lease-cleanup.py"},
+    ])
+    env.make_adapter().sync(mode="on")
+
+    commands = _all_commands(_load(env.settings))
+    events = {event for event, _matcher, _command in commands}
+    assert {"PostToolUseFailure", "Stop", "SubagentStop"} <= events
+    failure_matchers = [
+        matcher for event, matcher, _command in commands
+        if event == "PostToolUseFailure"]
+    assert failure_matchers == ["Write|Edit"]
 
 
 # ── 3. mcp 번역 ──

@@ -5,7 +5,10 @@
     "SessionStart": "SessionStart",
     "UserPromptSubmit": "UserPromptSubmit",
     "PreToolUse": "PreToolUse",
-    "PostToolUse": "PostToolUse"
+    "PostToolUse": "PostToolUse",
+    "PostToolUseFailure": "PostToolUseFailure",
+    "Stop": "Stop",
+    "SubagentStop": "SubagentStop"
   },
   "actions": {
     "file_edit": "Write|Edit"

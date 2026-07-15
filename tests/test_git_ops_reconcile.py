@@ -19,6 +19,31 @@ sys.path.insert(0, str(REPO / "infra"))
 import git_ops as go  # noqa: E402
 
 
+def _worktree_probe_result(args):
+    """Return the exact two-line contract required by is_git_worktree()."""
+    argv = list(args)
+    root = Path(argv[argv.index("-C") + 1]).resolve()
+    return 0, f"true\n{root}\n", ""
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_git_env(tmp_path_factory, monkeypatch):
+    """Keep helper and product Git subprocesses off host configuration."""
+    for name in list(os.environ):
+        if (name in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+                or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))):
+            monkeypatch.delenv(name, raising=False)
+    iso = tmp_path_factory.mktemp("git-iso")
+    empty_cfg = iso / "empty-gitconfig"
+    empty_cfg.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(iso))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(iso / "xdg"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
 def _git(cwd, *args, check=True):
     env = {
         **os.environ,
@@ -90,7 +115,8 @@ def test_reconcile_up_to_date(remote_clone):
 
 def test_reconcile_fast_forward(remote_clone):
     _push_new_upstream_commit(remote_clone)
-    res = go.do_reconcile(str(remote_clone.clone))
+    res = go.do_reconcile(
+        str(remote_clone.clone), _allow_bound_mutation=True)
     assert res.ok is True
     assert res.action == "fast-forward"
     assert (remote_clone.clone / "b.txt").exists()   # 실제 정합됨
@@ -108,7 +134,8 @@ def test_reconcile_diverged_rebases(remote_clone):
     # upstream 과 로컬이 서로 다른 파일을 추가 → diverge, 충돌 없이 rebase 성공.
     _push_new_upstream_commit(remote_clone, name="b.txt")
     _local_commit(remote_clone, name="local.txt")
-    res = go.do_reconcile(str(remote_clone.clone))
+    res = go.do_reconcile(
+        str(remote_clone.clone), _allow_bound_mutation=True)
     assert res.ok is True
     assert res.action == "rebased"
     assert res.diverged is True
@@ -118,18 +145,76 @@ def test_reconcile_diverged_rebases(remote_clone):
     assert res.ahead == 1   # 미push 로컬 커밋 1개 남음
 
 
+def test_unbound_fast_forward_defers_for_edit_lease_then_succeeds(
+        remote_clone):
+    """Explicit unbound mutation must not move HEAD during any active edit."""
+    _push_new_upstream_commit(remote_clone)
+    clone = remote_clone.clone
+    before = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    owner = "1" * 64
+    begun, detail = go.begin_hook_edit_lease(str(clone), owner)
+    assert begun, detail
+    try:
+        blocked = go.do_reconcile(
+            str(clone), _allow_bound_mutation=True)
+    finally:
+        assert go.end_hook_edit_lease(str(clone), owner)
+
+    assert blocked.ok is False
+    assert blocked.action == "deferred"
+    assert "edit lease" in blocked.detail
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == before
+
+    reconciled = go.do_reconcile(
+        str(clone), _allow_bound_mutation=True)
+
+    assert reconciled.ok is True
+    assert reconciled.action == "fast-forward"
+    assert (clone / "b.txt").exists()
+
+
+def test_unbound_rebase_defers_for_edit_lease_then_succeeds(remote_clone):
+    """A diverged unbound reconcile waits until the active edit is released."""
+    _push_new_upstream_commit(remote_clone, name="upstream.txt")
+    _local_commit(remote_clone, name="local.txt")
+    clone = remote_clone.clone
+    before = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    owner = "2" * 64
+    begun, detail = go.begin_hook_edit_lease(str(clone), owner)
+    assert begun, detail
+    try:
+        blocked = go.do_reconcile(
+            str(clone), _allow_bound_mutation=True)
+    finally:
+        assert go.end_hook_edit_lease(str(clone), owner)
+
+    assert blocked.ok is False
+    assert blocked.action == "deferred"
+    assert blocked.diverged is True
+    assert "edit lease" in blocked.detail
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == before
+
+    reconciled = go.do_reconcile(
+        str(clone), _allow_bound_mutation=True)
+
+    assert reconciled.ok is True
+    assert reconciled.action == "rebased"
+    assert (clone / "upstream.txt").exists()
+    assert (clone / "local.txt").exists()
+
+
 def test_reconcile_shared_deadline_clamps_rebase_timeout(tmp_path, monkeypatch):
     """fetch와 local probes가 쓴 시간을 빼고 rebase가 총예산의 남은 몫만 받는다."""
     now = {"value": 100.0}
     calls = []
     rev_list_calls = 0
 
-    def fake_run_git(args, timeout):
+    def fake_run_git(args, timeout, **_kwargs):
         nonlocal rev_list_calls
         calls.append((list(args), timeout, now["value"]))
         now["value"] += 2.0
         if "--is-inside-work-tree" in args:
-            return 0, "true\n", ""
+            return _worktree_probe_result(args)
         if "fetch" in args:
             return 0, "", ""
         if "rev-list" in args:
@@ -149,12 +234,21 @@ def test_reconcile_shared_deadline_clamps_rebase_timeout(tmp_path, monkeypatch):
             return 0, "", ""
         raise AssertionError(args)
 
+    @go.contextmanager
+    def ready_interlock(_root, _timeout=1.0):
+        yield True, ""
+
     monkeypatch.setattr(go, "run_git", fake_run_git)
+    monkeypatch.setattr(go, "_publication_interlock", ready_interlock)
+    monkeypatch.setattr(go, "publication_blocker_detail", lambda *_a: "")
+    monkeypatch.setattr(go, "_edit_gate", ready_interlock)
+    monkeypatch.setattr(
+        go, "_active_edit_lease_owners_locked", lambda _root: set())
     monkeypatch.setattr(
         go, "time", types.SimpleNamespace(monotonic=lambda: now["value"]))
     started = now["value"]
 
-    res = go.do_reconcile(str(tmp_path))
+    res = go.do_reconcile(str(tmp_path), _allow_bound_mutation=True)
 
     assert res.ok is True and res.action == "rebased"
     rebase_timeout = next(timeout for args, timeout, _at in calls if "rebase" in args)
@@ -169,7 +263,8 @@ def test_reconcile_defers_when_dirty_path_overlaps_upstream(remote_clone):
     dirty = remote_clone.clone / "a.txt"
     dirty.write_text("LOCAL DIRTY\n")
 
-    res = go.do_reconcile(str(remote_clone.clone))
+    res = go.do_reconcile(
+        str(remote_clone.clone), _allow_bound_mutation=True)
 
     assert res.ok is False
     assert res.action == "conflict"
@@ -189,19 +284,20 @@ def test_reconcile_rolls_back_autostash_conflict_from_dirty_toctou(
     real_run_git = go.run_git
     injected = False
 
-    def racing_run_git(args, timeout):
+    def racing_run_git(args, timeout, **kwargs):
         nonlocal injected
         if not injected and "rebase" in args and "--autostash" in args:
             injected = True
             (remote_clone.clone / "a.txt").write_text("LOCAL DIRTY\n")
-            _rc, out, err = real_run_git(args, timeout)
+            _rc, out, err = real_run_git(args, timeout, **kwargs)
             # 실제 rebase mutation/rc0 출력 직후 timeout이 표면화되는 경로.
             raise subprocess.TimeoutExpired(
                 cmd="git rebase", timeout=timeout, output=out, stderr=err)
-        return real_run_git(args, timeout)
+        return real_run_git(args, timeout, **kwargs)
 
     monkeypatch.setattr(go, "run_git", racing_run_git)
-    res = go.do_reconcile(str(remote_clone.clone))
+    res = go.do_reconcile(
+        str(remote_clone.clone), _allow_bound_mutation=True)
 
     assert injected is True
     assert res.ok is False
@@ -217,15 +313,135 @@ def test_reconcile_conflict_aborts_and_surfaces(remote_clone):
     # 같은 파일을 upstream·로컬이 충돌하게 수정 → rebase 충돌 → abort + conflict.
     _push_new_upstream_commit(remote_clone, name="a.txt", content="UP\n")
     _local_commit(remote_clone, name="a.txt", content="LOCAL\n")
-    res = go.do_reconcile(str(remote_clone.clone))
+    res = go.do_reconcile(
+        str(remote_clone.clone), _allow_bound_mutation=True)
     assert res.ok is False
     assert res.action == "conflict"
     assert res.diverged is True
+    assert "aborted" in res.detail
+    assert "abort attempted" not in res.detail
+    assert "rollback not proven" not in res.detail
     # rebase 가 진행 중으로 남지 않아야 한다(abort 로 원복).
     st = _git(remote_clone.clone, "status", "--porcelain=v1")
     assert "rebase" not in st.stdout.lower()
+    assert _git(remote_clone.clone, "ls-files", "-u").stdout.strip() == ""
     assert not (remote_clone.clone / ".git" / "rebase-merge").exists()
     assert not (remote_clone.clone / ".git" / "rebase-apply").exists()
+
+
+def test_reconcile_failed_abort_reports_rollback_not_proven(
+        remote_clone, monkeypatch):
+    """A failed `rebase --abort` must never be reported as proven aborted."""
+    _push_new_upstream_commit(remote_clone, name="a.txt", content="UP\n")
+    _local_commit(remote_clone, name="a.txt", content="LOCAL\n")
+    real_run_git = go.run_git
+    abort_attempts = []
+
+    def failing_abort_run_git(args, timeout, **kwargs):
+        if "rebase" in args and "--abort" in args:
+            abort_attempts.append(list(args))
+            return 1, "", "simulated abort failure"
+        return real_run_git(args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "run_git", failing_abort_run_git)
+    res = go.do_reconcile(
+        str(remote_clone.clone), _allow_bound_mutation=True)
+    try:
+        assert abort_attempts, "conflicting rebase must attempt cleanup"
+        assert res.ok is False and res.action == "conflict"
+        assert _git(remote_clone.clone, "ls-files", "-u").stdout.strip() != ""
+        assert ((remote_clone.clone / ".git" / "rebase-merge").exists()
+                or (remote_clone.clone / ".git" / "rebase-apply").exists())
+        detail = res.detail.lower()
+        assert "rebase failed (aborted)" not in detail
+        assert "abort attempted; rollback not proven" in detail
+    finally:
+        # The product call intentionally failed to recover; keep the fixture
+        # hygienic even when the RED assertion above fails.
+        cleanup = _git(remote_clone.clone, "rebase", "--abort", check=False)
+        assert cleanup.returncode == 0, cleanup.stderr
+        assert _git(remote_clone.clone, "ls-files", "-u").stdout.strip() == ""
+        assert not (remote_clone.clone / ".git" / "rebase-merge").exists()
+        assert not (remote_clone.clone / ".git" / "rebase-apply").exists()
+
+
+def test_bound_reconcile_postcondition_error_rolls_back_exact_identity(
+        remote_clone, monkeypatch):
+    """A failed private-index postcondition must not publish the rebased state."""
+    _push_new_upstream_commit(remote_clone, name="remote.txt")
+    _local_commit(remote_clone, name="local.txt")
+    clone = remote_clone.clone
+    before = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    identity = {"key": "branch:main", "branch": "main", "head": before}
+    target = go._PublicationTarget(
+        remote="origin", destination="refs/heads/main",
+        reconcile_ref="refs/remotes/origin/main")
+    real_capture = go._capture_bound_user_state
+    captures = []
+
+    def fail_success_postcondition(*args, **kwargs):
+        captures.append(True)
+        # 1: original, 2: final pre-mutation proof,
+        # 3: success postcondition, 4: rollback proof.
+        if len(captures) == 3:
+            return None
+        return real_capture(*args, **kwargs)
+
+    monkeypatch.setattr(
+        go, "_capture_bound_user_state", fail_success_postcondition)
+
+    res = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    after = _git(clone, "rev-parse", "refs/heads/main").stdout.strip()
+    assert after == before
+    assert res.ok is False and res.action == "conflict"
+    assert "aborted" in res.detail
+    assert "rollback not proven" not in res.detail
+    assert res.final_identity == identity
+    assert _git(
+        clone, "for-each-ref", "--format=%(refname)",
+        "refs/tm-mode/reconcile").stdout.strip() == ""
+
+
+def test_bound_reconcile_final_identity_probe_stays_inside_deadline(
+        tmp_path, monkeypatch):
+    """The transaction's two identity probes share one absolute deadline."""
+    deadline = 3.0
+    clock = {"now": 0.0}
+    new_head = "2" * 40
+    identity_timeouts = []
+    txn = go._BoundIndexTxn(
+        index_path=tmp_path / "index", lock_path=tmp_path / "index.lock",
+        lock_fd=-1, tx_dir=tmp_path / "tx",
+        original_index=tmp_path / "tx" / "original-index",
+        work_index=tmp_path / "tx" / "work-index", token="token",
+        head_ref="refs/tm-mode/reconcile/token/head",
+        stash_ref="refs/tm-mode/reconcile/token/stash",
+        original_head="1" * 40)
+
+    monkeypatch.setattr(go.time, "monotonic", lambda: clock["now"])
+
+    def fake_run_git(args, timeout, **kwargs):
+        identity_timeouts.append(timeout)
+        clock["now"] += timeout
+        if "symbolic-ref" in args:
+            return 0, "main\n", ""
+        if "rev-parse" in args:
+            return 0, f"{new_head}\n", ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(go, "run_git", fake_run_git)
+
+    result = go._bound_identity_probe(
+        str(tmp_path), txn, "main", deadline)
+
+    assert result == {
+        "key": "branch:main", "branch": "main", "head": new_head,
+    }
+    assert identity_timeouts == [2, 1]
+    assert clock["now"] <= deadline
 
 
 def test_reconcile_no_upstream(remote_clone):

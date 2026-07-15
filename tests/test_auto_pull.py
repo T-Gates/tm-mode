@@ -1,7 +1,8 @@
-"""슬라이스 U — 상시 레포 최신화 (throttled auto-pull) 테스트.
+"""슬라이스 U — 세션 시작 레포 최신화 (throttled auto-pull) 테스트.
 
-스펙/설계(팀 새벽 합의):
-  - UserPromptSubmit 훅이 매 프롬프트마다 팀 레포를 git pull 하되 스로틀로 과부하 방지.
+현재 스펙/설계:
+  - SessionStart 훅이 세션당 1회 팀 레포를 정합하며 스로틀로 과부하를 막는다.
+  - UserPromptSubmit 훅은 네트워크 작업 없이 세션로그 리마인더만 수행한다.
   - **실패는 절대 작업을 막지 않는다(철칙)**: 네트워크 없음·ff 불가·충돌·타임아웃·
     git 아님 → 조용히 통과, 예외 전파 0.
 
@@ -185,8 +186,8 @@ def test_auto_pull_never_raises_on_missing_dir(tmp_path):
 
 
 def test_auto_pull_records_time_on_failure_to_throttle_retries(cloned_repo, tmp_path):
-    """pull 실패해도 **시도** 시각을 기록한다 — 원격 장애 시 매 프롬프트가 재시도하며
-    작업에 세금을 물리지 않게(throttle 창당 1회만). '실패 무해' 철칙의 핵심 보강.
+    """pull 실패해도 **시도** 시각을 기록한다 — 원격 장애 시 다음 세션 시작이
+    곧바로 재시도하지 않게(throttle 창당 1회만). '실패 무해' 철칙의 핵심 보강.
     """
     # ff 불가 상태 만들기
     (cloned_repo.clone / "local.txt").write_text("local\n")
@@ -197,7 +198,7 @@ def test_auto_pull_records_time_on_failure_to_throttle_retries(cloned_repo, tmp_
                        now=5000.0, throttle_seconds=300)
     assert res.ok is False
     assert state.exists()  # 시도 기록됨
-    # 다음 프롬프트(throttle 안)는 재시도하지 않는다(작업 세금 방지)
+    # 다음 SessionStart(throttle 안)는 재시도하지 않는다(작업 세금 방지)
     assert ap.should_pull(str(state), now=5100.0, throttle_seconds=300) is False
 
 
@@ -285,7 +286,7 @@ def test_remind_does_NOT_pull_when_team_active(cloned_repo, tmp_path):
 def test_remind_still_reminds_when_team_active(tmp_path):
     """pull 을 떼도 리마인더 로직은 그대로 동작한다(세션로그 전무 → 발화).
 
-    출력은 평문 stdout(JSON 아님) — 세션 로그 안내 문구가 포함된다.
+    출력은 normalize가 재전달하는 JSON이며 locale과 무관하게 두 안내 채널이 채워진다.
     """
     import json
     team = tmp_path / "team"
@@ -293,11 +294,7 @@ def test_remind_still_reminds_when_team_active(tmp_path):
     (team / ".teammode-active").write_text("")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    # PR-i1: 한국어 리마인더를 단정하므로 ko 팀으로 고정(locale=ko_KR). members 는
-    # 그대로 비워 폴백(degraded) 경로 유지 — 종전 "config 없음" 픽스처의 의도 보존.
-    (team / "team.config.json").write_text(
-        json.dumps({"team": {"locale": "ko_KR"}}), encoding="utf-8")
-    # (구)team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
+    # team.config.json 없어 폴백 경로(degraded). issue #26: 폴백도 멤버 경로와 대칭으로
     # check_reset 한다 — 첫 호출은 date=""→오늘로 바뀌어 warm-up 리셋(미발화)되므로,
     # 상태파일을 date=오늘로 선시드해 warm-up 을 건너뛰고 age≥1800 발화를 검증한다.
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
@@ -309,9 +306,13 @@ def test_remind_still_reminds_when_team_active(tmp_path):
     }))
     proc = _run_remind(team, state_dir)
     assert proc.returncode == 0  # 작업 절대 차단 금지
-    # 세션로그 전무 → age ≥ 1800 → 발화(평문 출력)
+    # 세션로그 전무 → age ≥ 1800 → 발화(JSON 출력)
     assert proc.stdout.strip() != "", "세션로그 전무인데 리마인드 미발화"
-    assert "세션 로그" in proc.stdout
+    payload = json.loads(proc.stdout)
+    hook_output = payload["hookSpecificOutput"]
+    assert hook_output["hookEventName"] == "UserPromptSubmit"
+    assert hook_output["additionalContext"].strip()
+    assert payload["systemMessage"].strip()
 
 
 def test_remind_inactive_no_remind(cloned_repo, tmp_path):

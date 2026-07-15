@@ -13,6 +13,7 @@ killpg·`--ff-only`·subprocess+git 양쪽 타임아웃·자격증명/SSH 프롬
 from __future__ import annotations
 
 import errno
+import ctypes
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ import signal
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unicodedata
@@ -43,24 +45,31 @@ NET_TIMEOUT = 10
 
 # SessionStart do_reconcile 전체 벽시계 예산. manifest(60s)의 hook hard budget(50s)
 # 안에서 정상 SSH fetch 뒤 rebase 기회를 살리면서, context용 10s를 별도로 남긴다.
-RECONCILE_TOTAL_BUDGET = 35
+RECONCILE_TOTAL_BUDGET = 40
 
 # reconcile rebase timeout 뒤 cross-platform kill/drain(최대 7s) + exact autostash
 # 확인/abort/최악 rollback postcondition(12s)을 끝내기 위한 꼬리 예약.
 _RECONCILE_REBASE_RECOVERY_RESERVE = 19
+
+# Bound publication holds the canonical index lock while Git operates on a
+# private index.  This reserve is kept before the first reset/rebase so abort,
+# exact-state restoration, and proof probes share the original deadline.
+_BOUND_RECONCILE_RECOVERY_RESERVE = (
+    _RECONCILE_REBASE_RECOVERY_RESERVE + 6)
+_BOUND_ROLLBACK_STEP_TIMEOUT = 1
 
 # do_commit(push=True)의 **진입 앵커 벽시계 총예산**(초) — 데드라인은 함수 **진입**
 # 시점에 시작돼 로컬 단계(worktree/add/diff/commit + commit identity, 최악 ~16s)도 예산을
 # 소모하고, 네트워크 단계(push·복구 체인 push→push -u→fetch→rebase→push -u, 최악
 # NET_TIMEOUT 10s ×5 순차 ~50s)는 **남은 예산만** 쓴다. 로컬 하위호출 자체는 예산으로
 # 개별 클램프/중단하지 않는다(로컬 커밋은 항상 완주·보존 — 건너뛸 수 있는 건 네트워크뿐).
-# 35 인 이유: 정상 GitHub SSH 왕복(첫 non-ff push + fetch 약 5s) 뒤에도 rebase와 그
+# 45인 이유: 정상 GitHub SSH 왕복(첫 non-ff push + fetch 약 5s) 뒤에도 rebase와 그
 # 최악 rollback 꼬리를 모두 허용한다. 느린 네트워크 경로는 남은 예산만 주고 안전하게
-# pending으로 전환한다. 35 + 첫 index.lock 실패/재시도 + abort/ledger 꼬리가 훅
+# pending으로 전환한다. 45 + 첫 index.lock 실패/재시도 + abort/ledger 꼬리가 훅
 # manifest 캡(70s)
 # 아래 머문다 — 초과 시 hook runner 가 프로세스를 죽여 로컬 커밋/rebase
 # 뒤의 sync-warning 마커가 유실된다(codex 재리뷰 P1·A1).
-PUSH_TOTAL_BUDGET = 35
+PUSH_TOTAL_BUDGET = 45
 
 # do_commit이 네트워크 실패 뒤 CommitResult를 만들 때 현재 checkout을 다시 읽는 두
 # 로컬 probe(symbolic-ref + rev-parse)가 각각 DEFAULT_TIMEOUT까지 쓸 수 있다. 모든
@@ -91,6 +100,9 @@ class CommitResult:
     # commit 직후 고정한 checkout identity. push 실패 뒤 다른 프로세스가 checkout을
     # 바꿔도 pending ledger를 실패 커밋의 branch/HEAD에 묶기 위한 증거다.
     pending_identity: dict | None = None
+    # foreground에서 해석한 exact remote/ref. pending worker가 나중의 Git config나
+    # current checkout을 따라 다른 곳으로 게시하지 않도록 identity와 별도 보존한다.
+    pending_target: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -125,12 +137,74 @@ class FetchResult:
 @dataclass
 class ReconcileResult:
     ok: bool                       # 정합 성공(이미 최신 포함) 또는 정합 불필요
-    action: str = "noop"           # up-to-date|fast-forward|rebased|ahead-only|
+    action: str = "noop"           # up-to-date|fast-forward|rebased|merged|ahead-only|
     #                                no-upstream|fetch-failed|conflict|not-worktree|error
     ahead: int = 0                 # 정합 후 로컬이 upstream 보다 앞선(미push) 커밋 수
     behind: int = 0                # 정합 전 behind(진단·표면화용)
     diverged: bool = False         # 정합 전 ahead>0 & behind>0(rebase 가 필요했음)
     detail: str = ""               # 사람이 읽는 사유/요약
+    # expected_identity 모드에서 정합 뒤 publication 대상 branch의 immutable identity.
+    # rebase/fast-forward로 SHA가 바뀔 수 있으므로 caller가 이후 push를 이 값에 재바인딩한다.
+    final_identity: dict | None = None
+
+
+@dataclass(frozen=True)
+class _PublicationTarget:
+    """captured branch 하나만 게시하기 위한 검증된 remote/ref 묶음."""
+
+    remote: str
+    destination: str
+    reconcile_ref: str
+    set_upstream: bool = False
+    # Hash of every configured push URL. The URL itself may contain credentials,
+    # so pending state stores only this binding proof.
+    remote_fingerprint: str = ""
+    # In-memory only. Exact pushes use this captured endpoint instead of resolving
+    # the mutable remote name again; it is deliberately omitted from pending state.
+    push_endpoint: str = ""
+
+
+@dataclass(frozen=True)
+class _IndexMetadata:
+    """Canonical index metadata that survives private-index promotion."""
+
+    mode: int
+    uid: int
+    gid: int
+    xattrs: tuple[tuple[str | bytes, bytes], ...] = ()
+    xattrs_available: bool = False
+    xattr_backend: str = ""
+
+
+@dataclass
+class _BoundIndexTxn:
+    """One branch-bound reconcile transaction rooted beside the real index."""
+
+    index_path: Path
+    lock_path: Path
+    lock_fd: int
+    tx_dir: Path
+    original_index: Path
+    work_index: Path
+    token: str
+    head_ref: str
+    stash_ref: str
+    original_head: str
+    stash_oid: str = ""
+    promoted: bool = False
+    tx_dir_identity: tuple[int, int] = ()
+    original_index_identity: tuple[int, int] = ()
+    work_index_identity: tuple[int, int] = ()
+    index_metadata: _IndexMetadata | None = None
+
+
+@dataclass(frozen=True)
+class _BoundUserState:
+    """Git-visible user state used to prove a rollback restored exact meaning."""
+
+    status: str
+    unstaged_diff: str
+    staged_diff: str
 
 
 @dataclass
@@ -204,16 +278,62 @@ def http_timeout_opts(timeout: int) -> list:
 _http_timeout_opts = http_timeout_opts
 
 
-def run_git(args: list, timeout: int):
+_REPO_REDIRECT_ENV = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE",
+    "GIT_REPLACE_REF_BASE", "GIT_ATTR_SOURCE",
+    "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+})
+_REPO_CONFIG_ENTRY_ENV_RE = re.compile(r"^GIT_CONFIG_(?:KEY|VALUE)_\d+$")
+
+
+def _is_repo_scoped_git(args: list) -> bool:
+    """Our repository operations always bind their target with `git -C PATH`."""
+    return any(arg == "-C" and index + 1 < len(args)
+               for index, arg in enumerate(args))
+
+
+def run_git(args: list, timeout: int, *, env_overrides: dict | None = None,
+            output_errors: str = "replace", input_text: str | None = None):
     """git 을 **자체 프로세스 그룹**으로 실행하고, 타임아웃 시 그룹 전체를 죽인다.
 
     이유: `subprocess.run(timeout=)` 은 직접 자식(git)에만 SIGKILL 을 보내, git 이 fork 한
     git-remote-https 같은 손자가 고아로 남아 네트워크에 매달린다(적대 검수에서 실측). 새
     세션(setsid)으로 띄워 동일 PGID 로 묶고 타임아웃 시 killpg 로 손자까지 일괄 종료한다.
     """
+    child_env = git_env()
+    if _is_repo_scoped_git(args):
+        # `git -C requested` does not override repository/object/config redirect
+        # variables inherited from the parent.  Remove ambient redirects first;
+        # a trusted call-specific override (the transaction private index) is
+        # applied below.  User config file selection remains intact.
+        for name in tuple(child_env):
+            if (name in _REPO_REDIRECT_ENV
+                    or _REPO_CONFIG_ENTRY_ENV_RE.fullmatch(name)):
+                child_env.pop(name, None)
+    # Transaction-scoped Git knobs belong to this child only.  Copying both the
+    # process environment (git_env) and iterating the caller mapping avoids
+    # mutating either shared object.  ``None`` deliberately removes a hostile
+    # inherited value (notably GIT_INDEX_FILE while discovering the real index).
+    for key, value in dict(env_overrides or {}).items():
+        if not isinstance(key, str):
+            raise TypeError("git environment override names must be strings")
+        if "\0" in key:
+            raise ValueError("NUL is not allowed in git environment overrides")
+        if value is None:
+            child_env.pop(key, None)
+            continue
+        if not isinstance(value, str):
+            value = os.fspath(value)
+        if "\0" in value:
+            raise ValueError("NUL is not allowed in git environment overrides")
+        child_env[key] = value
+
     kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                  stdin=subprocess.DEVNULL, text=True,
-                  encoding="utf-8", errors="replace", env=git_env())
+                  stdin=(subprocess.PIPE if input_text is not None
+                         else subprocess.DEVNULL), text=True,
+                  encoding="utf-8", errors=output_errors, env=child_env)
     if hasattr(os, "setsid"):
         kwargs["start_new_session"] = True  # 자식을 새 프로세스 그룹 리더로
     # credential.interactive=false: 자격증명 helper 의 **대화형 프롬프트**만 끈다(helper
@@ -222,7 +342,7 @@ def run_git(args: list, timeout: int):
     proc = subprocess.Popen(
         ["git", "-c", "credential.interactive=false", *args], **kwargs)
     try:
-        out, err = proc.communicate(timeout=timeout)
+        out, err = proc.communicate(input=input_text, timeout=timeout)
         return proc.returncode, out, err
     except subprocess.TimeoutExpired as exc:
         kill_group(proc)
@@ -234,7 +354,7 @@ def run_git(args: list, timeout: int):
         # rollback할 수 있게 partial + kill-drain 출력을 예외에 보존한다.
         def _text(value):
             if isinstance(value, bytes):
-                return value.decode("utf-8", errors="replace")
+                return value.decode("utf-8", errors=output_errors)
             return str(value or "")
 
         exc.output = _text(getattr(exc, "output", "")) + _text(final_out)
@@ -286,9 +406,12 @@ def is_git_worktree(team_root: str) -> bool:
     """
     try:
         rc, out, _ = run_git(
-            ["-C", team_root, "rev-parse", "--is-inside-work-tree"],
+            ["-C", team_root, "rev-parse", "--is-inside-work-tree",
+             "--show-toplevel"],
             timeout=DEFAULT_TIMEOUT)
-        return rc == 0 and out.strip() == "true"
+        lines = (out or "").splitlines()
+        return (rc == 0 and len(lines) == 2 and lines[0] == "true"
+                and os.path.realpath(lines[1]) == os.path.realpath(team_root))
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -382,7 +505,8 @@ def _dirty_worktree_paths(team_root: str, timeout: int) -> set[str] | None:
 
 
 def _rebase_dirty_safety_issue(
-        team_root: str, upstream: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+        team_root: str, upstream: str, timeout: int = DEFAULT_TIMEOUT,
+        local_ref: str = "HEAD") -> str:
     """autostash apply conflict가 예상되면 사유를 반환하고 rebase를 시작하지 않는다."""
     dirty = _dirty_worktree_paths(team_root, timeout)
     if dirty is None:
@@ -392,7 +516,7 @@ def _rebase_dirty_safety_issue(
     try:
         rc, out, _ = run_git(
             ["-C", team_root, "diff", "--no-renames", "--name-only", "-z",
-             f"HEAD...{upstream}", "--"], timeout=timeout)
+             f"{local_ref}...{upstream}", "--"], timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return "upstream-change safety check failed"
     if rc != 0:
@@ -424,6 +548,290 @@ def _read_ref_oid(
     if rc == 1:
         return True, ""
     return False, ""
+
+
+def _validated_branch_identity(
+        team_root: str, identity: dict | None,
+        timeout: int = DEFAULT_TIMEOUT) -> dict[str, str] | None:
+    """branch + full commit OID identity를 검증한다(detached/short OID는 거부)."""
+    if not isinstance(identity, dict):
+        return None
+    key = identity.get("key")
+    branch = identity.get("branch")
+    head = identity.get("head")
+    components = branch.split("/") if isinstance(branch, str) else []
+    invalid_branch = (
+        not branch or branch.startswith(("-", "/")) or branch.endswith(("/", "."))
+        or branch == "@" or ".." in branch or "@{" in branch or "//" in branch
+        or any(not part or part.startswith(".") or part.endswith(".lock")
+               for part in components)
+        or bool(re.search(r"[\x00-\x20\x7f~^:?*\[\\]", branch or "")))
+    if (not all(isinstance(value, str) for value in (key, branch, head))
+            or invalid_branch or key != f"branch:{branch}"
+            or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", head or "")):
+        return None
+    return {"key": key, "branch": branch, "head": head.lower()}
+
+
+def _checkout_matches_identity(
+        team_root: str, identity: dict,
+        timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """현재 symbolic branch와 HEAD가 captured identity와 exact match인지 확인."""
+    current = _checkout_identity(team_root, timeout)
+    return (current.get("branch") == identity.get("branch")
+            and (current.get("head") or "").lower() == identity.get("head"))
+
+
+def _valid_full_ref(team_root: str, ref: str, timeout: int) -> bool:
+    if not isinstance(ref, str) or not ref.startswith("refs/"):
+        return False
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "check-ref-format", ref], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return rc == 0
+
+
+def _remote_names(team_root: str, timeout: int) -> list[str] | None:
+    try:
+        rc, out, _ = run_git(["-C", team_root, "remote"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    return [line for line in (out or "").splitlines() if line]
+
+
+def _remote_push_binding(
+        team_root: str, remote: str,
+        timeout: int = DEFAULT_TIMEOUT) -> tuple[str, str] | None:
+    """Capture exactly one argv-safe push endpoint and its credential-free hash."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "remote", "get-url", "--push", "--all", remote],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    urls = (out or "").splitlines() if rc == 0 else []
+    if len(urls) != 1 or not urls[0]:
+        return None
+    endpoint = urls[0]
+    if re.search(r"[\x00-\x1f\x7f]", endpoint) or "=" in endpoint:
+        return None
+    parsed = urlparse(endpoint)
+    # Direct endpoint argv eliminates remote-name TOCTOU. Do not put HTTP(S)
+    # userinfo/query credentials in a process argv; those configurations require
+    # manual publication or a credential-helper-backed clean URL.
+    if (parsed.password is not None
+            or (parsed.scheme.lower() in {"http", "https"}
+                and (parsed.username is not None
+                     or parsed.query or parsed.fragment))):
+        return None
+    canonical = endpoint.encode("utf-8", errors="surrogateescape")
+    return endpoint, hashlib.sha256(canonical).hexdigest()
+
+
+def _remote_push_fingerprint(
+        team_root: str, remote: str,
+        timeout: int = DEFAULT_TIMEOUT) -> str:
+    binding = _remote_push_binding(team_root, remote, timeout)
+    return binding[1] if binding is not None else ""
+
+
+def _valid_remote(remote: str, remotes: list[str]) -> bool:
+    """argv `--` 뒤에 쓰더라도 control/option-like remote는 fail closed."""
+    return (isinstance(remote, str) and remote in remotes
+            and not remote.startswith("-")
+            and not re.search(r"[\x00-\x20\x7f]", remote))
+
+
+def _tracking_ref_for_destination(remote: str, destination: str) -> str:
+    """Default fetch mapping에서 remote branch의 tracking ref를 계산한다."""
+    prefix = "refs/heads/"
+    if not destination.startswith(prefix):
+        return ""
+    return f"refs/remotes/{remote}/{destination[len(prefix):]}"
+
+
+def _resolve_publication_target(
+        team_root: str, identity: dict,
+        timeout: int = DEFAULT_TIMEOUT, deadline: float | None = None,
+        ) -> tuple[_PublicationTarget | None, str]:
+    """Git의 branch별 upstream/push 해석을 explicit single-ref target으로 고정."""
+    deadline = (time.monotonic() + max(1, timeout)
+                if deadline is None else deadline)
+
+    def _probe_timeout() -> int:
+        remaining = int(deadline - time.monotonic())
+        return min(max(1, timeout), remaining) if remaining >= 1 else 0
+
+    branch = identity["branch"]
+    local_ref = f"refs/heads/{branch}"
+    fmt = ("%(refname)%00%(upstream)%00%(upstream:remotename)%00"
+           "%(upstream:remoteref)%00%(push)%00%(push:remotename)%00"
+           "%(push:remoteref)")
+    probe_timeout = _probe_timeout()
+    if not probe_timeout:
+        return None, "publication target deadline exhausted"
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root, "for-each-ref", f"--format={fmt}", "--", local_ref],
+            timeout=probe_timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"publication target exec error: {exc}"
+    fields = (out or "").rstrip("\n").split("\0") if rc == 0 else []
+    if len(fields) != 7 or fields[0] != local_ref:
+        return None, (err or "publication target unavailable").strip()[:200]
+    (_refname, upstream_ref, upstream_remote, upstream_remote_ref,
+     push_ref, push_remote, push_remote_ref) = fields
+
+    probe_timeout = _probe_timeout()
+    if not probe_timeout:
+        return None, "publication target deadline exhausted"
+    remotes = _remote_names(team_root, probe_timeout)
+    if remotes is None:
+        return None, "publication remote list unavailable"
+    # push atom이 채워져도 push.default=upstream + remote.pushDefault=<다른 remote>
+    # 조합은 서로 모순될 수 있다. plain Git이 거부하는 구성을 explicit refspec으로
+    # 우회하지 않도록 effective mode를 항상 읽고 atom/remote/destination을 함께 검증한다.
+    push_default = "simple"
+    probe_timeout = _probe_timeout()
+    if not probe_timeout:
+        return None, "publication target deadline exhausted"
+    try:
+        drc, dout, _ = run_git(
+            ["-C", team_root, "config", "--get", "push.default"],
+            timeout=probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None, "push.default resolution failed"
+    if drc == 0:
+        push_default = (dout or "").strip().lower()
+    elif drc != 1:
+        return None, "push.default resolution failed"
+    if push_default not in {"nothing", "current", "upstream", "simple", "matching"}:
+        return None, "push.default is invalid"
+
+    def _default_remote() -> str:
+        if push_remote:
+            return push_remote
+        if upstream_remote:
+            return upstream_remote
+        if "origin" in remotes:
+            return "origin"
+        return remotes[0] if len(remotes) == 1 else ""
+
+    has_upstream = bool(
+        upstream_ref and upstream_remote and upstream_remote_ref)
+    if any((upstream_ref, upstream_remote, upstream_remote_ref)) and not has_upstream:
+        return None, "configured upstream is incomplete"
+
+    set_upstream = False
+    if push_remote_ref:
+        # remote.<name>.push가 exact single destination을 만들면 그 원격/목적지만 사용한다.
+        if not push_ref:
+            return None, "configured push destination is incomplete"
+        # Git's %(push:remotename) atom can be blank for an explicit
+        # remote.<name>.push refspec.  Infer the same unambiguous default Git
+        # would use, but never invent pull tracking for this explicit mapping.
+        remote = push_remote or _default_remote()
+        destination = push_remote_ref
+        reconcile_ref = push_ref
+        set_upstream = False
+    elif push_default in {"nothing", "matching"}:
+        return None, f"push.default={push_default} has no single publication target"
+    elif push_default == "upstream":
+        if not has_upstream:
+            return None, "push.default=upstream requires an upstream branch"
+        remote = push_remote or upstream_remote
+        if remote != upstream_remote:
+            return None, (
+                "push.default=upstream push remote does not match upstream remote")
+        if push_ref and push_ref != upstream_ref:
+            return None, "push.default=upstream push ref does not match upstream"
+        remote = upstream_remote
+        destination = upstream_remote_ref
+        reconcile_ref = upstream_ref
+    elif push_default == "simple":
+        remote = _default_remote()
+        if not has_upstream:
+            # 기존 no-upstream 복구 계약: selected remote의 same-name branch를 만들고
+            # 성공 뒤 captured local branch에 upstream을 별도 설정한다.
+            destination = local_ref
+            reconcile_ref = _tracking_ref_for_destination(remote, destination)
+            set_upstream = True
+        elif remote != upstream_remote:
+            # triangular workflow: pull은 origin, push는 fork. Git simple publishes
+            # the local same-name branch even when the pull upstream has another
+            # name; the pull upstream is intentionally preserved.
+            destination = local_ref
+            reconcile_ref = _tracking_ref_for_destination(remote, destination)
+            if push_ref and push_ref != reconcile_ref:
+                return None, "triangular push ref does not match push remote"
+        elif upstream_remote_ref == local_ref:
+            if push_ref and push_ref != upstream_ref:
+                return None, "push.default=simple push ref does not match upstream"
+            destination = upstream_remote_ref
+            reconcile_ref = upstream_ref
+        else:
+            # 같은 remote의 name mismatch는 plain simple push의 안내와 동일하게
+            # captured branch same-name target을 만들고 새 upstream으로 전환한다.
+            destination = local_ref
+            reconcile_ref = _tracking_ref_for_destination(remote, destination)
+            set_upstream = True
+    else:  # push.default=current
+        remote = _default_remote()
+        destination = local_ref
+        reconcile_ref = _tracking_ref_for_destination(remote, destination)
+        if push_ref and push_ref != reconcile_ref:
+            return None, "push.default=current push ref does not match push remote"
+        set_upstream = False
+
+    if not _valid_remote(remote, remotes):
+        return None, "publication remote is invalid or unavailable"
+    probe_timeout = _probe_timeout()
+    if not probe_timeout:
+        return None, "publication target deadline exhausted"
+    remote_binding = _remote_push_binding(team_root, remote, probe_timeout)
+    if remote_binding is None:
+        return None, "publication requires one credential-safe push URL"
+    push_endpoint, remote_fingerprint = remote_binding
+    probe_timeout = _probe_timeout()
+    if (not probe_timeout or not destination.startswith("refs/heads/")
+            or not _valid_full_ref(team_root, destination, probe_timeout)):
+        return None, "publication destination is not a valid branch ref"
+    probe_timeout = _probe_timeout()
+    if (not probe_timeout or not reconcile_ref.startswith("refs/remotes/")
+            or not _valid_full_ref(team_root, reconcile_ref, probe_timeout)):
+        return None, "publication tracking ref is invalid"
+    expected_tracking = _tracking_ref_for_destination(remote, destination)
+    if reconcile_ref != expected_tracking:
+        return None, "publication tracking ref does not match push remote/destination"
+    return (_PublicationTarget(
+        remote=remote, destination=destination,
+        reconcile_ref=reconcile_ref, set_upstream=set_upstream,
+        remote_fingerprint=remote_fingerprint,
+        push_endpoint=push_endpoint), "")
+
+
+def _ahead_behind_refs(
+        team_root: str, upstream_ref: str, local_ref: str,
+        timeout: int) -> tuple[int, int, bool]:
+    """명시 ref 두 개의 (ahead, behind, available). current HEAD를 읽지 않는다."""
+    try:
+        rc, out, _ = run_git(
+            ["-C", team_root, "rev-list", "--count", "--left-right",
+             f"{upstream_ref}...{local_ref}"], timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return 0, 0, False
+    parts = (out or "").split() if rc == 0 else []
+    if len(parts) != 2:
+        return 0, 0, False
+    try:
+        behind, ahead = int(parts[0]), int(parts[1])
+    except ValueError:
+        return 0, 0, False
+    return ahead, behind, True
 
 
 def _capture_rebase_guard(
@@ -549,14 +957,2248 @@ def _verify_rebase_postcondition(
     return False, "stash changed during rebase; publication deferred"
 
 
+def _verify_rebase_rollback_postcondition(
+        team_root: str, guard: _RebaseGuard,
+        created_autostash_oid: str = "",
+        timeout: int = DEFAULT_TIMEOUT) -> tuple[bool, str]:
+    """abort 뒤 branch+OID, unmerged, autostash 상태가 모두 복원됐는지 입증."""
+    post_ok, detail = _verify_rebase_postcondition(
+        team_root, guard, created_autostash_oid, timeout)
+    current = _checkout_identity(team_root, timeout)
+    restored = (current.get("branch") == guard.branch
+                and (current.get("head") or "").lower() == guard.head.lower())
+    if not restored:
+        identity_detail = "checkout branch/HEAD not restored"
+        detail = f"{detail}; {identity_detail}" if detail else identity_detail
+    return post_ok and restored, detail
+
+
+def _rebase_abort_detail(
+        prefix: str, abort_ok: bool, rollback_ok: bool,
+        post_detail: str, failure_detail: str = "") -> str:
+    """abort+rollback 증거가 있을 때만 affirmative `(aborted)`를 만든다."""
+    proven = abort_ok and rollback_ok
+    status = ("rebase failed (aborted)" if proven
+              else "abort attempted; rollback not proven")
+    if prefix == "rebase failed":
+        detail = status if proven else f"rebase failed; {status}"
+    else:
+        detail = f"{prefix}; {status}"
+    if failure_detail:
+        detail += f": {failure_detail}"
+    if post_detail:
+        detail += f"; {post_detail}"
+    return detail
+
+
+def _deadline_timeout(deadline: float, cap: int, reserve: int = 0) -> int:
+    """Clamp one probe to a shared absolute deadline without minting budget."""
+    remaining = int(deadline - time.monotonic() - reserve)
+    return min(max(1, cap), remaining) if remaining >= 1 else 0
+
+
+_XATTR_NATIVE_NAMES = ("listxattr", "getxattr", "setxattr", "removexattr")
+_DARWIN_XATTR_BACKEND = "darwin-libc"
+_DARWIN_XATTR_NOFOLLOW = 0x0001
+_DARWIN_ACL_TYPE_EXTENDED = 0x00000100
+_DARWIN_ACL_FIRST_ENTRY = 0
+
+
+def _darwin_xattr_libc():
+    """Return configured Darwin libc xattr functions or None (fail closed)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.listxattr.argtypes = [
+            ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        libc.listxattr.restype = ctypes.c_ssize_t
+        libc.getxattr.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p,
+            ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int]
+        libc.getxattr.restype = ctypes.c_ssize_t
+        libc.setxattr.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p,
+            ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int]
+        libc.setxattr.restype = ctypes.c_int
+        libc.removexattr.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        libc.removexattr.restype = ctypes.c_int
+        return libc
+    except (AttributeError, OSError, TypeError):
+        return None
+
+
+def _raise_xattr_errno(operation: str) -> None:
+    error = ctypes.get_errno() or errno.EIO
+    raise OSError(error, f"Darwin {operation} failed")
+
+
+def _darwin_list_xattrs(path: Path, libc) -> tuple[bytes, ...]:
+    encoded_path = os.fsencode(path)
+    for _attempt in range(3):
+        ctypes.set_errno(0)
+        size = libc.listxattr(
+            encoded_path, None, 0, _DARWIN_XATTR_NOFOLLOW)
+        if size < 0:
+            _raise_xattr_errno("listxattr size")
+        if size == 0:
+            return ()
+        buffer = ctypes.create_string_buffer(size)
+        ctypes.set_errno(0)
+        actual = libc.listxattr(
+            encoded_path, buffer, size, _DARWIN_XATTR_NOFOLLOW)
+        if actual < 0:
+            if ctypes.get_errno() == errno.ERANGE:
+                continue
+            _raise_xattr_errno("listxattr")
+        raw = bytes(buffer.raw[:actual])
+        if not raw.endswith(b"\0"):
+            raise OSError(errno.EIO, "Darwin listxattr returned malformed names")
+        names = tuple(raw[:-1].split(b"\0"))
+        if any(not name for name in names):
+            raise OSError(errno.EIO, "Darwin listxattr returned empty name")
+        return names
+    raise OSError(errno.EBUSY, "Darwin xattr names changed during capture")
+
+
+def _darwin_get_xattr(path: Path, name: bytes, libc) -> bytes:
+    encoded_path = os.fsencode(path)
+    for _attempt in range(3):
+        ctypes.set_errno(0)
+        size = libc.getxattr(
+            encoded_path, name, None, 0, 0, _DARWIN_XATTR_NOFOLLOW)
+        if size < 0:
+            _raise_xattr_errno("getxattr size")
+        if size == 0:
+            return b""
+        buffer = ctypes.create_string_buffer(size)
+        ctypes.set_errno(0)
+        actual = libc.getxattr(
+            encoded_path, name, buffer, size, 0, _DARWIN_XATTR_NOFOLLOW)
+        if actual < 0:
+            if ctypes.get_errno() == errno.ERANGE:
+                continue
+            _raise_xattr_errno("getxattr")
+        return bytes(buffer.raw[:actual])
+    raise OSError(errno.EBUSY, "Darwin xattr value changed during capture")
+
+
+def _darwin_set_xattr(path: Path, name: bytes, value: bytes, libc) -> None:
+    value_buffer = ctypes.create_string_buffer(value, len(value)) if value else None
+    ctypes.set_errno(0)
+    result = libc.setxattr(
+        os.fsencode(path), name, value_buffer, len(value), 0,
+        _DARWIN_XATTR_NOFOLLOW)
+    if result != 0:
+        _raise_xattr_errno("setxattr")
+
+
+def _darwin_remove_xattr(path: Path, name: bytes, libc) -> None:
+    ctypes.set_errno(0)
+    if libc.removexattr(
+            os.fsencode(path), name, _DARWIN_XATTR_NOFOLLOW) != 0:
+        _raise_xattr_errno("removexattr")
+
+
+def _native_xattrs_available() -> bool:
+    return all(hasattr(os, name) for name in _XATTR_NATIVE_NAMES)
+
+
+def _capture_xattrs_with_backend(
+        path: Path, backend: str) -> tuple[tuple[str | bytes, bytes], ...]:
+    if backend == "native":
+        names = os.listxattr(path, follow_symlinks=False)
+        return tuple(
+            (name, os.getxattr(path, name, follow_symlinks=False))
+            for name in sorted(names, key=lambda item: os.fsencode(item)))
+    if backend == _DARWIN_XATTR_BACKEND:
+        libc = _darwin_xattr_libc()
+        if libc is None:
+            raise OSError(errno.ENOTSUP, "Darwin libc xattr backend unavailable")
+        return tuple(
+            (name, _darwin_get_xattr(path, name, libc))
+            for name in sorted(_darwin_list_xattrs(path, libc)))
+    return ()
+
+
+def _nofollow_xattr_names(path: Path) -> tuple[bytes, ...] | None:
+    """Return raw-ish nofollow names, or None when a safe probe is unavailable."""
+    try:
+        if sys.platform == "darwin":
+            libc = _darwin_xattr_libc()
+            if libc is None:
+                return None
+            return tuple(sorted(_darwin_list_xattrs(path, libc)))
+        if _native_xattrs_available():
+            return tuple(sorted(
+                (os.fsencode(name) for name in os.listxattr(
+                    path, follow_symlinks=False))))
+    except (OSError, TypeError, UnicodeError):
+        return None
+    return () if os.name == "nt" else None
+
+
+def _darwin_acl_libc():
+    """Return configured Darwin extended-ACL functions or None."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.acl_get_file.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        libc.acl_get_file.restype = ctypes.c_void_p
+        libc.acl_get_link_np.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        libc.acl_get_link_np.restype = ctypes.c_void_p
+        libc.acl_get_entry.argtypes = [
+            ctypes.c_void_p, ctypes.c_int,
+            ctypes.POINTER(ctypes.c_void_p)]
+        libc.acl_get_entry.restype = ctypes.c_int
+        libc.acl_free.argtypes = [ctypes.c_void_p]
+        libc.acl_free.restype = ctypes.c_int
+        return libc
+    except (AttributeError, OSError, TypeError):
+        return None
+
+
+def _darwin_has_extended_acl(
+        path: Path, *, symlink: bool, libc) -> bool | None:
+    """Tri-state Darwin extended ACL probe without following a symlink."""
+    getter = libc.acl_get_link_np if symlink else libc.acl_get_file
+    ctypes.set_errno(0)
+    acl = getter(os.fsencode(path), _DARWIN_ACL_TYPE_EXTENDED)
+    if not acl:
+        # Darwin reports ENOENT when the inode has no extended ACL object.
+        return False if ctypes.get_errno() == errno.ENOENT else None
+    try:
+        entry = ctypes.c_void_p()
+        ctypes.set_errno(0)
+        result = libc.acl_get_entry(
+            acl, _DARWIN_ACL_FIRST_ENTRY, ctypes.byref(entry))
+        # Darwin's acl_get_entry(3) returns 0 on success and populates entry.
+        if result == 0 and entry.value:
+            return True
+        if result == 0:
+            return False
+        return None
+    finally:
+        libc.acl_free(acl)
+
+
+def _capture_index_xattrs(
+        path: Path) -> tuple[tuple[tuple[str | bytes, bytes], ...], str]:
+    if _native_xattrs_available():
+        try:
+            return _capture_xattrs_with_backend(path, "native"), "native"
+        except OSError as exc:
+            unsupported = {
+                errno.ENOSYS,
+                getattr(errno, "ENOTSUP", errno.ENOSYS),
+                getattr(errno, "EOPNOTSUPP", errno.ENOSYS),
+            }
+            if exc.errno not in unsupported:
+                raise
+    if os.name == "nt":  # Windows ACLs remain an explicit residual.
+        return (), ""
+    if _darwin_xattr_libc() is None:
+        raise OSError(errno.ENOTSUP, "safe xattr backend unavailable", str(path))
+    return (_capture_xattrs_with_backend(path, _DARWIN_XATTR_BACKEND),
+            _DARWIN_XATTR_BACKEND)
+
+
+def _apply_index_xattrs(
+        path: Path, attrs: tuple[tuple[str | bytes, bytes], ...],
+        backend: str) -> None:
+    expected = dict(attrs)
+    if backend == "native":
+        if not _native_xattrs_available():
+            raise OSError(errno.ENOTSUP, "native xattr backend unavailable")
+        for name in os.listxattr(path, follow_symlinks=False):
+            if name not in expected:
+                os.removexattr(path, name, follow_symlinks=False)
+        for name, value in attrs:
+            os.setxattr(path, name, value, follow_symlinks=False)
+        return
+    if backend == _DARWIN_XATTR_BACKEND:
+        libc = _darwin_xattr_libc()
+        if libc is None:
+            raise OSError(errno.ENOTSUP, "Darwin libc xattr backend unavailable")
+        actual = dict(_capture_xattrs_with_backend(path, backend))
+        for name in actual:
+            if name not in expected:
+                _darwin_remove_xattr(path, name, libc)
+        for name, value in attrs:
+            _darwin_set_xattr(path, name, value, libc)
+
+
+def _capture_index_metadata(path: Path) -> _IndexMetadata:
+    current = os.lstat(path)
+    if not stat.S_ISREG(current.st_mode) or stat.S_ISLNK(current.st_mode):
+        raise OSError(errno.EPERM, "unsafe index metadata source", str(path))
+    xattrs, xattr_backend = _capture_index_xattrs(path)
+    return _IndexMetadata(
+        mode=stat.S_IMODE(current.st_mode), uid=current.st_uid,
+        gid=current.st_gid, xattrs=xattrs,
+        xattrs_available=bool(xattr_backend), xattr_backend=xattr_backend)
+
+
+def _index_metadata_matches(path: Path, metadata: _IndexMetadata) -> bool:
+    try:
+        current = os.lstat(path)
+        if (not stat.S_ISREG(current.st_mode) or stat.S_ISLNK(current.st_mode)
+                or stat.S_IMODE(current.st_mode) != metadata.mode):
+            return False
+        if os.name != "nt" and (current.st_uid, current.st_gid) != (
+                metadata.uid, metadata.gid):
+            return False
+        if metadata.xattrs_available:
+            actual = _capture_xattrs_with_backend(
+                path, metadata.xattr_backend)
+            if actual != metadata.xattrs:
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def _apply_index_metadata(path: Path, metadata: _IndexMetadata) -> None:
+    """Apply and verify stdlib-visible metadata without following symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        current = os.fstat(fd)
+        if not stat.S_ISREG(current.st_mode):
+            raise OSError(errno.EPERM, "private index is not regular", str(path))
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, metadata.mode)
+        else:  # pragma: no cover - Windows fallback
+            os.chmod(path, metadata.mode)
+        if os.name != "nt" and hasattr(os, "fchown"):
+            os.fchown(fd, metadata.uid, metadata.gid)
+    finally:
+        os.close(fd)
+    if metadata.xattrs_available:
+        _apply_index_xattrs(
+            path, metadata.xattrs, metadata.xattr_backend)
+    if not _index_metadata_matches(path, metadata):
+        raise OSError(errno.EIO, "index metadata verification failed", str(path))
+
+
+def _secure_copy_regular(source: Path, destination: Path) -> None:
+    """Copy one owner-controlled regular file without following symlinks."""
+    source_stat = os.lstat(source)
+    if (not stat.S_ISREG(source_stat.st_mode)
+            or stat.S_ISLNK(source_stat.st_mode)
+            or (hasattr(os, "getuid") and source_stat.st_uid != os.getuid())):
+        raise OSError(errno.EPERM, "unsafe canonical index", str(source))
+    read_fd = write_fd = -1
+    destination_identity: tuple[int, int] = ()
+    try:
+        read_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        read_flags |= getattr(os, "O_NOFOLLOW", 0)
+        read_fd = os.open(source, read_flags)
+        opened = os.fstat(read_fd)
+        if ((opened.st_dev, opened.st_ino)
+                != (source_stat.st_dev, source_stat.st_ino)):
+            raise OSError(errno.EBUSY, "canonical index changed during open")
+        write_flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                       | getattr(os, "O_CLOEXEC", 0)
+                       | getattr(os, "O_NOFOLLOW", 0))
+        write_fd = os.open(destination, write_flags, 0o600)
+        written = os.fstat(write_fd)
+        destination_identity = (written.st_dev, written.st_ino)
+        while True:
+            chunk = os.read(read_fd, 1024 * 1024)
+            if not chunk:
+                break
+            offset = 0
+            while offset < len(chunk):
+                offset += os.write(write_fd, chunk[offset:])
+        os.fsync(write_fd)
+    except BaseException:
+        if destination_identity:
+            try:
+                current = os.lstat(destination)
+                if ((current.st_dev, current.st_ino) == destination_identity
+                        and stat.S_ISREG(current.st_mode)
+                        and not stat.S_ISLNK(current.st_mode)):
+                    os.unlink(destination)
+            except OSError:
+                pass
+        raise
+    finally:
+        for fd in (write_fd, read_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def _bound_lock_owned(txn: _BoundIndexTxn) -> bool:
+    if txn.lock_fd < 0:
+        return False
+    try:
+        opened = os.fstat(txn.lock_fd)
+        current = os.lstat(txn.lock_path)
+    except OSError:
+        return False
+    return ((opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino)
+            and stat.S_ISREG(current.st_mode) and not stat.S_ISLNK(current.st_mode))
+
+
+def _release_bound_lock(txn: _BoundIndexTxn) -> tuple[bool, str]:
+    """Release only our lock inode and prove unlink plus parent durability."""
+    ok = True
+    details: list[str] = []
+    if not _bound_lock_owned(txn):
+        ok = False
+        details.append("canonical index lock ownership changed")
+    else:
+        try:
+            os.unlink(txn.lock_path)
+        except OSError as exc:
+            ok = False
+            details.append(f"canonical index lock unlink failed: {exc}")
+        else:
+            if not _fsync_parent_dir(str(txn.lock_path)):
+                ok = False
+                details.append("canonical index lock parent fsync failed")
+    if txn.lock_fd >= 0:
+        try:
+            os.close(txn.lock_fd)
+        except OSError as exc:
+            ok = False
+            details.append(f"canonical index lock close failed: {exc}")
+        txn.lock_fd = -1
+    return ok, "; ".join(details)
+
+
+def _remove_bound_tx_dir(txn: _BoundIndexTxn) -> bool:
+    """Remove only our private same-admin-dir transaction directory."""
+    try:
+        current = os.lstat(txn.tx_dir)
+        if (txn.tx_dir.parent != txn.index_path.parent
+                or not stat.S_ISDIR(current.st_mode)
+                or stat.S_ISLNK(current.st_mode)
+                or (current.st_dev, current.st_ino) != txn.tx_dir_identity
+                or (hasattr(os, "getuid") and current.st_uid != os.getuid())):
+            return False
+        # Prove the directory entries are durable before deleting the last
+        # filesystem recovery anchor.  A failed preflight leaves it intact.
+        if not _fsync_parent_dir(str(txn.original_index)):
+            return False
+        for path, expected_identity in (
+                (txn.work_index, txn.work_index_identity),
+                (txn.original_index, txn.original_index_identity)):
+            try:
+                child = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if (not expected_identity
+                    or (child.st_dev, child.st_ino) != expected_identity
+                    or not stat.S_ISREG(child.st_mode)
+                    or stat.S_ISLNK(child.st_mode)
+                    or (hasattr(os, "getuid") and child.st_uid != os.getuid())):
+                return False
+            os.unlink(path)
+        os.rmdir(txn.tx_dir)
+        return _fsync_parent_dir(str(txn.tx_dir))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def _ensure_bound_filesystem_anchor(txn: _BoundIndexTxn) -> bool:
+    """Create a durable common-admin blocker after ref cleanup uncertainty."""
+    try:
+        try:
+            current = os.lstat(txn.tx_dir)
+        except FileNotFoundError:
+            os.mkdir(txn.tx_dir, mode=0o700)
+            current = os.lstat(txn.tx_dir)
+        if (txn.tx_dir.parent != txn.index_path.parent
+                or not stat.S_ISDIR(current.st_mode)
+                or stat.S_ISLNK(current.st_mode)
+                or (hasattr(os, "getuid") and current.st_uid != os.getuid())):
+            return False
+        marker = txn.tx_dir / "RECOVERY"
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_CLOEXEC", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            fd = os.open(marker, flags, 0o600)
+        except FileExistsError:
+            marker_stat = os.lstat(marker)
+            if (not stat.S_ISREG(marker_stat.st_mode)
+                    or stat.S_ISLNK(marker_stat.st_mode)
+                    or (hasattr(os, "getuid")
+                        and marker_stat.st_uid != os.getuid())):
+                return False
+        else:
+            try:
+                payload = (
+                    f"token={txn.token}\nhead_ref={txn.head_ref}\n"
+                    f"stash_ref={txn.stash_ref}\n").encode("utf-8")
+                view = memoryview(payload)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError(errno.EIO, "recovery marker short write")
+                    view = view[written:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        return (_fsync_parent_dir(str(marker))
+                and _fsync_parent_dir(str(txn.tx_dir)))
+    except OSError:
+        return False
+
+
+def _begin_bound_index_tx(
+        team_root: str, identity: dict[str, str], timeout: int
+        ) -> tuple[_BoundIndexTxn | None, str]:
+    """Acquire the canonical index lock and make two private index copies."""
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root, "rev-parse", "--git-path", "index"],
+            timeout=timeout, env_overrides={"GIT_INDEX_FILE": None})
+        if rc != 0 or not (out or "").strip():
+            return None, (err or "canonical index unavailable").strip()[:200]
+        raw = Path((out or "").strip())
+        index_path = raw if raw.is_absolute() else Path(team_root) / raw
+        index_path = Path(os.path.abspath(index_path))
+        parent_stat = os.lstat(index_path.parent)
+        if (not stat.S_ISDIR(parent_stat.st_mode)
+                or stat.S_ISLNK(parent_stat.st_mode)
+                or (hasattr(os, "getuid") and parent_stat.st_uid != os.getuid())):
+            return None, "canonical index admin directory is unsafe"
+        index_stat = os.lstat(index_path)
+        if (not stat.S_ISREG(index_stat.st_mode)
+                or stat.S_ISLNK(index_stat.st_mode)
+                or (hasattr(os, "getuid") and index_stat.st_uid != os.getuid())):
+            return None, "canonical index is unsafe"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"canonical index discovery failed: {exc}"
+
+    lock_path = Path(f"{index_path}.lock")
+    token = hashlib.sha256(os.urandom(32)).hexdigest()[:24]
+    lock_fd = -1
+    tx_dir: Path | None = None
+    try:
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_CLOEXEC", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+        lock_fd = os.open(lock_path, flags, 0o600)
+    except FileExistsError:
+        return None, "canonical index is locked by another Git operation"
+    except OSError as exc:
+        return None, f"canonical index lock unavailable: {exc}"
+
+    txn: _BoundIndexTxn | None = None
+    created_tx_identity: tuple[int, int] = ()
+    created_original_identity: tuple[int, int] = ()
+    created_work_identity: tuple[int, int] = ()
+    try:
+        os.write(
+            lock_fd, f"tm-mode bound reconcile {token}\n".encode("ascii"))
+        os.fsync(lock_fd)
+        if not _fsync_parent_dir(str(lock_path)):
+            raise OSError(errno.EIO, "bound lock durability unavailable")
+        index_metadata = _capture_index_metadata(index_path)
+        tx_dir = Path(tempfile.mkdtemp(
+            prefix=f".tm-mode-reconcile-{token}-", dir=index_path.parent))
+        os.chmod(tx_dir, 0o700)
+        tx_dir_stat = os.lstat(tx_dir)
+        created_tx_identity = (tx_dir_stat.st_dev, tx_dir_stat.st_ino)
+        original_index = tx_dir / "original-index"
+        work_index = tx_dir / "work-index"
+        _secure_copy_regular(index_path, original_index)
+        original_stat = os.lstat(original_index)
+        created_original_identity = (original_stat.st_dev, original_stat.st_ino)
+        _apply_index_metadata(original_index, index_metadata)
+        # The work index must come from the already captured original, never a
+        # second read of a lock-unaware writer's canonical replacement.
+        _secure_copy_regular(original_index, work_index)
+        work_stat = os.lstat(work_index)
+        created_work_identity = (work_stat.st_dev, work_stat.st_ino)
+        _apply_index_metadata(work_index, index_metadata)
+        for durable_index in (original_index, work_index):
+            durable_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            durable_flags |= getattr(os, "O_NOFOLLOW", 0)
+            durable_fd = os.open(durable_index, durable_flags)
+            try:
+                durable_stat = os.fstat(durable_fd)
+                if not stat.S_ISREG(durable_stat.st_mode):
+                    raise OSError(
+                        errno.EPERM, "private index durability target is unsafe")
+                os.fsync(durable_fd)
+            finally:
+                os.close(durable_fd)
+        if (not _fsync_parent_dir(str(work_index))
+                or not _fsync_parent_dir(str(tx_dir))):
+            raise OSError(
+                errno.EIO, "bound recovery mapping durability unavailable")
+        original_stat = os.lstat(original_index)
+        work_stat = os.lstat(work_index)
+        txn = _BoundIndexTxn(
+            index_path=index_path, lock_path=lock_path, lock_fd=lock_fd,
+            tx_dir=tx_dir, original_index=original_index,
+            work_index=work_index, token=token,
+            head_ref=f"refs/tm-mode/reconcile/{token}/head",
+            stash_ref=f"refs/tm-mode/reconcile/{token}/stash",
+            original_head=identity["head"],
+            tx_dir_identity=(tx_dir_stat.st_dev, tx_dir_stat.st_ino),
+            original_index_identity=(original_stat.st_dev, original_stat.st_ino),
+            work_index_identity=(work_stat.st_dev, work_stat.st_ino),
+            index_metadata=index_metadata)
+        return txn, ""
+    except OSError as exc:
+        if txn is None:
+            txn = _BoundIndexTxn(
+                index_path=index_path, lock_path=lock_path, lock_fd=lock_fd,
+                tx_dir=tx_dir or index_path.parent / ".missing-tx",
+                original_index=(tx_dir or index_path.parent) / "original-index",
+                work_index=(tx_dir or index_path.parent) / "work-index",
+                token=token,
+                head_ref=f"refs/tm-mode/reconcile/{token}/head",
+                stash_ref=f"refs/tm-mode/reconcile/{token}/stash",
+                original_head=identity["head"],
+                tx_dir_identity=created_tx_identity,
+                original_index_identity=created_original_identity,
+                work_index_identity=created_work_identity)
+        release_ok, release_detail = _release_bound_lock(txn)
+        cleanup_ok = True
+        if release_ok and tx_dir is not None:
+            cleanup_ok = _remove_bound_tx_dir(txn)
+        detail = f"bound reconcile transaction unavailable: {exc}"
+        if not release_ok:
+            detail += (f"; lock release failed: {release_detail}; "
+                       f"recovery evidence retained at {txn.tx_dir}")
+        elif not cleanup_ok:
+            detail += f"; recovery cleanup failed at {txn.tx_dir}"
+        return None, detail
+
+
+def _run_bound_git(
+        team_root: str, txn: _BoundIndexTxn, args: list[str], timeout: int,
+        *, proof_raw: bool = False, input_text: str | None = None):
+    try:
+        return run_git(
+            ["-C", team_root, *args], timeout=timeout,
+            env_overrides={"GIT_INDEX_FILE": str(txn.work_index)},
+            output_errors="surrogateescape" if proof_raw else "replace",
+            input_text=input_text)
+    finally:
+        # Git updates an index through `<path>.lock` + rename, so the work-index
+        # inode legitimately changes.  Refresh only an owner-controlled regular
+        # file at the exact transaction path; cleanup still refuses replacements
+        # it never observed through this wrapper.
+        try:
+            current = os.lstat(txn.work_index)
+            if (stat.S_ISREG(current.st_mode) and not stat.S_ISLNK(current.st_mode)
+                    and txn.work_index.parent == txn.tx_dir
+                    and (not hasattr(os, "getuid") or current.st_uid == os.getuid())):
+                txn.work_index_identity = (current.st_dev, current.st_ino)
+        except OSError:
+            pass
+
+
+def _capture_bound_user_state(
+        team_root: str, txn: _BoundIndexTxn, deadline: float,
+        reserve: int = 0, cap: int = DEFAULT_TIMEOUT) -> _BoundUserState | None:
+    commands = (
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--"],
+        ["diff", "--cached", "--binary", "--no-ext-diff",
+         "--no-textconv", "--"],
+    )
+    outputs: list[str] = []
+    for args in commands:
+        probe_timeout = _deadline_timeout(
+            deadline, cap, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, out, _ = _run_bound_git(
+                team_root, txn, list(args), probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0:
+            return None
+        outputs.append(out or "")
+    return _BoundUserState(*outputs)
+
+
+def _bound_hidden_index_flags(
+        team_root: str, txn: _BoundIndexTxn, deadline: float,
+        reserve: int = 0) -> bool | None:
+    """Return whether any private-index entry hides worktree changes.
+
+    ``ls-files -v`` lower-cases an entry tag for assume-unchanged and uses
+    ``S`` for skip-worktree.  Either flag makes status/diff/stash an incomplete
+    proof, so the bound transaction must fail before its first reset.
+    """
+    probe_timeout = _deadline_timeout(
+        deadline, DEFAULT_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return None
+    try:
+        rc, out, _ = _run_bound_git(
+            team_root, txn, ["ls-files", "-v", "-z", "--"],
+            probe_timeout, proof_raw=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    for record in (out or "").split("\0"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1] != " ":
+            return None
+        tag = record[0]
+        if tag == "S" or tag.islower():
+            return True
+    return False
+
+
+def _probe_process_umask(timeout: int) -> int | None:
+    """Read the inherited checkout umask in a child without changing our process."""
+    try:
+        result = subprocess.run(
+            ["sh", "-c", "umask"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    raw = (result.stdout or "").strip()
+    if result.returncode != 0 or not re.fullmatch(r"[0-7]{3,4}", raw):
+        return None
+    return int(raw, 8)
+
+
+def _bound_worktree_metadata_issue(
+        team_root: str, txn: _BoundIndexTxn, deadline: float,
+        reserve: int = 0, *, local_source: str | None = None,
+        upstream_source: str | None = None) -> str | None:
+    """Prove reset/stash cannot erase tracked-path metadata before mutation.
+
+    Git only reconstructs blob bytes plus its executable/symlink bit.  Exact
+    POSIX permissions, ownership, hard-link identity, flags, ACLs, and custom
+    xattrs are therefore not recoverable from the stash proof.  Defer instead
+    of silently normalizing them.  Missing tracked paths carry no local inode
+    metadata and are safe for Git to recreate.
+    """
+    if os.name == "nt":  # Windows ACL preservation remains documented residual.
+        return ""
+    probe_timeout = _deadline_timeout(
+        deadline, DEFAULT_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return None
+    checkout_umask = _probe_process_umask(probe_timeout)
+    if checkout_umask is None:
+        return None
+    try:
+        rc, out, _ = _run_bound_git(
+            team_root, txn, ["ls-files", "--stage", "-z", "--"],
+            probe_timeout, proof_raw=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0 or (out and not out.endswith("\0")):
+        return None
+
+    entries: list[tuple[str, str]] = []
+    candidate_paths: list[str] = []
+    seen_candidate_paths: set[str] = set()
+    for record in (out or "").split("\0"):
+        if not record:
+            continue
+        try:
+            header, path = record.split("\t", 1)
+            git_mode, object_id, stage = header.split(" ")
+        except ValueError:
+            return None
+        if (stage != "0"
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", object_id)):
+            return None
+        entries.append((path, git_mode))
+        if path not in seen_candidate_paths:
+            seen_candidate_paths.add(path)
+            candidate_paths.append(path)
+
+    # The current private index is necessary for partial-commit/staged paths,
+    # while exact local/upstream trees add rename and newly tracked targets that
+    # do not exist in that index yet.  Their parent directories can determine
+    # ownership, ACL, flags, xattrs, and creation mode after reset/rebase.
+    for source in (local_source, upstream_source):
+        if source is None:
+            continue
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, tree_out, _ = _run_bound_git(
+                team_root, txn,
+                ["ls-tree", "-r", "-z", "--full-tree", source, "--"],
+                probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0 or (tree_out and not tree_out.endswith("\0")):
+            return None
+        for record in (tree_out or "").split("\0"):
+            if not record:
+                continue
+            try:
+                header, path = record.split("\t", 1)
+                git_mode, object_type, object_id = header.split(" ")
+            except ValueError:
+                return None
+            valid_entry = (
+                (git_mode in {"100644", "100755", "120000"}
+                 and object_type == "blob")
+                or (git_mode == "160000" and object_type == "commit"))
+            if (not valid_entry
+                    or not re.fullmatch(
+                        r"[0-9a-f]{40}|[0-9a-f]{64}", object_id)):
+                return None
+            if path not in seen_candidate_paths:
+                seen_candidate_paths.add(path)
+                candidate_paths.append(path)
+
+    acl_libc = None
+    checked_parents: set[Path] = set()
+    root = Path(os.path.abspath(team_root))
+    allowed_xattrs = ({b"com.apple.provenance"}
+                      if sys.platform == "darwin" else set())
+
+    def _parent_issue(parent: Path) -> str | None:
+        nonlocal acl_libc
+        if parent in checked_parents:
+            return ""
+        if not _deadline_timeout(deadline, DEFAULT_TIMEOUT, reserve=reserve):
+            return None
+        try:
+            before_parent = os.lstat(parent)
+        except OSError:
+            return None
+        if (not stat.S_ISDIR(before_parent.st_mode)
+                or stat.S_ISLNK(before_parent.st_mode)):
+            return "non-recoverable parent directory metadata type"
+        expected_dir_mode = 0o777 & ~checkout_umask
+        if (before_parent.st_uid != os.getuid()
+                or before_parent.st_gid != os.getgid()
+                or stat.S_IMODE(before_parent.st_mode) != expected_dir_mode
+                or before_parent.st_mode & stat.S_ISGID):
+            return "non-recoverable parent directory metadata ownership or mode"
+        if sys.platform == "darwin":
+            if not hasattr(before_parent, "st_flags"):
+                return None
+            if before_parent.st_flags != 0:
+                return "non-recoverable parent directory metadata flags"
+            if acl_libc is None:
+                acl_libc = _darwin_acl_libc()
+                if acl_libc is None:
+                    return None
+            has_acl = _darwin_has_extended_acl(
+                parent, symlink=False, libc=acl_libc)
+            if has_acl is None:
+                return None
+            if has_acl:
+                return "non-recoverable parent directory metadata ACL"
+        parent_xattrs = _nofollow_xattr_names(parent)
+        if parent_xattrs is None:
+            return None
+        if any(name not in allowed_xattrs for name in parent_xattrs):
+            return "non-recoverable parent directory metadata xattrs"
+        try:
+            after_parent = os.lstat(parent)
+        except OSError:
+            return None
+        if ((before_parent.st_dev, before_parent.st_ino,
+             before_parent.st_mode, before_parent.st_uid,
+             before_parent.st_gid, getattr(before_parent, "st_flags", 0))
+                != (after_parent.st_dev, after_parent.st_ino,
+                    after_parent.st_mode, after_parent.st_uid,
+                    after_parent.st_gid,
+                    getattr(after_parent, "st_flags", 0))):
+            return None
+        checked_parents.add(parent)
+        return ""
+
+    # Check every candidate target parent before inspecting current leaf
+    # inodes.  Stop at the first missing component: Git will create that suffix
+    # with the already-proved process umask beneath the nearest safe existing
+    # ancestor.  A file/symlink component is rejected by _parent_issue.
+    for relative in candidate_paths:
+        if not _deadline_timeout(deadline, DEFAULT_TIMEOUT, reserve=reserve):
+            return None
+        components = relative.split("/")
+        if (not components or any(
+                not component or component in {".", ".."}
+                for component in components)):
+            return None
+        cursor = root
+        issue = _parent_issue(cursor)
+        if issue is None or issue:
+            return issue
+        for component in components[:-1]:
+            cursor = cursor / component
+            try:
+                os.lstat(cursor)
+            except FileNotFoundError:
+                break
+            except OSError:
+                return None
+            issue = _parent_issue(cursor)
+            if issue is None or issue:
+                return issue
+
+    for relative, git_mode in entries:
+        if not _deadline_timeout(deadline, DEFAULT_TIMEOUT, reserve=reserve):
+            return None
+        path = root / relative
+        try:
+            before = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        is_link = stat.S_ISLNK(before.st_mode)
+        if git_mode == "120000":
+            type_ok = is_link
+        elif git_mode in {"100644", "100755"}:
+            expected_mode = 0o644 if git_mode == "100644" else 0o755
+            type_ok = (stat.S_ISREG(before.st_mode) and not is_link
+                       and stat.S_IMODE(before.st_mode) == expected_mode)
+            recreated_mode = ((0o666 if git_mode == "100644" else 0o777)
+                              & ~checkout_umask)
+            if recreated_mode != expected_mode:
+                return "non-recoverable tracked path checkout umask"
+        else:
+            return f"unsupported tracked entry metadata ({git_mode})"
+        if not type_ok:
+            return "non-recoverable tracked path type or mode"
+        if (before.st_uid != os.getuid()
+                or before.st_gid != os.getgid()):
+            return "non-recoverable tracked path ownership"
+        if before.st_nlink != 1:
+            return "non-recoverable tracked path hard links"
+        if sys.platform == "darwin":
+            if not hasattr(before, "st_flags"):
+                return None
+            if before.st_flags != 0:
+                return "non-recoverable tracked path flags"
+            if acl_libc is None:
+                acl_libc = _darwin_acl_libc()
+                if acl_libc is None:
+                    return None
+            has_acl = _darwin_has_extended_acl(
+                path, symlink=is_link, libc=acl_libc)
+            if has_acl is None:
+                return None
+            if has_acl:
+                return "non-recoverable tracked path ACL"
+        xattr_names = _nofollow_xattr_names(path)
+        if xattr_names is None:
+            return None
+        if any(name not in allowed_xattrs for name in xattr_names):
+            return "non-recoverable tracked path xattrs"
+        try:
+            after = os.lstat(path)
+        except OSError:
+            return None
+        before_proof = (
+            before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+            before.st_gid, before.st_nlink,
+            getattr(before, "st_flags", 0))
+        after_proof = (
+            after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+            after.st_gid, after.st_nlink,
+            getattr(after, "st_flags", 0))
+        if after_proof != before_proof:
+            return None
+    return ""
+
+
+def _bound_worktree_transform_attrs(
+        team_root: str, txn: _BoundIndexTxn, deadline: float,
+        *, local_source: str, upstream_source: str,
+        reserve: int = 0) -> str | None:
+    """Reject tracked paths whose raw bytes are hidden by Git transforms.
+
+    External clean filters, working-tree encodings, and ``ident`` expansion can
+    map distinct filesystem bytes to one Git blob.  In that case diff/stash is
+    not an exact-byte recovery proof, so defer before the first reset.  The
+    path stream and attribute result are NUL-delimited to preserve arbitrary
+    valid Git path bytes.
+    """
+    path_commands = (
+        ["ls-files", "-z", "--"],
+        ["ls-tree", "-r", "--name-only", "-z", local_source],
+        ["ls-tree", "-r", "--name-only", "-z", upstream_source],
+    )
+    paths: list[str] = []
+    seen_paths: set[str] = set()
+    for command in path_commands:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, path_output, _ = _run_bound_git(
+                team_root, txn, list(command), probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0 or (path_output and not path_output.endswith("\0")):
+            return None
+        for path in (path_output or "").split("\0"):
+            if path and path not in seen_paths:
+                seen_paths.add(path)
+                paths.append(path)
+    if not paths:
+        return ""
+    path_input = "\0".join(paths) + "\0"
+
+    def _remove_candidate_index(
+            candidate: Path, expected_identity: tuple[int, int]) -> bool:
+        """Unlink only the exact temporary candidate index we observed."""
+        try:
+            tx_dir_stat = os.lstat(txn.tx_dir)
+            if (candidate.parent != txn.tx_dir
+                    or not stat.S_ISDIR(tx_dir_stat.st_mode)
+                    or stat.S_ISLNK(tx_dir_stat.st_mode)
+                    or (tx_dir_stat.st_dev, tx_dir_stat.st_ino)
+                    != txn.tx_dir_identity
+                    or (hasattr(os, "getuid")
+                        and tx_dir_stat.st_uid != os.getuid())):
+                return False
+            # A surviving Git lock is an unobserved recovery artifact.  Never
+            # guess that it belongs to this call or delete it by filename.
+            try:
+                os.lstat(Path(f"{candidate}.lock"))
+            except FileNotFoundError:
+                pass
+            else:
+                return False
+            try:
+                current = os.lstat(candidate)
+            except FileNotFoundError:
+                return not expected_identity
+            if (not expected_identity
+                    or (current.st_dev, current.st_ino) != expected_identity
+                    or not stat.S_ISREG(current.st_mode)
+                    or stat.S_ISLNK(current.st_mode)
+                    or (hasattr(os, "getuid")
+                        and current.st_uid != os.getuid())):
+                return False
+            os.unlink(candidate)
+            return _fsync_parent_dir(str(candidate))
+        except OSError:
+            return False
+
+    def _check_candidate_tree_attrs(source: str, label: str) -> str | None:
+        """Old-Git fallback: materialize one exact tree in a private index."""
+        nonce = hashlib.sha256(os.urandom(32)).hexdigest()[:24]
+        candidate = txn.tx_dir / f"attr-index-{label}-{nonce}"
+        candidate_lock = Path(f"{candidate}.lock")
+        candidate_identity: tuple[int, int] = ()
+        attrs = ""
+        proof_ok = False
+        cleanup_ok = False
+        try:
+            # Both paths must be absent before Git receives the unique name.
+            for path in (candidate, candidate_lock):
+                try:
+                    os.lstat(path)
+                except FileNotFoundError:
+                    continue
+                return None
+            probe_timeout = _deadline_timeout(
+                deadline, DEFAULT_TIMEOUT, reserve=reserve)
+            if not probe_timeout:
+                return None
+            rc, _, _ = run_git(
+                ["-C", team_root, "read-tree", source],
+                timeout=probe_timeout,
+                env_overrides={"GIT_INDEX_FILE": str(candidate)},
+                output_errors="surrogateescape")
+            try:
+                candidate_stat = os.lstat(candidate)
+            except FileNotFoundError:
+                return None
+            if (not stat.S_ISREG(candidate_stat.st_mode)
+                    or stat.S_ISLNK(candidate_stat.st_mode)
+                    or candidate.parent != txn.tx_dir
+                    or (hasattr(os, "getuid")
+                        and candidate_stat.st_uid != os.getuid())):
+                return None
+            candidate_identity = (
+                candidate_stat.st_dev, candidate_stat.st_ino)
+            if rc != 0:
+                return None
+            probe_timeout = _deadline_timeout(
+                deadline, DEFAULT_TIMEOUT, reserve=reserve)
+            if not probe_timeout:
+                return None
+            rc, attrs, _ = run_git(
+                ["-C", team_root, "check-attr", "--cached", "-z",
+                 "filter", "working-tree-encoding", "ident", "--stdin"],
+                timeout=probe_timeout,
+                env_overrides={"GIT_INDEX_FILE": str(candidate)},
+                output_errors="surrogateescape", input_text=path_input)
+            if rc != 0:
+                return None
+            # check-attr is read-only; an inode replacement means the proof no
+            # longer belongs to the exact read-tree result we captured.
+            after = os.lstat(candidate)
+            if ((after.st_dev, after.st_ino) != candidate_identity
+                    or not stat.S_ISREG(after.st_mode)
+                    or stat.S_ISLNK(after.st_mode)
+                    or (hasattr(os, "getuid")
+                        and after.st_uid != os.getuid())):
+                return None
+            proof_ok = True
+        except (OSError, subprocess.SubprocessError):
+            proof_ok = False
+        finally:
+            cleanup_ok = _remove_candidate_index(
+                candidate, candidate_identity)
+            if not cleanup_ok:
+                # Even a post-unlink directory-fsync failure makes cleanup
+                # uncertain.  Materialize a durable blocker so the outer
+                # transaction cannot silently erase the evidence.
+                _ensure_bound_filesystem_anchor(txn)
+        return attrs if proof_ok and cleanup_ok else None
+
+    def _transform_value_present(attrs: str) -> bool | None:
+        if attrs and not attrs.endswith("\0"):
+            return None
+        fields = (attrs[:-1].split("\0") if attrs else [])
+        if len(fields) % 3:
+            return None
+        for _path, attribute, value in zip(
+                fields[0::3], fields[1::3], fields[2::3]):
+            if attribute not in {"filter", "working-tree-encoding", "ident"}:
+                return None
+            if value not in {"unspecified", "unset"}:
+                return True
+        return False
+
+    sources = (
+        ("current", None),
+        ("local", local_source),
+        ("upstream", upstream_source),
+    )
+    for label, source in sources:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        args = ["check-attr", "-z"]
+        if source is not None:
+            args.append(f"--source={source}")
+        args += ["filter", "working-tree-encoding", "ident", "--stdin"]
+        try:
+            rc, attrs, _ = _run_bound_git(
+                team_root, txn, args, probe_timeout,
+                proof_raw=True, input_text=path_input)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0:
+            if source is None:
+                return None
+            attrs = _check_candidate_tree_attrs(source, label)
+            if attrs is None:
+                return None
+        transform_present = _transform_value_present(attrs)
+        if transform_present is None:
+            return None
+        if transform_present:
+            return label
+    return ""
+
+
+def _bound_untracked_tree_collision(
+        team_root: str, txn: _BoundIndexTxn, local_ref: str,
+        upstream_ref: str, deadline: float, reserve: int = 0) -> bool | None:
+    """Detect untracked bytes that reset/merge could replace or remove.
+
+    ``stash create`` does not capture untracked files.  In particular, a staged
+    deletion can make ``tracked-file/secret`` appear untracked even though the
+    reset target still contains ``tracked-file`` as a blob.  ``reset --hard``
+    removes that directory recursively, so any exact or file/directory-prefix
+    collision must defer before the first mutation.
+    """
+    commands = (
+        ["ls-files", "--others", "--exclude-standard", "-z", "--"],
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"],
+        ["ls-tree", "-r", "--name-only", "-z", local_ref],
+        ["ls-tree", "-r", "--name-only", "-z", upstream_ref],
+    )
+    outputs: list[str] = []
+    for args in commands:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, out, _ = _run_bound_git(
+                team_root, txn, list(args), probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0 or (out and not out.endswith("\0")):
+            return None
+        outputs.append(out or "")
+
+    probe_timeout = _deadline_timeout(
+        deadline, DEFAULT_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return None
+    try:
+        rc, ignorecase_out, _ = _run_bound_git(
+            team_root, txn,
+            ["config", "--bool", "--get", "core.ignorecase"], probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc == 0:
+        raw_ignorecase = (ignorecase_out or "").strip().lower()
+        if raw_ignorecase not in {"true", "false"}:
+            return None
+        ignorecase = raw_ignorecase == "true"
+    elif rc == 1:
+        ignorecase = False
+    else:
+        return None
+
+    def _filesystem_key(path: str) -> str:
+        normalized = "/".join(
+            unicodedata.normalize("NFC", part) for part in path.split("/"))
+        return normalized.casefold() if ignorecase else normalized
+
+    untracked = {
+        _filesystem_key(path)
+        for output in outputs[:2]
+        for path in output.split("\0") if path
+    }
+    checkout_paths = {
+        _filesystem_key(path)
+        for output in outputs[2:]
+        for path in output.split("\0") if path
+    }
+    for local_path in untracked:
+        local_prefix = local_path.rstrip("/") + "/"
+        for checkout_path in checkout_paths:
+            checkout_prefix = checkout_path.rstrip("/") + "/"
+            if (local_path == checkout_path
+                    or local_path.startswith(checkout_prefix)
+                    or checkout_path.startswith(local_prefix)):
+                return True
+    return False
+
+
+def _bound_ignored_upstream_collision(
+        team_root: str, txn: _BoundIndexTxn, local_ref: str,
+        upstream_ref: str, deadline: float, reserve: int = 0) -> bool | None:
+    """Detect ignored local paths that an explicit upstream delta can replace."""
+    commands = (
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z",
+         "--"],
+        ["diff", "--name-only", "--no-renames", "-z",
+         f"{local_ref}...{upstream_ref}", "--"],
+    )
+    outputs: list[str] = []
+    for args in commands:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, out, _ = _run_bound_git(
+                team_root, txn, list(args), probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0:
+            return None
+        outputs.append(out or "")
+    probe_timeout = _deadline_timeout(
+        deadline, DEFAULT_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return None
+    try:
+        rc, ignorecase_out, _ = _run_bound_git(
+            team_root, txn,
+            ["config", "--bool", "--get", "core.ignorecase"], probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc == 0:
+        raw_ignorecase = (ignorecase_out or "").strip().lower()
+        if raw_ignorecase not in {"true", "false"}:
+            return None
+        ignorecase = raw_ignorecase == "true"
+    elif rc == 1:
+        ignorecase = False
+    else:
+        return None
+
+    def _filesystem_key(path: str) -> str:
+        normalized = "/".join(
+            unicodedata.normalize("NFC", part) for part in path.split("/"))
+        return normalized.casefold() if ignorecase else normalized
+
+    ignored = [
+        _filesystem_key(path) for path in outputs[0].split("\0") if path]
+    upstream = [
+        _filesystem_key(path) for path in outputs[1].split("\0") if path]
+    for local_path in ignored:
+        local_prefix = local_path.rstrip("/") + "/"
+        for upstream_path in upstream:
+            upstream_prefix = upstream_path.rstrip("/") + "/"
+            if (local_path == upstream_path
+                    or local_path.startswith(upstream_prefix)
+                    or upstream_path.startswith(local_prefix)):
+                return True
+    return False
+
+
+def _bound_identity_probe(
+        team_root: str, txn: _BoundIndexTxn, branch: str,
+        deadline: float, reserve: int = 0,
+        cap: int = DEFAULT_TIMEOUT) -> dict[str, str] | None:
+    probe_timeout = _deadline_timeout(deadline, cap, reserve=reserve)
+    if not probe_timeout:
+        return None
+    try:
+        rc, out, _ = _run_bound_git(
+            team_root, txn,
+            ["symbolic-ref", "--quiet", "--short", "HEAD"], probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0 or (out or "").strip() != branch:
+        return None
+    probe_timeout = _deadline_timeout(deadline, cap, reserve=reserve)
+    if not probe_timeout:
+        return None
+    try:
+        rc, out, _ = _run_bound_git(
+            team_root, txn,
+            ["rev-parse", "--verify", f"refs/heads/{branch}"], probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    head = (out or "").strip().lower() if rc == 0 else ""
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
+        return None
+    return {"key": f"branch:{branch}", "branch": branch, "head": head}
+
+
+def _regular_digest(path: Path) -> str:
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
+        raise OSError(errno.EPERM, "unsafe transaction index", str(path))
+    fd = -1
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        opened = os.fstat(fd)
+        if ((before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise OSError(errno.EBUSY, "transaction index changed during open")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _probe_bound_ref_oid(
+        team_root: str, txn: _BoundIndexTxn, ref: str,
+        deadline: float, reserve: int = 0) -> tuple[bool, str]:
+    """Tri-state ref probe: unavailable, available-missing, or available-OID."""
+    probe_timeout = _deadline_timeout(
+        deadline, _BOUND_ROLLBACK_STEP_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return False, ""
+    try:
+        rc, out, _ = _run_bound_git(
+            team_root, txn,
+            ["rev-parse", "--verify", "--quiet", ref], probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False, ""
+    if rc == 0 and (out or "").strip():
+        return True, (out or "").strip().lower()
+    if rc == 1:
+        return True, ""
+    return False, ""
+
+
+def _create_bound_recovery_ref(
+        team_root: str, txn: _BoundIndexTxn, ref: str, expected_oid: str,
+        deadline: float, reserve: int) -> tuple[bool, bool, bool, str]:
+    """Create a recovery ref and resolve timeout ambiguity with an exact probe.
+
+    Returns `(completed, created_by_us, cleanup_safe, detail)`.  A timed-out
+    update is never retried: exact expected OID is CAS-cleanable, missing is safe,
+    while an unavailable or different OID retains all evidence.
+    """
+    probe_timeout = _deadline_timeout(
+        deadline, DEFAULT_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return False, False, True, "deadline exhausted before recovery ref"
+    failure = ""
+    try:
+        rc, _, err = _run_bound_git(
+            team_root, txn,
+            ["update-ref", ref, expected_oid, ""], probe_timeout)
+        if rc == 0:
+            return True, True, True, ""
+        failure = (err or "recovery ref update failed").strip()[:200]
+    except subprocess.TimeoutExpired:
+        failure = "recovery ref update timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        failure = f"recovery ref update exec error: {exc}"
+
+    available, actual_oid = _probe_bound_ref_oid(
+        team_root, txn, ref, deadline, reserve=reserve)
+    if not available:
+        return False, False, False, f"{failure}; ref state unavailable"
+    if actual_oid == expected_oid.lower():
+        return False, True, True, f"{failure}; exact ref creation observed"
+    if not actual_oid:
+        return False, False, True, failure
+    return (False, False, False,
+            f"{failure}; unexpected recovery ref OID {actual_oid}")
+
+
+def _cleanup_bound_refs(
+        team_root: str, txn: _BoundIndexTxn, deadline: float,
+        *, head_created: bool, stash_created: bool) -> bool:
+    refs = []
+    if stash_created:
+        refs.append((txn.stash_ref, txn.stash_oid))
+    if head_created:
+        refs.append((txn.head_ref, txn.original_head))
+    deleted: list[tuple[str, str]] = []
+    for ref, expected in refs:
+        probe_timeout = _deadline_timeout(
+            deadline, _BOUND_ROLLBACK_STEP_TIMEOUT)
+        if not probe_timeout:
+            return False
+        try:
+            rc, _, _ = _run_bound_git(
+                team_root, txn,
+                ["update-ref", "-d", ref, expected], probe_timeout)
+        except (OSError, subprocess.SubprocessError):
+            rc = 1
+        if rc != 0:
+            _restore_bound_refs(team_root, txn, deadline, deleted)
+            return False
+        deleted.append((ref, expected))
+    return True
+
+
+def _restore_bound_refs(
+        team_root: str, txn: _BoundIndexTxn, deadline: float,
+        refs: list[tuple[str, str]]) -> bool:
+    """Best-effort create-only restoration after a partial cleanup failure."""
+    ok = True
+    for ref, expected in refs:
+        probe_timeout = _deadline_timeout(
+            deadline, _BOUND_ROLLBACK_STEP_TIMEOUT)
+        if not probe_timeout:
+            return False
+        try:
+            rc, _, _ = _run_bound_git(
+                team_root, txn,
+                ["update-ref", ref, expected, ""], probe_timeout)
+        except (OSError, subprocess.SubprocessError):
+            rc = 1
+        if rc != 0:
+            available, actual = _probe_bound_ref_oid(
+                team_root, txn, ref, deadline)
+            ok = ok and available and actual == expected.lower()
+    return ok
+
+
+def _bound_rebase_dirs_clear(txn: _BoundIndexTxn) -> bool:
+    return (not (txn.index_path.parent / "rebase-merge").exists()
+            and not (txn.index_path.parent / "rebase-apply").exists())
+
+
+def _bound_merge_state_clear(txn: _BoundIndexTxn) -> bool:
+    """Prove a failed/successful bound merge left no sequencer state."""
+    admin = txn.index_path.parent
+    return all(not (admin / name).exists() for name in (
+        "MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_AUTOSTASH",
+        "AUTO_MERGE"))
+
+
+def _bound_operation_state_clear(txn: _BoundIndexTxn) -> bool:
+    return _bound_rebase_dirs_clear(txn) and _bound_merge_state_clear(txn)
+
+
+def _clear_bound_auto_merge(
+        team_root: str, txn: _BoundIndexTxn, deadline: float) -> bool:
+    """Delete Git's operation-created AUTO_MERGE pseudo-ref.
+
+    ``publication_blocker_detail`` proves it was absent before the transaction.
+    Git may leave it after a successful/aborted rebase on newer versions, so the
+    bound transaction owns cleanup and proves its removal before returning.
+    """
+    probe_timeout = _deadline_timeout(
+        deadline, _BOUND_ROLLBACK_STEP_TIMEOUT)
+    if not probe_timeout:
+        return False
+    try:
+        rc, _, _ = _run_bound_git(
+            team_root, txn, ["update-ref", "-d", "AUTO_MERGE"], probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return rc == 0 and not (txn.index_path.parent / "AUTO_MERGE").exists()
+
+
+def _promote_bound_index(txn: _BoundIndexTxn) -> tuple[bool, str]:
+    """Promote the private index only while our canonical lock is still owned."""
+    try:
+        if not _bound_lock_owned(txn):
+            return False, "canonical index lock ownership changed"
+        if (_regular_digest(txn.index_path)
+                != _regular_digest(txn.original_index)):
+            return False, "canonical index changed outside its lock"
+        if txn.index_metadata is None:
+            return False, "canonical index metadata snapshot unavailable"
+        if not _index_metadata_matches(txn.index_path, txn.index_metadata):
+            return False, "canonical index metadata changed outside its lock"
+        # Git legitimately replaced work-index via its private lock.  Reapply the
+        # canonical metadata to that final inode and verify before promotion.
+        _apply_index_metadata(txn.work_index, txn.index_metadata)
+        refreshed = os.lstat(txn.work_index)
+        txn.work_index_identity = (refreshed.st_dev, refreshed.st_ino)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(txn.work_index, flags)
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                return False, "private index is not regular"
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(txn.work_index, txn.index_path)
+        txn.promoted = True
+        failures = []
+        # os.replace is the transaction commit point.  A diagnostic race/failure
+        # after it cannot re-enter rollback, whose core invariant is that the
+        # canonical index was never promoted.
+        if not _index_metadata_matches(txn.index_path, txn.index_metadata):
+            failures.append("post-promotion index metadata check failed")
+        durable = _fsync_parent_dir(str(txn.index_path))
+        if not durable:
+            failures.append("post-promotion index parent fsync failed")
+        if failures:
+            return False, "promotion durability failed: " + "; ".join(failures)
+        return True, ""
+    except OSError as exc:
+        return False, f"private index promotion failed: {exc}"
+
+
+def _rollback_bound_reconcile(
+        team_root: str, txn: _BoundIndexTxn, identity: dict[str, str],
+        original_state: _BoundUserState, deadline: float,
+        *, mode: str) -> tuple[bool, str, dict[str, str] | None]:
+    """Restore through the private index, then prove every rollback invariant."""
+    details: list[str] = []
+    if mode == "rebase":
+        abort_command = ["rebase", "--abort"]
+        operation_clear = _bound_rebase_dirs_clear(txn)
+    elif mode == "merge":
+        abort_command = ["merge", "--abort"]
+        operation_clear = _bound_merge_state_clear(txn)
+    else:
+        abort_command = []
+        operation_clear = True
+    abort_needed = bool(abort_command) and not operation_clear
+    abort_ok = not abort_needed
+    if abort_needed:
+        probe_timeout = _deadline_timeout(
+            deadline, _BOUND_ROLLBACK_STEP_TIMEOUT)
+        if probe_timeout:
+            try:
+                rc, _, err = _run_bound_git(
+                    team_root, txn, abort_command, probe_timeout)
+                abort_ok = rc == 0
+                if rc != 0:
+                    details.append(
+                        (err or f"{mode} abort failed").strip()[:200])
+            except (OSError, subprocess.SubprocessError) as exc:
+                details.append(f"{mode} abort exec error: {exc}")
+        else:
+            details.append(f"deadline exhausted before {mode} abort")
+
+    branch_now = _bound_identity_probe(
+        team_root, txn, identity["branch"], deadline,
+        cap=_BOUND_ROLLBACK_STEP_TIMEOUT)
+    reset_ok = branch_now is not None
+    if reset_ok:
+        probe_timeout = _deadline_timeout(
+            deadline, _BOUND_ROLLBACK_STEP_TIMEOUT)
+        if not probe_timeout:
+            reset_ok = False
+        else:
+            try:
+                rc, _, err = _run_bound_git(
+                    team_root, txn,
+                    ["reset", "--hard", txn.original_head], probe_timeout)
+                reset_ok = rc == 0
+                if rc != 0:
+                    details.append((err or "rollback reset failed").strip()[:200])
+            except (OSError, subprocess.SubprocessError) as exc:
+                reset_ok = False
+                details.append(f"rollback reset exec error: {exc}")
+    else:
+        details.append("captured branch unavailable during rollback")
+
+    apply_ok = reset_ok
+    if apply_ok and txn.stash_oid:
+        probe_timeout = _deadline_timeout(
+            deadline, _BOUND_ROLLBACK_STEP_TIMEOUT)
+        if not probe_timeout:
+            apply_ok = False
+        else:
+            try:
+                rc, _, err = _run_bound_git(
+                    team_root, txn,
+                    ["stash", "apply", "--index", txn.stash_oid], probe_timeout)
+                apply_ok = rc == 0
+                if rc != 0:
+                    details.append((err or "rollback stash apply failed").strip()[:200])
+            except (OSError, subprocess.SubprocessError) as exc:
+                apply_ok = False
+                details.append(f"rollback stash apply exec error: {exc}")
+
+    auto_merge_ok = _clear_bound_auto_merge(team_root, txn, deadline)
+    if not auto_merge_ok:
+        details.append("AUTO_MERGE cleanup failed")
+
+    restored_identity = _bound_identity_probe(
+        team_root, txn, identity["branch"], deadline,
+        cap=_BOUND_ROLLBACK_STEP_TIMEOUT)
+    restored_state = _capture_bound_user_state(
+        team_root, txn, deadline, cap=_BOUND_ROLLBACK_STEP_TIMEOUT)
+    unmerged_ok = False
+    probe_timeout = _deadline_timeout(
+        deadline, _BOUND_ROLLBACK_STEP_TIMEOUT)
+    if probe_timeout:
+        try:
+            rc, out, _ = _run_bound_git(
+                team_root, txn,
+                ["diff", "--name-only", "--diff-filter=U", "-z", "--"],
+                probe_timeout)
+            unmerged_ok = rc == 0 and not (out or "")
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        canonical_ok = (_regular_digest(txn.index_path)
+                        == _regular_digest(txn.original_index))
+    except OSError:
+        canonical_ok = False
+    state_ok = restored_state == original_state
+    identity_ok = (restored_identity is not None
+                   and restored_identity["head"] == txn.original_head.lower())
+    dirs_ok = _bound_operation_state_clear(txn)
+    lock_ok = _bound_lock_owned(txn)
+    proven = all((abort_ok, reset_ok, apply_ok, auto_merge_ok, state_ok, identity_ok,
+                  unmerged_ok, dirs_ok, canonical_ok, lock_ok))
+    if not state_ok:
+        details.append("user index/worktree state not restored")
+    if not identity_ok:
+        details.append("captured branch/OID not restored")
+    if not unmerged_ok or not dirs_ok:
+        details.append("reconcile/unmerged state not cleared")
+    if not canonical_ok:
+        details.append("canonical index changed during rollback")
+    return proven, "; ".join(dict.fromkeys(details)), restored_identity
+
+
+def _bound_reconcile_transaction_locked(
+        team_root: str, identity: dict[str, str], upstream_ref: str,
+        upstream_oid: str, local_ref: str, *, mode: str, ahead: int, behind: int,
+        timeout: int, deadline: float) -> ReconcileResult:
+    """Mutate one captured branch under the canonical lock/private-index pair."""
+    is_diverged = mode in {"rebase", "merge"}
+    failure_action = "conflict" if is_diverged else "error"
+    start_timeout = _deadline_timeout(deadline, DEFAULT_TIMEOUT)
+    if not start_timeout:
+        return ReconcileResult(
+            ok=False, action="error", ahead=ahead, behind=behind,
+            diverged=is_diverged,
+            detail="reconcile budget exhausted before index transaction")
+    txn, begin_detail = _begin_bound_index_tx(
+        team_root, identity, start_timeout)
+    if txn is None:
+        return ReconcileResult(
+            ok=False, action=failure_action,
+            ahead=ahead, behind=behind, diverged=is_diverged,
+            detail=begin_detail)
+
+    head_created = stash_created = False
+    recovery_cleanup_safe = True
+    lock_finalized = False
+
+    def _created_ref_pairs() -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        if stash_created:
+            pairs.append((txn.stash_ref, txn.stash_oid))
+        if head_created:
+            pairs.append((txn.head_ref, txn.original_head))
+        return pairs
+
+    def _clean_transaction() -> bool:
+        if not recovery_cleanup_safe:
+            return False
+        # Keep recovery refs live until the filesystem anchor has been removed
+        # and its parent directory fsynced.  A post-rmdir fsync failure can no
+        # longer leave the repository with neither kind of recovery evidence.
+        if not _remove_bound_tx_dir(txn):
+            return False
+        refs_ok = _cleanup_bound_refs(
+            team_root, txn, deadline,
+            head_created=head_created, stash_created=stash_created)
+        if refs_ok:
+            return True
+        # Cleanup may have deleted a prefix of the refs before a later CAS or
+        # probe failed.  Observe the restoration result and also recreate a
+        # durable filesystem blocker so failure never depends on that result.
+        _restore_bound_refs(
+            team_root, txn, deadline, _created_ref_pairs())
+        _ensure_bound_filesystem_anchor(txn)
+        return False
+
+    def _evidence_detail() -> str:
+        anchors: list[str] = []
+        for ref, _expected in _created_ref_pairs():
+            available, actual = _probe_bound_ref_oid(
+                team_root, txn, ref, deadline)
+            if available and actual:
+                anchors.append(f"{ref}@{actual[:12]}")
+        try:
+            tx_stat = os.lstat(txn.tx_dir)
+        except OSError:
+            tx_stat = None
+        if (tx_stat is not None and stat.S_ISDIR(tx_stat.st_mode)
+                and not stat.S_ISLNK(tx_stat.st_mode)):
+            anchors.append(str(txn.tx_dir))
+        if not anchors:
+            return "recovery evidence state unavailable"
+        return "recovery evidence retained at " + " ".join(anchors)
+
+    def _release_then_maybe_clean(
+            detail: str, *, clean: bool) -> tuple[str, bool]:
+        """Finalize lock before any destructive evidence cleanup."""
+        nonlocal lock_finalized
+        release_ok, release_detail = _release_bound_lock(txn)
+        lock_finalized = True
+        if not release_ok:
+            return (f"{detail}; lock release failed: {release_detail}; "
+                    f"{_evidence_detail()}"), False
+        if clean and not _clean_transaction():
+            return f"{detail}; recovery cleanup failed; {_evidence_detail()}", False
+        return detail, True
+
+    def _pre_mutation_failure(detail: str) -> ReconcileResult:
+        detail, _ = _release_then_maybe_clean(detail, clean=True)
+        return ReconcileResult(
+            ok=False, action=failure_action,
+            ahead=ahead, behind=behind, diverged=is_diverged,
+            detail=detail)
+
+    def _mutation_failure(detail: str) -> ReconcileResult:
+        proven, rollback_detail, observed_identity = _rollback_bound_reconcile(
+            team_root, txn, identity, original_state, deadline,
+            mode=mode)
+        if proven:
+            suffix = {
+                "rebase": "rebase failed (aborted)",
+                "merge": "merge failed (aborted)",
+            }.get(mode, "ff failed (rolled back)")
+            message = f"{suffix}: {detail}"
+            if rollback_detail:
+                message += f"; {rollback_detail}"
+            message, _ = _release_then_maybe_clean(message, clean=True)
+        else:
+            message = f"{detail}; abort attempted; rollback not proven"
+            if rollback_detail:
+                message += f"; {rollback_detail}"
+            message += (f"; recovery refs {txn.head_ref} {txn.stash_ref}"
+                        f"; transaction {txn.tx_dir}")
+            message, _ = _release_then_maybe_clean(message, clean=False)
+        return ReconcileResult(
+            ok=False, action=failure_action,
+            ahead=ahead, behind=behind, diverged=is_diverged,
+            detail=message, final_identity=observed_identity)
+
+    try:
+        # Capture semantic user state against the private copy.  Every preparation
+        # probe leaves enough of the same deadline for rollback before mutation.
+        original_state = _capture_bound_user_state(
+            team_root, txn, deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if original_state is None:
+            return _pre_mutation_failure(
+                "bound reconcile user-state snapshot unavailable")
+
+        hidden_flags = _bound_hidden_index_flags(
+            team_root, txn, deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if hidden_flags is None:
+            return _pre_mutation_failure(
+                "bound reconcile hidden index flags unavailable")
+        if hidden_flags:
+            return _pre_mutation_failure(
+                "bound reconcile deferred: hidden index flags present")
+
+        transform_source = _bound_worktree_transform_attrs(
+            team_root, txn, deadline,
+            local_source=txn.original_head, upstream_source=upstream_oid,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if transform_source is None:
+            return _pre_mutation_failure(
+                "bound reconcile working-tree transform proof unavailable")
+        if transform_source:
+            return _pre_mutation_failure(
+                f"bound reconcile deferred: {transform_source} working-tree "
+                "transform attributes present")
+
+        ignored_collision = _bound_ignored_upstream_collision(
+            team_root, txn, txn.original_head, upstream_oid, deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if ignored_collision is None:
+            return _pre_mutation_failure(
+                "bound reconcile ignored path collision proof unavailable")
+        if ignored_collision:
+            return _pre_mutation_failure(
+                "bound reconcile deferred: ignored path collision")
+
+        untracked_collision = _bound_untracked_tree_collision(
+            team_root, txn, txn.original_head, upstream_oid, deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if untracked_collision is None:
+            return _pre_mutation_failure(
+                "bound reconcile untracked path collision proof unavailable")
+        if untracked_collision:
+            return _pre_mutation_failure(
+                "bound reconcile deferred: untracked path collision")
+
+        metadata_issue = _bound_worktree_metadata_issue(
+            team_root, txn, deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE,
+            local_source=txn.original_head,
+            upstream_source=upstream_oid)
+        if metadata_issue is None:
+            return _pre_mutation_failure(
+                "bound reconcile tracked metadata proof unavailable")
+        if metadata_issue:
+            return _pre_mutation_failure(
+                f"bound reconcile deferred: {metadata_issue}")
+
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if not probe_timeout:
+            return _pre_mutation_failure(
+                "reconcile budget exhausted before recovery snapshot")
+        try:
+            rc, stash_out, stash_err = _run_bound_git(
+                team_root, txn,
+                ["stash", "create", "tm-mode bound reconcile"], probe_timeout)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _pre_mutation_failure(
+                f"recovery snapshot exec error: {exc}")
+        if rc != 0:
+            return _pre_mutation_failure(
+                f"recovery snapshot failed: {(stash_err or '').strip()[:200]}")
+        txn.stash_oid = (stash_out or "").strip().lower()
+        if (txn.stash_oid
+                and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", txn.stash_oid)):
+            return _pre_mutation_failure("recovery snapshot OID is invalid")
+
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if not probe_timeout:
+            return _pre_mutation_failure(
+                "reconcile budget exhausted before recovery refs")
+        (ref_completed, head_created, ref_cleanup_safe,
+         ref_detail) = _create_bound_recovery_ref(
+            team_root, txn, txn.head_ref, txn.original_head, deadline,
+            _BOUND_RECONCILE_RECOVERY_RESERVE)
+        recovery_cleanup_safe = recovery_cleanup_safe and ref_cleanup_safe
+        if not ref_completed:
+            return _pre_mutation_failure(
+                f"recovery head ref failed: {ref_detail}")
+        if txn.stash_oid:
+            probe_timeout = _deadline_timeout(
+                deadline, DEFAULT_TIMEOUT,
+                reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+            if not probe_timeout:
+                return _pre_mutation_failure(
+                    "reconcile budget exhausted before stash recovery ref")
+            (ref_completed, stash_created, ref_cleanup_safe,
+             ref_detail) = _create_bound_recovery_ref(
+                team_root, txn, txn.stash_ref, txn.stash_oid, deadline,
+                _BOUND_RECONCILE_RECOVERY_RESERVE)
+            recovery_cleanup_safe = recovery_cleanup_safe and ref_cleanup_safe
+            if not ref_completed:
+                return _pre_mutation_failure(
+                    f"recovery stash ref failed: {ref_detail}")
+
+        # Last pre-mutation gate, under the real index lock: exact symbolic branch,
+        # exact ref OID, unchanged canonical index, and owned lock inode.
+        current = _bound_identity_probe(
+            team_root, txn, identity["branch"], deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        try:
+            canonical_unchanged = (
+                _regular_digest(txn.index_path)
+                == _regular_digest(txn.original_index))
+        except OSError:
+            canonical_unchanged = False
+        if (current != identity or not canonical_unchanged
+                or not _bound_lock_owned(txn)):
+            return _pre_mutation_failure(
+                "checkout or canonical index changed before mutation")
+
+        latest_state = _capture_bound_user_state(
+            team_root, txn, deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if latest_state is None:
+            return _pre_mutation_failure(
+                "bound reconcile final user-state proof unavailable")
+        if latest_state != original_state:
+            return _pre_mutation_failure(
+                "bound reconcile deferred: user state changed before mutation")
+
+        mutation_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if not mutation_timeout:
+            return _pre_mutation_failure(
+                "reconcile budget exhausted before reset mutation")
+        try:
+            rc, _, err = _run_bound_git(
+                team_root, txn,
+                ["reset", "--hard", txn.original_head], mutation_timeout)
+        except subprocess.TimeoutExpired:
+            return _mutation_failure("pre-reconcile reset timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _mutation_failure(f"pre-reconcile reset exec error: {exc}")
+        if rc != 0:
+            return _mutation_failure(
+                f"pre-reconcile reset failed: {(err or '').strip()[:200]}")
+
+        operation_timeout = _deadline_timeout(
+            deadline, timeout,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if not operation_timeout:
+            return _mutation_failure(
+                "reconcile budget exhausted before branch mutation")
+        if mode == "fast-forward":
+            operation_args = [
+                "merge", "--no-overwrite-ignore", "--ff-only", upstream_oid]
+        elif mode == "rebase":
+            operation_args = [
+                "-c", "rebase.autoStash=false",
+                "-c", "rebase.updateRefs=false",
+                "rebase", "--no-autostash", upstream_oid,
+            ]
+        else:  # pending-preserving divergence recovery
+            operation_args = [
+                "merge", "--no-overwrite-ignore",
+                "--no-ff", "--no-edit", upstream_oid,
+            ]
+        try:
+            rc, operation_out, operation_err = _run_bound_git(
+                team_root, txn, operation_args, operation_timeout)
+        except subprocess.TimeoutExpired:
+            return _mutation_failure(f"{mode} timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _mutation_failure(f"{mode} exec error: {exc}")
+        if rc != 0:
+            failure = (operation_err or operation_out or "").strip()[:200]
+            return _mutation_failure(f"{mode} failed: {failure}")
+
+        if txn.stash_oid:
+            apply_timeout = _deadline_timeout(
+                deadline, DEFAULT_TIMEOUT,
+                reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+            if not apply_timeout:
+                return _mutation_failure(
+                    "reconcile budget exhausted before user-state restore")
+            try:
+                rc, _, apply_err = _run_bound_git(
+                    team_root, txn,
+                    ["stash", "apply", "--index", txn.stash_oid], apply_timeout)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return _mutation_failure(f"user-state restore exec error: {exc}")
+            if rc != 0:
+                return _mutation_failure(
+                    f"user-state restore failed: {(apply_err or '').strip()[:200]}")
+
+        if not _clear_bound_auto_merge(team_root, txn, deadline):
+            return _mutation_failure("AUTO_MERGE cleanup failed")
+
+        final_before_promote = _bound_identity_probe(
+            team_root, txn, identity["branch"], deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        restored_state = _capture_bound_user_state(
+            team_root, txn, deadline,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        unmerged_ok = False
+        if probe_timeout:
+            try:
+                urc, uout, _ = _run_bound_git(
+                    team_root, txn,
+                    ["diff", "--name-only", "--diff-filter=U", "-z", "--"],
+                    probe_timeout)
+                unmerged_ok = urc == 0 and not (uout or "")
+            except (OSError, subprocess.SubprocessError):
+                pass
+        state_ok = (restored_state is not None
+                    and restored_state.status == original_state.status
+                    and restored_state.unstaged_diff == original_state.unstaged_diff
+                    and restored_state.staged_diff == original_state.staged_diff)
+        if (final_before_promote is None or not state_ok or not unmerged_ok
+                or not _bound_operation_state_clear(txn)):
+            return _mutation_failure(
+                "reconcile postcondition or user-state proof failed")
+
+        promoted, promote_detail = _promote_bound_index(txn)
+        if not promoted:
+            if txn.promoted:
+                detail = promote_detail
+                detail, _ = _release_then_maybe_clean(detail, clean=False)
+                detail += f"; {_evidence_detail()}"
+                return ReconcileResult(
+                    ok=False,
+                    action=failure_action,
+                    ahead=ahead, behind=behind, diverged=is_diverged,
+                    detail=detail, final_identity=final_before_promote)
+            return _mutation_failure(promote_detail)
+        final_identity = _bound_identity_probe(
+            team_root, txn, identity["branch"], deadline)
+        if final_identity != final_before_promote:
+            # The canonical index has crossed its commit point, so a raw ref writer
+            # that bypasses both the Git index lock and our publication interlock
+            # cannot be rolled back safely.  Never adopt that writer's OID as this
+            # transaction's publication identity.  Retain the original recovery
+            # refs/txdir so the captured commit remains reachable and every later
+            # publication path fails closed until a human repairs the checkout.
+            detail, _ = _release_then_maybe_clean(
+                "checkout changed after private index promotion", clean=False)
+            if "recovery evidence" not in detail:
+                detail += f"; {_evidence_detail()}"
+            return ReconcileResult(
+                ok=False,
+                action=failure_action,
+                ahead=ahead, behind=behind, diverged=is_diverged,
+                detail=detail, final_identity=None)
+
+        release_detail, finalized = _release_then_maybe_clean(
+            "bound reconcile completed", clean=False)
+        if not finalized:
+            return ReconcileResult(
+                ok=False,
+                action=failure_action,
+                ahead=ahead, behind=behind, diverged=is_diverged,
+                detail=release_detail,
+                final_identity=final_identity)
+
+        cleaned = _clean_transaction()
+        if not cleaned:
+            return ReconcileResult(
+                ok=False,
+                action=failure_action,
+                ahead=ahead, behind=behind, diverged=is_diverged,
+                detail=f"recovery cleanup failed; {_evidence_detail()}",
+                final_identity=final_identity)
+        final_ahead = ahead
+        probe_timeout = _deadline_timeout(deadline, DEFAULT_TIMEOUT)
+        if probe_timeout:
+            measured, _, available = _ahead_behind_refs(
+                team_root, upstream_ref, local_ref, probe_timeout)
+            if available:
+                final_ahead = measured
+        action = {
+            "fast-forward": "fast-forward",
+            "rebase": "rebased",
+            "merge": "merged",
+        }[mode]
+        detail = {
+            "fast-forward": "",
+            "rebase": "rebased onto upstream",
+            "merge": "merged upstream while preserving pending ancestry",
+        }[mode]
+        return ReconcileResult(
+            ok=True, action=action, ahead=final_ahead, behind=behind,
+            diverged=is_diverged, detail=detail,
+            final_identity=final_identity)
+    finally:
+        # Push is reached only after this finally; a foreign/replaced lock inode is
+        # never unlinked, while our own real lock is always released on return.
+        if not lock_finalized:
+            _release_bound_lock(txn)
+
+
+def _bound_reconcile_transaction(
+        team_root: str, identity: dict[str, str], upstream_ref: str,
+        upstream_oid: str, local_ref: str, *, mode: str, ahead: int, behind: int,
+        timeout: int, deadline: float,
+        edit_lease_owner: str | None = None,
+        pending_guard: tuple[str, str, dict] | None = None) -> ReconcileResult:
+    """Serialize bound mutation against every publication and clear path."""
+    is_diverged = mode in {"rebase", "merge"}
+    failure_action = "conflict" if is_diverged else "error"
+    lock_timeout = _deadline_timeout(
+        deadline, 1, reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+    if not lock_timeout:
+        return ReconcileResult(
+            ok=False, action=failure_action,
+            ahead=ahead, behind=behind, diverged=is_diverged,
+            detail="reconcile budget exhausted before publication interlock")
+    with _publication_interlock(team_root, lock_timeout) as (acquired, detail):
+        if not acquired:
+            return ReconcileResult(
+                ok=False, action=failure_action,
+                ahead=ahead, behind=behind, diverged=is_diverged,
+                detail=detail)
+        blocker = publication_blocker_detail(team_root, lock_timeout)
+        if blocker:
+            return ReconcileResult(
+                ok=False, action=failure_action,
+                ahead=ahead, behind=behind, diverged=is_diverged,
+                detail=blocker)
+        # The edit gate stays held through local ff/rebase, so a later Pre cannot
+        # register and start writing in the mutation window.  Hook-driven
+        # mutation requires its exact marker to be the sole editor; an explicit
+        # manual/internal mutation requires the marker set to be empty.
+        with _edit_gate(team_root, 0.2) as (edit_acquired, edit_detail):
+            if not edit_acquired:
+                return ReconcileResult(
+                    ok=False, action="deferred", ahead=ahead, behind=behind,
+                    diverged=is_diverged, detail=edit_detail,
+                    final_identity=identity)
+            owners = _active_edit_lease_owners_locked(team_root)
+            expected_owners = (
+                {edit_lease_owner} if edit_lease_owner is not None else set())
+            if owners != expected_owners:
+                return ReconcileResult(
+                    ok=False, action="deferred", ahead=ahead, behind=behind,
+                    diverged=is_diverged,
+                    detail="worktree edit lease unavailable or shared",
+                    final_identity=identity)
+            if (pending_guard is not None
+                    and not _push_pending_snapshot_is_current(
+                        team_root, pending_guard[0], pending_guard[1])):
+                return ReconcileResult(
+                    ok=False, action="pending-changed", ahead=ahead,
+                    behind=behind, diverged=is_diverged,
+                    detail="pending ledger changed before reconcile mutation",
+                    final_identity=identity)
+            result = _bound_reconcile_transaction_locked(
+                team_root, identity, upstream_ref, upstream_oid, local_ref,
+                mode=mode, ahead=ahead, behind=behind,
+                timeout=timeout, deadline=deadline)
+            if result.ok and pending_guard is not None:
+                snapshot, target_key, target = pending_guard
+                if (result.final_identity is None
+                        or not _advance_push_pending_if_unchanged(
+                            team_root, snapshot, target_key,
+                            result.final_identity, target)):
+                    return ReconcileResult(
+                        ok=False, action="pending-update-failed",
+                        ahead=result.ahead, behind=result.behind,
+                        diverged=result.diverged,
+                        detail=("reconciled while preserving pending history, but "
+                                "the pending ledger could not be advanced; retry safe"),
+                        final_identity=result.final_identity)
+            return result
+
+
+def _finalize_pending_reconcile_without_mutation(
+        team_root: str, identity: dict[str, str], *, ahead: int, behind: int,
+        action: str, detail: str, deadline: float,
+        pending_guard: tuple[str, str, dict],
+        edit_lease_owner: str | None = None) -> ReconcileResult:
+    """CAS-check/advance a pending entry under the same mutation barriers."""
+    lock_timeout = _deadline_timeout(deadline, 1)
+    if not lock_timeout:
+        return ReconcileResult(
+            ok=False, action="error", ahead=ahead, behind=behind,
+            detail="reconcile budget exhausted before pending checkpoint",
+            final_identity=identity)
+    with _publication_interlock(team_root, lock_timeout) as (acquired, lock_detail):
+        if not acquired:
+            return ReconcileResult(
+                ok=False, action="error", ahead=ahead, behind=behind,
+                detail=lock_detail, final_identity=identity)
+        blocker = publication_blocker_detail(team_root, lock_timeout)
+        if blocker:
+            return ReconcileResult(
+                ok=False, action="error", ahead=ahead, behind=behind,
+                detail=blocker, final_identity=identity)
+        with _edit_gate(team_root, 0.2) as (edit_acquired, edit_detail):
+            if not edit_acquired:
+                return ReconcileResult(
+                    ok=False, action="deferred", ahead=ahead, behind=behind,
+                    detail=edit_detail, final_identity=identity)
+            owners = _active_edit_lease_owners_locked(team_root)
+            expected = ({edit_lease_owner}
+                        if edit_lease_owner is not None else set())
+            if owners != expected:
+                return ReconcileResult(
+                    ok=False, action="deferred", ahead=ahead, behind=behind,
+                    detail="worktree edit lease unavailable or shared",
+                    final_identity=identity)
+            if not _checkout_matches_identity(team_root, identity, lock_timeout):
+                return ReconcileResult(
+                    ok=False, action="checkout-changed", ahead=ahead,
+                    behind=behind,
+                    detail="checkout changed before pending checkpoint")
+            snapshot, target_key, target = pending_guard
+            if not _advance_push_pending_if_unchanged(
+                    team_root, snapshot, target_key, identity, target):
+                return ReconcileResult(
+                    ok=False, action="pending-update-failed", ahead=ahead,
+                    behind=behind,
+                    detail="pending ledger changed or could not be advanced",
+                    final_identity=identity)
+            return ReconcileResult(
+                ok=True, action=action, ahead=ahead, behind=behind,
+                detail=detail, final_identity=identity)
+
+
 def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT,
-                 deadline=None) -> ReconcileResult:
+                 deadline=None, *, expected_identity: dict | None = None,
+                 _target: _PublicationTarget | None = None,
+                 _allow_bound_mutation: bool = False,
+                 _edit_lease_owner: str | None = None,
+                 _preserve_pending_ancestry: bool = False,
+                 _pending_guard: tuple[str, str, dict] | None = None,
+                 ) -> ReconcileResult:
     """fetch 후 추적 upstream 과 **실제 정합**(ff 또는 rebase --autostash). 무raise(철칙).
 
     do_pull 의 `pull --ff-only` 는 로컬이 diverge(ahead>0 & behind>0)면 조용히 실패해
     멀티유저 환경에서 로컬 커밋만 쌓이게 만든다(이슈 #23). do_reconcile 은 diverge 도
     rebase 로 정합하고, 충돌이면 **abort 후 conflict 로 표면화**(조용히 넘기지 않음).
-    세션 시작 1회용 — 호출 빈도는 상위(session-start 스로틀)가 통제한다.
+    호출 빈도와 deadline은 상위가 통제한다. SessionStart는 스로틀하고,
+    auto-commit publication은 do_commit의 공유 push 예산 안에서 호출한다.
 
     분기:
       - 추적 upstream 없음 → no-upstream(정합 불필요, ok=True).
@@ -581,60 +3223,265 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT,
         return ReconcileResult(ok=False, action="not-worktree",
                                detail="not a git work tree")
 
+    if (_preserve_pending_ancestry
+            and (expected_identity is None or _target is None
+                 or _pending_guard is None)):
+        return ReconcileResult(
+            ok=False, action="error",
+            detail="pending-preserving reconcile requires bound identity and guard")
+
+    # SessionStart/수동 호출(expected_identity=None)은 종전 current HEAD/@{u} 계약을
+    # 그대로 쓴다. auto-commit opt-in만 commit 직후 캡처한 branch+OID와 explicit
+    # publication target에 묶여 checkout 경합을 fail closed로 멈춘다.
+    bound_identity = None
+    local_ref = "HEAD"
+    upstream_ref = "@{u}"
+    if expected_identity is not None:
+        identity_timeout = _remaining(DEFAULT_TIMEOUT)
+        if not identity_timeout:
+            return ReconcileResult(
+                ok=False, action="error",
+                detail="reconcile budget exhausted before identity validation")
+        bound_identity = _validated_branch_identity(
+            team_root, expected_identity, identity_timeout)
+        if bound_identity is None:
+            return ReconcileResult(
+                ok=False, action="checkout-changed",
+                detail="captured checkout identity is invalid")
+        if not _checkout_matches_identity(
+                team_root, bound_identity, identity_timeout):
+            return ReconcileResult(
+                ok=False, action="checkout-changed",
+                detail="checkout changed before reconcile fetch")
+        if _target is None:
+            _target, target_detail = _resolve_publication_target(
+                team_root, bound_identity, identity_timeout,
+                deadline=deadline)
+            if _target is None:
+                return ReconcileResult(
+                    ok=False, action="fetch-failed", detail=target_detail)
+        local_ref = f"refs/heads/{bound_identity['branch']}"
+        upstream_ref = _target.reconcile_ref
+
+    def _checkout_changed(detail: str, *, ahead: int = 0, behind: int = 0,
+                          diverged: bool = False) -> ReconcileResult:
+        return ReconcileResult(
+            ok=False, action="checkout-changed", ahead=ahead, behind=behind,
+            diverged=diverged, detail=detail)
+
+    def _bound_match() -> bool | None:
+        if bound_identity is None:
+            return True
+        identity_timeout = _remaining(DEFAULT_TIMEOUT)
+        if not identity_timeout:
+            return None
+        return _checkout_matches_identity(
+            team_root, bound_identity, identity_timeout)
+
+    def _success_or_pending_checkpoint(
+            action: str, *, ahead: int = 0, behind: int = 0,
+            detail: str = "") -> ReconcileResult:
+        if (_pending_guard is not None and bound_identity is not None):
+            return _finalize_pending_reconcile_without_mutation(
+                team_root, bound_identity, ahead=ahead, behind=behind,
+                action=action, detail=detail, deadline=deadline,
+                pending_guard=_pending_guard,
+                edit_lease_owner=_edit_lease_owner)
+        return ReconcileResult(
+            ok=True, action=action, ahead=ahead, behind=behind,
+            detail=detail, final_identity=bound_identity)
+
     # 1) fetch — push/pull 과 동일 안전장치(http 타임아웃·killpg·자격증명 차단) 재사용.
+    match = _bound_match()
+    if match is None:
+        return ReconcileResult(
+            ok=False, action="error", detail="reconcile budget exhausted before fetch")
+    if not match:
+        return _checkout_changed("checkout changed before reconcile fetch")
     fetch_timeout = _remaining(timeout)
     if not fetch_timeout:
         return ReconcileResult(
             ok=False, action="error", detail="reconcile budget exhausted before fetch")
+    fetch_args = ["-C", team_root, *http_timeout_opts(fetch_timeout)]
+    if _target is not None and _target.push_endpoint:
+        # Reconcile the actual publication endpoint, not merely remote.<name>.url:
+        # a separate pushurl may point at a fork whose branch has advanced.  A
+        # one-shot alias prevents late url.* rewrite rules from retargeting the
+        # captured credential-safe endpoint, mirroring exact push protection.
+        endpoint_alias = f"tm-mode-fetch-{os.urandom(16).hex()}://endpoint"
+        fetch_args += [
+            "-c", f"url.{_target.push_endpoint}.insteadOf={endpoint_alias}",
+            "fetch", "--no-tags", "--no-write-fetch-head", "--",
+            endpoint_alias,
+            f"+{_target.destination}:{_target.reconcile_ref}",
+        ]
+    else:
+        fetch_args += ["fetch"]
+        if _target is not None:
+            # Compatibility for internal callers that predate endpoint capture.
+            fetch_args += ["--", _target.remote]
     try:
         frc, _, ferr = run_git(
-            ["-C", team_root, *http_timeout_opts(fetch_timeout), "fetch"],
-            timeout=fetch_timeout)
+            fetch_args, timeout=fetch_timeout)
     except subprocess.TimeoutExpired:
         return ReconcileResult(ok=False, action="fetch-failed", detail="fetch timeout")
     except (OSError, subprocess.SubprocessError) as exc:
         return ReconcileResult(ok=False, action="fetch-failed",
                                detail=f"fetch exec error: {exc}")
+    if (frc != 0 and _target is not None and _target.push_endpoint
+            and "couldn't find remote ref" in (ferr or "").lower()
+            and _target.destination in (ferr or "")):
+        # Exact endpoint proof says the destination does not exist.  Remove only
+        # the tracking OID we just observed (CAS); a concurrent publication that
+        # created/advanced it wins and makes this attempt retry instead of being
+        # mistaken for a new branch.
+        tracking_available, tracked = _read_ref_oid(
+            team_root, _target.reconcile_ref, min(DEFAULT_TIMEOUT, fetch_timeout))
+        if not tracking_available:
+            return ReconcileResult(
+                ok=False, action="fetch-failed",
+                detail="missing remote branch tracking state unavailable")
+        try:
+            drc, _, derr = run_git(
+                ["-C", team_root, "update-ref", "-d",
+                 _target.reconcile_ref, tracked],
+                timeout=min(DEFAULT_TIMEOUT, fetch_timeout))
+        except (OSError, subprocess.SubprocessError) as exc:
+            return ReconcileResult(
+                ok=False, action="fetch-failed",
+                detail=f"missing remote branch cleanup failed: {exc}")
+        if drc != 0:
+            return ReconcileResult(
+                ok=False, action="fetch-failed",
+                detail=(derr or "publication tracking ref changed").strip()[:200])
+        frc, ferr = 0, ""
     if frc != 0:
         return ReconcileResult(ok=False, action="fetch-failed",
                                detail=(ferr or "").strip()[:200])
+
+    match = _bound_match()
+    if match is None:
+        return ReconcileResult(
+            ok=False, action="error", detail="reconcile budget exhausted after fetch")
+    if not match:
+        return _checkout_changed("checkout changed after reconcile fetch")
 
     # 2) ahead/behind 측정 — 추적 upstream 유무 판정 포함.
     probe_timeout = _remaining(DEFAULT_TIMEOUT)
     if not probe_timeout:
         return ReconcileResult(
             ok=False, action="error", detail="reconcile budget exhausted after fetch")
-    ahead, behind, has_up = _ahead_behind_raw(team_root, probe_timeout)
+    if bound_identity is None:
+        ahead, behind, has_up = _ahead_behind_raw(team_root, probe_timeout)
+    else:
+        upstream_available, upstream_oid = _read_ref_oid(
+            team_root, upstream_ref, probe_timeout)
+        if not upstream_available:
+            return ReconcileResult(
+                ok=False, action="error",
+                detail="publication tracking ref unavailable")
+        if not upstream_oid:
+            return _success_or_pending_checkpoint(
+                "no-upstream", detail="게시 대상 remote branch 없음(정합 불필요)")
+        ahead, behind, has_up = _ahead_behind_refs(
+            team_root, upstream_ref, local_ref, probe_timeout)
     if not has_up:
-        return ReconcileResult(ok=True, action="no-upstream",
-                               detail="추적 upstream 없음(정합 불필요)")
+        return _success_or_pending_checkpoint(
+            "no-upstream", detail="추적 upstream 없음(정합 불필요)")
+
+    # PostToolUse auto-commit runs while another Claude/Codex editor may already
+    # be writing the same checkout.  Without an edit lease, any snapshot followed
+    # by reset/rebase has an unavoidable TOCTOU window that can erase those bytes.
+    # The foreground publication path therefore performs fetch/status only.  A
+    # remote advance is kept as a durable local commit + pending marker for the
+    # SessionStart/manual reconcile channel, which runs outside the file-edit hook.
+    if behind > 0 and not _allow_bound_mutation:
+        return ReconcileResult(
+            ok=False, action="deferred", ahead=ahead, behind=behind,
+            diverged=ahead > 0,
+            detail=("remote advanced; foreground worktree reconciliation "
+                    "disabled because exact edit-lease and pending-safety "
+                    "authorization was not provided"),
+            final_identity=bound_identity)
 
     # 3) 이미 정합(behind==0)
     if behind == 0:
         action = "ahead-only" if ahead > 0 else "up-to-date"
-        return ReconcileResult(ok=True, action=action, ahead=ahead, behind=0)
+        return _success_or_pending_checkpoint(
+            action, ahead=ahead, behind=0)
 
     # 4) 순수 behind → fast-forward
     if ahead == 0:
+        match = _bound_match()
+        if match is None:
+            return ReconcileResult(
+                ok=False, action="error", behind=behind,
+                detail="reconcile budget exhausted before ff merge")
+        if not match:
+            return _checkout_changed(
+                "checkout changed before ff merge", behind=behind)
         merge_timeout = _remaining(DEFAULT_TIMEOUT)
         if not merge_timeout:
             return ReconcileResult(
                 ok=False, action="error", behind=behind,
                 detail="reconcile budget exhausted before ff merge")
-        try:
-            rc, _, err = run_git(
-                ["-C", team_root, "merge", "--ff-only", "@{u}"],
-                timeout=merge_timeout)
-        except subprocess.TimeoutExpired:
-            return ReconcileResult(ok=False, action="error", behind=behind,
-                                   detail="ff merge timeout")
-        except (OSError, subprocess.SubprocessError) as exc:
-            return ReconcileResult(ok=False, action="error", behind=behind,
-                                   detail=f"ff merge exec error: {exc}")
-        if rc == 0:
-            return ReconcileResult(ok=True, action="fast-forward", behind=behind)
-        return ReconcileResult(ok=False, action="error", behind=behind,
-                               detail=(err or "").strip()[:200])
+        if bound_identity is not None:
+            return _bound_reconcile_transaction(
+                team_root, bound_identity, upstream_ref, upstream_oid, local_ref,
+                mode="fast-forward", ahead=ahead, behind=behind,
+                timeout=merge_timeout, deadline=deadline,
+                edit_lease_owner=_edit_lease_owner,
+                pending_guard=_pending_guard)
+        lock_timeout = _remaining(1)
+        if not lock_timeout:
+            return ReconcileResult(
+                ok=False, action="error", behind=behind,
+                detail="reconcile budget exhausted before publication interlock")
+        with _publication_interlock(
+                team_root, lock_timeout) as (acquired, detail):
+            if not acquired:
+                return ReconcileResult(
+                    ok=False, action="error", behind=behind, detail=detail)
+            blocker = publication_blocker_detail(team_root, lock_timeout)
+            if blocker:
+                return ReconcileResult(
+                    ok=False, action="error", behind=behind, detail=blocker)
+            # Explicit/manual callers have no exact tool owner.  Keep the same
+            # PreToolUse barrier held through the entire worktree mutation and
+            # require that no editor is registered.
+            with _edit_gate(team_root, 0.2) as (edit_acquired, edit_detail):
+                if not edit_acquired:
+                    return ReconcileResult(
+                        ok=False, action="deferred", behind=behind,
+                        detail=edit_detail)
+                owners = _active_edit_lease_owners_locked(team_root)
+                if owners != set():
+                    return ReconcileResult(
+                        ok=False, action="deferred", behind=behind,
+                        detail="worktree edit lease unavailable or shared")
+                merge_timeout = _remaining(DEFAULT_TIMEOUT)
+                if not merge_timeout:
+                    return ReconcileResult(
+                        ok=False, action="error", behind=behind,
+                        detail="reconcile budget exhausted before ff merge")
+                try:
+                    rc, _, err = run_git(
+                        ["-C", team_root, "merge", "--ff-only", upstream_ref],
+                        timeout=merge_timeout)
+                except subprocess.TimeoutExpired:
+                    return ReconcileResult(
+                        ok=False, action="error", behind=behind,
+                        detail="ff merge timeout")
+                except (OSError, subprocess.SubprocessError) as exc:
+                    return ReconcileResult(
+                        ok=False, action="error", behind=behind,
+                        detail=f"ff merge exec error: {exc}")
+                if rc == 0:
+                    return ReconcileResult(
+                        ok=True, action="fast-forward", behind=behind)
+                return ReconcileResult(
+                    ok=False, action="error", behind=behind,
+                    detail=(err or "").strip()[:200])
 
     # 5) diverge(ahead>0 & behind>0) → rebase --autostash. dirty 파일과 upstream
     # 변경이 겹치면 autostash 적용이 충돌 상태를 남길 수 있으므로 시작 전에 보류한다.
@@ -643,73 +3490,125 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT,
             ok=False, action="error", ahead=ahead, behind=behind, diverged=True,
             detail="reconcile budget exhausted before rebase safety checks")
     safety_issue = _rebase_dirty_safety_issue(
-        team_root, "@{u}", _remaining(1))
+        team_root, upstream_ref, _remaining(1), local_ref=local_ref)
     if safety_issue:
         return ReconcileResult(
             ok=False, action="conflict", ahead=ahead, behind=behind,
             diverged=True, detail=f"rebase deferred: {safety_issue}")
-    rebase_guard = _capture_rebase_guard(team_root, _remaining(1))
-    if rebase_guard is None:
-        return ReconcileResult(
-            ok=False, action="conflict", ahead=ahead, behind=behind,
-            diverged=True, detail="rebase deferred: rollback guard unavailable")
-    if not _budget_ok(reserve=_RECONCILE_REBASE_RECOVERY_RESERVE + 1):
-        return ReconcileResult(
-            ok=False, action="error", ahead=ahead, behind=behind, diverged=True,
-            detail="reconcile budget exhausted before rebase")
-    rebase_timeout = _remaining(
-        timeout, reserve=_RECONCILE_REBASE_RECOVERY_RESERVE)
-    try:
-        rc, rout, rerr = run_git(
-            ["-C", team_root, "rebase", "--autostash", "@{u}"],
-            timeout=rebase_timeout)
-    except subprocess.TimeoutExpired as exc:
-        created_autostash = _created_autostash_oid(
-            team_root, _timeout_detail(exc), timeout=1)
-        _abort_rebase(team_root, 1)
-        _post_ok, post_detail = _verify_rebase_postcondition(
-            team_root, rebase_guard, created_autostash, timeout=1)
-        return ReconcileResult(ok=False, action="conflict", ahead=ahead,
-                               behind=behind, diverged=True,
-                               detail="rebase timeout(aborted)" +
-                               (f"; {post_detail}" if post_detail else ""))
-    except (OSError, subprocess.SubprocessError) as exc:
-        _abort_rebase(team_root, 1)
-        _post_ok, post_detail = _verify_rebase_postcondition(
-            team_root, rebase_guard, timeout=1)
-        return ReconcileResult(ok=False, action="conflict", ahead=ahead,
-                               behind=behind, diverged=True,
-                               detail=f"rebase exec error(aborted): {exc}" +
-                               (f"; {post_detail}" if post_detail else ""))
-    if rc == 0:
-        created_autostash = _created_autostash_oid(
-            team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
-        post_ok, post_detail = _verify_rebase_postcondition(
-            team_root, rebase_guard, created_autostash, timeout=1)
-        if not post_ok:
+    if bound_identity is not None:
+        return _bound_reconcile_transaction(
+            team_root, bound_identity, upstream_ref, upstream_oid, local_ref,
+            mode=("merge" if _preserve_pending_ancestry else "rebase"),
+            ahead=ahead, behind=behind,
+            timeout=timeout, deadline=deadline,
+            edit_lease_owner=_edit_lease_owner,
+            pending_guard=_pending_guard)
+
+    def _run_unbound_rebase_locked() -> ReconcileResult:
+        # The first safety probe happened before lock acquisition; repeat it in
+        # the serialized mutation window so a concurrent residue never slips in.
+        locked_safety_issue = _rebase_dirty_safety_issue(
+            team_root, upstream_ref, _remaining(1), local_ref=local_ref)
+        if locked_safety_issue:
             return ReconcileResult(
                 ok=False, action="conflict", ahead=ahead, behind=behind,
-                diverged=True, detail=f"rebase postcondition failed: {post_detail}")
-        # 정합 후 남은 ahead(미push 로컬 커밋) 재계산.
-        final_probe_timeout = _remaining(DEFAULT_TIMEOUT)
-        if not final_probe_timeout:
+                diverged=True,
+                detail=f"rebase deferred: {locked_safety_issue}")
+        rebase_guard = _capture_rebase_guard(team_root, _remaining(1))
+        if rebase_guard is None:
+            return ReconcileResult(
+                ok=False, action="conflict", ahead=ahead, behind=behind,
+                diverged=True,
+                detail="rebase deferred: rollback guard unavailable")
+        if not _budget_ok(reserve=_RECONCILE_REBASE_RECOVERY_RESERVE + 1):
             return ReconcileResult(
                 ok=False, action="error", ahead=ahead, behind=behind,
-                diverged=True,
-                detail="reconciled but budget exhausted before final status")
-        a2, _, _ = _ahead_behind_raw(team_root, final_probe_timeout)
-        return ReconcileResult(ok=True, action="rebased", ahead=a2,
-                               behind=behind, diverged=True,
-                               detail="rebased onto upstream")
-    _abort_rebase(team_root, 1)
-    created_autostash = _created_autostash_oid(
-        team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
-    _post_ok, post_detail = _verify_rebase_postcondition(
-        team_root, rebase_guard, created_autostash, timeout=1)
-    return ReconcileResult(ok=False, action="conflict", ahead=ahead,
-                           behind=behind, diverged=True,
-                           detail=(rerr or "").strip()[:200] +
-                           (f"; {post_detail}" if post_detail else ""))
+                diverged=True, detail="reconcile budget exhausted before rebase")
+        rebase_timeout = _remaining(
+            timeout, reserve=_RECONCILE_REBASE_RECOVERY_RESERVE)
+        try:
+            rc, rout, rerr = run_git(
+                ["-C", team_root, "rebase", "--autostash", upstream_ref],
+                timeout=rebase_timeout)
+        except subprocess.TimeoutExpired as exc:
+            created_autostash = _created_autostash_oid(
+                team_root, _timeout_detail(exc), timeout=1)
+            abort_ok = _abort_rebase(team_root, 1)
+            rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
+                team_root, rebase_guard, created_autostash, timeout=1)
+            return ReconcileResult(
+                ok=False, action="conflict", ahead=ahead, behind=behind,
+                diverged=True, detail=_rebase_abort_detail(
+                    "rebase timeout", abort_ok, rollback_ok, post_detail))
+        except (OSError, subprocess.SubprocessError) as exc:
+            abort_ok = _abort_rebase(team_root, 1)
+            rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
+                team_root, rebase_guard, timeout=1)
+            return ReconcileResult(
+                ok=False, action="conflict", ahead=ahead, behind=behind,
+                diverged=True, detail=_rebase_abort_detail(
+                    f"rebase exec error: {exc}", abort_ok, rollback_ok,
+                    post_detail))
+        if rc == 0:
+            created_autostash = _created_autostash_oid(
+                team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+            post_ok, post_detail = _verify_rebase_postcondition(
+                team_root, rebase_guard, created_autostash, timeout=1)
+            if not post_ok:
+                return ReconcileResult(
+                    ok=False, action="conflict", ahead=ahead, behind=behind,
+                    diverged=True,
+                    detail=f"rebase postcondition failed: {post_detail}")
+            final_probe_timeout = _remaining(DEFAULT_TIMEOUT)
+            if not final_probe_timeout:
+                return ReconcileResult(
+                    ok=False, action="error", ahead=ahead, behind=behind,
+                    diverged=True,
+                    detail="reconciled but budget exhausted before final status")
+            a2, _, _ = _ahead_behind_raw(team_root, final_probe_timeout)
+            return ReconcileResult(
+                ok=True, action="rebased", ahead=a2, behind=behind,
+                diverged=True, detail="rebased onto upstream")
+        abort_ok = _abort_rebase(team_root, 1)
+        created_autostash = _created_autostash_oid(
+            team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
+        rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
+            team_root, rebase_guard, created_autostash, timeout=1)
+        return ReconcileResult(
+            ok=False, action="conflict", ahead=ahead, behind=behind,
+            diverged=True, detail=_rebase_abort_detail(
+                "rebase failed", abort_ok, rollback_ok, post_detail,
+                (rerr or "").strip()[:200]))
+
+    lock_timeout = _remaining(
+        1, reserve=_RECONCILE_REBASE_RECOVERY_RESERVE)
+    if not lock_timeout:
+        return ReconcileResult(
+            ok=False, action="error", ahead=ahead, behind=behind, diverged=True,
+            detail="reconcile budget exhausted before publication interlock")
+    with _publication_interlock(
+            team_root, lock_timeout) as (acquired, detail):
+        if not acquired:
+            return ReconcileResult(
+                ok=False, action="conflict", ahead=ahead, behind=behind,
+                diverged=True, detail=detail)
+        blocker = publication_blocker_detail(team_root, lock_timeout)
+        if blocker:
+            return ReconcileResult(
+                ok=False, action="conflict", ahead=ahead, behind=behind,
+                diverged=True, detail=blocker)
+        with _edit_gate(team_root, 0.2) as (edit_acquired, edit_detail):
+            if not edit_acquired:
+                return ReconcileResult(
+                    ok=False, action="deferred", ahead=ahead, behind=behind,
+                    diverged=True, detail=edit_detail)
+            owners = _active_edit_lease_owners_locked(team_root)
+            if owners != set():
+                return ReconcileResult(
+                    ok=False, action="deferred", ahead=ahead, behind=behind,
+                    diverged=True,
+                    detail="worktree edit lease unavailable or shared")
+            return _run_unbound_rebase_locked()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -994,6 +3893,8 @@ def push_pending_path(team_root: str) -> str:
 
 _PUSH_PENDING_LOCK_WAIT_SECONDS = 1.0
 _PUSH_PENDING_LOCK_POLL_SECONDS = 0.01
+_PENDING_IDENTITY_TIMEOUT = 1
+_PENDING_TARGET_UNSET = object()
 _LOCK_CONTENTION_ERRNOS = {
     errno.EACCES,
     errno.EAGAIN,
@@ -1380,6 +4281,75 @@ def pending_targets_current_checkout(team_root: str, snapshot_content: str) -> b
     return bool(pending_entry_key_for_current_checkout(team_root, snapshot_content))
 
 
+def pending_allows_current_checkout_reconcile(
+        team_root: str, snapshot_content: str) -> bool:
+    """Return whether pending evidence proves this checkout may be rewritten.
+
+    An immutable pending head for the current checkout cannot survive rebase:
+    the rewritten commit gets a new OID while the worker remains bound to the
+    old one.  Unknown/legacy/corrupt evidence is equally unsafe.  Valid entries
+    for other checkouts do not constrain the current branch.
+    """
+    if not snapshot_content:
+        return True
+    entries = _pending_entries(snapshot_content)
+    if not entries or _legacy_pending_key(snapshot_content):
+        return False
+    current = _checkout_identity(team_root)
+    if not current.get("key") or current["key"] in entries:
+        return False
+    for key, entry in entries.items():
+        if (key.startswith("legacy:") or not isinstance(entry, dict)
+                or entry.get("legacy") is True):
+            return False
+        identity = _validated_pending_identity(team_root, {
+            "key": key,
+            "branch": str(entry.get("branch") or ""),
+            "head": str(entry.get("head") or ""),
+        })
+        if identity is None:
+            return False
+    return True
+
+
+def pending_entry_covered_by_publication(
+        team_root: str, snapshot_content: str, target_key: str,
+        publication_identity: dict | None,
+        publication_target: dict | None) -> bool:
+    """Prove a just-published immutable commit contains one older pending entry."""
+    entry = _pending_entries(snapshot_content).get(target_key)
+    published = _validated_pending_identity(team_root, publication_identity)
+    if not isinstance(entry, dict) or published is None:
+        return False
+    if published.get("key") != target_key:
+        return False
+    pending = _validated_pending_identity(
+        team_root, {
+            "key": target_key,
+            "branch": str(entry.get("branch") or ""),
+            "head": str(entry.get("head") or ""),
+        })
+    if pending is None or not isinstance(publication_target, dict):
+        return False
+
+    def _signature(payload: dict) -> tuple[str, str, str, str] | None:
+        values = tuple(str(payload.get(key) or "") for key in (
+            "remote", "destination", "reconcile_ref", "remote_fingerprint"))
+        if (not values[0] or not values[1].startswith("refs/heads/")
+                or not values[2].startswith("refs/remotes/")
+                or not re.fullmatch(r"[0-9a-f]{64}", values[3])):
+            return None
+        return values
+
+    if (_signature(entry) is None
+            or _signature(entry) != _signature(publication_target)):
+        return False
+    if pending["head"] == published["head"]:
+        return True
+    return _pending_head_ancestry(
+        team_root, pending["head"], published["head"]) is True
+
+
 def pending_target_summary(snapshot_content: str, team_root: str = "") -> str:
     """경고용 pending target 요약(credential/control-code 정제 포함)."""
     targets = []
@@ -1418,7 +4388,7 @@ def _validated_pending_identity(
         try:
             rc, _, _ = run_git(
                 ["-C", team_root, "check-ref-format", "--branch", branch],
-                timeout=DEFAULT_TIMEOUT)
+                timeout=_PENDING_IDENTITY_TIMEOUT)
         except (OSError, subprocess.SubprocessError):
             return None
         if rc != 0:
@@ -1428,7 +4398,7 @@ def _validated_pending_identity(
     try:
         rc, _, _ = run_git(
             ["-C", team_root, "cat-file", "-e", f"{head}^{{commit}}"],
-            timeout=DEFAULT_TIMEOUT)
+            timeout=_PENDING_IDENTITY_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return None
     if rc != 0:
@@ -1436,7 +4406,216 @@ def _validated_pending_identity(
     return {"key": key, "branch": branch, "head": head.lower()}
 
 
-def write_push_pending(team_root: str, identity: dict | None = None) -> bool:
+def _pending_target_payload(target: _PublicationTarget) -> dict:
+    return {
+        "remote": target.remote,
+        "destination": target.destination,
+        "reconcile_ref": target.reconcile_ref,
+        "set_upstream": target.set_upstream,
+        "remote_fingerprint": target.remote_fingerprint,
+    }
+
+
+def _validated_pending_target(
+        team_root: str, target: _PublicationTarget | dict | None,
+        timeout: int = _PENDING_IDENTITY_TIMEOUT, *,
+        verify_remote_binding: bool = True) -> dict | None:
+    """Validate a credential-free exact pending publication destination."""
+    if isinstance(target, _PublicationTarget):
+        payload = _pending_target_payload(target)
+    elif isinstance(target, dict):
+        payload = dict(target)
+    else:
+        return None
+    remote = payload.get("remote")
+    destination = payload.get("destination")
+    reconcile_ref = payload.get("reconcile_ref")
+    set_upstream = payload.get("set_upstream", False)
+    remote_fingerprint = payload.get("remote_fingerprint")
+    if (not all(isinstance(value, str)
+                for value in (
+                    remote, destination, reconcile_ref, remote_fingerprint))
+            or not isinstance(set_upstream, bool)
+            or not re.fullmatch(r"[0-9a-f]{64}", remote_fingerprint)):
+        return None
+    remotes = _remote_names(team_root, timeout)
+    if remotes is None or not _valid_remote(remote, remotes):
+        return None
+    if verify_remote_binding:
+        current_fingerprint = _remote_push_fingerprint(
+            team_root, remote, timeout)
+        if (not current_fingerprint
+                or current_fingerprint != remote_fingerprint):
+            return None
+    if (not destination.startswith("refs/heads/")
+            or not _valid_full_ref(team_root, destination, timeout)):
+        return None
+    if (not reconcile_ref.startswith("refs/remotes/")
+            or not _valid_full_ref(team_root, reconcile_ref, timeout)
+            or reconcile_ref != _tracking_ref_for_destination(
+                remote, destination)):
+        return None
+    return {
+        "remote": remote,
+        "destination": destination,
+        "reconcile_ref": reconcile_ref,
+        "set_upstream": set_upstream,
+        "remote_fingerprint": remote_fingerprint,
+    }
+
+
+def _pending_head_ancestry(
+        team_root: str, older: str, newer: str,
+        timeout: int = _PENDING_IDENTITY_TIMEOUT) -> bool | None:
+    """Return whether older is an ancestor of newer; None means unprovable."""
+    try:
+        rc, _, _ = run_git(
+            ["-C", team_root, "merge-base", "--is-ancestor", older, newer],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc == 0:
+        return True
+    if rc == 1:
+        return False
+    return None
+
+
+def _push_pending_snapshot_is_current(
+        team_root: str, snapshot_content: str, target_key: str) -> bool:
+    """Short exact ledger precheck; callers use publication interlock for races."""
+    if not snapshot_content or not target_key:
+        return False
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return False
+        current = _read_private_text(push_pending_path(team_root))
+        return (current.available
+                and current.content == snapshot_content.strip()
+                and target_key in _pending_entries(current.content))
+
+
+def _advance_push_pending_if_unchanged(
+        team_root: str, snapshot_content: str, target_key: str,
+        final_identity: dict | None, target: dict | None) -> bool:
+    """CAS-advance H1 to a proven descendant without losing other checkouts.
+
+    The caller holds the publication interlock and edit gate.  Validation and
+    ancestry probes happen before the short ledger lock; the byte-exact snapshot
+    check inside the lock prevents a concurrent writer from being overwritten.
+    """
+    final = _validated_pending_identity(team_root, final_identity)
+    stored_target = _validated_pending_target(team_root, target)
+    snapshot_entries = _pending_entries(snapshot_content)
+    old_entry = snapshot_entries.get(target_key)
+    if (final is None or final.get("key") != target_key
+            or stored_target is None or not isinstance(old_entry, dict)):
+        return False
+    old_identity = _validated_pending_identity(team_root, {
+        "key": target_key,
+        "branch": str(old_entry.get("branch") or ""),
+        "head": str(old_entry.get("head") or ""),
+    })
+    old_target = _validated_pending_target(team_root, old_entry)
+    if (old_identity is None or old_target != stored_target
+            or _pending_head_ancestry(
+                team_root, old_identity["head"], final["head"]) is not True):
+        return False
+
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return False
+        current = _read_private_text(push_pending_path(team_root))
+        if (not current.available
+                or current.content != snapshot_content.strip()):
+            return False
+        entries = _pending_entries(current.content)
+        entry = entries.get(target_key)
+        if not isinstance(entry, dict) or entry != old_entry:
+            return False
+        if old_identity["head"] == final["head"]:
+            return True
+        advanced = dict(entry)
+        advanced.update({
+            "branch": final["branch"],
+            "head": final["head"],
+            "written_at": datetime.now().isoformat(timespec="seconds"),
+            "nonce": os.urandom(8).hex(),
+        })
+        entries[target_key] = advanced
+        return _write_private_text(
+            push_pending_path(team_root),
+            _serialize_pending_entries(team_root, entries))
+
+
+def reconcile_current_pending(
+        team_root: str, snapshot_content: str, target_key: str,
+        timeout: int = NET_TIMEOUT, deadline: float | None = None,
+        ) -> ReconcileResult:
+    """Safely converge one current-checkout pending entry with its stored target.
+
+    Divergence is merged rather than rebased so the recorded immutable H1 stays
+    an ancestor.  The ledger is then CAS-advanced to the final branch head while
+    publication/edit barriers are still held, allowing the exact worker to push
+    the new head without an H1/non-fast-forward retry wedge.
+    """
+    entry = _pending_entries(snapshot_content).get(target_key)
+    if not isinstance(entry, dict):
+        return ReconcileResult(
+            ok=False, action="pending-changed",
+            detail="pending entry unavailable")
+    pending_identity = _validated_pending_identity(team_root, {
+        "key": target_key,
+        "branch": str(entry.get("branch") or ""),
+        "head": str(entry.get("head") or ""),
+    })
+    current = _validated_branch_identity(team_root, _checkout_identity(team_root))
+    if (pending_identity is None or current is None
+            or pending_identity.get("key") != current.get("key")):
+        return ReconcileResult(
+            ok=False, action="checkout-changed",
+            detail="pending entry does not match the current branch")
+    if _pending_head_ancestry(
+            team_root, pending_identity["head"], current["head"]) is not True:
+        return ReconcileResult(
+            ok=False, action="pending-history-changed",
+            detail="recorded pending head is not an ancestor of current HEAD",
+            final_identity=current)
+
+    validated_target = _validated_pending_target(team_root, entry)
+    if validated_target is None:
+        return ReconcileResult(
+            ok=False, action="pending-target-invalid",
+            detail="stored pending target or remote binding changed",
+            final_identity=current)
+    binding = _remote_push_binding(
+        team_root, validated_target["remote"],
+        timeout=min(DEFAULT_TIMEOUT, max(1, timeout)))
+    if (binding is None
+            or binding[1] != validated_target["remote_fingerprint"]):
+        return ReconcileResult(
+            ok=False, action="pending-target-invalid",
+            detail="stored pending remote binding changed",
+            final_identity=current)
+    target = _PublicationTarget(
+        remote=validated_target["remote"],
+        destination=validated_target["destination"],
+        reconcile_ref=validated_target["reconcile_ref"],
+        set_upstream=validated_target["set_upstream"],
+        remote_fingerprint=validated_target["remote_fingerprint"],
+        push_endpoint=binding[0],
+    )
+    guard = (snapshot_content, target_key, validated_target)
+    return do_reconcile(
+        team_root, timeout=timeout, deadline=deadline,
+        expected_identity=current, _target=target,
+        _allow_bound_mutation=True,
+        _preserve_pending_ancestry=True, _pending_guard=guard)
+
+
+def write_push_pending(
+        team_root: str, identity: dict | None = None,
+        *, target=_PENDING_TARGET_UNSET) -> bool:
     """현재 checkout pending entry를 원자 upsert한다. 다른 branch entry는 보존. 무raise.
 
     branch/detached HEAD binding은 worker가 다른 branch를 성공으로 오판해 ledger를
@@ -1447,6 +4626,20 @@ def write_push_pending(team_root: str, identity: dict | None = None) -> bool:
     identity = _validated_pending_identity(team_root, identity)
     if identity is None:
         return False
+    if target is _PENDING_TARGET_UNSET:
+        resolved_target = None
+        if identity.get("branch") and identity.get("head"):
+            resolved_target, _ = _resolve_publication_target(
+                team_root, identity, timeout=DEFAULT_TIMEOUT)
+        target_payload = _validated_pending_target(
+            team_root, resolved_target, _PENDING_IDENTITY_TIMEOUT)
+    elif target is None:
+        target_payload = None
+    else:
+        target_payload = _validated_pending_target(
+            team_root, target, _PENDING_IDENTITY_TIMEOUT)
+        if target_payload is None:
+            return False
     with _push_pending_ledger_lock(team_root) as locked:
         if not locked:
             return False
@@ -1466,13 +4659,44 @@ def write_push_pending(team_root: str, identity: dict | None = None) -> bool:
                     "written_at": datetime.now().isoformat(timespec="seconds"),
                     "nonce": legacy_key.removeprefix("legacy:"),
                 }
-            entries[identity["key"]] = {
+            existing = entries.get(identity["key"])
+            if isinstance(existing, dict):
+                existing_head = str(existing.get("head") or "").lower()
+                existing_target = {
+                    key: existing.get(key)
+                    for key in (
+                        "remote", "destination", "reconcile_ref", "set_upstream",
+                        "remote_fingerprint")
+                    if key in existing
+                }
+                if existing_head and existing_head != identity["head"]:
+                    old_in_new = _pending_head_ancestry(
+                        team_root, existing_head, identity["head"])
+                    new_in_old = _pending_head_ancestry(
+                        team_root, identity["head"], existing_head)
+                    targets_match = (not existing_target
+                                     or existing_target == target_payload)
+                    if new_in_old is True and targets_match:
+                        # The existing pending head already publishes the newer
+                        # request's full history. Preserve its immutable nonce/head.
+                        return True
+                    if old_in_new is not True or not targets_match:
+                        # A reset/recommit or target change cannot overwrite the
+                        # only durable record of the older unpublished commit.
+                        return False
+                elif (existing_head == identity["head"] and existing_target
+                      and existing_target != target_payload):
+                    return False
+            entry = {
                 "branch": identity["branch"],
                 "head": identity["head"],
                 "written_at": datetime.now().isoformat(timespec="seconds"),
                 # coarse mtime FS에서도 같은 초 재기록을 구분하는 고유 판별자.
                 "nonce": os.urandom(8).hex(),
             }
+            if target_payload is not None:
+                entry.update(target_payload)
+            entries[identity["key"]] = entry
             payload = _serialize_pending_entries(team_root, entries)
             return _write_private_text(push_pending_path(team_root), payload)
         except (OSError, ValueError):
@@ -1492,7 +4716,70 @@ def read_push_pending(team_root: str) -> str:
     return read_push_pending_state(team_root).content
 
 
-def clear_push_pending_if_unchanged(
+def push_pending_entry(
+        team_root: str, snapshot_content: str, target_key: str,
+        timeout: int = NET_TIMEOUT) -> tuple[bool, str]:
+    """Publish one ledger entry by its stored immutable OID and exact target.
+
+    No current branch, upstream, or later Git config participates.  A target-less
+    legacy entry is preserved for manual/session recovery rather than guessed.
+    """
+    entry = _pending_entries(snapshot_content).get(target_key)
+    if not isinstance(entry, dict):
+        return False, "pending entry unavailable"
+    identity = _validated_pending_identity(
+        team_root, {
+            "key": target_key,
+            "branch": str(entry.get("branch") or ""),
+            "head": str(entry.get("head") or ""),
+        })
+    if identity is None:
+        return False, "pending identity unavailable"
+    target = _validated_pending_target(
+        team_root, entry, verify_remote_binding=False)
+    if target is None:
+        return False, "pending publication target unavailable"
+    binding = _remote_push_binding(team_root, target["remote"], timeout)
+    if binding is None or binding[1] != target["remote_fingerprint"]:
+        return False, "pending remote binding changed"
+    endpoint, _fingerprint = binding
+    try:
+        rc, out, err, tracking_detail = _run_exact_publication_push(
+            team_root, endpoint, target["destination"],
+            target["reconcile_ref"], identity["head"], timeout)
+    except subprocess.TimeoutExpired:
+        return False, "pending push timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"pending push exec error: {exc}"
+    if rc == 0:
+        detail = "pushed pending immutable head"
+        if tracking_detail:
+            detail += f"; tracking update skipped: {tracking_detail}"
+        if target["set_upstream"]:
+            stored_target = _PublicationTarget(
+                remote=target["remote"],
+                destination=target["destination"],
+                reconcile_ref=target["reconcile_ref"],
+                set_upstream=True,
+                remote_fingerprint=target["remote_fingerprint"],
+                push_endpoint=endpoint,
+            )
+            setup_ok, setup_detail = _set_publication_upstream(
+                team_root, identity, stored_target,
+                timeout=min(DEFAULT_TIMEOUT, max(1, timeout)))
+            if setup_ok:
+                return True, f"{detail} (set upstream)"
+            # The immutable commit is already durable at the exact destination.
+            # Never turn a local config race into a duplicate publication retry.
+            return True, f"{detail}; upstream setup skipped: {setup_detail}"
+        return True, detail
+    combined = (err or "") + "\n" + (out or "")
+    if _is_non_fast_forward(combined):
+        return False, "non-fast-forward"
+    return False, f"pending push failed: {combined.strip()[:200]}"
+
+
+def _clear_push_pending_if_unchanged_locked(
         team_root: str, snapshot_content: str, target_key: str | None = None) -> bool:
     """스냅샷이 그대로일 때 지정 checkout entry만 clear한다.
 
@@ -1528,7 +4815,18 @@ def clear_push_pending_if_unchanged(
         return _write_private_text(path, _serialize_pending_entries(team_root, entries))
 
 
-def clear_sync_warning_if_fully_published(
+def clear_push_pending_if_unchanged(
+        team_root: str, snapshot_content: str,
+        target_key: str | None = None) -> bool:
+    """Interlocked public CAS clear; blockers preserve the pending ledger."""
+    with _publication_interlock(team_root, 1) as (acquired, _detail):
+        if not acquired or publication_blocker_detail(team_root, 1):
+            return False
+        return _clear_push_pending_if_unchanged_locked(
+            team_root, snapshot_content, target_key)
+
+
+def _clear_sync_warning_if_fully_published_locked(
         team_root: str, timeout: int = DEFAULT_TIMEOUT) -> bool:
     """origin publication 과 empty pending 을 함께 입증한 경우에만 warning 을 지운다.
 
@@ -1557,6 +4855,80 @@ def clear_sync_warning_if_fully_published(
         return _remove_private_file(sync_warning_path(team_root))
 
 
+def clear_sync_warning_if_fully_published(
+        team_root: str, timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """Interlocked public warning clear; blockers preserve diagnostic state."""
+    lock_timeout = max(0.05, min(float(timeout), 1.0))
+    with _publication_interlock(
+            team_root, lock_timeout) as (acquired, _detail):
+        if (not acquired
+                or publication_blocker_detail(team_root, lock_timeout)):
+            return False
+        return _clear_sync_warning_if_fully_published_locked(
+            team_root, timeout)
+
+
+def clear_sync_warning_after_exact_publication(
+        team_root: str, identity: dict | None, target: dict | None,
+        timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """Clear a warning only when this exact target/OID is locally proven durable.
+
+    ``@{u}`` is the wrong proof for triangular workflows (pull from origin,
+    publish to fork).  Exact publication advances the captured destination's
+    tracking ref, so that ref plus an empty pending ledger is the target-aware
+    success proof.  Warning content is compare-and-delete guarded to avoid
+    erasing a newer concurrent failure.
+    """
+    lock_timeout = max(0.05, min(float(timeout), 1.0))
+    with _publication_interlock(
+            team_root, lock_timeout) as (acquired, _detail):
+        if (not acquired
+                or publication_blocker_detail(team_root, lock_timeout)):
+            return False
+        published = _validated_pending_identity(team_root, identity)
+        destination = _validated_pending_target(
+            team_root, target, timeout=min(DEFAULT_TIMEOUT, max(1, timeout)))
+        if published is None or destination is None:
+            return False
+        available, tracked = _read_ref_oid(
+            team_root, destination["reconcile_ref"],
+            timeout=min(DEFAULT_TIMEOUT, max(1, timeout)))
+        if (not available
+                or tracked.lower() != published["head"].lower()):
+            return False
+        warning_before = _read_private_text(sync_warning_path(team_root))
+        if not warning_before.available:
+            return False
+        with _push_pending_ledger_lock(team_root) as locked:
+            if not locked:
+                return False
+            pending = _read_private_text(push_pending_path(team_root))
+            if not pending.available or pending.content:
+                return False
+            warning_now = _read_private_text(sync_warning_path(team_root))
+            if (not warning_now.available
+                    or warning_now.fingerprint != warning_before.fingerprint
+                    or warning_now.content != warning_before.content):
+                return False
+            return _remove_private_file(sync_warning_path(team_root))
+
+
+def clear_sync_warning_after_pending_publication(
+        team_root: str, snapshot_content: str, target_key: str,
+        timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """Target-aware warning cleanup for a just-CAS-cleared worker snapshot."""
+    entry = _pending_entries(snapshot_content).get(target_key)
+    if not isinstance(entry, dict):
+        return False
+    identity = {
+        "key": target_key,
+        "branch": str(entry.get("branch") or ""),
+        "head": str(entry.get("head") or ""),
+    }
+    return clear_sync_warning_after_exact_publication(
+        team_root, identity, entry, timeout=timeout)
+
+
 def push_pending_age_seconds(team_root: str):
     """pending 마커 나이(초). 없으면 None. UserPromptSubmit 초경량 검사용 —
     state dir + marker lstat 만 수행한다(장수 세션에서 매 발화 비용 최소화)."""
@@ -1575,6 +4947,864 @@ def push_pending_age_seconds(team_root: str):
         return None
 
 
+def _owned_directory(path: Path) -> bool:
+    try:
+        current = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(current.st_mode) and not stat.S_ISLNK(current.st_mode)
+            and (not hasattr(os, "getuid") or current.st_uid == os.getuid()))
+
+
+def _git_common_admin_dirs(
+        team_root: str, timeout: float
+        ) -> tuple[Path | None, tuple[Path, ...], str]:
+    """Resolve and owner-validate the common dir plus every worktree admin."""
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root, "rev-parse", "--git-common-dir"],
+            timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, (), f"Git common directory unavailable: {exc}"
+    raw_common = (out or "").rstrip("\n")
+    if rc != 0 or not raw_common or "\n" in raw_common or "\0" in raw_common:
+        failure = (err or "Git common directory unavailable").strip()[:200]
+        return None, (), failure
+    candidate = Path(raw_common)
+    common_dir = candidate if candidate.is_absolute() else Path(team_root) / candidate
+    common_dir = Path(os.path.abspath(common_dir))
+    if not _owned_directory(common_dir):
+        return None, (), "Git common directory is not an owned safe directory"
+
+    admins: list[Path] = [common_dir]
+    worktrees_dir = common_dir / "worktrees"
+    try:
+        worktrees_stat = os.lstat(worktrees_dir)
+    except FileNotFoundError:
+        return common_dir, tuple(admins), ""
+    except OSError as exc:
+        return None, (), f"linked-worktree admin probe unavailable: {exc}"
+    if (not stat.S_ISDIR(worktrees_stat.st_mode)
+            or stat.S_ISLNK(worktrees_stat.st_mode)
+            or (hasattr(os, "getuid") and worktrees_stat.st_uid != os.getuid())):
+        return None, (), "linked-worktree admin root is unsafe"
+    try:
+        with os.scandir(worktrees_dir) as entries:
+            for entry in entries:
+                entry_path = worktrees_dir / entry.name
+                entry_stat = entry.stat(follow_symlinks=False)
+                if (not stat.S_ISDIR(entry_stat.st_mode)
+                        or stat.S_ISLNK(entry_stat.st_mode)
+                        or (hasattr(os, "getuid")
+                            and entry_stat.st_uid != os.getuid())):
+                    return None, (), "linked-worktree admin entry is unsafe"
+                admins.append(entry_path)
+    except OSError as exc:
+        return None, (), f"linked-worktree admin scan unavailable: {exc}"
+    return common_dir, tuple(admins), ""
+
+
+@contextmanager
+def _publication_interlock(team_root: str, timeout: float = 1.0):
+    """Crash-safe common-repo advisory lock for reconcile/push/clear."""
+    timeout = max(0.05, min(float(timeout), 1.0))
+    common_dir, _admins, layout_detail = _git_common_admin_dirs(
+        team_root, timeout)
+    if common_dir is None:
+        yield False, f"publication interlock unavailable: {layout_detail}"
+        return
+    lock_path = common_dir / ".tm-mode-publication.lock"
+    handle = None
+    acquired = False
+    unlock = None
+    detail = "publication interlock unavailable"
+    deadline = time.monotonic() + timeout
+    try:
+        try:
+            lock_fd = _secure_open_regular(
+                str(lock_path), os.O_RDWR | os.O_CREAT)
+            handle = os.fdopen(lock_fd, "r+b", buffering=0)
+            if os.name == "nt":  # pragma: no cover - Windows CI unavailable
+                import msvcrt
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+
+                def try_lock():
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+                def unlock():
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                def try_lock():
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+                def unlock():
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+            while True:
+                try:
+                    try_lock()
+                    opened = os.fstat(handle.fileno())
+                    current = os.lstat(lock_path)
+                    if ((opened.st_dev, opened.st_ino)
+                            != (current.st_dev, current.st_ino)
+                            or not _owned_regular(current)):
+                        detail = "publication interlock path identity changed"
+                        break
+                    acquired = True
+                    detail = ""
+                    break
+                except OSError as exc:
+                    if exc.errno not in _LOCK_CONTENTION_ERRNOS:
+                        detail = f"publication interlock failed: {exc}"
+                        break
+                    if time.monotonic() >= deadline:
+                        detail = "publication interlock contention"
+                        break
+                    time.sleep(_PUSH_PENDING_LOCK_POLL_SECONDS)
+        except (OSError, ImportError) as exc:
+            detail = f"publication interlock unavailable: {exc}"
+        yield acquired, detail
+    finally:
+        if acquired and unlock is not None:
+            try:
+                unlock()
+            except OSError:
+                pass
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
+_HOOK_LEASE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
+_EDIT_LEASE_PREFIX = "lease-"
+_HOOK_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_EDIT_LEASE_TMP_RE = re.compile(
+    r"^\.lease-[0-9a-f]{64}\.[A-Za-z0-9_-]{6,64}\.tmp$")
+_HOOK_RUNTIME_UNSET = object()
+
+
+def hook_edit_lease_owner(data: dict | None) -> str:
+    """Return an opaque exact Pre/Post tool-call owner, or empty fail-closed."""
+    if not isinstance(data, dict):
+        return ""
+    # The normalized payload is the correlation source.  A leaked/stale
+    # CLAUDE_SESSION_ID in a Codex environment must never alias another runtime.
+    session_id = str(data.get("session_id") or "").strip()
+    tool_use_id = str(data.get("tool_use_id") or "").strip()
+    agent = str(data.get("agent") or "").strip().lower()
+    if (agent not in {"claude", "codex"}
+            or not _HOOK_LEASE_ID_RE.fullmatch(session_id)
+            or not _HOOK_LEASE_ID_RE.fullmatch(tool_use_id)):
+        return ""
+    material = f"{agent}\0{session_id}\0{tool_use_id}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def hook_edit_lease_scope(data: dict | None) -> str:
+    """Return an opaque runtime turn/subagent scope for terminal cleanup.
+
+    Stop is not a process/session exclusivity proof.  Requiring turn_id and
+    including agent_id prevents a concurrently resumed thread or background
+    subagent from clearing another active editor that shares session_id.
+    """
+    if not isinstance(data, dict):
+        return ""
+    agent = str(data.get("agent") or "").strip().lower()
+    session_id = str(data.get("session_id") or "").strip()
+    turn_id = str(data.get("turn_id") or "").strip()
+    agent_id = str(data.get("agent_id") or "").strip()
+    if (agent not in {"claude", "codex"}
+            or not _HOOK_LEASE_ID_RE.fullmatch(session_id)
+            or (agent_id and not _HOOK_LEASE_ID_RE.fullmatch(agent_id))):
+        return ""
+    if agent == "codex" and not _HOOK_LEASE_ID_RE.fullmatch(turn_id):
+        return ""
+    # Claude command-hook payloads do not expose turn_id.  Its verified runtime
+    # identity separates concurrent resume processes, while agent_id separates
+    # root and background subagent editors inside the same runtime/session.
+    scoped_turn = turn_id if agent == "codex" else ""
+    material = (
+        f"{agent}\0{session_id}\0{scoped_turn}\0{agent_id}".encode("utf-8"))
+    return hashlib.sha256(material).hexdigest()
+
+
+def _windows_process_identity(pid: int) -> dict | bool | None:
+    """Windows PID, parent and creation token via kernel APIs."""
+    try:  # pragma: no cover - exercised on Windows CI/hosts
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ULONG_PTR = wintypes.WPARAM
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ULONG_PTR),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        class FILETIME(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", wintypes.DWORD),
+                ("dwHighDateTime", wintypes.DWORD),
+            ]
+
+        kernel32.CreateToolhelp32Snapshot.argtypes = [
+            wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(FILETIME), ctypes.POINTER(FILETIME),
+            ctypes.POINTER(FILETIME), ctypes.POINTER(FILETIME)]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+        invalid = ctypes.c_void_p(-1).value
+        if snapshot in (None, 0, invalid):
+            return None
+        parent = None
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            found = bool(kernel32.Process32FirstW(snapshot, ctypes.byref(entry)))
+            while found:
+                if int(entry.th32ProcessID) == pid:
+                    parent = int(entry.th32ParentProcessID)
+                    break
+                found = bool(kernel32.Process32NextW(snapshot, ctypes.byref(entry)))
+        finally:
+            kernel32.CloseHandle(snapshot)
+        if parent is None:
+            return False
+
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            return False if error == 87 else None  # ERROR_INVALID_PARAMETER
+        try:
+            created, exited, kernel, user = FILETIME(), FILETIME(), FILETIME(), FILETIME()
+            if not kernel32.GetProcessTimes(
+                    handle, ctypes.byref(created), ctypes.byref(exited),
+                    ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buffer, ctypes.byref(size)):
+                return None
+            executable_path = os.path.realpath(buffer.value)
+            started = str(
+                (int(created.dwHighDateTime) << 32)
+                | int(created.dwLowDateTime))
+        finally:
+            kernel32.CloseHandle(handle)
+        return {
+            "pid": pid,
+            "parent": parent,
+            "started": started,
+            "executable": hashlib.sha256(
+                executable_path.encode("utf-8", "surrogateescape")).hexdigest(),
+            "path": executable_path,
+        }
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _process_identity(pid: int) -> dict | bool | None:
+    """Read PID reuse-safe process identity; False=definitely gone, None=unknown."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return None
+    if os.name == "nt":
+        return _windows_process_identity(pid)
+    if sys.platform.startswith("linux"):
+        proc = Path(f"/proc/{pid}")
+        try:
+            raw = (proc / "stat").read_text(encoding="utf-8")
+            close = raw.rfind(")")
+            if close < 0:
+                return None
+            fields = raw[close + 2:].split()
+            if len(fields) < 20:
+                return None
+            parent = int(fields[1])
+            started = fields[19]
+            executable_path = os.path.realpath(os.readlink(proc / "exe"))
+        except FileNotFoundError:
+            return False
+        except (OSError, UnicodeError, ValueError):
+            return None
+    elif os.name == "posix":
+        try:
+            probe = subprocess.run(
+                ["/bin/ps", "-ww", "-p", str(pid), "-o", "pid=", "-o",
+                 "ppid=", "-o", "lstart=", "-o", "comm="],
+                capture_output=True, text=True, timeout=0.2, check=False,
+                env={**os.environ, "LC_ALL": "C", "LANG": "C", "TZ": "UTC"})
+        except (OSError, subprocess.SubprocessError):
+            return None
+        row = probe.stdout.strip()
+        if probe.returncode != 0 or not row:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            except (OSError, PermissionError):
+                return None
+            return None
+        parts = row.split(maxsplit=7)
+        if len(parts) != 8:
+            return None
+        try:
+            parent = int(parts[1])
+        except ValueError:
+            return None
+        started = " ".join(parts[2:7])
+        executable_path = os.path.realpath(parts[7])
+    else:
+        return None
+    return {
+        "pid": pid,
+        "parent": parent,
+        "started": started,
+        "executable": hashlib.sha256(
+            executable_path.encode("utf-8", "surrogateescape")).hexdigest(),
+        "path": executable_path,
+    }
+
+
+def _runtime_executable_matches(agent: str, executable_path: str) -> bool:
+    normalized = executable_path.replace("\\", "/").lower()
+    name = normalized.rsplit("/", 1)[-1]
+    if agent == "codex":
+        return name in {"codex", "codex.exe"}
+    if agent == "claude":
+        return (name in {"claude", "claude.exe"}
+                or ("/claude/versions/" in normalized
+                    and bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}(?:\.exe)?", name))))
+    return False
+
+
+def _current_hook_runtime_identity(agent: str) -> dict | None:
+    """Find the nearest verified Codex/Claude host ancestor of this hook."""
+    if agent not in {"claude", "codex"}:
+        return None
+    pid = os.getppid()
+    seen: set[int] = set()
+    for _ in range(16):
+        if pid <= 1 or pid in seen:
+            return None
+        seen.add(pid)
+        current = _process_identity(pid)
+        if not isinstance(current, dict):
+            return None
+        if _runtime_executable_matches(agent, str(current.get("path") or "")):
+            return {
+                "pid": current["pid"],
+                "started": current["started"],
+                "executable": current["executable"],
+            }
+        pid = int(current.get("parent") or 0)
+    return None
+
+
+def _validated_hook_runtime(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    pid = value.get("pid")
+    started = value.get("started")
+    executable = value.get("executable")
+    if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1
+            or not isinstance(started, str) or not started
+            or len(started) > 160
+            or not isinstance(executable, str)
+            or not _HOOK_DIGEST_RE.fullmatch(executable)):
+        return None
+    return {"pid": pid, "started": started, "executable": executable}
+
+
+def _hook_runtime_liveness(runtime: dict) -> bool | None:
+    """True=exact runtime alive, False=dead/PID reused, None=unprovable."""
+    expected = _validated_hook_runtime(runtime)
+    if expected is None:
+        return None
+    current = _process_identity(expected["pid"])
+    if current is False:
+        return False
+    if not isinstance(current, dict):
+        return None
+    if current.get("started") != expected["started"]:
+        return False
+    if current.get("executable") != expected["executable"]:
+        # Same PID birth token is the liveness proof.  Executable path can
+        # legitimately drift during an in-place package upgrade (`(deleted)`
+        # on Linux); never turn that auxiliary mismatch into active deletion.
+        return None
+    return True
+
+
+def hook_edit_lease_metadata(
+        data: dict | None, *, _runtime_identity=_HOOK_RUNTIME_UNSET) -> dict | None:
+    """Build bounded marker metadata without storing raw session/turn IDs."""
+    owner = hook_edit_lease_owner(data)
+    if not owner or not isinstance(data, dict):
+        return None
+    agent = str(data.get("agent") or "").strip().lower()
+    runtime = (_current_hook_runtime_identity(agent)
+               if _runtime_identity is _HOOK_RUNTIME_UNSET
+               else _runtime_identity)
+    return {
+        "version": 2,
+        "owner": owner,
+        "scope": hook_edit_lease_scope(data),
+        "runtime": _validated_hook_runtime(runtime),
+    }
+
+
+@contextmanager
+def _edit_gate(team_root: str, timeout: float = 0.2):
+    """Short common-repo lock serializing Pre markers with local mutation.
+
+    This is deliberately separate from the publication interlock: network push
+    may hold that lock for seconds, but it does not touch the worktree and must
+    not deny an otherwise safe file edit.
+    """
+    timeout = max(0.02, min(float(timeout), 0.5))
+    common_dir, _admins, layout_detail = _git_common_admin_dirs(
+        team_root, timeout)
+    if common_dir is None:
+        yield False, f"edit gate unavailable: {layout_detail}"
+        return
+    lock_path = common_dir / ".tm-mode-edit-gate.lock"
+    handle = None
+    acquired = False
+    unlock = None
+    detail = "edit gate unavailable"
+    deadline = time.monotonic() + timeout
+    try:
+        try:
+            lock_fd = _secure_open_regular(
+                str(lock_path), os.O_RDWR | os.O_CREAT)
+            handle = os.fdopen(lock_fd, "r+b", buffering=0)
+            if os.name == "nt":  # pragma: no cover - Windows CI unavailable
+                import msvcrt
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+
+                def try_lock():
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+                def unlock():
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                def try_lock():
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+                def unlock():
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+            while True:
+                try:
+                    try_lock()
+                    opened = os.fstat(handle.fileno())
+                    current = os.lstat(lock_path)
+                    if ((opened.st_dev, opened.st_ino)
+                            != (current.st_dev, current.st_ino)
+                            or not _owned_regular(current)):
+                        detail = "edit gate path identity changed"
+                        break
+                    acquired, detail = True, ""
+                    break
+                except OSError as exc:
+                    if exc.errno not in _LOCK_CONTENTION_ERRNOS:
+                        detail = f"edit gate failed: {exc}"
+                        break
+                    if time.monotonic() >= deadline:
+                        detail = "edit gate contention"
+                        break
+                    time.sleep(_PUSH_PENDING_LOCK_POLL_SECONDS)
+        except (OSError, ImportError) as exc:
+            detail = f"edit gate unavailable: {exc}"
+        yield acquired, detail
+    finally:
+        if acquired and unlock is not None:
+            try:
+                unlock()
+            except OSError:
+                pass
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
+def _edit_lease_dir(team_root: str, timeout: float = 0.2) -> Path | None:
+    common_dir, _admins, _detail = _git_common_admin_dirs(team_root, timeout)
+    if common_dir is None:
+        return None
+    path = common_dir / ".tm-mode-edit-leases"
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        current = os.lstat(path)
+        if (not stat.S_ISDIR(current.st_mode)
+                or stat.S_ISLNK(current.st_mode)
+                or (hasattr(os, "getuid") and current.st_uid != os.getuid())):
+            return None
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            if os.name != "nt":
+                return None
+        return path
+    except OSError:
+        return None
+
+
+def _validated_edit_lease_metadata(
+        value: object, expected_owner: str = "") -> dict | None:
+    if not isinstance(value, dict) or value.get("version") != 2:
+        return None
+    owner = value.get("owner")
+    scope = value.get("scope")
+    runtime_raw = value.get("runtime")
+    if (not isinstance(owner, str) or not _HOOK_DIGEST_RE.fullmatch(owner)
+            or (expected_owner and owner != expected_owner)
+            or not isinstance(scope, str)
+            or (scope and not _HOOK_DIGEST_RE.fullmatch(scope))):
+        return None
+    runtime = None
+    if runtime_raw is not None:
+        runtime = _validated_hook_runtime(runtime_raw)
+        if runtime is None:
+            return None
+    return {
+        "version": 2,
+        "owner": owner,
+        "scope": scope,
+        "runtime": runtime,
+    }
+
+
+def _read_edit_lease_marker(path: Path, expected_owner: str) -> dict | None:
+    try:
+        fd = _secure_open_regular(
+            str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            raw = handle.read(4097)
+        if len(raw) > 4096:
+            return None
+        return _validated_edit_lease_metadata(
+            json.loads(raw), expected_owner=expected_owner)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+
+
+def _write_edit_lease_marker(path: Path, metadata: dict) -> bool:
+    """Atomic, owner-only marker write in the Git common directory."""
+    directory = path.parent
+    tmp = ""
+    fd = -1
+    try:
+        existing = None
+        try:
+            existing = os.lstat(path)
+        except FileNotFoundError:
+            pass
+        if existing is not None and not _owned_regular(existing):
+            return False
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(directory))
+        current = os.fstat(fd)
+        if not _owned_regular(current):
+            return False
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        payload = json.dumps(
+            metadata, ensure_ascii=True, sort_keys=True,
+            separators=(",", ":")) + "\n"
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            fd = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        tmp = ""
+        return _fsync_parent_dir(str(path))
+    except (OSError, TypeError, UnicodeError, ValueError):
+        return False
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _active_edit_lease_owners_locked(
+        team_root: str) -> set[str] | None:
+    """Read exact tool-call markers while caller holds ``_edit_gate``.
+
+    Age alone is not proof that a file tool stopped writing, so markers are
+    never auto-deleted here.  A killed Post hook fails closed by keeping local
+    history mutation disabled until the exact cleanup is performed.
+    """
+    directory = _edit_lease_dir(team_root)
+    if directory is None:
+        return None
+    owners: set[str] = set()
+    pruned_temp = False
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if _EDIT_LEASE_TMP_RE.fullmatch(entry.name):
+                    # Writers hold _edit_gate for the entire atomic replace, so
+                    # a matching temp observed while we hold the same gate can
+                    # only be crash residue.  Prune only an owned regular file;
+                    # everything else remains fail-closed.
+                    current = entry.stat(follow_symlinks=False)
+                    if not _owned_regular(current):
+                        return None
+                    try:
+                        os.unlink(entry.path)
+                        pruned_temp = True
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        return None
+                    continue
+                if not entry.name.startswith(_EDIT_LEASE_PREFIX):
+                    return None
+                owner = entry.name[len(_EDIT_LEASE_PREFIX):]
+                if not re.fullmatch(r"[0-9a-f]{64}", owner):
+                    return None
+                current = entry.stat(follow_symlinks=False)
+                if not _owned_regular(current):
+                    return None
+                marker = _read_edit_lease_marker(Path(entry.path), owner)
+                if marker is None:
+                    return None
+                runtime = marker.get("runtime")
+                if isinstance(runtime, dict):
+                    alive = _hook_runtime_liveness(runtime)
+                    if alive is False:
+                        try:
+                            os.unlink(entry.path)
+                        except FileNotFoundError:
+                            pass
+                        except OSError:
+                            return None
+                        continue
+                owners.add(owner)
+        if (pruned_temp
+                and not _fsync_parent_dir(str(directory / ".pruned"))):
+            return None
+        return owners
+    except OSError:
+        return None
+
+
+def begin_hook_edit_lease(
+        team_root: str, owner: str, timeout: float = 0.2,
+        *, metadata: dict | None = None) -> tuple[bool, str]:
+    """Register one exact PreToolUse edit before the file tool may run."""
+    if not _HOOK_DIGEST_RE.fullmatch(owner or ""):
+        return False, "missing exact session/tool identity"
+    marker_metadata = _validated_edit_lease_metadata(
+        metadata or {
+            "version": 2, "owner": owner, "scope": "", "runtime": None,
+        }, expected_owner=owner)
+    if marker_metadata is None:
+        return False, "invalid edit lease metadata"
+    with _edit_gate(team_root, timeout) as (acquired, detail):
+        if not acquired:
+            return False, detail
+        owners = _active_edit_lease_owners_locked(team_root)
+        directory = _edit_lease_dir(team_root)
+        if owners is None or directory is None:
+            return False, "edit lease state unavailable"
+        marker = directory / f"{_EDIT_LEASE_PREFIX}{owner}"
+        try:
+            if not _write_edit_lease_marker(marker, marker_metadata):
+                return False, "edit lease write failed"
+            return True, ""
+        except OSError as exc:
+            return False, f"edit lease write failed: {exc}"
+
+
+def end_hook_edit_lease(
+        team_root: str, owner: str, timeout: float = 0.2) -> bool:
+    """Release only the matching PostToolUse marker; never glob by session."""
+    if not re.fullmatch(r"[0-9a-f]{64}", owner or ""):
+        return False
+    with _edit_gate(team_root, timeout) as (acquired, _detail):
+        if not acquired:
+            return False
+        directory = _edit_lease_dir(team_root)
+        if directory is None:
+            return False
+        marker = directory / f"{_EDIT_LEASE_PREFIX}{owner}"
+        try:
+            current = os.lstat(marker)
+            if not _owned_regular(current):
+                return False
+            os.unlink(marker)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+
+def end_hook_edit_leases_for_scope(
+        team_root: str, scope: str, runtime: dict,
+        timeout: float = 0.2) -> int:
+    """Release only markers owned by this exact turn/subagent runtime.
+
+    A shared session id is intentionally insufficient: concurrent resume
+    processes and background subagents can share it while still editing.
+    """
+    expected_runtime = _validated_hook_runtime(runtime)
+    if (not _HOOK_DIGEST_RE.fullmatch(scope or "")
+            or expected_runtime is None):
+        return 0
+    with _edit_gate(team_root, timeout) as (acquired, _detail):
+        if not acquired:
+            return 0
+        directory = _edit_lease_dir(team_root)
+        if directory is None:
+            return 0
+        removed = 0
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not entry.name.startswith(_EDIT_LEASE_PREFIX):
+                        return removed
+                    owner = entry.name[len(_EDIT_LEASE_PREFIX):]
+                    if not _HOOK_DIGEST_RE.fullmatch(owner):
+                        return removed
+                    marker = _read_edit_lease_marker(Path(entry.path), owner)
+                    if marker is None:
+                        continue
+                    if (marker.get("scope") != scope
+                            or marker.get("runtime") != expected_runtime):
+                        continue
+                    try:
+                        os.unlink(entry.path)
+                        removed += 1
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        continue
+            return removed
+        except OSError:
+            return removed
+
+
+def publication_blocker_detail(
+        team_root: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+    """Return a fail-closed reason while bound-reconcile residue exists.
+
+    Every publication path and stale-ledger clear shares this probe.  A probe
+    failure is itself a blocker: treating an unreadable Git admin area as clean
+    could publish or clear the only recovery signal while a transaction is
+    unresolved.
+    """
+    timeout = max(0.1, float(timeout))
+    deadline = time.monotonic() + timeout
+    common_dir, admin_dirs, layout_detail = _git_common_admin_dirs(
+        team_root, timeout)
+    if common_dir is None:
+        return f"reconcile blocker probe unavailable: {layout_detail}"
+    for admin_dir in admin_dirs:
+        index_path = admin_dir / "index"
+        for label, path in (
+                ("canonical index lock", Path(f"{index_path}.lock")),
+                ("rebase-merge", admin_dir / "rebase-merge"),
+                ("rebase-apply", admin_dir / "rebase-apply"),
+                ("merge head", admin_dir / "MERGE_HEAD"),
+                ("merge message", admin_dir / "MERGE_MSG"),
+                ("merge mode", admin_dir / "MERGE_MODE"),
+                ("merge autostash", admin_dir / "MERGE_AUTOSTASH"),
+                ("auto merge", admin_dir / "AUTO_MERGE")):
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                return f"reconcile blocker probe unavailable ({label}): {exc}"
+            else:
+                return f"unresolved reconcile blocker: {label}"
+        try:
+            with os.scandir(admin_dir) as entries:
+                for entry in entries:
+                    if entry.name.startswith(".tm-mode-reconcile-"):
+                        return "unresolved reconcile blocker: transaction directory"
+        except OSError as exc:
+            return f"reconcile blocker probe unavailable (admin directory): {exc}"
+
+    refs_timeout = deadline - time.monotonic()
+    if refs_timeout <= 0:
+        return "reconcile blocker probe unavailable: budget exhausted"
+    try:
+        rc, refs_out, refs_err = run_git(
+            ["-C", team_root, "for-each-ref", "--format=%(refname)",
+             "refs/tm-mode/reconcile"], timeout=refs_timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"reconcile blocker probe unavailable (recovery refs): {exc}"
+    if rc != 0:
+        failure = (refs_err or "recovery ref probe failed").strip()[:200]
+        return f"reconcile blocker probe unavailable: {failure}"
+    if any(line.strip() for line in (refs_out or "").splitlines()):
+        return "unresolved reconcile blocker: recovery refs"
+    return ""
+
+
 def kick_push_worker(team_root: str, worker_path: str) -> bool:
     """push-worker detach spawn (#45). 무raise — 반환: spawn 시도 성공 여부.
 
@@ -1586,6 +5816,8 @@ def kick_push_worker(team_root: str, worker_path: str) -> bool:
     - TEAMMODE_DISABLE_PUSH_WORKER=1 이면 생략(테스트 관찰용 kill-switch).
     """
     if os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") == "1":
+        return False
+    if publication_blocker_detail(team_root):
         return False
     try:
         import sys as _sys
@@ -1608,7 +5840,97 @@ def kick_push_worker(team_root: str, worker_path: str) -> bool:
         return False
 
 
-def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
+def _run_publication_push_locked(
+        args: list[str], timeout: int) -> tuple[int, str, str]:
+    """The single raw network-push callsite; caller owns common interlock."""
+    return run_git(args, timeout=timeout)
+
+
+def _run_publication_push(
+        team_root: str, args: list[str], timeout: int,
+        *, lock_timeout: float | None = None) -> tuple[int, str, str]:
+    """Serialize one network push and re-probe all repo recovery blockers."""
+    wait = (max(0.05, min(float(timeout), 1.0))
+            if lock_timeout is None else lock_timeout)
+    with _publication_interlock(team_root, wait) as (acquired, detail):
+        if not acquired:
+            return 1, "", detail
+        blocker = publication_blocker_detail(team_root, wait)
+        if blocker:
+            return 1, "", blocker
+        return _run_publication_push_locked(args, timeout)
+
+
+def _advance_tracking_ref_after_exact_push_locked(
+        team_root: str, tracking_ref: str, head: str,
+        previous: str, timeout: int) -> tuple[bool, str]:
+    """CAS the local tracking ref to the commit just accepted by the endpoint."""
+    args = ["-C", team_root, "update-ref", tracking_ref, head, previous]
+    try:
+        rc, _, err = run_git(args, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        rc, err = 1, f"tracking ref update exec error: {exc}"
+    if rc == 0:
+        return True, ""
+    available, actual = _read_ref_oid(team_root, tracking_ref, timeout)
+    if available and actual.lower() == head.lower():
+        return True, ""
+    return False, (err or "tracking ref changed during exact push").strip()[:200]
+
+
+def _run_exact_publication_push_locked(
+        team_root: str, endpoint: str, destination: str,
+        tracking_ref: str, head: str, timeout: int,
+        ) -> tuple[int, str, str, str]:
+    """Push one OID/ref to one captured endpoint; caller owns interlock."""
+    available, previous = _read_ref_oid(team_root, tracking_ref, timeout)
+    if not available:
+        return 1, "", "publication tracking ref unavailable", ""
+    refspec = f"{head}:{destination}"
+    # Git applies url.*.insteadOf / pushInsteadOf even when the endpoint is
+    # passed directly on argv.  Passing the endpoint itself is therefore still
+    # retargetable by a late repo/global config change.  Instead, pass an
+    # unpredictable one-shot alias and map that alias to the captured endpoint
+    # with command-line-priority config.  URL rewriting is single-pass, so a
+    # hostile rule matching the endpoint is not re-applied to the mapped result;
+    # no pre-existing rule can predict the 128-bit alias.  '=' is rejected by
+    # _remote_push_binding because it cannot be represented in a `-c name=value`
+    # key without ambiguity.
+    endpoint_alias = f"tm-mode-exact-{os.urandom(16).hex()}://endpoint"
+    rewrite_guards = [
+        "-c", f"url.{endpoint}.insteadOf={endpoint_alias}",
+        "-c", f"url.{endpoint}.pushInsteadOf={endpoint_alias}",
+    ]
+    args = [
+        "-C", team_root, *http_timeout_opts(timeout), *rewrite_guards, "push",
+        "--no-follow-tags", "--recurse-submodules=check",
+        "--", endpoint_alias, refspec,
+    ]
+    rc, out, err = _run_publication_push_locked(args, timeout)
+    if rc != 0:
+        return rc, out, err, ""
+    tracking_ok, tracking_detail = _advance_tracking_ref_after_exact_push_locked(
+        team_root, tracking_ref, head, previous, min(DEFAULT_TIMEOUT, timeout))
+    return (rc, out, err, "" if tracking_ok else tracking_detail)
+
+
+def _run_exact_publication_push(
+        team_root: str, endpoint: str, destination: str,
+        tracking_ref: str, head: str, timeout: int,
+        ) -> tuple[int, str, str, str]:
+    """Interlocked exact endpoint publication with blocker re-probe."""
+    wait = max(0.05, min(float(timeout), 1.0))
+    with _publication_interlock(team_root, wait) as (acquired, detail):
+        if not acquired:
+            return 1, "", detail, ""
+        blocker = publication_blocker_detail(team_root, wait)
+        if blocker:
+            return 1, "", blocker, ""
+        return _run_exact_publication_push_locked(
+            team_root, endpoint, destination, tracking_ref, head, timeout)
+
+
+def _push_plain_locked(team_root: str, timeout: int = NET_TIMEOUT):
     """**plain push only** — push-worker 전용 (#45 정정: plain-push-only).
 
     worker 는 로컬 히스토리를 절대 건드리지 않는다(rebase/fetch 복구 금지) —
@@ -1625,7 +5947,7 @@ def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
     - 그 외 실패/타임아웃 → (False, detail). 절대 예외를 전파하지 않는다.
     """
     try:
-        prc, pout, perr = run_git(
+        prc, pout, perr = _run_publication_push_locked(
             ["-C", team_root, *http_timeout_opts(timeout), "push"],
             timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -1638,7 +5960,7 @@ def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
     combined = (perr or "") + "\n" + (pout or "")
     if _is_no_upstream(combined):
         try:
-            urc, uout, uerr = run_git(
+            urc, uout, uerr = _run_publication_push_locked(
                 ["-C", team_root, *http_timeout_opts(timeout),
                  "push", "-u", "origin", "HEAD"],
                 timeout=timeout)
@@ -1656,6 +5978,19 @@ def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
     if _is_non_fast_forward(combined):
         return False, "non-fast-forward"
     return False, f"push failed: {combined.strip()[:200]}"
+
+
+def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
+    """Interlocked plain push; re-probe residue after lock acquisition."""
+    lock_timeout = max(0.05, min(float(timeout), 1.0))
+    with _publication_interlock(
+            team_root, lock_timeout) as (acquired, detail):
+        if not acquired:
+            return False, detail
+        blocker = publication_blocker_detail(team_root, lock_timeout)
+        if blocker:
+            return False, blocker
+        return _push_plain_locked(team_root, timeout)
 
 
 def _is_non_fast_forward(text: str) -> bool:
@@ -1693,17 +6028,19 @@ def _is_no_upstream(text: str) -> bool:
                 and "does not match" in low))
 
 
-def _abort_rebase(team_root: str, timeout: int) -> None:
-    """진행중 rebase 를 취소해 원상복구(`git rebase --abort`). 무raise(best-effort).
+def _abort_rebase(team_root: str, timeout: int) -> bool:
+    """진행중 rebase 취소 성공 여부를 반환한다. 무raise(best-effort).
 
     rebase 가 충돌·타임아웃·예외로 실패하면 `.git/rebase-merge` 같은 진행중 상태가
     남아 레포가 어정쩡해진다. 비차단 반환 전에 반드시 호출해 로컬 커밋/워킹트리를
-    원래대로 되돌린다. abort 자체의 실패도 삼킨다(더 할 수 있는 게 없으므로).
+    원래대로 되돌린다. abort 자체의 실패도 삼키되 거짓 성공 진단을 막기 위해 False다.
     """
     try:
-        run_git(["-C", team_root, "rebase", "--abort"], timeout=timeout)
+        rc, _, _ = run_git(
+            ["-C", team_root, "rebase", "--abort"], timeout=timeout)
     except (OSError, subprocess.SubprocessError):
-        pass
+        return False
+    return rc == 0
 
 
 def _has_staged_changes(team_root: str, timeout: int) -> bool:
@@ -1716,8 +6053,95 @@ def _has_staged_changes(team_root: str, timeout: int) -> bool:
     return rc != 0
 
 
-def do_commit(team_root: str, message: str, push: bool = False,
-              timeout: int = NET_TIMEOUT, paths: list | None = None) -> CommitResult:
+def _set_publication_upstream_locked(
+        team_root: str, identity: dict[str, str],
+        target: _PublicationTarget, *, timeout: int = DEFAULT_TIMEOUT,
+        deadline: float | None = None) -> tuple[bool, str]:
+    """Set captured-branch upstream while the publication interlock is held."""
+    deadline = (time.monotonic() + max(1, timeout)
+                if deadline is None else deadline)
+
+    def _probe_timeout() -> int:
+        remaining = int(deadline - time.monotonic())
+        return min(max(1, timeout), remaining) if remaining >= 1 else 0
+
+    probe_timeout = _probe_timeout()
+    if not probe_timeout:
+        return False, "upstream setup deadline exhausted"
+    binding = _remote_push_binding(team_root, target.remote, probe_timeout)
+    if (binding is None or not target.remote_fingerprint
+            or binding[1] != target.remote_fingerprint):
+        return False, "publication remote binding changed before upstream setup"
+
+    branch_ref = f"refs/heads/{identity['branch']}"
+    fmt = "%(refname)%00%(objectname)"
+    probe_timeout = _probe_timeout()
+    if not probe_timeout:
+        return False, "upstream setup deadline exhausted"
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root, "for-each-ref", f"--format={fmt}", "--",
+             branch_ref, target.reconcile_ref],
+            timeout=probe_timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"upstream setup identity check failed: {exc}"
+    if rc != 0:
+        return False, (err or "upstream setup identity check failed").strip()[:200]
+    refs = {}
+    for line in (out or "").splitlines():
+        fields = line.split("\0")
+        if len(fields) == 2:
+            refs[fields[0]] = fields[1].lower()
+    expected = identity["head"].lower()
+    if refs.get(branch_ref) != expected:
+        return False, "captured branch changed before upstream setup"
+    if refs.get(target.reconcile_ref) != expected:
+        return False, "published tracking ref does not match captured commit"
+    probe_timeout = _probe_timeout()
+    if not probe_timeout:
+        return False, "upstream setup deadline exhausted"
+    try:
+        rc, out, err = run_git(
+            ["-C", team_root,
+             f"branch", f"--set-upstream-to={target.reconcile_ref}",
+             "--", identity["branch"]],
+            timeout=probe_timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"upstream setup exec error: {exc}"
+    if rc != 0:
+        return False, f"upstream setup failed: {((err or out) or '').strip()[:200]}"
+    return True, ""
+
+
+def _set_publication_upstream(
+        team_root: str, identity: dict[str, str],
+        target: _PublicationTarget, *, timeout: int = DEFAULT_TIMEOUT,
+        deadline: float | None = None) -> tuple[bool, str]:
+    """Immutable push 성공 뒤 captured branch config를 interlock 아래 갱신한다."""
+    deadline = (time.monotonic() + max(1, timeout)
+                if deadline is None else deadline)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False, "upstream setup deadline exhausted"
+    lock_timeout = max(0.05, min(remaining, 1.0))
+    with _publication_interlock(
+            team_root, lock_timeout) as (acquired, detail):
+        if not acquired:
+            return False, detail
+        blocker = publication_blocker_detail(team_root, lock_timeout)
+        if blocker:
+            return False, blocker
+        return _set_publication_upstream_locked(
+            team_root, identity, target, timeout=timeout, deadline=deadline)
+
+
+def _do_commit_impl(
+        team_root: str, message: str, push: bool = False,
+        timeout: int = NET_TIMEOUT, paths: list | None = None,
+        reconcile_before_push: bool = False, *,
+        _allow_bound_mutation: bool = False,
+        _edit_lease_owner: str | None = None,
+        _publication_leases: list, _commit_state: dict) -> CommitResult:
     """`git add` + `git commit -m` (+ 선택 push). 절대 예외를 전파하지 않는다(철칙).
 
     auto_pull/do_pull 과 같은 안전장치 재사용(git_env 자격증명 차단·killpg 타임아웃).
@@ -1726,7 +6150,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
     전용**이다. 내부 로컬 하위호출(add·staged-diff·commit)은 DEFAULT_TIMEOUT 고정 —
     함수 timeout 을 그대로 쓰면 push=False(네트워크 0) 경로까지 10s 로 승격돼
     "로컬 동사는 2s(세션 스냅함)" 선언이 깨진다(codex 리뷰 P2-2).
-    또한 push=True 흐름 전체는 **진입 앵커** 벽시계 예산 PUSH_TOTAL_BUDGET(35s)로
+    또한 push=True 흐름 전체는 **진입 앵커** 벽시계 예산 PUSH_TOTAL_BUDGET(45s)로
     캡된다 — 데드라인이 함수 진입에서 시작돼 로컬 단계(최악 ~16s)도 예산을 소모하고
     네트워크 단계는 남은 만큼만 쓴다(로컬 하위호출은 개별 클램프 없음 — 로컬 커밋은
     항상 완주·보존). 복구 체인(최악 네트워크 5회 순차)이 훅 manifest 캡(70s)을 넘기
@@ -1736,6 +6160,8 @@ def do_commit(team_root: str, message: str, push: bool = False,
     - 변경 없음 → committed=False, ok=False (비치명: 레포 무손상).
     - push=True 이고 원격 없음/오프라인 → **커밋은 보존**, push 만 실패(ok 은 commit 성공
       기준으로 True, pushed=False). push 실패가 로컬 커밋을 되돌리지 않는다.
+    - reconcile_before_push=True → 로컬 커밋 뒤 첫 push 전에 기존 안전 정합을 수행한다.
+      push=False 일 때는 이 옵션을 무시한다.
 
     스테이징 범위(L2-G P1-4):
     - `paths=None`(기본) → 종래대로 `add -A`(commit 동사용 — 사용자가 의도적으로 호출).
@@ -1755,67 +6181,121 @@ def do_commit(team_root: str, message: str, push: bool = False,
     if not is_git_worktree(team_root):
         return CommitResult(ok=False, detail="not a git work tree")
 
-    # 1) stage — paths 지정 시 그 경로만, None 이면 전부(add -A)
-    if paths is None:
-        add_args = ["-C", team_root, "add", "-A"]
-    else:
-        if not paths:
-            return CommitResult(ok=False, committed=False,
-                                detail="no paths to stage")
-        # `--` 로 경로 인자를 옵션과 분리(선두 대시 파일명이 옵션으로 오인되지 않게).
-        add_args = ["-C", team_root, "add", "--", *[str(p) for p in paths]]
-    try:
-        rc, _, err = run_git(add_args, timeout=DEFAULT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return CommitResult(ok=False, detail="add timeout")
-    except (OSError, subprocess.SubprocessError) as exc:
-        return CommitResult(ok=False, detail=f"add exec error: {exc}")
-    if rc != 0:
-        return CommitResult(ok=False, detail=f"add failed: {(err or '').strip()[:200]}")
+    def _local_commit_phase(
+            ) -> tuple[CommitResult | None, str, dict | None]:
+        """Stage, commit, and capture identity while caller owns the lease."""
+        # 1) stage — paths 지정 시 그 경로만, None 이면 전부(add -A)
+        if paths is None:
+            add_args = ["-C", team_root, "add", "-A"]
+        else:
+            if not paths:
+                return (CommitResult(
+                    ok=False, committed=False, detail="no paths to stage"),
+                    "", None)
+            # `--` 로 경로 인자를 옵션과 분리(선두 대시 파일명이 옵션으로 오인되지 않게).
+            add_args = [
+                "-C", team_root, "add", "--", *[str(p) for p in paths]]
+        try:
+            rc, _, err = run_git(add_args, timeout=DEFAULT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return CommitResult(ok=False, detail="add timeout"), "", None
+        except (OSError, subprocess.SubprocessError) as exc:
+            return (CommitResult(
+                ok=False, detail=f"add exec error: {exc}"), "", None)
+        if rc != 0:
+            return (CommitResult(
+                ok=False,
+                detail=f"add failed: {(err or '').strip()[:200]}"), "", None)
 
-    # 2) 변경 없으면 비치명 종료(빈 커밋 만들지 않음)
-    if not _has_staged_changes(team_root, DEFAULT_TIMEOUT):
-        return CommitResult(ok=False, committed=False,
-                            detail="nothing to commit")
+        # 2) 변경 없으면 비치명 종료(빈 커밋 만들지 않음)
+        if not _has_staged_changes(team_root, DEFAULT_TIMEOUT):
+            return (CommitResult(
+                ok=False, committed=False, detail="nothing to commit"),
+                "", None)
 
-    # 3) commit — paths 지정 시 pathspec partial commit(미리 staged 된 다른 경로 제외).
-    commit_start_identity = _checkout_identity(team_root)
-    commit_args = ["-C", team_root, "commit", "-m", message]
-    if paths:
-        commit_args += ["--", *[str(p) for p in paths]]
-    try:
-        rc, out, err = run_git(commit_args, timeout=DEFAULT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return CommitResult(ok=False, detail="commit timeout")
-    except (OSError, subprocess.SubprocessError) as exc:
-        return CommitResult(ok=False, detail=f"commit exec error: {exc}")
-    if rc != 0:
-        return CommitResult(ok=False, committed=False,
-                            detail=f"commit failed: {((err or out) or '').strip()[:200]}")
+        # 3) commit — paths 지정 시 pathspec partial commit(미리 staged 된 다른 경로 제외).
+        commit_start_identity = _checkout_identity(team_root)
+        commit_args = ["-C", team_root, "commit", "-m", message]
+        if paths:
+            commit_args += ["--", *[str(p) for p in paths]]
+        try:
+            rc, out, err = run_git(commit_args, timeout=DEFAULT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return CommitResult(ok=False, detail="commit timeout"), "", None
+        except (OSError, subprocess.SubprocessError) as exc:
+            return (CommitResult(
+                ok=False, detail=f"commit exec error: {exc}"), "", None)
+        if rc != 0:
+            return (CommitResult(
+                ok=False, committed=False,
+                detail=f"commit failed: {((err or out) or '').strip()[:200]}"),
+                "", None)
 
-    commit_identity = _checkout_identity(team_root)
-    if (not commit_identity.get("head")
-            or commit_identity.get("head") == commit_start_identity.get("head")
-            or commit_identity.get("branch") != commit_start_identity.get("branch")):
-        # commit 전후 checkout 일관성을 입증하지 못하면 later-current checkout에
-        # pending을 오바인딩하지 않는다. 호출부가 ledger 실패를 즉시 표면화한다.
-        commit_identity = None
+        # Mark the durable commit before any diagnostic identity probe so the
+        # public exception shell never reports committed=False after HEAD moved.
+        _commit_state.update(committed=True, identity=None)
+        commit_identity = _checkout_identity(team_root)
+        if (not commit_identity.get("head")
+                or commit_identity.get("head")
+                == commit_start_identity.get("head")
+                or commit_identity.get("branch")
+                != commit_start_identity.get("branch")):
+            # commit 전후 checkout 일관성을 입증하지 못하면 later-current checkout에
+            # pending을 오바인딩하지 않는다. 호출부가 ledger 실패를 즉시 표면화한다.
+            commit_identity = None
+        _commit_state.update(identity=commit_identity)
+        return None, (out or "").strip()[:200], commit_identity
+
+    # All local history/index mutation shares the same common-repository lock
+    # order as bound and unbound reconcile: publication lease first, then Git's
+    # canonical index lock.  Re-probe after acquisition so stale refs/txdirs
+    # block before `git add`, including push=False callers.  This lease ends
+    # before any reconcile/publication lease below, avoiding nested flock.
+    with _publication_interlock(team_root, 1.0) as (
+            commit_phase_acquired, commit_phase_detail):
+        if not commit_phase_acquired:
+            return CommitResult(
+                ok=False, committed=False, detail=commit_phase_detail)
+        commit_phase_blocker = publication_blocker_detail(team_root, 1.0)
+        if commit_phase_blocker:
+            return CommitResult(
+                ok=False, committed=False, detail=commit_phase_blocker)
+        local_error, commit_out, publication_identity = _local_commit_phase()
+        if local_error is not None:
+            return local_error
+
+    publication_interlock_cm = None
+    publication_target: _PublicationTarget | None = None
 
     def _committed_result(pushed: bool, detail: str) -> CommitResult:
-        identity = commit_identity
-        if identity is not None:
+        nonlocal publication_interlock_cm
+        identity = publication_identity
+        if identity is not None and not (push and reconcile_before_push):
             current = _checkout_identity(team_root)
             # 같은 branch에서 rebase로 commit SHA가 바뀐 경우 최신 HEAD를 고정한다.
             # 반환 직전 checkout이 바뀌었다면 원래 commit 직후 identity를 유지한다.
             if (current.get("branch") == identity.get("branch")
                     and current.get("head")):
                 identity = current
-        return CommitResult(
+        result = CommitResult(
             ok=True, committed=True, pushed=pushed, detail=detail,
-            pending_identity=identity)
+            pending_identity=identity,
+            pending_target=(
+                _pending_target_payload(publication_target)
+                if publication_target is not None else None))
+        if publication_interlock_cm is not None:
+            lease = publication_interlock_cm
+            publication_interlock_cm = None
+            if lease in _publication_leases:
+                _publication_leases.remove(lease)
+            try:
+                lease.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001 - result must remain non-raising
+                pass
+        return result
 
     if not push:
-        return _committed_result(False, (out or "").strip()[:200])
+        return _committed_result(False, commit_out)
 
     # 4) push (선택). 실패해도 **커밋은 보존** — ok 은 commit 성공 기준으로 유지.
     #
@@ -1851,6 +6331,162 @@ def do_commit(team_root: str, message: str, push: bool = False,
         return _committed_result(
             False, f"committed; push budget exhausted ({step})")
 
+    if reconcile_before_push:
+        # Opt-in publication은 commit 직후의 branch+OID에 영구 바인딩한다. 이후 current
+        # checkout은 검증 대상으로만 읽고, push/retry source나 pending identity로 쓰지 않는다.
+        bound = _validated_branch_identity(team_root, publication_identity)
+        if bound is None or not _checkout_matches_identity(team_root, bound):
+            return _committed_result(
+                False, "committed; captured checkout identity unavailable")
+        publication_identity = bound
+        if not _budget_ok():
+            return _budget_stop("before pre-push reconcile")
+        publication_target, target_detail = _resolve_publication_target(
+            team_root, bound, deadline=_deadline)
+        target = publication_target
+        if target is None:
+            return _committed_result(
+                False, f"committed; publication target unavailable: {target_detail}")
+        if not _budget_ok():
+            return _budget_stop("after publication target resolution")
+        reconcile_deadline = _deadline - (_COMMIT_RESULT_RESERVE + 1)
+
+        def _adopt_reconciled_identity(
+                result: ReconcileResult, label: str) -> str:
+            nonlocal publication_identity
+            if result.final_identity is None:
+                if result.ok and result.action in {"fast-forward", "rebased"}:
+                    return f"{label} identity unavailable"
+                return ""
+            candidate = _validated_branch_identity(
+                team_root, result.final_identity)
+            if (candidate is None
+                    or candidate.get("branch") != bound.get("branch")):
+                return f"{label} identity invalid"
+            publication_identity = candidate
+            return ""
+
+        sync = do_reconcile(
+            team_root, timeout=timeout, deadline=reconcile_deadline,
+            expected_identity=bound, _target=target,
+            _allow_bound_mutation=_allow_bound_mutation,
+            _edit_lease_owner=_edit_lease_owner)
+        identity_error = _adopt_reconciled_identity(sync, "reconciled")
+        if identity_error:
+            return _committed_result(False, f"committed; {identity_error}")
+        if not sync.ok:
+            detail = sync.detail or sync.action
+            return _committed_result(
+                False,
+                f"committed; pre-push reconcile {sync.action}: {detail}")
+        if not _budget_ok():
+            return _budget_stop("before push after reconcile")
+
+        def _explicit_push() -> tuple[int, str, str, str] | None:
+            lock_timeout = _deadline_timeout(
+                _deadline, 1, reserve=_COMMIT_RESULT_RESERVE)
+            if not lock_timeout:
+                return 1, "", "publication interlock budget exhausted", ""
+            with _publication_interlock(
+                    team_root, lock_timeout) as (acquired, detail):
+                if not acquired:
+                    return 1, "", detail, ""
+                blocker = publication_blocker_detail(
+                    team_root, lock_timeout)
+                if blocker:
+                    return 1, "", blocker, ""
+                if not _checkout_matches_identity(
+                        team_root, publication_identity):
+                    return None
+                # Hold the common-repo interlock through the network call and use
+                # the endpoint captured during target resolution. Re-reading the
+                # remote name here would reintroduce a config TOCTOU.
+                push_timeout = _net_t()
+                if not target.push_endpoint:
+                    return 1, "", "captured push endpoint unavailable", ""
+                return _run_exact_publication_push_locked(
+                    team_root, target.push_endpoint, target.destination,
+                    target.reconcile_ref, publication_identity["head"],
+                    push_timeout)
+
+        def _explicit_push_success(detail: str) -> CommitResult:
+            if not target.set_upstream:
+                return _committed_result(True, detail)
+            setup_ok, setup_detail = _set_publication_upstream(
+                team_root, publication_identity, target, deadline=_deadline)
+            if setup_ok:
+                return _committed_result(True, f"{detail} (set upstream)")
+            # Remote publication is already durable. Never report pushed=False or retry
+            # the immutable commit merely because the local tracking config raced/failed.
+            return _committed_result(
+                True, f"{detail}; upstream setup skipped: {setup_detail}")
+
+        try:
+            push_result = _explicit_push()
+        except subprocess.TimeoutExpired:
+            return _committed_result(False, "committed; explicit push timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _committed_result(
+                False, f"committed; explicit push exec error: {exc}")
+        if push_result is None:
+            return _committed_result(
+                False, "committed; checkout-changed before explicit push")
+        prc, pout, perr, tracking_detail = push_result
+        if prc == 0:
+            detail = "committed and pushed"
+            if tracking_detail:
+                detail += f"; tracking update skipped: {tracking_detail}"
+            return _explicit_push_success(detail)
+
+        combined = (perr or "") + "\n" + (pout or "")
+        if not _is_non_fast_forward(combined):
+            return _committed_result(
+                False, f"committed; explicit push failed: "
+                       f"{combined.strip()[:200]}")
+
+        # Remote가 initial reconcile 직후 전진한 경우에도 retry 전체를 같은 A identity,
+        # remote, destination에 묶는다. current B/HEAD/plain push로 강등하지 않는다.
+        if not _budget_ok():
+            return _budget_stop("before explicit non-ff reconcile")
+        retry_deadline = _deadline - (_COMMIT_RESULT_RESERVE + 1)
+        retry_sync = do_reconcile(
+            team_root, timeout=timeout, deadline=retry_deadline,
+            expected_identity=publication_identity, _target=target,
+            _allow_bound_mutation=_allow_bound_mutation,
+            _edit_lease_owner=_edit_lease_owner)
+        identity_error = _adopt_reconciled_identity(
+            retry_sync, "retry reconcile")
+        if identity_error:
+            return _committed_result(False, f"committed; {identity_error}")
+        if not retry_sync.ok:
+            detail = retry_sync.detail or retry_sync.action
+            return _committed_result(
+                False, f"committed; explicit non-ff reconcile "
+                       f"{retry_sync.action}: {detail}")
+        if not _budget_ok():
+            return _budget_stop("before explicit re-push")
+        try:
+            retry_result = _explicit_push()
+        except subprocess.TimeoutExpired:
+            return _committed_result(
+                False, "committed; rebased but explicit re-push timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _committed_result(
+                False, f"committed; explicit re-push exec error: {exc}")
+        if retry_result is None:
+            return _committed_result(
+                False, "committed; checkout-changed before explicit re-push")
+        rrc, rout, rerr, retry_tracking_detail = retry_result
+        if rrc == 0:
+            detail = "committed; rebased and pushed"
+            if retry_tracking_detail:
+                detail += (
+                    f"; tracking update skipped: {retry_tracking_detail}")
+            return _explicit_push_success(detail)
+        return _committed_result(
+            False, f"committed; explicit re-push failed: "
+                   f"{((rerr or rout) or '').strip()[:200]}")
+
     # preflight(A1): 로컬 단계가 예산을 이미 소진했으면 push 를 아예 시작하지 않는다 —
     # _net_t 의 하한(1s) 때문에 소진 상태에서도 1s 짜리 헛 push 가 나가는 걸 차단.
     # 이 결과 모양(committed=True/pushed=False)이 auto-commit 훅의 sync-warning
@@ -1858,8 +6494,30 @@ def do_commit(team_root: str, message: str, push: bool = False,
     if not _budget_ok():
         return _budget_stop("before push")
 
+    # Legacy publication is one serialized transaction: initial rejection,
+    # fetch/rebase/abort proof, and final retry all share this same lease.  A
+    # worker can never publish an intermediate rebased HEAD between calls.
+    lock_timeout = _deadline_timeout(
+        _deadline, 1, reserve=_COMMIT_RESULT_RESERVE)
+    if not lock_timeout:
+        return _budget_stop("before publication interlock")
+    lease = _publication_interlock(team_root, lock_timeout)
     try:
-        prc, pout, perr = run_git(
+        acquired, interlock_detail = lease.__enter__()
+    except Exception as exc:  # noqa: BLE001 - public operation is non-raising
+        return _committed_result(
+            False, f"committed; publication interlock unavailable: {exc}")
+    if not acquired:
+        lease.__exit__(None, None, None)
+        return _committed_result(False, f"committed; {interlock_detail}")
+    publication_interlock_cm = lease
+    _publication_leases.append(lease)
+    blocker = publication_blocker_detail(team_root, lock_timeout)
+    if blocker:
+        return _committed_result(False, f"committed; {blocker}")
+
+    try:
+        prc, pout, perr = _run_publication_push_locked(
             ["-C", team_root, *http_timeout_opts(timeout), "push"],
             timeout=_net_t())
     except subprocess.TimeoutExpired:
@@ -1880,7 +6538,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
         if not _budget_ok():
             return _budget_stop("before push -u")
         try:
-            urc, uout, uerr = run_git(
+            urc, uout, uerr = _run_publication_push_locked(
                 ["-C", team_root, *http_timeout_opts(timeout),
                  "push", "-u", "origin", "HEAD"],
                 timeout=_net_t())
@@ -1950,29 +6608,33 @@ def do_commit(team_root: str, message: str, push: bool = False,
             except subprocess.TimeoutExpired as exc:
                 created_autostash = _created_autostash_oid(
                     team_root, _timeout_detail(exc), timeout=1)
-                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                _post_ok, post_detail = _verify_rebase_postcondition(
+                abort_ok = _abort_rebase(
+                    team_root, DEFAULT_TIMEOUT)  # 로컬 — 예산 밖 고정(#codex-P1)
+                rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
                     team_root, rebase_guard, created_autostash, timeout=1)
                 return _committed_result(
-                    False, "committed; push -u rebase timeout" +
-                    (f"; {post_detail}" if post_detail else ""))
+                    False, "committed; push -u " + _rebase_abort_detail(
+                        "rebase timeout", abort_ok, rollback_ok, post_detail))
             except (OSError, subprocess.SubprocessError) as exc:
-                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                _post_ok, post_detail = _verify_rebase_postcondition(
+                abort_ok = _abort_rebase(
+                    team_root, DEFAULT_TIMEOUT)  # 로컬 — 예산 밖 고정(#codex-P1)
+                rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
                     team_root, rebase_guard, timeout=1)
                 return _committed_result(
-                    False, f"committed; push -u rebase exec error: {exc}" +
-                    (f"; {post_detail}" if post_detail else ""))
+                    False, "committed; push -u " + _rebase_abort_detail(
+                        f"rebase exec error: {exc}", abort_ok, rollback_ok,
+                        post_detail))
             if rrc != 0:
-                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
+                abort_ok = _abort_rebase(
+                    team_root, DEFAULT_TIMEOUT)  # 로컬 — 예산 밖 고정(#codex-P1)
                 created_autostash = _created_autostash_oid(
                     team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
-                _post_ok, post_detail = _verify_rebase_postcondition(
+                rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
                     team_root, rebase_guard, created_autostash, timeout=1)
                 return _committed_result(
-                    False, f"committed; push -u rebase failed (aborted): "
-                    f"{(rerr or '').strip()[:200]}" +
-                    (f"; {post_detail}" if post_detail else ""))
+                    False, "committed; push -u " + _rebase_abort_detail(
+                        "rebase failed", abort_ok, rollback_ok, post_detail,
+                        (rerr or "").strip()[:200]))
             created_autostash = _created_autostash_oid(
                 team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
             post_ok, post_detail = _verify_rebase_postcondition(
@@ -1984,7 +6646,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
             if not _budget_ok():
                 return _budget_stop("before push -u after rebase")
             try:
-                u2rc, u2out, u2err = run_git(
+                u2rc, u2out, u2err = _run_publication_push_locked(
                     ["-C", team_root, *http_timeout_opts(timeout),
                      "push", "-u", "origin", "HEAD"],
                     timeout=_net_t())
@@ -2049,19 +6711,22 @@ def do_commit(team_root: str, message: str, push: bool = False,
             except subprocess.TimeoutExpired as exc:
                 created_autostash = _created_autostash_oid(
                     team_root, _timeout_detail(exc), timeout=1)
-                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                _post_ok, post_detail = _verify_rebase_postcondition(
+                abort_ok = _abort_rebase(
+                    team_root, DEFAULT_TIMEOUT)  # 로컬 — 예산 밖 고정(#codex-P1)
+                rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
                     team_root, rebase_guard, created_autostash, timeout=1)
                 return _committed_result(
-                    False, "committed; rebase timeout" +
-                    (f"; {post_detail}" if post_detail else ""))
+                    False, "committed; " + _rebase_abort_detail(
+                        "rebase timeout", abort_ok, rollback_ok, post_detail))
             except (OSError, subprocess.SubprocessError) as exc:
-                _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
-                _post_ok, post_detail = _verify_rebase_postcondition(
+                abort_ok = _abort_rebase(
+                    team_root, DEFAULT_TIMEOUT)  # 로컬 — 예산 밖 고정(#codex-P1)
+                rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
                     team_root, rebase_guard, timeout=1)
                 return _committed_result(
-                    False, f"committed; rebase exec error: {exc}" +
-                    (f"; {post_detail}" if post_detail else ""))
+                    False, "committed; " + _rebase_abort_detail(
+                        f"rebase exec error: {exc}", abort_ok, rollback_ok,
+                        post_detail))
             if rrc == 0:
                 created_autostash = _created_autostash_oid(
                     team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
@@ -2074,7 +6739,7 @@ def do_commit(team_root: str, message: str, push: bool = False,
                 if not _budget_ok():
                     return _budget_stop("before re-push")
                 try:
-                    p2rc, p2out, p2err = run_git(
+                    p2rc, p2out, p2err = _run_publication_push_locked(
                         ["-C", team_root, *http_timeout_opts(timeout), "push"],
                         timeout=_net_t())
                 except subprocess.TimeoutExpired:
@@ -2089,18 +6754,50 @@ def do_commit(team_root: str, message: str, push: bool = False,
                     False, f"committed; rebased but re-push failed: "
                     f"{((p2err or p2out) or '').strip()[:200]}")
             # rebase 실패(충돌 등) → abort 로 원상복구 후 비차단 반환.
-            _abort_rebase(team_root, DEFAULT_TIMEOUT)  # abort는 로컬 — 예산 밖 고정(#codex-P1)
+            abort_ok = _abort_rebase(
+                team_root, DEFAULT_TIMEOUT)  # 로컬 — 예산 밖 고정(#codex-P1)
             created_autostash = _created_autostash_oid(
                 team_root, (rout or "") + "\n" + (rerr or ""), timeout=1)
-            _post_ok, post_detail = _verify_rebase_postcondition(
+            rollback_ok, post_detail = _verify_rebase_rollback_postcondition(
                 team_root, rebase_guard, created_autostash, timeout=1)
             return _committed_result(
-                False, f"committed; rebase failed (aborted): "
-                f"{(rerr or '').strip()[:200]}" +
-                (f"; {post_detail}" if post_detail else ""))
+                False, "committed; " + _rebase_abort_detail(
+                    "rebase failed", abort_ok, rollback_ok, post_detail,
+                    (rerr or "").strip()[:200]))
 
     return _committed_result(
         False, f"committed; push failed: {((perr or pout) or '').strip()[:200]}")
+
+
+def do_commit(team_root: str, message: str, push: bool = False,
+              timeout: int = NET_TIMEOUT, paths: list | None = None,
+              reconcile_before_push: bool = False, *,
+              _allow_bound_mutation: bool = False,
+              _edit_lease_owner: str | None = None) -> CommitResult:
+    """Exception-safe public shell that always releases publication leases."""
+    leases: list = []
+    commit_state: dict = {"committed": False, "identity": None}
+    try:
+        return _do_commit_impl(
+            team_root, message, push=push, timeout=timeout, paths=paths,
+            reconcile_before_push=reconcile_before_push,
+            _allow_bound_mutation=_allow_bound_mutation,
+            _edit_lease_owner=_edit_lease_owner,
+            _publication_leases=leases, _commit_state=commit_state)
+    except Exception as exc:  # noqa: BLE001 - public operation is non-raising
+        committed = bool(commit_state["committed"])
+        return CommitResult(
+            ok=committed, committed=committed, pushed=False,
+            detail=f"{'committed; ' if committed else ''}unexpected git error: {exc}",
+            pending_identity=commit_state["identity"])
+    finally:
+        exc_info = sys.exc_info()
+        while leases:
+            lease = leases.pop()
+            try:
+                lease.__exit__(*exc_info)
+            except Exception:  # noqa: BLE001 - release is best effort/non-raising
+                pass
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -2365,7 +7062,8 @@ def _push_existing_workflow_strip_commit(team_root: str,
     if rc != 0 or (out or "").strip() != _WORKFLOW_STRIP_MESSAGE:
         return WorkflowStripResult(ok=True, detail="no workflows")
     try:
-        prc, pout, perr = run_git(
+        prc, pout, perr = _run_publication_push(
+            team_root,
             ["-C", team_root, *http_timeout_opts(NET_TIMEOUT), "push"],
             timeout=NET_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -2459,7 +7157,8 @@ def strip_template_workflows(team_root: str,
                 f"commit failed: {((err or out) or '').strip()[:200]}"))
 
     try:
-        prc, pout, perr = run_git(
+        prc, pout, perr = _run_publication_push(
+            root,
             ["-C", root, *http_timeout_opts(NET_TIMEOUT), "push"],
             timeout=NET_TIMEOUT)
     except subprocess.TimeoutExpired:

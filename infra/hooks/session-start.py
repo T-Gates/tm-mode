@@ -197,6 +197,8 @@ def _recent_transcript_generation(raw: dict) -> tuple[str, str, str] | None:
 
 def _resume_claim_key(data: dict) -> str | None:
     """동일 resume generation만 묶는 안정 해시. 다른 lifecycle source는 우회한다."""
+    if data.get("agent") != "codex":
+        return None
     raw = data.get("raw")
     if not isinstance(raw, dict) or raw.get("source") != "resume":
         return None
@@ -443,13 +445,33 @@ def _maybe_auto_pull(team_root: str, deadline=None) -> None:
         # 시도 단위 기록: 원격 장애 시에도 throttle 창당 1회만 비용(do_reconcile 은 무raise).
         _record_pull_time(state, now)
 
+        # An immutable pending entry names the pre-reconcile commit exactly.
+        # Rebasing that checkout first would rewrite H1 to H1' and then kick a
+        # worker that can only push the old H1; the old entry becomes a permanent
+        # non-fast-forward wedge and can no longer be ancestry-covered by H1'.
+        # Preserve the recorded evidence here; the finally-path pending recovery
+        # performs an ancestry-preserving merge/CAS before the exact worker retry.
+        # Unavailable ledger state is also fail-closed: do not mutate history
+        # while we cannot prove that no current-checkout pending exists.
+        pending_state = _git_ops.read_push_pending_state(team_root)
+        if not pending_state.available:
+            return
+        pending_snapshot = _git_ops.bind_legacy_pending_to_current_checkout(
+            team_root, pending_state.content)
+        if (pending_snapshot
+                and _git_ops.pending_entry_key_for_current_checkout(
+                    team_root, pending_snapshot)):
+            return
+
         if deadline is not None:
             if not _remaining_timeout(
                     deadline, _git_ops.DEFAULT_TIMEOUT):
                 return
-            res = _git_ops.do_reconcile(team_root, deadline=deadline)
+            res = _git_ops.do_reconcile(
+                team_root, deadline=deadline, _allow_bound_mutation=True)
         else:
-            res = _git_ops.do_reconcile(team_root)
+            res = _git_ops.do_reconcile(
+                team_root, _allow_bound_mutation=True)
 
         # ── 표면화: diverge/충돌/실패는 마커 + stderr(조용히 넘기지 않음) ──
         # ⚠️ write_sync_warning 의 detail 은 나중에 hook_ss_sync_warn(이미 i18n 라우팅)의
@@ -486,9 +508,9 @@ def _maybe_auto_pull(team_root: str, deadline=None) -> None:
     except Exception:  # noqa: BLE001 — 철칙: 무슨 일이 있어도 세션·주입을 막지 않는다
         pass
     finally:
-        # #45 pending recovery 는 pull 스로틀과 **독립**이지만, reconcile 과는 직렬화한다.
-        # 먼저 worker 를 시작하면 non-ff 로 실패한 뒤 이어진 rebase 결과를 다시 push 할
-        # 기회가 없다. 폴백·스로틀·예외 경로를 포함해 정합 시도 뒤 마지막에 항상 재kick.
+        # #45 pending recovery 는 pull 스로틀과 **독립**이다. current checkout pending
+        # 이 있으면 위에서 history mutation을 건너뛴 뒤 이 exact worker만 재kick한다.
+        # 폴백·스로틀·예외 경로를 포함해 마지막에 항상 실행한다.
         _recover_push_pending(team_root, lang, deadline=deadline)
 
 
@@ -554,18 +576,18 @@ def _maybe_fetch_upstream(team_root: str, deadline=None) -> None:
 def _recover_push_pending(team_root: str, lang: str = "ko", deadline=None) -> None:
     """#45 pending recovery — worker 유실(머신 슬립·Windows detach 실패·크래시) 복원.
 
-    ledger 가 correctness 의 단일 소스: pending 존재 시 age 무관 ahead 조합 판정 —
-      - 판정불가(no upstream/git 오류) → 보수 경고(clear 하지 않음).
-      - ahead > 0 → 경고 + worker **재kick 만**(세션 시작을 push 로 무겁히지 않는다 —
-        직접 push 금지가 계약).
-      - ahead == 0 → stale pending 자동 clear(이미 push 됨 — worker 가 clear 전에 죽음).
+    ledger 가 correctness 의 단일 소스: pending 존재 시 age 무관 worker 를 재kick한다.
+    현재 checkout 의 ahead==0 은 기록된 immutable HEAD가 실제 destination에
+    publication 됐다는 증거가 아니다(그 사이 branch reset/config 변경 가능). 따라서
+    SessionStart 는 pending 을 절대 clear하지 않고, 저장된 OID/refspec을 push하고 CAS
+    clear하는 push-worker에만 완료 판정을 위임한다.
     무raise — 세션·주입을 막지 않는다. lang 은 호출부(_maybe_auto_pull)가 한 번
     해석해 넘긴다(적대검수 — long tail).
     """
     if _git_ops is None:
         return
     try:
-        # legacy bind/current-checkout/ahead 판정과 state lock 꼬리를 위한 최소 여유.
+        # legacy bind/current-checkout 판정과 state lock 꼬리를 위한 최소 여유.
         # 부족하면 ledger를 그대로 보존해 다음 auto-commit/세션이 재시도하게 한다.
         if (deadline is not None
                 and not _remaining_timeout(
@@ -592,48 +614,49 @@ def _recover_push_pending(team_root: str, lang: str = "ko", deadline=None) -> No
                      "해당 branch로 전환해 재시도하세요: {targets}", targets=targets),
                   file=sys.stderr)
             return
-        ahead_timeout = _remaining_timeout(
-            deadline, _git_ops.DEFAULT_TIMEOUT) if deadline is not None \
-            else _git_ops.DEFAULT_TIMEOUT
-        if not ahead_timeout:
-            return
-        ahead, _behind, has_upstream = _git_ops._ahead_behind_raw(
-            team_root, ahead_timeout)
+        # The immutable pending head cannot be rebased.  Reconcile its exact
+        # stored target with an ancestry-preserving merge, then CAS-advance the
+        # ledger before the worker retries.  This closes the permanent H1/R
+        # non-fast-forward loop while keeping the worker history-read-only.
+        if deadline is None:
+            recovery = _git_ops.reconcile_current_pending(
+                team_root, pending_snapshot, pending_target_key)
+        else:
+            recovery = _git_ops.reconcile_current_pending(
+                team_root, pending_snapshot, pending_target_key,
+                deadline=deadline)
+        if not recovery.ok:
+            safe_detail = _git_ops.sanitize_git_detail(
+                recovery.detail or recovery.action)
+            if recovery.action == "conflict":
+                _git_ops.write_sync_warning(
+                    team_root,
+                    _t("hook_ss_pending_merge_conflict_marker", lang,
+                       "push pending 정합 충돌(merge abort) — 수동 정리 필요: "
+                       "{detail}", detail=safe_detail))
+            elif recovery.action in {
+                    "pending-history-changed", "pending-target-invalid",
+                    "pending-update-failed"}:
+                _git_ops.write_sync_warning_if_empty(
+                    team_root,
+                    _t("hook_ss_pending_reconcile_failed_marker", lang,
+                       "push pending 자동 정합 보류 — 수동 확인 필요: {action} — "
+                       "{detail}", action=recovery.action,
+                       detail=safe_detail))
+            print(_t(
+                "hook_ss_pending_reconcile_skipped", lang,
+                "[teammode] push pending 자동 정합 건너뜀(비치명): "
+                "{action} — {detail}", action=recovery.action,
+                detail=safe_detail), file=sys.stderr)
         worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "push-worker.py")
-        if not has_upstream:
-            # 판정불가 = 무 upstream(신규 브랜치) 또는 git 오류 — 구분 불가하므로
-            # 보수 경고 + **kick**(codex P2: worker 의 push_plain 이 no-upstream 을
-            # `push -u` 로 처리한다 — kick 없이 경고만 반복하면 영구 잔존 UX).
-            print(_t("hook_ss_push_pending_no_upstream", lang,
-                     "[teammode] push 미완(pending)이 있는데 원격 판정 불가 — "
-                     "worker 를 재시작합니다(신규 브랜치면 push -u 로 처리)."),
-                  file=sys.stderr)
-            if not _git_ops.kick_push_worker(team_root, worker):
-                print(_t("hook_ss_push_worker_restart_failed", lang,
-                         "[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
-                         "재시도됩니다."), file=sys.stderr)
-            return
-        if ahead > 0:
-            print(_t("hook_ss_push_pending_ahead", lang,
-                     "[teammode] 이전 세션의 push 미완(pending, ahead={ahead}) — "
-                     "worker 를 재시작합니다.", ahead=ahead), file=sys.stderr)
-            if not _git_ops.kick_push_worker(team_root, worker):
-                print(_t("hook_ss_push_worker_restart_failed", lang,
-                         "[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
-                         "재시도됩니다."), file=sys.stderr)
-            return
-        # ahead == 0: push 는 이미 됐는데 clear 전에 worker 가 죽은 잔재 — 자동 정리.
-        if _git_ops.clear_push_pending_if_unchanged(
-                team_root, pending_snapshot, pending_target_key):
-            if deadline is None:
-                _git_ops.clear_sync_warning_if_fully_published(team_root)
-            else:
-                clear_timeout = _remaining_timeout(
-                    deadline, _git_ops.DEFAULT_TIMEOUT)
-                if clear_timeout:
-                    _git_ops.clear_sync_warning_if_fully_published(
-                        team_root, timeout=clear_timeout)
+        print(_t("hook_ss_push_pending_rekick", lang,
+                 "[teammode] 이전 세션의 push 미완(pending) — 저장된 대상에 "
+                 "worker 를 재시작합니다."), file=sys.stderr)
+        if not _git_ops.kick_push_worker(team_root, worker):
+            print(_t("hook_ss_push_worker_restart_failed", lang,
+                     "[teammode] worker 재시작 실패 — 다음 커밋/세션에서 "
+                     "재시도됩니다."), file=sys.stderr)
     except Exception:  # noqa: BLE001 — 철칙
         pass
 

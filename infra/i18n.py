@@ -50,6 +50,15 @@ MESSAGES = {
             "conflict — manual cleanup needed. behind={behind} ahead={ahead}",
         "hook_ss_reconcile_skipped":
             "[teammode] Session reconcile skipped (non-fatal): {action} — {detail}",
+        "hook_ss_pending_merge_conflict_marker":
+            "Push-pending reconcile conflict (merge abort) — manual cleanup "
+            "needed: {detail}",
+        "hook_ss_pending_reconcile_failed_marker":
+            "Automatic push-pending reconcile deferred — manual review needed: "
+            "{action} — {detail}",
+        "hook_ss_pending_reconcile_skipped":
+            "[teammode] Automatic push-pending reconcile skipped (non-fatal): "
+            "{action} — {detail}",
         "hook_ss_push_pending_no_upstream":
             "[teammode] A push is still pending but the remote can't be judged — "
             "restarting the worker (will use `push -u` if this is a new branch).",
@@ -58,6 +67,9 @@ MESSAGES = {
         "hook_ss_push_pending_ahead":
             "[teammode] A previous session's push is still pending (ahead={ahead}) — "
             "restarting the worker.",
+        "hook_ss_push_pending_rekick":
+            "[teammode] A previous session's push is still pending — restarting "
+            "the worker for its stored destination.",
         "hook_ss_push_pending_checkout_mismatch":
             "Push pending targets a different checkout; preserving it on the "
             "current branch: {targets}",
@@ -110,6 +122,11 @@ MESSAGES = {
             "[teammode] Failed to record push-pending — the push was not "
             "scheduled (the commit itself is preserved). Check XDG state write "
             "permissions. Original push failure: {detail}",
+        "hook_ac_commit_deferred_marker":
+            "Auto-commit deferred (changes remain uncommitted): {detail}",
+        "hook_ac_commit_deferred_print":
+            "[teammode] Auto-commit deferred — changes remain uncommitted: "
+            "{detail}",
 
         # ── 엔진(teammode.py) 출력 — en 전용(ko 원문은 각 호출부 리터럴이 단일 소스,
         #    hook_* 와 동일 계약). auto_update_on_start(`tm on`) 이 찍는 줄들.
@@ -633,6 +650,18 @@ MESSAGES = {
             "skill (engine: python infra/teammode.py memory write …).",
         "hook_kb_stderr_blocked":
             "[teammode] KB write blocked: {reason}",
+        "hook_edit_lease_deny_busy":
+            "The file edit was not started because another session is changing "
+            "the shared checkout. Retry shortly: {detail}",
+        "hook_edit_lease_deny_unavailable":
+            "The edit synchronization module could not be loaded, so the file "
+            "edit was blocked conservatively. Retry after resynchronizing hooks.",
+        "hook_edit_lease_deny_identity":
+            "The hook payload has no exact session/tool identity, so safe automatic "
+            "reconciliation cannot be guaranteed. Resynchronize the agent hooks "
+            "and retry.",
+        "hook_edit_lease_stderr_blocked":
+            "[teammode] File edit deferred: {reason}",
 
         # confirm-action
         "hook_ca_deny_manifest":

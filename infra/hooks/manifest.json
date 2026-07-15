@@ -24,7 +24,35 @@
     "fallback": "runtime",
     "enforcement": "block",
     "_timeout_unit": "seconds",
-    "_timeout_note": "#19 foreground push 복구: PUSH_TOTAL_BUDGET(35s) + 첫 로컬 index.lock 실패 경로(실패 commit 직전 identity probe 포함 최대 12s) + 재시도 대기 1s + Windows taskkill/drain이 포함된 branch/HEAD 검증·ledger lock·fsync·worker 정리 여유. runner 70s kill 전에 pending/sync-warning fallback을 durable 기록한다."
+    "_timeout_note": "#19 foreground push 복구: PUSH_TOTAL_BUDGET(45s) + 첫 로컬 index.lock 실패 경로(실패 commit 직전 identity probe 포함 최대 12s) + 재시도 대기 1s + 1s-capped branch/HEAD 검증·ledger lock·fsync·worker 정리 여유. runner 70s kill 전에 pending/sync-warning fallback을 durable 기록한다."
+  },
+  {
+    "event": "PostToolUseFailure",
+    "match": { "action": "file_edit" },
+    "script": "edit-lease-cleanup.py",
+    "timeout": 2,
+    "mode": "on",
+    "enforcement": "advisory",
+    "_timeout_unit": "seconds",
+    "_note": "Claude exact failure lifecycle cleanup. Codex 0.144.4 does not expose PostToolUseFailure and explicitly maps this event to null."
+  },
+  {
+    "event": "Stop",
+    "script": "edit-lease-cleanup.py",
+    "timeout": 2,
+    "mode": "on",
+    "enforcement": "advisory",
+    "_timeout_unit": "seconds",
+    "_note": "Release only the exact turn plus verified runtime scope; never session-wide."
+  },
+  {
+    "event": "SubagentStop",
+    "script": "edit-lease-cleanup.py",
+    "timeout": 2,
+    "mode": "on",
+    "enforcement": "advisory",
+    "_timeout_unit": "seconds",
+    "_note": "Release only the exact subagent turn plus verified runtime scope."
   },
   {
     "event": "PreToolUse",
