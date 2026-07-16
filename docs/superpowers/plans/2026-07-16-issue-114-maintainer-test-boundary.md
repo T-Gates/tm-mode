@@ -41,15 +41,18 @@ inferred here.
 
 ## As built
 
-- `maintainer_tests/test_validation_distribution_boundary.py` runs an actual
+- Follow-up hardening in
+  `maintainer_tests/test_validation_distribution_boundary.py` adds an actual
   default `pytest --collect-only` subprocess and proves that default collection
-  excludes `maintainer_tests/`. Its CI assertion parses the same `jobs.pytest`
-  matrix job block and requires both the default and maintainer commands there.
+  excludes `maintainer_tests/`. Its stronger CI assertion parses the same
+  `jobs.pytest` matrix job block and requires both the default and maintainer
+  commands there.
 - `tests/test_release_pin.py` was moved to
   `maintainer_tests/test_release_pin.py` and modified, not merely renamed. The
-  final file adds public installer-oneliner and changelog contracts, and its
-  non-TTY subprocess explicitly isolates POSIX/Windows home state (`HOME`,
-  `USERPROFILE`), XDG and GitHub config directories, `APPDATA`/
+  final file retains the public installer-oneliner and changelog contracts that
+  already existed on `origin/main`. Its actual follow-up addition is stronger
+  non-TTY subprocess host isolation: it explicitly isolates POSIX/Windows home
+  state (`HOME`, `USERPROFILE`), XDG and GitHub config directories, `APPDATA`/
   `LOCALAPPDATA`, clears GitHub tokens and inherited member/drive-path values,
   and uses an empty `PATH`.
 - `tests/test_validation_sync.py` proves a legacy instance deletes the old
@@ -107,10 +110,12 @@ Expected: FAIL because `tests/test_release_pin.py` still exists, its maintainer 
 - [x] **Step 3: Move the release contract test and add the CI step**
 
 Move `tests/test_release_pin.py` to `maintainer_tests/test_release_pin.py`. The
-initial move preserves its release assertions; follow-up hardening adds the
-contract coverage and host-isolated subprocess environment recorded in **As
-built** above. In `.github/workflows/test.yml`, keep the existing instance
-validation command and add a separate step:
+initial move retains its release assertions, including the pre-existing public
+installer-oneliner and changelog contracts. Follow-up hardening adds stronger
+default-collection and CI-job boundary assertions plus the host-isolated
+subprocess environment recorded in **As built** above. In
+`.github/workflows/test.yml`, keep the existing instance validation command and
+add a separate step:
 
 ```yaml
 - name: Run maintainer-only product checks
