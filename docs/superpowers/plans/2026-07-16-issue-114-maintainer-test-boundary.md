@@ -8,14 +8,74 @@
 
 **Tech Stack:** Python 3.9+, pytest, GitHub Actions, tm-mode validation sync (`infra/git_ops.py`).
 
+> **Lifecycle/status:** This plan was authored before implementation and
+> intentionally kept uncommitted while the task commits were built. It was
+> committed after verification as the final execution record. A checked box
+> (`[x]`) means the corresponding evidence was observed in this issue-114
+> implementation session; an unchecked box means that evidence has not yet
+> been observed.
+
+## Observed verification evidence
+
+- Environment follow-up: `python3 --version` printed `Python 3.14.6`.
+- Baseline: `python3 -m pytest -q` reached `[100%]` and exited 0.
+- Task 1 RED: `python3 -m pytest -q maintainer_tests/test_validation_distribution_boundary.py`
+  reported 2 failed and exited 1 while the old `tests/test_release_pin.py` path
+  was present and the CI maintainer command was absent.
+- Task 1 GREEN: `python3 -m pytest -q maintainer_tests` reported 9 passed and
+  exited 0.
+- Task 2 regression: `python3 -m pytest -q tests/test_validation_sync.py::test_release_check_move_outside_validation_prunes_old_instance_copy`
+  exited 0. The combined `python3 -m pytest -q tests/test_validation_sync.py maintainer_tests`
+  run also exited 0; no pass count was recorded for either run.
+- Task 3 focused verification: `python3 -m pytest -q tests/test_no_identity_leaks.py maintainer_tests/test_validation_distribution_boundary.py`
+  reported 3 passed.
+- Final product suite: `python3 -m pytest -q tests maintainer_tests` reached
+  `[100%]` and exited 0.
+- Final diff hygiene: `git diff --check origin/main..HEAD` exited 0 with no
+  output. `git status --short` exited 0 with no output.
+
+`pyproject.toml` already sets pytest `addopts = "-q"`; the explicit `-q` in
+these commands therefore produced double-quiet output. In particular, the
+final product-suite pass count was suppressed and is intentionally not
+inferred here.
+
+## As built
+
+- `maintainer_tests/test_validation_distribution_boundary.py` runs an actual
+  default `pytest --collect-only` subprocess and proves that default collection
+  excludes `maintainer_tests/`. Its CI assertion parses the same `jobs.pytest`
+  matrix job block and requires both the default and maintainer commands there.
+- `tests/test_release_pin.py` was moved to
+  `maintainer_tests/test_release_pin.py` and modified, not merely renamed. The
+  final file adds public installer-oneliner and changelog contracts, and its
+  non-TTY subprocess explicitly isolates POSIX/Windows home state (`HOME`,
+  `USERPROFILE`), XDG and GitHub config directories, `APPDATA`/
+  `LOCALAPPDATA`, clears GitHub tokens and inherited member/drive-path values,
+  and uses an empty `PATH`.
+- `tests/test_validation_sync.py` proves a legacy instance deletes the old
+  release-check path without receiving the upstream-only replacement.
+- `CONTRIBUTING.md`, `CONTRIBUTING.ko.md`, and
+  `.github/PULL_REQUEST_TEMPLATE.md` carry equivalent two-suite guidance and
+  evidence requirements.
+- Final branch inventory is exactly these eight diff entries:
+  1. Modify `.github/PULL_REQUEST_TEMPLATE.md`.
+  2. Modify `.github/workflows/test.yml`.
+  3. Modify `CONTRIBUTING.ko.md`.
+  4. Modify `CONTRIBUTING.md`.
+  5. Add `docs/superpowers/plans/2026-07-16-issue-114-maintainer-test-boundary.md`.
+  6. Move and modify `tests/test_release_pin.py` to
+     `maintainer_tests/test_release_pin.py`.
+  7. Add `maintainer_tests/test_validation_distribution_boundary.py`.
+  8. Modify `tests/test_validation_sync.py`.
+
 ---
 
 ### Task 1: Lock the product-versus-instance test boundary
 
 **Files:**
 - Create: `maintainer_tests/test_validation_distribution_boundary.py`
-- Move later: `tests/test_release_pin.py` to `maintainer_tests/test_release_pin.py`
-- Modify later: `.github/workflows/test.yml`
+- Move and modify: `tests/test_release_pin.py` to `maintainer_tests/test_release_pin.py`
+- Modify: `.github/workflows/test.yml`
 
 - [x] **Step 1: Write the failing boundary tests**
 
@@ -46,7 +106,11 @@ Expected: FAIL because `tests/test_release_pin.py` still exists, its maintainer 
 
 - [x] **Step 3: Move the release contract test and add the CI step**
 
-Move `tests/test_release_pin.py` to `maintainer_tests/test_release_pin.py` without changing its assertions. In `.github/workflows/test.yml`, keep the existing instance validation command and add a separate step:
+Move `tests/test_release_pin.py` to `maintainer_tests/test_release_pin.py`. The
+initial move preserves its release assertions; follow-up hardening adds the
+contract coverage and host-isolated subprocess environment recorded in **As
+built** above. In `.github/workflows/test.yml`, keep the existing instance
+validation command and add a separate step:
 
 ```yaml
 - name: Run maintainer-only product checks
