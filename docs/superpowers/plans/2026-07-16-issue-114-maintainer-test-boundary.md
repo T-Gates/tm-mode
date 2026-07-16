@@ -29,8 +29,10 @@
   run also exited 0; no pass count was recorded for either run.
 - Task 3 focused verification: `python3 -m pytest -q tests/test_no_identity_leaks.py maintainer_tests/test_validation_distribution_boundary.py`
   reported 3 passed.
-- Final product suite: `python3 -m pytest -q tests maintainer_tests` reached
-  `[100%]` and exited 0.
+- Final controller product suite after all code/test follow-ups, at HEAD
+  `b845c2a`: `python3 -m pytest -q tests maintainer_tests` reached `[100%]` and
+  exited 0 under Python 3.14.6. Its pass count was suppressed by double-quiet
+  output.
 - Final diff hygiene: `git diff --check origin/main..HEAD` exited 0 with no
   output. `git status --short` exited 0 with no output.
 - Commit `59c26f4` adversarial RED: the focused default-collection check failed
@@ -49,10 +51,10 @@
 - Final adversarial re-review at HEAD `0fe67c3`: **Ready: YES**. The review
   passed with no remaining findings.
 
-The whole-product-suite result above predates the two adversarial follow-up
-commits. At `0fe67c3`, the observed post-follow-up evidence is the targeted
-combined exit-0 run stated above; this record does not infer another full-suite
-result or count.
+The whole-product-suite result above was observed at `b845c2a` after commits
+`59c26f4` and `0fe67c3` and all other code/test follow-ups. Any subsequent
+commit in this execution is evidence-documentation-only and changes this plan,
+not implementation or tests.
 
 `pyproject.toml` already sets pytest `addopts = "-q"`; the explicit `-q` in
 these commands therefore produced double-quiet output. In particular, the
