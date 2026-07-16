@@ -33,6 +33,26 @@
   `[100%]` and exited 0.
 - Final diff hygiene: `git diff --check origin/main..HEAD` exited 0 with no
   output. `git status --short` exited 0 with no output.
+- Commit `59c26f4` adversarial RED: the focused default-collection check failed
+  when an ambient `PYTEST_PLUGINS` override reached the child pytest process;
+  the non-TTY subprocess check also failed its `sitecustomize.py` sentinel when
+  ambient Python startup code reached the child.
+- Commit `59c26f4` GREEN: `python3 -m pytest -q maintainer_tests` reported
+  9 passed after pytest/Python subprocess isolation was tightened.
+- Commit `0fe67c3` adversarial RED: adding a no-shared-history requirement to
+  the legacy-instance regression failed at the `merge-base` assertion while
+  the fixture still cloned shared upstream history.
+- Commit `0fe67c3` GREEN: the unrelated-history regression passed for both
+  `prior-manual-revert` and `current-pre-move` blob parameters. The combined
+  `python3 -m pytest -q tests/test_validation_sync.py maintainer_tests` run
+  exited 0; no pass count is inferred.
+- Final adversarial re-review at HEAD `0fe67c3`: **Ready: YES**. The review
+  passed with no remaining findings.
+
+The whole-product-suite result above predates the two adversarial follow-up
+commits. At `0fe67c3`, the observed post-follow-up evidence is the targeted
+combined exit-0 run stated above; this record does not infer another full-suite
+result or count.
 
 `pyproject.toml` already sets pytest `addopts = "-q"`; the explicit `-q` in
 these commands therefore produced double-quiet output. In particular, the
@@ -46,7 +66,8 @@ inferred here.
   default `pytest --collect-only` subprocess and proves that default collection
   excludes `maintainer_tests/`. Its stronger CI assertion parses the same
   `jobs.pytest` matrix job block and requires both the default and maintainer
-  commands there.
+  commands there. The child environment removes ambient `PYTEST_ADDOPTS` and
+  `PYTEST_PLUGINS` overrides and disables third-party plugin autoload.
 - `tests/test_release_pin.py` was moved to
   `maintainer_tests/test_release_pin.py` and modified, not merely renamed. The
   final file retains the public installer-oneliner and changelog contracts that
@@ -54,9 +75,13 @@ inferred here.
   non-TTY subprocess host isolation: it explicitly isolates POSIX/Windows home
   state (`HOME`, `USERPROFILE`), XDG and GitHub config directories, `APPDATA`/
   `LOCALAPPDATA`, clears GitHub tokens and inherited member/drive-path values,
-  and uses an empty `PATH`.
-- `tests/test_validation_sync.py` proves a legacy instance deletes the old
-  release-check path without receiving the upstream-only replacement.
+  sanitizes Python startup overrides, uses an empty `PATH`, and invokes the
+  child with Python `-I -S`; a sentinel proves ambient `sitecustomize.py` is not
+  imported.
+- `tests/test_validation_sync.py` models a legacy instance with history
+  unrelated to upstream and covers two blob states: a prior manually reverted
+  release check and the current pre-move release check. Both must be pruned as
+  upstream-deleted without receiving the upstream-only replacement.
 - `CONTRIBUTING.md`, `CONTRIBUTING.ko.md`, and
   `.github/PULL_REQUEST_TEMPLATE.md` carry equivalent two-suite guidance and
   evidence requirements.
@@ -231,6 +256,9 @@ regression, one CI step, matching English/Korean/PR-template contributor
 guidance, and this implementation-plan record only; no SPEC content or version
 changes.
 
-- [ ] **Step 3: Request an adversarial code review**
+- [x] **Step 3: Request an adversarial code review**
 
 Ask a fresh reviewer to verify that default instance pytest no longer collects the release-only test, upstream CI still runs it, and legacy instance update safely deletes the old path.
+
+Observed final verdict at HEAD `0fe67c3`: **Ready: YES**; the adversarial
+re-review passed with no remaining findings.
