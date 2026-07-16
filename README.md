@@ -248,7 +248,7 @@ Design principles:
 5. **Instance data is inviolable** — no product code path syncs or deletes `memory/`·`team.config.json`.
 6. **Reproducible installs** — distribution artifacts (install.sh·cli.py·npx shim) are pinned to release tags; main stays stable via PR+CI.
 
-Where to start, by contribution type: engine verb → spec § then `infra/teammode.py`; new hook → declare in `infra/hooks/manifest.json`; new agent → `infra/agents/<name>/`; new L2 provider → `providers/<name>.json` (no code change needed); bug fix → red test first, then `python3 -m pytest -q`.
+Where to start, by contribution type: engine verb → spec § then `infra/teammode.py`; new hook → declare in `infra/hooks/manifest.json`; new agent → `infra/agents/<name>/`; new L2 provider → `providers/<name>.json` (no code change needed); bug fix → red test first, then both `python3 -m pytest -q` and `python3 -m pytest -q maintainer_tests`.
 
 </details>
 
@@ -465,7 +465,7 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
 - **훅 추가** → `infra/hooks/manifest.json` 에 선언 → 훅 본체(정규 stdin 계약) → 어댑터는 손댈 일 없음(manifest 를 읽음).
 - **에이전트 지원 추가** → `infra/agents/<name>/` 신설(adapter.py + events.json) → `install_lib.wire_agents()`.
 - **L2 provider 추가** → `providers/<name>.json` 데이터 팩(코드 변경 없이 동작해야 정상).
-- **버그 수정** → 재현 테스트 먼저(red) → 수정(green) → `python3 -m pytest -q` 전체.
+- **버그 수정** → 재현 테스트 먼저(red) → 수정(green) → `python3 -m pytest -q`와 `python3 -m pytest -q maintainer_tests` 모두 실행.
 
 </details>
 

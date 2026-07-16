@@ -5,7 +5,10 @@ install.sh 가 받는 cli.py, 문서·도움말의 curl 원라이너가 전부 �
 핀 버전은 __version__ 과 일치해야 릴리스 루틴에서 어긋나지 않는다.
 """
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -91,14 +94,59 @@ def test_template_repo_configurable():
 
 def test_nontty_env_template_rejected(tmp_path, monkeypatch):
     """[codex P1] 비-TTY 에서 env 만의 비기본 template 은 생성 전에 중단(악성 주입 차단)."""
-    import subprocess, sys
     cli = REPO / "src" / "teammode" / "cli.py"
+    ambient_python = tmp_path / "ambient-python"
+    ambient_python.mkdir()
+    sentinel = tmp_path / "ambient-python-imported"
+    (ambient_python / "sitecustomize.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('loaded', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(ambient_python))
+
+    home = tmp_path / "home"
+    isolated_paths = {
+        "HOME": home,
+        "USERPROFILE": home,
+        "XDG_CONFIG_HOME": tmp_path / "xdg-config",
+        "XDG_STATE_HOME": tmp_path / "xdg-state",
+        "XDG_DATA_HOME": tmp_path / "xdg-data",
+        "GH_CONFIG_DIR": tmp_path / "gh-config",
+        "APPDATA": tmp_path / "appdata",
+        "LOCALAPPDATA": tmp_path / "local-appdata",
+        "PATH": tmp_path / "empty-bin",
+    }
+    for path in set(isolated_paths.values()):
+        path.mkdir()
+
+    env = os.environ.copy()
+    for key in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "TEAMMODE_MEMBER",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+        "PYTHONINSPECT",
+    ):
+        env.pop(key, None)
+    env.update({key: str(path) for key, path in isolated_paths.items()})
+    env.update({
+        "PYTHONNOUSERSITE": "1",
+        "TEAMMODE_CODEX_TRUST_CHECK": "0",
+        "TM_TEMPLATE_REPO": "attacker/malicious-template",
+    })
+
     r = subprocess.run(
-        [sys.executable, str(cli), "init", "evil-owner/evil-repo"],
+        [sys.executable, "-I", "-S", str(cli), "init", "evil-owner/evil-repo"],
         capture_output=True, text=True, stdin=subprocess.DEVNULL,
-        env={**__import__("os").environ,
-             "TM_TEMPLATE_REPO": "attacker/malicious-template"},
+        env=env,
         cwd=str(tmp_path), timeout=30)
+    assert not sentinel.exists(), "child imported ambient sitecustomize.py"
     assert r.returncode != 0
     assert "TM_TEMPLATE_REPO" in (r.stderr + r.stdout)
     assert "--template" in (r.stderr + r.stdout)

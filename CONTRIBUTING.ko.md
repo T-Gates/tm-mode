@@ -22,8 +22,9 @@
 
 ```bash
 git clone https://github.com/<you>/tm-mode && cd tm-mode
-pip install pytest          # pytest는 stdlib이 아니고, 이 레포에 lockfile로 고정돼 있지도 않음
-python -m pytest -q         # 전체 테스트 — PR 전 반드시 통과
+pip install pytest                    # pytest는 stdlib이 아니고, 이 레포에 lockfile로 고정돼 있지도 않음
+python -m pytest -q                   # tests/ 아래 인스턴스 배포 런타임/검증 스위트
+python -m pytest -q maintainer_tests  # 업스트림 전용 릴리스/문서/패키지 계약 스위트 — 제출 전 둘 다 실행
 ```
 
 - Python **3.9+**. 제품 자체는 런타임 의존성이 0입니다(`pyproject.toml`의 `dependencies = []`) — git/gh는 호스트 필수도구지 pip 패키지가 아닙니다.
@@ -48,7 +49,8 @@ python -m pytest -q         # 전체 테스트 — PR 전 반드시 통과
 | `infra/credentials.py`, `infra/i18n.py`, `infra/io_encoding.py`, `infra/providers.py`, `infra/workday.py` | 엔진 보조 모듈 |
 | `infra/guidelines.md`, `infra/guidelines.en.md` | 에이전트 세션에 주입되는 "팀모드 운영 지침" 텍스트(한국어/영어) |
 | `infra/banners/`, `infra/migrations/`, `infra/scaffolds/` | 배너 아트, 마이그레이션 노트, 새 팀 레포 셋업 시 쓰이는 scaffold 템플릿 |
-| `tests/` | pytest 스위트 — 기능/수정 하나당 `test_*.py` 하나 |
+| `tests/` | 인스턴스에 배포되는 런타임/검증 pytest 스위트 — 기능/수정 하나당 `test_*.py` 하나 |
+| `maintainer_tests/` | 업스트림 전용 릴리스/문서/패키지 계약 pytest 스위트 |
 | `conformance/check.py` | `lint` / `verify` / `conform` 검수 도구 |
 | `conformance/scenarios/*.json` | 5개 골든 시나리오 — `verify`/`conform`이 실행하는 실행 가능한 스펙 |
 | `docs/spec/` | 동작의 **단일 권위본**(SPEC v0.4, 영어) |
@@ -67,15 +69,16 @@ python -m pytest -q         # 전체 테스트 — PR 전 반드시 통과
 ## 5. 테스트 · conformance 검사 실행
 
 ```bash
-python -m pytest -q                                                          # 전체 테스트 스위트
+python -m pytest -q                                                          # tests/ 아래 인스턴스 배포 런타임/검증 스위트
+python -m pytest -q maintainer_tests                                         # 업스트림 전용 릴리스/문서/패키지 계약 스위트
 python conformance/check.py lint    --root .                                 # 정적: manifest/events.json 형태 검사, 엔진 실행 없음
 python conformance/check.py verify  --root . --engine "python infra/teammode.py"   # 동적: 골든 시나리오 5개를 우리 엔진에 실행
 python conformance/check.py conform --root . --engine "<다른 구현>"           # 같은 시나리오를 제3의 구현에 실행, advisory Tier 산출용
 ```
 
-각 플래그는 `python conformance/check.py --help`로 확인 가능하고, 골든 시나리오 형식은 `conformance/scenarios/README.md`에 문서화돼 있습니다. 새 동작에는 테스트를 함께 추가하고, 버그 수정이면 재현 테스트를 먼저 red로 작성한 뒤 고치세요.
+업스트림 기여자는 제출 전에 두 pytest 명령을 모두 실행해야 합니다. 기본 명령은 의도적으로 `tests/`만 수집하며, 이 런타임/검증 테스트는 팀 인스턴스에 배포됩니다. `maintainer_tests/`는 업스트림 메인테이너 계약 스위트입니다. 기본 pytest와 `tm-mode update` validation 동기화에서는 제외하고, 업스트림 CI가 릴리스·문서·패키지 계약 검사를 위해 명시적으로 실행합니다. conformance 각 플래그는 `python conformance/check.py --help`로 확인 가능하고, 골든 시나리오 형식은 `conformance/scenarios/README.md`에 문서화돼 있습니다. 새 동작에는 테스트를 함께 추가하고, 버그 수정이면 재현 테스트를 먼저 red로 작성한 뒤 고치세요.
 
-전체 스위트는 수 초가 아니라 **수 분** 걸립니다 — 멈춘 것으로 오해하지 말고 그렇게 예상하세요. CI는 Python 3.9와 3.12에서 테스트합니다(`.github/workflows/test.yml`) — 훨씬 최신 인터프리터를 쓰고 있고 관련 없어 보이는 실패가 무더기로 나온다면, 제품 버그로 단정하기 전에 이 버전들 중 하나로 먼저 시도해보세요. `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` **하나만** 실패한다면, 전역 `git config user.name`이 설정된 머신에서는 정상적으로 나타나는 현상입니다(`.github/workflows/test.yml` 맨 위의 경고 주석 참고) — 환경 전제조건 문제이지 제품 버그가 아닙니다.
+`tests/` 스위트는 수 초가 아니라 **수 분** 걸립니다 — 멈춘 것으로 오해하지 말고 그렇게 예상하세요. CI는 두 스위트를 Python 3.9와 3.12에서 테스트합니다(`.github/workflows/test.yml`) — 훨씬 최신 인터프리터를 쓰고 있고 관련 없어 보이는 실패가 무더기로 나온다면, 제품 버그로 단정하기 전에 이 버전들 중 하나로 먼저 시도해보세요. `tests/test_install_l1b.py::test_bootstrap_exit3_when_no_name_resolvable` **하나만** 실패한다면, 전역 `git config user.name`이 설정된 머신에서는 정상적으로 나타나는 현상입니다(`.github/workflows/test.yml` 맨 위의 경고 주석 참고) — 환경 전제조건 문제이지 제품 버그가 아닙니다.
 
 PR을 push하기 전에 CI 계약을 명시적으로 확인하세요:
 
@@ -83,7 +86,7 @@ PR을 push하기 전에 CI 계약을 명시적으로 확인하세요:
 - 테스트가 "git config 없음", 색상 출력, 터미널 동작, `$HOME`, XDG 경로, 환경변수를 검증한다면 그 상태를 테스트 안에서 격리하세요. 개발자 머신이 깨끗하다고 가정하지 마세요. 전역 `git user.name`, `NO_COLOR`, `TERM=dumb`, 커스텀 `HOME`, shell alias는 흔합니다.
 - 테스트가 가짜 git remote를 만든다면 branch 이름을 명시하세요(`git checkout -B main`, bare repo는 `git symbolic-ref HEAD refs/heads/main`). GitHub Actions runner의 기본 branch 이름은 로컬 머신과 같다고 보장되지 않습니다.
 - fixture에 GitHub URL이 필요하면 공개 위생 허용 어휘 안에서만 쓰고 `tests/test_no_identity_leaks.py`를 실행하세요. 대소문자도 중요할 수 있습니다. `USER@example.com`처럼 보이는 문자열은 identity-leak 가드에 걸릴 수 있습니다.
-- `origin/main`을 merge/rebase한 뒤에는 다시 전체 스위트를 돌리고 push하세요. 이미 green이던 PR도 다른 PR이 같은 테스트·문서·workflow·공용 helper를 건드리면 merge commit에서 `DIRTY`가 되거나 실패할 수 있습니다.
+- `origin/main`을 merge/rebase한 뒤에는 두 pytest 스위트를 다시 돌리고 push하세요. 이미 green이던 PR도 다른 PR이 같은 테스트·문서·workflow·공용 helper를 건드리면 merge commit에서 `DIRTY`가 되거나 실패할 수 있습니다.
 
 릴리스 publish는 PR 테스트와 별도 gate입니다. `.github/workflows/publish.yml`은 `v*` 태그에서만 돌며, PyPI와 npm의 registry-side Trusted Publishing / 패키지 소유 권한이 필요합니다. 과거 태그 publish가 실패했다고 PR 자체가 깨졌다는 뜻은 아니지만, 릴리스 태그를 자르기 전에는 메인테이너가 PyPI publisher, npm package access, 태그/패키지 버전 일치를 확인해야 합니다.
 
@@ -127,8 +130,8 @@ chore: switch license to Apache 2.0
 ## 10. Pull Request
 
 1. Fork → 브랜치(`fix/...`, `feat/...`) → `T-Gates/tm-mode`의 `main`으로 PR.
-2. `.github/PULL_REQUEST_TEMPLATE.md`를 채웁니다: 무엇/왜, 변경사항, 테스트 근거(`python -m pytest -q` 출력 붙이기), 체크리스트(stdlib-only 유지, 전체 테스트 통과). 웹 UI는 이 템플릿을 자동 적용하지만 `gh pr create --body`는 그렇지 않으니, 그렇게 올릴 경우 같은 구조로 직접 작성하세요.
-3. PR을 merge 가능 상태로 유지하세요. GitHub가 `DIRTY`를 표시하면 `origin/main`을 merge 또는 rebase하고, 어느 쪽 동작도 버리지 않게 충돌을 풀고, 전체 스위트를 다시 돌린 뒤 일반 follow-up commit으로 push하세요.
+2. `.github/PULL_REQUEST_TEMPLATE.md`를 채웁니다: 무엇/왜, 변경사항, 테스트 근거(`python -m pytest -q`와 `python -m pytest -q maintainer_tests` 출력 모두 붙이기), 체크리스트(stdlib-only 유지, 두 스위트 모두 통과). 웹 UI는 이 템플릿을 자동 적용하지만 `gh pr create --body`는 그렇지 않으니, 그렇게 올릴 경우 같은 구조로 직접 작성하세요.
+3. PR을 merge 가능 상태로 유지하세요. GitHub가 `DIRTY`를 표시하면 `origin/main`을 merge 또는 rebase하고, 어느 쪽 동작도 버리지 않게 충돌을 풀고, 두 pytest 스위트를 다시 돌린 뒤 일반 follow-up commit으로 push하세요.
 4. `.github/CODEOWNERS`에 따라 메인테이너가 리뷰·머지합니다. 리뷰 코멘트에는 후속 커밋으로 응답하세요 — 리뷰 도중 히스토리를 force-push로 덮어쓰지 마세요.
 
 ## 11. 문서 · i18n
