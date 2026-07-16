@@ -95,19 +95,29 @@ def test_template_repo_configurable():
 def test_nontty_env_template_rejected(tmp_path):
     """[codex P1] 비-TTY 에서 env 만의 비기본 template 은 생성 전에 중단(악성 주입 차단)."""
     cli = REPO / "src" / "teammode" / "cli.py"
+    home = tmp_path / "home"
     isolated_paths = {
-        "HOME": tmp_path / "home",
+        "HOME": home,
+        "USERPROFILE": home,
         "XDG_CONFIG_HOME": tmp_path / "xdg-config",
         "XDG_STATE_HOME": tmp_path / "xdg-state",
         "XDG_DATA_HOME": tmp_path / "xdg-data",
         "GH_CONFIG_DIR": tmp_path / "gh-config",
+        "APPDATA": tmp_path / "appdata",
+        "LOCALAPPDATA": tmp_path / "local-appdata",
         "PATH": tmp_path / "empty-bin",
     }
-    for path in isolated_paths.values():
+    for path in set(isolated_paths.values()):
         path.mkdir()
 
     env = os.environ.copy()
-    for key in ("GH_TOKEN", "GITHUB_TOKEN", "TEAMMODE_MEMBER"):
+    for key in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "TEAMMODE_MEMBER",
+        "HOMEDRIVE",
+        "HOMEPATH",
+    ):
         env.pop(key, None)
     env.update({key: str(path) for key, path in isolated_paths.items()})
     env.update({
