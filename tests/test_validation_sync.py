@@ -458,6 +458,49 @@ def test_renamed_away_is_safe_delete_with_target(team_with_upstream_deletes):
     assert "tests/test_moved.py" in plan.safe_paths  # 새 경로는 신규 추가
 
 
+def test_release_check_move_outside_validation_prunes_old_instance_copy(
+        tmp_path, monkeypatch):
+    """validation 밖으로 옮긴 release check 는 옛 인스턴스 복사본만 정리한다."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+    team = tmp_path / "team"
+
+    _git(tmp_path, "init", "--bare", str(upstream))
+    _git(upstream, "symbolic-ref", "HEAD", "refs/heads/main")
+    _git(tmp_path, "clone", str(upstream), str(seed))
+    _git(seed, "config", "user.name", "t")
+    _git(seed, "config", "user.email", "t@t")
+    _write(seed, "tests/test_release_pin.py", "release-v1\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "v1 release check in validation")
+    _git(seed, "branch", "-M", "main")
+    _git(seed, "push", "-u", "origin", "main")
+
+    _git(tmp_path, "clone", str(upstream), str(team))
+    _git(team, "remote", "add", "upstream", str(upstream))
+
+    (seed / "maintainer_tests").mkdir()
+    _git(seed, "mv", "tests/test_release_pin.py",
+         "maintainer_tests/test_release_pin.py")
+    _git(seed, "commit", "-m", "v2 move release check to maintainer tests")
+    _git(seed, "push")
+    _git(team, "fetch", "upstream")
+
+    plan = go.plan_validation_sync(str(team), "upstream/main")
+    assert "tests/test_release_pin.py" in {d.path for d in plan.safe_deletes}
+    assert not any(path.startswith("maintainer_tests/")
+                   for path in plan.safe_paths)
+    assert not any(path.startswith("maintainer_tests/")
+                   for path in plan.up_to_date)
+
+    result = go.apply_validation_sync(str(team), "upstream/main", plan)
+    assert result.ok, result.detail
+    assert "tests/test_release_pin.py" in result.deleted
+    assert not (team / "tests" / "test_release_pin.py").exists()
+    assert not (team / "maintainer_tests" / "test_release_pin.py").exists()
+
+
 def test_hybrid_blob_not_deleted_marked(team_with_upstream_deletes):
     """로컬 수정된(blob∉역사) 잔존 파일은 v2 도 삭제 안 함 — 사람 정리 후보로 표시."""
     team = team_with_upstream_deletes
