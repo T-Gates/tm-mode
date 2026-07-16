@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import sys
@@ -7,16 +8,25 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
-def test_release_contract_checks_live_outside_instance_validation_tree():
+def test_release_contract_checks_live_outside_instance_validation_tree(monkeypatch):
     assert not (REPO / "tests" / "test_release_pin.py").exists()
     assert (REPO / "maintainer_tests" / "test_release_pin.py").is_file()
 
+    monkeypatch.setenv("PYTEST_ADDOPTS", "maintainer_tests")
+    monkeypatch.setenv(
+        "PYTEST_PLUGINS", "tm_mode_missing_ambient_pytest_plugin"
+    )
+    child_env = os.environ.copy()
+    for key in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+        child_env.pop(key, None)
+    child_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q"],
         cwd=REPO,
         capture_output=True,
         text=True,
         timeout=60,
+        env=child_env,
     )
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
