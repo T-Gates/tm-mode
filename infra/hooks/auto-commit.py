@@ -315,20 +315,22 @@ def main() -> int:
                         file=sys.stderr)
                     _kick_push_worker(root)
                 else:
-                    # codex P1: ledger 기록 실패를 삼키면 "커밋됨·push 안 됨·pending
-                    # 없음·마커 없음" 무음 유실 — sync-warning fallback + stderr 1줄.
+                    # False includes history/target/CAS refusal, not only I/O;
+                    # keep the original push detail without guessing a cause.
                     # 마커는 나중에 session-start 의 locale wrapper 안에 삽입되므로
                     # marker content 자체도 현재 팀 locale 로 렌더링한다.
                     _git_ops.write_sync_warning(
                         root, _t("hook_ac_pending_write_failed_marker", lang,
-                                "커밋됨; push-pending 기록 실패 — push 미보장"
-                                "(XDG state 쓰기 오류); 원래 push 실패: {detail}",
+                                "push-pending 상태를 안전하게 갱신하지 못했습니다 — "
+                                "커밋은 보존됐지만 자동 push 복구는 예약되지 "
+                                "않았습니다; 원래 push 실패: {detail}",
                                 detail=detail))
                     print(_t(
                         "hook_ac_pending_write_failed_print", lang,
-                        "[teammode] push-pending 기록 실패 — push 가 예약되지 "
-                        "않았습니다(커밋은 보존). XDG state 쓰기 권한을 "
-                        "확인하세요. 원래 push 실패: {detail}", detail=detail),
+                        "[teammode] push-pending 상태를 안전하게 갱신하지 "
+                        "못했습니다 — 커밋은 보존됐지만 자동 push 복구는 "
+                        "예약되지 않았습니다. 원래 push 실패: {detail}",
+                        detail=detail),
                         file=sys.stderr)
         else:
             # Pre-commit interlock/blocker and real add/commit failures have no

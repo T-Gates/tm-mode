@@ -336,21 +336,29 @@ def test_foreground_publication_partial_local_cleanup_stays_visible(
     assert detail_fragment in fake.warnings[-1][1]
 
 
+@pytest.mark.parametrize("lang", ("ko", "en"))
 def test_pending_write_failure_preserves_push_detail_without_worker(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, lang):
     root = _active_root(tmp_path)
+    secret = "ghp_pending_write_secret_123456"
     res = go.CommitResult(ok=True, committed=True, pushed=False,
-                          detail="committed; push timeout")
+                          detail=f"committed; push timeout token={secret}")
     fake = _FakeGitOps(res, pending_write_ok=False)
-    rc = _run(_load_hook(), fake, root, monkeypatch)
+    rc = _run(_load_hook(), fake, root, monkeypatch, lang=lang)
     err = capsys.readouterr().err
+    rendered = fake.warnings[-1][1] + "\n" + err
     assert rc == 0
     assert fake.push_args == [True]
     assert fake.pending_writes == 1
     assert fake.kicked == 0
-    assert res.detail in fake.warnings[-1][1]
-    assert "pending" in fake.warnings[-1][1].lower()
-    assert res.detail in err
+    expected = (("push-pending 상태를 안전하게 갱신하지 못했습니다",
+                 "커밋은 보존됐지만 자동 push 복구는 예약되지 않았습니다")
+                if lang == "ko" else
+                ("could not safely update push-pending state",
+                 "automatic push recovery was not scheduled"))
+    assert all(text.lower() in rendered.lower() for text in expected)
+    assert secret not in rendered and "[redacted]" in rendered
+    assert "xdg" not in rendered.lower() and "permission" not in rendered.lower()
     assert fake.events == ["pending", "warning"]
 
 

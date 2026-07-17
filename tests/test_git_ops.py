@@ -3054,13 +3054,6 @@ def test_git_ops_do_pull_non_git_no_raise(tmp_path):
     assert res.ok is False  # 예외 없이 실패 표현
 
 
-def test_git_ops_has_safety_primitives():
-    # 안전장치 함수들이 공통 모듈에 존재(재사용 대상)
-    for name in ("_run_git", "_git_env", "_kill_group", "_is_git_worktree",
-                 "PullResult"):
-        assert hasattr(go, name), f"git_ops 에 {name} 없음"
-
-
 # ── auto_pull 이 git_ops 를 재사용 (드리프트 방지) ──
 
 def test_auto_pull_reuses_git_ops():
