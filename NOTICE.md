@@ -8,6 +8,12 @@ When `tm on` detects that upstream's `NOTICE.md` differs from your local copy, t
 
 ---
 
+## 2026-07-18
+
+- **Pending publication survives external rebase**: when a supported startup reconcile rewrites a locally pending commit, tm-mode proves the old patch set in current history, advances the pending ledger to the current HEAD, and finishes with an ordinary push instead of getting stuck at `pending-history-changed`.
+- **Fail-closed history proof**: mismatched checkout, remote, destination, fingerprint, incomplete or empty proof, Git errors or timeouts, replace refs, and grafts are rejected; the worker never rewrites history or force-pushes.
+- **Maintainer validation boundary**: release-pin checks now stay in upstream maintainer CI instead of being distributed as team-instance validation, resolving #114.
+
 ## 2026-07-15
 
 - **Safer automatic sync**: session-log auto-commit now reconciles concurrent teammate pushes before publishing, retries within a bounded window, and records recoverable pending state instead of blocking hooks.

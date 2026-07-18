@@ -21,7 +21,7 @@ The agent follows the AGENTS.md "첫 접촉 (First contact)" procedure: show the
 pipx install tm-mode        # or: pip install tm-mode
 
 # Or curl (without pip) — append one of the step-2 commands exactly as shown:
-#   curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.6/install.sh | sh -s -- <command>
+#   curl -fsSL https://raw.githubusercontent.com/T-Gates/tm-mode/refs/tags/v0.1.7/install.sh | sh -s -- <command>
 ```
 
 ## 2. Create or join a team
