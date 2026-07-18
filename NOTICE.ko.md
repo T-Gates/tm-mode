@@ -8,6 +8,12 @@
 
 ---
 
+## 2026-07-18
+
+- **외부 rebase 이후 pending 발행 복구**: 지원되는 시작 경로가 로컬 pending 커밋을 다시 쓴 경우, 현재 history에 이전 patch 전체가 있음을 증명한 뒤 pending 장부를 현재 HEAD로 전진시키고 일반 push로 마쳐 `pending-history-changed` 고착을 막습니다.
+- **fail-closed history 증명**: checkout·remote·destination·fingerprint 불일치, 불완전하거나 빈 증명, Git 오류·timeout, replace ref·graft를 거부하며 worker는 history 수정이나 force push를 하지 않습니다.
+- **maintainer 검증 경계 정리**: release pin 검사는 팀 instance validation에 배포하지 않고 upstream maintainer CI에서만 실행해 #114를 해결합니다.
+
 ## 2026-07-15
 
 - **더 안전한 자동 동기화**: 세션 로그 자동 커밋이 팀원의 동시 push를 먼저 reconcile한 뒤 제한된 범위에서 재시도하고, hook을 막는 대신 복구 가능한 pending 상태를 기록합니다.

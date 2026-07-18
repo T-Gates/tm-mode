@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## 0.1.7 — 2026-07-18
+
+- Recovered pending session-log publication after an external `pull --rebase` rewrites the pending commit: exact patch-equivalent coverage across publication, pending CAS advance, SessionStart reconciliation, and pending rewrite now advances the ledger to current history so ordinary push can clear it.
+- Kept rewritten-history recovery fail-closed: checkout, remote, destination, fingerprint, incomplete or empty proof, Git errors, timeouts, replace refs, and grafts are rejected; workers still never rewrite history or force-push.
+- Separated maintainer-only release-pin checks from syncable instance validation, keeping upstream release gates in CI without distributing them into team instances and resolving #114.
+
 ## 0.1.6 — 2026-07-15
 
 - Made automatic session-log publication safe under concurrent teammate pushes: auto-commit now performs a bounded reconcile and exact push, preserves unrelated work, and records recoverable pending state instead of blocking agent hooks.
