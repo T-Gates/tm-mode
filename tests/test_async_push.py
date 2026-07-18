@@ -26,6 +26,24 @@ sys.path.insert(0, str(REPO / "infra"))
 import git_ops  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_git_env(tmp_path_factory, monkeypatch):
+    """Keep fixture and product Git subprocesses off host configuration."""
+    for name in list(os.environ):
+        if (name in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+                or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))):
+            monkeypatch.delenv(name, raising=False)
+    iso = tmp_path_factory.mktemp("git-iso")
+    empty_cfg = iso / "empty-gitconfig"
+    empty_cfg.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(iso))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(iso / "xdg"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
 @pytest.fixture()
 def xdg(tmp_path, monkeypatch):
     """XDG_STATE_HOME 격리 — 실 ~/.local/state 무접촉."""
@@ -55,9 +73,9 @@ def _init_repo(path: Path, *, bare: bool = False) -> Path:
     subprocess.run(args, check=True, capture_output=True)
     if not bare:
         subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t.com"],
-                       capture_output=True)
+                       check=True, capture_output=True)
         subprocess.run(["git", "-C", str(path), "config", "user.name", "T"],
-                       capture_output=True)
+                       check=True, capture_output=True)
     return path
 
 
@@ -68,23 +86,25 @@ def _clone_pair(tmp_path) -> tuple:
     subprocess.run(["git", "clone", "-q", str(origin), str(work)],
                    check=True, capture_output=True)
     subprocess.run(["git", "-C", str(work), "config", "user.email", "t@t.com"],
-                   capture_output=True)
+                   check=True, capture_output=True)
     subprocess.run(["git", "-C", str(work), "config", "user.name", "T"],
-                   capture_output=True)
+                   check=True, capture_output=True)
     (work / "README.md").write_text("init\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(work), "add", "."], capture_output=True)
+    subprocess.run(["git", "-C", str(work), "add", "."],
+                   check=True, capture_output=True)
     subprocess.run(["git", "-C", str(work), "commit", "-qm", "init"],
-                   capture_output=True)
+                   check=True, capture_output=True)
     subprocess.run(["git", "-C", str(work), "push", "-qu", "origin", "HEAD"],
-                   capture_output=True)
+                   check=True, capture_output=True)
     return origin, work
 
 
 def _commit_file(repo: Path, name: str, content: str = "x") -> None:
     (repo / name).write_text(content, encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", name], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "add", name],
+                   check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", f"add {name}"],
-                   capture_output=True)
+                   check=True, capture_output=True)
 
 
 def _commit_auto_session(repo: Path, name: str, content: str = "session\n") -> None:
@@ -119,6 +139,56 @@ def _git_text(repo: Path, *args: str) -> str:
 def _bare_git_text(origin: Path, *args: str) -> str:
     return subprocess.run(["git", "--git-dir", str(origin), *args], check=True,
                           capture_output=True, text=True).stdout.strip()
+
+
+def _git_rc(repo: Path, *args: str) -> int:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True).returncode
+
+
+def _external_rebase_pending_head(
+        origin: Path, work: Path, other_path: Path, *, prefix: str,
+        rebase: bool = True) -> tuple:
+    """Push remote R and optionally rewrite unpublished H1 with a real rebase."""
+    old_head = _git_text(work, "rev-parse", "HEAD")
+    other = _clone_other(origin, other_path)
+    _commit_file(other, f"{prefix}-remote-r.md", "remote R\n")
+    subprocess.run(["git", "-C", str(other), "push", "-q"], check=True)
+    remote_head = _bare_git_text(origin, "rev-parse", "refs/heads/main")
+    if not rebase:
+        return old_head, old_head, remote_head
+    subprocess.run(
+        ["git", "-C", str(work), "-c", "rebase.backend=apply",
+         "pull", "--rebase"], check=True, capture_output=True)
+    rewritten_head = _git_text(work, "rev-parse", "HEAD")
+    assert old_head != rewritten_head
+    assert _git_rc(work, "merge-base", "--is-ancestor",
+                   old_head, rewritten_head) == 1
+    assert _git_text(work, "cherry", rewritten_head, old_head) == f"- {old_head}"
+    return old_head, rewritten_head, remote_head
+
+
+def _rewrite_pending_with_other_entry(tmp_path: Path) -> tuple:
+    """Create another-checkout entry plus main H1 rewritten to H1' and H2."""
+    origin, work = _clone_pair(tmp_path)
+    subprocess.run(["git", "-C", str(work), "checkout", "-qb",
+                    "other-pending"], check=True, capture_output=True)
+    _commit_file(work, "other-pending.md", "other checkout\n")
+    assert git_ops.write_push_pending(str(work)) is True
+    other_key = "branch:other-pending"
+
+    subprocess.run(["git", "-C", str(work), "checkout", "-q", "main"],
+                   check=True, capture_output=True)
+    _commit_file(work, "rewrite-write-h1.md", "pending H1\n")
+    assert git_ops.write_push_pending(str(work)) is True
+    old_snapshot = git_ops.read_push_pending(str(work))
+    main_key = git_ops.pending_entry_key_for_current_checkout(
+        str(work), old_snapshot)
+    old_entries = git_ops._pending_entries(old_snapshot)
+    _external_rebase_pending_head(
+        origin, work, tmp_path / "rewrite-write-other", prefix="rewrite-write")
+    _commit_file(work, "rewrite-write-h2.md", "local H2\n")
+    return work, main_key, other_key, old_entries
 
 
 _RECONCILE_BLOCKER_KINDS = (
@@ -229,7 +299,8 @@ def test_push_plain_non_ff_no_recovery(xdg, tmp_path):
     subprocess.run(["git", "-C", str(other), "config", "user.name", "O"],
                    capture_output=True)
     _commit_file(other, "theirs.md")
-    subprocess.run(["git", "-C", str(other), "push", "-q"], capture_output=True)
+    subprocess.run(["git", "-C", str(other), "push", "-q"],
+                   capture_output=True)
 
     _commit_file(work, "mine.md")
     head_before = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
@@ -253,7 +324,8 @@ def test_push_plain_no_upstream_sets_u_once(xdg, tmp_path):
     assert pushed is True, detail
 
 
-def test_push_plain_retargets_mismatched_upstream_to_same_name_branch(xdg, tmp_path):
+def test_push_plain_retargets_mismatched_upstream_to_same_name_branch(
+        xdg, tmp_path):
     """`checkout -b feat origin/main`의 simple-push mismatch도 origin/feat로 복구."""
     origin, work = _clone_pair(tmp_path)
     subprocess.run(["git", "-C", str(work), "checkout", "-qb", "feat/session",
@@ -288,24 +360,6 @@ def test_push_plain_refuses_unresolved_reconcile_artifact(
     assert git_ops.read_sync_warning(str(work)) == warning_before
 
 
-@pytest.mark.parametrize(
-    "blocker", ("index-lock", "rebase-merge", "transaction-dir"))
-def test_publication_blocker_scans_other_linked_worktree_admin(
-        tmp_path, blocker):
-    """A sibling worktree's private admin residue blocks the shared repo."""
-    _origin, work = _clone_pair(tmp_path)
-    linked = tmp_path / "linked"
-    subprocess.run(
-        ["git", "-C", str(work), "worktree", "add", "-qb", "linked-review",
-         str(linked)], check=True, capture_output=True)
-    _install_reconcile_blocker(linked, blocker)
-
-    detail = git_ops.publication_blocker_detail(str(work))
-
-    assert detail
-    assert "blocker" in detail or "rebase" in detail or "transaction" in detail
-
-
 def test_push_plain_fails_closed_when_reconcile_blocker_probe_unavailable(
         tmp_path, monkeypatch):
     """An unavailable blocker probe is not equivalent to a clean repository."""
@@ -327,6 +381,24 @@ def test_push_plain_fails_closed_when_reconcile_blocker_probe_unavailable(
     assert "unavailable" in detail
     assert all("push" not in args for args, _timeout, _kwargs in calls), (
         "a failed blocker probe must prevent the network push call")
+
+
+@pytest.mark.parametrize(
+    "blocker", ("index-lock", "rebase-merge", "transaction-dir"))
+def test_publication_blocker_scans_other_linked_worktree_admin(
+        tmp_path, blocker):
+    """A sibling worktree's private admin residue blocks the shared repo."""
+    _origin, work = _clone_pair(tmp_path)
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(work), "worktree", "add", "-qb", "linked-review",
+         str(linked)], check=True, capture_output=True)
+    _install_reconcile_blocker(linked, blocker)
+
+    detail = git_ops.publication_blocker_detail(str(work))
+
+    assert detail
+    assert "blocker" in detail or "rebase" in detail or "transaction" in detail
 
 
 # ── push-worker (drain loop · plain-push-only) ──────────────────────
@@ -585,8 +657,54 @@ def test_exact_push_command_checks_submodule_availability(monkeypatch, tmp_path)
     assert "--recurse-submodules=check" in observed
 
 
-def test_pending_refuses_unrelated_same_branch_overwrite(xdg, tmp_path):
-    """A reset-and-recommit cannot replace the immutable pending head silently."""
+def test_pending_history_proof_ignores_repo_local_replace_refs(tmp_path):
+    """Replace refs cannot turn an unrelated recommit into published history."""
+    repo = _init_repo(tmp_path / "replace-proof")
+    _commit_file(repo, "base.md", "base\n")
+    base = _git_text(repo, "rev-parse", "HEAD")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-qb", "old", base],
+                   check=True, capture_output=True)
+    _commit_file(repo, "old.md", "old pending\n")
+    old = _git_text(repo, "rev-parse", "HEAD")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"],
+                   check=True, capture_output=True)
+    _commit_file(repo, "new.md", "unrelated recommit\n")
+    new = _git_text(repo, "rev-parse", "HEAD")
+
+    assert not git_ops._pending_head_covered_by_history(str(repo), old, new)
+    subprocess.run(
+        ["git", "-C", str(repo), "replace", "--graft", new, old],
+        check=True, capture_output=True)
+    assert _git_rc(repo, "merge-base", "--is-ancestor", old, new) == 0
+
+    assert not git_ops._pending_head_covered_by_history(str(repo), old, new)
+
+
+def test_pending_history_proof_ignores_repo_local_grafts(tmp_path):
+    """Legacy graft files cannot forge pending publication ancestry."""
+    repo = _init_repo(tmp_path / "graft-proof")
+    _commit_file(repo, "base.md", "base\n")
+    base = _git_text(repo, "rev-parse", "HEAD")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-qb", "old", base],
+                   check=True, capture_output=True)
+    _commit_file(repo, "old.md", "old pending\n")
+    old = _git_text(repo, "rev-parse", "HEAD")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"],
+                   check=True, capture_output=True)
+    _commit_file(repo, "new.md", "unrelated recommit\n")
+    new = _git_text(repo, "rev-parse", "HEAD")
+
+    grafts = _git_path(repo, "info/grafts")
+    grafts.parent.mkdir(parents=True, exist_ok=True)
+    grafts.write_text(f"{new} {old}\n", encoding="ascii")
+    assert _git_rc(repo, "merge-base", "--is-ancestor", old, new) == 0
+
+    assert not git_ops._pending_head_covered_by_history(str(repo), old, new)
+
+
+def test_pending_history_proof_rejects_uncovered_real_git_histories(
+        xdg, tmp_path):
+    """Real byte/history counterexamples cannot replace or cover pending state."""
     _, work = _clone_pair(tmp_path)
     base = _git_text(work, "rev-parse", "HEAD")
     _commit_file(work, "first-line.md", "first\n")
@@ -600,6 +718,136 @@ def test_pending_refuses_unrelated_same_branch_overwrite(xdg, tmp_path):
 
     assert git_ops.write_push_pending(str(work)) is False
     assert git_ops.read_push_pending(str(work)) == first_snapshot
+
+    def divergent_history(name, old_contents, new_contents):
+        repo = _init_repo(tmp_path / name)
+        _commit_file(repo, "proof.txt", "base\n")
+        subprocess.run(["git", "-C", str(repo), "checkout", "-qb", "old"],
+                       check=True, capture_output=True)
+        for index, content in enumerate(old_contents):
+            if isinstance(content, bytes):
+                (repo / "proof.txt").write_bytes(content)
+            else:
+                (repo / "proof.txt").write_text(content, encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "commit", "-qam",
+                            f"old {index}"], check=True, capture_output=True)
+        old = _git_text(repo, "rev-parse", "HEAD")
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"],
+                       check=True, capture_output=True)
+        for index, content in enumerate(new_contents):
+            if isinstance(content, bytes):
+                (repo / "proof.txt").write_bytes(content)
+            else:
+                (repo / "proof.txt").write_text(content, encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "commit", "-qam",
+                            f"new {index}"], check=True, capture_output=True)
+        return repo, old, _git_text(repo, "rev-parse", "HEAD")
+
+    whitespace = divergent_history(
+        "whitespace-proof", ("a b\n",), ("a\tb\n",))
+    multiplicity = divergent_history(
+        "multiplicity-proof",
+        ("base\nx\n", "base\n", "base\nx\n"),
+        ("base\nx\n", "base\n"))
+    crlf = divergent_history(
+        "crlf-proof", (b"line\r\n",), (b"line\n",))
+    invalid_utf8 = divergent_history(
+        "invalid-utf8-proof", (b"value:\x80\n",), (b"value:\x81\n",))
+    sha256 = tmp_path / "sha256-proof"
+    subprocess.run(
+        ["git", "init", "-q", "--object-format=sha256",
+         "--initial-branch=main", str(sha256)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(sha256), "config", "user.email", "t@t.com"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(sha256), "config", "user.name", "T"],
+                   check=True, capture_output=True)
+    _commit_file(sha256, "full-oid.txt", "sha256\n")
+    full = _git_text(sha256, "rev-parse", "HEAD")
+    abbreviated = full[:40]
+    identity = lambda head: {
+        "key": "branch:main", "branch": "main", "head": head}
+    observed = {
+        "space-tab": git_ops._pending_head_covered_by_history(
+            str(whitespace[0]), whitespace[1], whitespace[2]),
+        "multiplicity": git_ops._pending_head_covered_by_history(
+            str(multiplicity[0]), multiplicity[1], multiplicity[2]),
+        "crlf-lf": git_ops._pending_head_covered_by_history(
+            str(crlf[0]), crlf[1], crlf[2]),
+        "invalid-utf8": git_ops._pending_head_covered_by_history(
+            str(invalid_utf8[0]), invalid_utf8[1], invalid_utf8[2]),
+        "sha256-prefix-identity": git_ops._validated_pending_identity(
+            str(sha256), identity(abbreviated)) is not None,
+        "sha256-prefix-helper": git_ops._pending_head_covered_by_history(
+            str(sha256), abbreviated, abbreviated),
+        "sha256-full": (
+            git_ops._validated_pending_identity(
+                str(sha256), identity(full)) is not None
+            and git_ops._pending_head_covered_by_history(
+                str(sha256), full, full)),
+    }
+    assert observed == {
+        "space-tab": False, "multiplicity": False,
+        "crlf-lf": False, "invalid-utf8": False,
+        "sha256-prefix-identity": False, "sha256-prefix-helper": False,
+        "sha256-full": True,
+    }
+
+
+def test_pending_write_rejects_replace_forged_reverse_ancestry(xdg, tmp_path):
+    """A replace ref cannot make an older pending entry cover a new reset."""
+    _, work = _clone_pair(tmp_path)
+    base = _git_text(work, "rev-parse", "HEAD")
+    _commit_file(work, "old-pending.md", "old pending\n")
+    old = _git_text(work, "rev-parse", "HEAD")
+    assert git_ops.write_push_pending(str(work)) is True
+    snapshot = git_ops.read_push_pending(str(work))
+
+    subprocess.run(["git", "-C", str(work), "reset", "--hard", base],
+                   check=True, capture_output=True)
+    _commit_file(work, "unrelated-new.md", "unrelated new\n")
+    new = _git_text(work, "rev-parse", "HEAD")
+    subprocess.run(
+        ["git", "-C", str(work), "replace", "--graft", old, new],
+        check=True, capture_output=True)
+    assert _git_rc(work, "merge-base", "--is-ancestor", new, old) == 0
+
+    assert git_ops.write_push_pending(str(work)) is False
+    assert git_ops.read_push_pending(str(work)) == snapshot
+
+
+@pytest.mark.parametrize("mutation", (None, "target-entry", "other-entry"))
+def test_pending_write_patch_rewrite_is_cas_safe(
+        xdg, tmp_path, monkeypatch, mutation):
+    """A patch rewrite advances once, but never overwrites a concurrent nonce."""
+    work, main_key, other_key, old = _rewrite_pending_with_other_entry(tmp_path)
+    race_key = main_key if mutation == "target-entry" else other_key
+    if mutation:
+        real_coverage = git_ops._pending_head_covered_by_history
+
+        def prove_then_race(*args, **kwargs):
+            covered = real_coverage(*args, **kwargs)
+            entries = git_ops._pending_entries(git_ops.read_push_pending(str(work)))
+            entries[race_key] = dict(entries[race_key], nonce="raced")
+            git_ops._write_private_text(
+                git_ops.push_pending_path(str(work)),
+                git_ops._serialize_pending_entries(str(work), entries))
+            return covered
+
+        monkeypatch.setattr(
+            git_ops, "_pending_head_covered_by_history", prove_then_race)
+
+    assert git_ops.write_push_pending(str(work)) is (mutation is None)
+    updated = git_ops._pending_entries(git_ops.read_push_pending(str(work)))
+    if mutation:
+        assert updated[race_key]["nonce"] == "raced"
+        assert updated[main_key]["head"] == old[main_key]["head"]
+    else:
+        fields = ("remote", "destination", "reconcile_ref", "set_upstream",
+                  "remote_fingerprint")
+        assert updated[other_key] == old[other_key]
+        assert updated[main_key]["head"] == _git_text(work, "rev-parse", "HEAD")
+        assert updated[main_key]["nonce"] != old[main_key]["nonce"]
+        assert all(updated[main_key].get(k) == old[main_key].get(k) for k in fields)
 
 
 def test_worker_no_pending_is_noop(xdg, tmp_path):
@@ -681,32 +929,54 @@ def test_foreground_success_does_not_clear_other_branch_pending(xdg, tmp_path):
     assert "session-a" not in refs
 
 
-def test_foreground_success_preserves_uncovered_same_branch_pending(
-        xdg, tmp_path):
-    """A reset/recommit push cannot clear an older unrelated pending commit."""
+@pytest.mark.parametrize("history", ("unrelated", "external-rebase"))
+def test_foreground_success_clears_patch_equivalent_rewritten_pending(
+        xdg, tmp_path, history):
+    """Publication preserves unrelated H1 but clears a patch-rewritten H1."""
     origin, work = _clone_pair(tmp_path)
     base = _git_text(work, "rev-parse", "HEAD")
     _commit_file(work, "old-pending.md", "unpublished old history\n")
     old_head = _git_text(work, "rev-parse", "HEAD")
     assert git_ops.write_push_pending(str(work)) is True
     pending_before = git_ops.read_push_pending(str(work))
-
-    subprocess.run(
-        ["git", "-C", str(work), "reset", "--hard", base],
-        check=True, capture_output=True)
+    if history == "unrelated":
+        subprocess.run(["git", "-C", str(work), "reset", "--hard", base],
+                       check=True, capture_output=True)
+    else:
+        _external_rebase_pending_head(
+            origin, work, tmp_path / "foreground-other", prefix="foreground")
+        key = git_ops.pending_entry_key_for_current_checkout(
+            str(work), pending_before)
+        entry = git_ops._pending_entries(pending_before)[key]
+        current = git_ops._checkout_identity(str(work))
+        assert git_ops.pending_entry_covered_by_publication(
+            str(work), pending_before, key, current, entry)
+        mutations = {
+            "remote": "fork",
+            "destination": "refs/heads/other",
+            "reconcile_ref": "refs/remotes/origin/other",
+            "remote_fingerprint": "0" * 64,
+        }
+        for field, value in mutations.items():
+            changed_target = dict(entry, **{field: value})
+            assert not git_ops.pending_entry_covered_by_publication(
+                str(work), pending_before, key, current, changed_target)
     _activate(work)
     edited = work / "new-history.md"
     edited.write_text("new published history\n", encoding="utf-8")
-    r = _run_auto_commit(
-        work, [edited], xdg, {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+    payload = _lease_payload("codex", f"session-{history}", f"tool-{history}")
+    owner = git_ops.hook_edit_lease_owner(payload)
+    assert git_ops.begin_hook_edit_lease(str(work), owner)[0] is True
+    result = _run_auto_commit(
+        work, [edited], xdg, {"TEAMMODE_DISABLE_PUSH_WORKER": "1"}, payload)
 
-    assert r.returncode == 0, r.stderr
-    remote_head = _bare_git_text(origin, "rev-parse", "refs/heads/main")
-    assert remote_head != old_head
-    assert subprocess.run(
-        ["git", "-C", str(work), "merge-base", "--is-ancestor",
-         old_head, remote_head], capture_output=True).returncode == 1
-    assert git_ops.read_push_pending(str(work)) == pending_before
+    assert result.returncode == 0, result.stderr
+    published = _git_text(work, "rev-parse", "HEAD")
+    assert _bare_git_text(origin, "rev-parse", "refs/heads/main") == published
+    assert _git_rc(work, "merge-base", "--is-ancestor", old_head, published) == 1
+    expected_pending = pending_before if history == "unrelated" else ""
+    assert git_ops.read_push_pending(str(work)) == expected_pending
+    assert git_ops.end_hook_edit_lease(str(work), owner) is False
 
 
 def test_pending_ledger_tracks_and_drains_multiple_branches(xdg, tmp_path):
@@ -1146,14 +1416,23 @@ def test_pending_reconcile_fetches_the_captured_push_endpoint(xdg, tmp_path):
     assert _bare_git_text(origin, "rev-parse", "refs/heads/main") == origin_before
 
 
+@pytest.mark.parametrize("history", ("descendant", "external-rebase"))
 def test_pending_reconcile_advances_to_current_descendant_before_worker(
-        xdg, tmp_path):
+        xdg, tmp_path, history):
     origin, work = _clone_pair(tmp_path)
     _commit_file(work, "pending-descendant-h1.md", "pending H1\n")
+    pending_h1 = _git_text(work, "rev-parse", "HEAD")
     assert git_ops.write_push_pending(str(work)) is True
     snapshot = git_ops.read_push_pending(str(work))
     key = git_ops.pending_entry_key_for_current_checkout(str(work), snapshot)
-    _commit_file(work, "pending-descendant-h2.md", "local H2\n")
+    if history == "descendant":
+        _commit_file(work, "pending-descendant-h2.md", "local H2\n")
+    else:
+        old_head, rewritten_h1, _remote_r = _external_rebase_pending_head(
+            origin, work, tmp_path / "pending-descendant-other",
+            prefix="pending-descendant")
+        assert old_head == pending_h1
+        assert rewritten_h1 == _git_text(work, "rev-parse", "HEAD")
     local_h2 = _git_text(work, "rev-parse", "HEAD")
 
     result = git_ops.reconcile_current_pending(str(work), snapshot, key)
@@ -1164,6 +1443,86 @@ def test_pending_reconcile_advances_to_current_descendant_before_worker(
     assert _run_worker(work, {"XDG_STATE_HOME": str(xdg)}).returncode == 0
     assert _bare_git_text(origin, "rev-parse", "refs/heads/main") == local_h2
     assert git_ops.read_push_pending(str(work)) == ""
+
+
+@pytest.mark.parametrize("width", (40, 64))
+def test_pending_history_coverage_requires_exact_full_oids(
+        tmp_path, monkeypatch, width):
+    old, parent, current = "a" * width, "b" * width, "c" * width
+    calls = []
+
+    def git(args, timeout, input_text=None, input_bytes=None, **_kwargs):
+        calls.append((args, input_text, input_bytes))
+        if "rev-parse" in args:
+            return 0, f"{args[-1].split('^')[0]}\n", ""
+        if "merge-base" in args:
+            return 1, "", ""
+        if "rev-list" in args:
+            commit = old if args[-1] == f"{current}..{old}" else current
+            return 0, f"{commit} {parent}\n", ""
+        if "diff-tree" in args:
+            return 0, input_bytes, b""
+        commit = input_bytes.decode("ascii").strip()
+        return 0, f"{'d' * width} {commit}\n".encode("ascii"), b""
+
+    monkeypatch.setattr(git_ops, "run_git", git)
+    assert git_ops._pending_head_covered_by_history(
+        str(tmp_path), old, current, timeout=2)
+    assert any("patch-id" in args and "--verbatim" in args
+               for args, _text, _bytes in calls)
+    calls.clear()
+    assert all(not git_ops._pending_head_covered_by_history(
+        str(tmp_path), "a" * bad, current, timeout=2)
+        for bad in (39, 41, 63, 65))
+    assert not calls
+
+
+@pytest.mark.parametrize("case", (
+    "ancestor", "merge", "empty", "partial", "missing", "timeout",
+    "oserror", "subprocess-error", "malformed-rev", "malformed-patch",
+    "duplicate", "missing-patch"))
+def test_pending_history_coverage_fails_closed(case, tmp_path, monkeypatch):
+    old, parent, current, first = (c * 40 for c in "abcd")
+
+    def git(args, timeout, input_text=None, input_bytes=None, **_kwargs):
+        error = {
+            "timeout": subprocess.TimeoutExpired("git", timeout),
+            "oserror": OSError("exec"),
+            "subprocess-error": subprocess.SubprocessError("probe"),
+        }.get(case)
+        if error:
+            raise error
+        if "rev-parse" in args:
+            oid = args[-1].split("^")[0]
+            return (128, "", "missing") if case == "missing" else (
+                0, f"{oid}\n", "")
+        if "merge-base" in args:
+            return (0 if case == "ancestor" else 1), "", ""
+        if "rev-list" in args:
+            old_side = args[-1] == f"{current}..{old}"
+            output = (f"{current} {parent}\n" if not old_side else {
+                "merge": f"{old} {parent} {first}\n",
+                "malformed-rev": f"{old[:12]} {parent}\n",
+                "partial": f"{first} {parent}\n{old} {first}\n",
+            }.get(case, f"{old} {parent}\n"))
+            return 0, output, ""
+        if "diff-tree" in args:
+            return 0, input_bytes, b""
+        commits = input_bytes.decode("ascii").splitlines()
+        if old in commits:
+            if case in {"empty", "missing-patch"}:
+                return 0, b"", b""
+            if case == "malformed-patch":
+                return 0, f"{old[:12]} {old}\n".encode("ascii"), b""
+            if case == "duplicate":
+                output = f"{'e' * 40} {old}\n{'e' * 40} {old}\n"
+                return 0, output.encode("ascii"), b""
+        output = "".join(f"{'e' * 40} {commit}\n" for commit in commits)
+        return 0, output.encode("ascii"), b""
+
+    monkeypatch.setattr(git_ops, "run_git", git)
+    assert git_ops._pending_head_covered_by_history(
+        str(tmp_path), old, current, timeout=2) is (case == "ancestor")
 
 
 def test_pending_merge_respects_required_commit_signing_and_rolls_back(
@@ -1697,10 +2056,17 @@ def test_auto_commit_defers_rebase_when_remote_overlaps_dirty_file(xdg, tmp_path
     (work / "dirty.md").write_text("local uncommitted edit\n", encoding="utf-8")
     session_log = work / "session-overlap.md"
     session_log.write_text("must remain retryable\n", encoding="utf-8")
-    r = _run_auto_commit(work, [session_log], xdg,
-                         {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
+    payload = _lease_payload("codex", "session-overlap", "tool-overlap")
+    owner = git_ops.hook_edit_lease_owner(payload)
+    assert owner
+    assert git_ops.begin_hook_edit_lease(str(work), owner)[0] is True
+    r = _run_auto_commit(
+        work, [session_log], xdg,
+        {"TEAMMODE_DISABLE_PUSH_WORKER": "1"}, payload)
 
     assert r.returncode == 0
+    assert "dirty paths overlap upstream changes" in r.stderr
+    assert "foreground worktree reconciliation disabled" not in r.stderr
     assert _git_text(work, "show", "HEAD:session-overlap.md") == (
         "must remain retryable")
     assert (work / "dirty.md").read_text(encoding="utf-8") == (
@@ -1711,6 +2077,7 @@ def test_auto_commit_defers_rebase_when_remote_overlaps_dirty_file(xdg, tmp_path
     assert git_ops.read_push_pending(str(work)) != ""
     with pytest.raises(subprocess.CalledProcessError):
         _bare_git_text(origin, "show", "HEAD:session-overlap.md")
+    assert git_ops.end_hook_edit_lease(str(work), owner) is False
 
 
 def test_do_commit_rolls_back_autostash_conflict_from_dirty_toctou(
@@ -1781,50 +2148,6 @@ def test_do_commit_rolls_back_autostash_conflict_from_dirty_toctou(
     assert remote_tree.returncode != 0
 
 
-def test_auto_commit_conflict_preserves_local_commit_and_pending(xdg, tmp_path):
-    """remote divergence는 rebase 없이 local commit/dirty/pending을 모두 보존한다."""
-    origin, work = _clone_pair(tmp_path)
-    (work / "shared.md").write_text("base\n", encoding="utf-8")
-    (work / "dirty.md").write_text("baseline\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(work), "add", "shared.md", "dirty.md"],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(work), "commit", "-qm", "add conflict fixtures"],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(work), "push", "-q"],
-                   check=True, capture_output=True)
-    other = _clone_other(origin, tmp_path / "other")
-    (other / "shared.md").write_text("remote version\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(other), "commit", "-qam", "remote conflict"],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(other), "push", "-q"],
-                   check=True, capture_output=True)
-    remote_head = _git_text(other, "rev-parse", "HEAD")
-
-    _activate(work)
-    (work / "dirty.md").write_text("local dirty edit\n", encoding="utf-8")
-    shared = work / "shared.md"
-    shared.write_text("local version\n", encoding="utf-8")
-    r = _run_auto_commit(work, [shared], xdg,
-                         {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
-
-    assert r.returncode == 0, r.stderr
-    local_head = _git_text(work, "rev-parse", "HEAD")
-    assert local_head != remote_head
-    assert _bare_git_text(origin, "rev-parse", "HEAD") == remote_head
-    assert _git_text(work, "show", "HEAD:shared.md") == "local version"
-    ahead, behind = git_ops.ahead_behind(str(work))
-    assert ahead >= 1 and behind >= 1
-    assert (work / "dirty.md").read_text(encoding="utf-8") == "local dirty edit\n"
-    assert "dirty.md" in _git_text(work, "status", "--short")
-    assert git_ops.read_push_pending(str(work)) != ""
-    marker = git_ops.read_sync_warning(str(work))
-    assert "foreground worktree reconciliation disabled" in marker
-    assert "deferred" in marker
-    assert not (work / ".git" / "rebase-merge").exists()
-    assert not (work / ".git" / "rebase-apply").exists()
-    assert _git_text(work, "stash", "list") == ""
-
-
 def test_auto_commit_leftover_pending_warns_stderr(xdg, tmp_path):
     """시작 시 잔존 pending 이 있으면 stderr 1줄('한 편집 늦은' 즉시 가시화)."""
     _, work = _clone_pair(tmp_path)
@@ -1836,26 +2159,6 @@ def test_auto_commit_leftover_pending_warns_stderr(xdg, tmp_path):
                          {"TEAMMODE_DISABLE_PUSH_WORKER": "1"})
     assert r.returncode == 0
     assert "push" in r.stderr and "pending" in r.stderr.lower() or "미완" in r.stderr
-
-
-def test_auto_commit_publishes_end_to_end(xdg, tmp_path):
-    """정상 remote 에서는 훅 종료 시점 또는 fallback 직후 publication 이 완료된다."""
-    import time as _t
-    _, work = _clone_pair(tmp_path)
-    _activate(work)
-    f = work / "note3.md"
-    f.write_text("x", encoding="utf-8")
-    r = _run_auto_commit(work, [f], xdg)
-    assert r.returncode == 0, r.stderr
-    deadline = _t.time() + 15
-    while _t.time() < deadline:
-        ahead, _ = git_ops.ahead_behind(str(work))
-        if ahead == 0 and git_ops.read_push_pending(str(work)) == "":
-            break
-        _t.sleep(0.3)
-    ahead, _ = git_ops.ahead_behind(str(work))
-    assert ahead == 0, "worker 가 push 를 완료하지 못했다"
-    assert git_ops.read_push_pending(str(work)) == ""
 
 
 # ── session-start pending recovery (#45 가시화 3중의 ①) ─────────────
@@ -1953,47 +2256,46 @@ def test_recover_ahead_rekicks_worker_no_direct_push(tmp_path, capsys, monkeypat
     assert fake.cleared == 0
 
 
+@pytest.mark.parametrize("history", ("pending-merge", "external-rebase"))
 def test_session_start_merges_pending_head_before_worker_recovery(
-        xdg, tmp_path, monkeypatch):
-    """SessionStart preserves H1 ancestry while converging it with remote R."""
+        xdg, tmp_path, monkeypatch, history):
+    """SessionStart advances safe pending history before the actual worker runs."""
     origin, work = _clone_pair(tmp_path)
     _commit_file(work, "local-h1.md", "local pending H1\n")
     pending_head = _git_text(work, "rev-parse", "HEAD")
     assert git_ops.write_push_pending(str(work)) is True
     pending_before = git_ops.read_push_pending(str(work))
-
-    other = _clone_other(origin, tmp_path / "session-start-other")
-    _commit_file(other, "remote-r.md", "remote R\n")
-    subprocess.run(
-        ["git", "-C", str(other), "push", "-q"],
-        check=True, capture_output=True)
-    remote_head = _bare_git_text(origin, "rev-parse", "refs/heads/main")
-    assert remote_head != pending_head
+    old, _rewritten, remote_head = _external_rebase_pending_head(
+        origin, work, tmp_path / "session-start-other", prefix="session-start",
+        rebase=history == "external-rebase")
+    assert old == pending_head and remote_head != pending_head
 
     mod = _load_session_start()
-    kicks = []
+    workers = []
     monkeypatch.setenv("XDG_STATE_HOME", str(xdg))
     monkeypatch.setenv("TEAMMODE_PULL_THROTTLE", "0")
-    monkeypatch.setattr(
-        git_ops, "kick_push_worker",
-        lambda root, worker: kicks.append((root, worker)) or True)
+
+    def run_worker_now(root, worker):
+        assert Path(worker) == WORKER
+        worker_result = _run_worker(
+            Path(root), {"XDG_STATE_HOME": str(xdg)})
+        workers.append(worker_result)
+        return worker_result.returncode == 0
+
+    monkeypatch.setattr(git_ops, "kick_push_worker", run_worker_now)
 
     mod._maybe_auto_pull(str(work))
 
-    merged = _git_text(work, "rev-parse", "HEAD")
-    assert merged not in {pending_head, remote_head}
-    assert subprocess.run(
-        ["git", "-C", str(work), "merge-base", "--is-ancestor",
-         pending_head, merged], capture_output=True).returncode == 0
-    assert subprocess.run(
-        ["git", "-C", str(work), "merge-base", "--is-ancestor",
-         remote_head, merged], capture_output=True).returncode == 0
-    assert _bare_git_text(origin, "rev-parse", "refs/heads/main") == remote_head
-    pending_after = git_ops.read_push_pending(str(work))
-    key = git_ops.pending_entry_key_for_current_checkout(str(work), pending_after)
-    assert pending_after != pending_before
-    assert git_ops._pending_entries(pending_after)[key]["head"] == merged
-    assert len(kicks) == 1
+    recovered = _git_text(work, "rev-parse", "HEAD")
+    assert recovered not in {pending_head, remote_head}
+    expected_pending_ancestor_rc = 0 if history == "pending-merge" else 1
+    assert _git_rc(work, "merge-base", "--is-ancestor",
+                   pending_head, recovered) == expected_pending_ancestor_rc
+    assert _git_rc(work, "merge-base", "--is-ancestor", remote_head, recovered) == 0
+    assert len(workers) == 1
+    assert workers[0].returncode == 0, workers[0].stderr
+    assert _bare_git_text(origin, "rev-parse", "refs/heads/main") == recovered
+    assert git_ops.read_push_pending(str(work)) == "", pending_before
     assert not _git_path(work, "MERGE_HEAD").exists()
     assert not _git_path(work, "rebase-merge").exists()
     assert not _git_path(work, "rebase-apply").exists()

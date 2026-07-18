@@ -26,6 +26,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -295,7 +296,8 @@ def _is_repo_scoped_git(args: list) -> bool:
 
 
 def run_git(args: list, timeout: int, *, env_overrides: dict | None = None,
-            output_errors: str = "replace", input_text: str | None = None):
+            output_errors: str = "replace", input_text: str | None = None,
+            input_bytes: bytes | None = None):
     """git 을 **자체 프로세스 그룹**으로 실행하고, 타임아웃 시 그룹 전체를 죽인다.
 
     이유: `subprocess.run(timeout=)` 은 직접 자식(git)에만 SIGKILL 을 보내, git 이 fork 한
@@ -330,10 +332,15 @@ def run_git(args: list, timeout: int, *, env_overrides: dict | None = None,
             raise ValueError("NUL is not allowed in git environment overrides")
         child_env[key] = value
 
-    kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                  stdin=(subprocess.PIPE if input_text is not None
-                         else subprocess.DEVNULL), text=True,
-                  encoding="utf-8", errors=output_errors, env=child_env)
+    if input_text is not None and input_bytes is not None:
+        raise ValueError("input_text and input_bytes are mutually exclusive")
+    binary = input_bytes is not None
+    kwargs = dict(
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=(subprocess.PIPE if input_text is not None or binary
+               else subprocess.DEVNULL), env=child_env)
+    if not binary:
+        kwargs.update(text=True, encoding="utf-8", errors=output_errors)
     if hasattr(os, "setsid"):
         kwargs["start_new_session"] = True  # 자식을 새 프로세스 그룹 리더로
     # credential.interactive=false: 자격증명 helper 의 **대화형 프롬프트**만 끈다(helper
@@ -342,7 +349,8 @@ def run_git(args: list, timeout: int, *, env_overrides: dict | None = None,
     proc = subprocess.Popen(
         ["git", "-c", "credential.interactive=false", *args], **kwargs)
     try:
-        out, err = proc.communicate(input=input_text, timeout=timeout)
+        out, err = proc.communicate(
+            input=input_bytes if binary else input_text, timeout=timeout)
         return proc.returncode, out, err
     except subprocess.TimeoutExpired as exc:
         kill_group(proc)
@@ -3120,7 +3128,8 @@ def _bound_reconcile_transaction(
                 if (result.final_identity is None
                         or not _advance_push_pending_if_unchanged(
                             team_root, snapshot, target_key,
-                            result.final_identity, target)):
+                            result.final_identity, target,
+                            deadline=deadline)):
                     return ReconcileResult(
                         ok=False, action="pending-update-failed",
                         ahead=result.ahead, behind=result.behind,
@@ -3173,7 +3182,8 @@ def _finalize_pending_reconcile_without_mutation(
                     detail="checkout changed before pending checkpoint")
             snapshot, target_key, target = pending_guard
             if not _advance_push_pending_if_unchanged(
-                    team_root, snapshot, target_key, identity, target):
+                    team_root, snapshot, target_key, identity, target,
+                    deadline=deadline):
                 return ReconcileResult(
                     ok=False, action="pending-update-failed", ahead=ahead,
                     behind=behind,
@@ -4344,10 +4354,8 @@ def pending_entry_covered_by_publication(
     if (_signature(entry) is None
             or _signature(entry) != _signature(publication_target)):
         return False
-    if pending["head"] == published["head"]:
-        return True
-    return _pending_head_ancestry(
-        team_root, pending["head"], published["head"]) is True
+    return _pending_head_covered_by_history(
+        team_root, pending["head"], published["head"])
 
 
 def pending_target_summary(snapshot_content: str, team_root: str = "") -> str:
@@ -4380,7 +4388,7 @@ def _validated_pending_identity(
     head = identity.get("head")
     if not all(isinstance(value, str) for value in (key, branch, head)):
         return None
-    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head or ""):
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", head or ""):
         return None
     if branch:
         if key != f"branch:{branch}":
@@ -4396,12 +4404,13 @@ def _validated_pending_identity(
     elif key != f"detached:{head}":
         return None
     try:
-        rc, _, _ = run_git(
-            ["-C", team_root, "cat-file", "-e", f"{head}^{{commit}}"],
+        rc, resolved, _ = run_git(
+            ["-C", team_root, "rev-parse", "--verify", "--end-of-options",
+             f"{head}^{{commit}}"],
             timeout=_PENDING_IDENTITY_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return None
-    if rc != 0:
+    if (rc != 0 or (resolved or "").splitlines() != [head.lower()]):
         return None
     return {"key": key, "branch": branch, "head": head.lower()}
 
@@ -4469,7 +4478,7 @@ def _pending_head_ancestry(
         timeout: int = _PENDING_IDENTITY_TIMEOUT) -> bool | None:
     """Return whether older is an ancestor of newer; None means unprovable."""
     try:
-        rc, _, _ = run_git(
+        rc, _, _ = _run_physical_history_git(
             ["-C", team_root, "merge-base", "--is-ancestor", older, newer],
             timeout=timeout)
     except (OSError, subprocess.SubprocessError):
@@ -4479,6 +4488,131 @@ def _pending_head_ancestry(
     if rc == 1:
         return False
     return None
+
+
+def _run_physical_history_git(args: list, timeout: float, **kwargs):
+    """Run a history proof against stored objects, never replace/graft views."""
+    env_overrides = dict(kwargs.pop("env_overrides", {}) or {})
+    env_overrides.update({
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_GRAFT_FILE": os.devnull,
+    })
+    return run_git(
+        ["--no-replace-objects", "-c", "advice.graftFileDeprecated=false",
+         *args],
+        timeout=timeout, env_overrides=env_overrides, **kwargs)
+
+
+def _pending_head_covered_by_history(
+        team_root: str, older: str, newer: str,
+        timeout: int = _PENDING_IDENTITY_TIMEOUT, deadline=None) -> bool:
+    """Prove ancestry or an exact, linear, non-empty patch rewrite; fail closed."""
+    older, newer = str(older or "").lower(), str(newer or "").lower()
+    if (len(older) not in (40, 64) or len(newer) != len(older)
+            or any(re.fullmatch(r"[0-9a-f]+", oid) is None
+                   for oid in (older, newer))):
+        return False
+    cap = max(1.0, float(timeout))
+    bounded = time.monotonic() + cap
+    deadline = bounded if deadline is None else min(bounded, deadline)
+    oid_pattern = rf"[0-9a-f]{{{len(older)}}}"
+
+    def _probe(args, input_text=None, input_bytes=None):
+        remaining = min(cap, deadline - time.monotonic())
+        if remaining <= 0:
+            return None
+        try:
+            return _run_physical_history_git(
+                args, timeout=remaining, input_text=input_text,
+                input_bytes=input_bytes)
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    for oid in (older, newer):
+        resolved = _probe([
+            "-C", team_root, "rev-parse", "--verify", "--end-of-options",
+            f"{oid}^{{commit}}"])
+        if (resolved is None or resolved[0] != 0
+                or (resolved[1] or "").splitlines() != [oid]):
+            return False
+
+    ancestry = _probe([
+        "-C", team_root, "merge-base", "--is-ancestor", older, newer])
+    if ancestry is None or ancestry[0] not in (0, 1):
+        return False
+    if ancestry[0] == 0:
+        return True
+
+    old_rev_list = _probe([
+        "-C", team_root, "rev-list", "--parents", "--reverse",
+        f"{newer}..{older}",
+    ])
+    new_rev_list = _probe([
+        "-C", team_root, "rev-list", "--parents", "--reverse",
+        f"{older}..{newer}",
+    ])
+    if (old_rev_list is None or old_rev_list[0] != 0
+            or new_rev_list is None or new_rev_list[0] != 0):
+        return False
+    old_rows = [
+        line.lower().split()
+        for line in (old_rev_list[1] or "").splitlines()]
+    new_rows = [
+        line.lower().split()
+        for line in (new_rev_list[1] or "").splitlines()]
+    if (not old_rows or any(len(row) != 2 or any(
+            re.fullmatch(oid_pattern, oid) is None for oid in row)
+            for row in old_rows)
+            or any(not row or any(
+                re.fullmatch(oid_pattern, oid) is None for oid in row)
+                for row in new_rows)):
+        return False
+    old_only = [row[0] for row in old_rows]
+    new_only = [row[0] for row in new_rows if len(row) == 2]
+    if (len(set(old_only)) != len(old_only)
+            or len(set(row[0] for row in new_rows)) != len(new_rows)
+            or not new_only):
+        return False
+
+    def _patch_fingerprints(commits):
+        diff = _probe([
+            "-C", team_root, "diff-tree", "--stdin", "--patch", "--binary",
+            "--full-index", "--no-ext-diff", "--no-textconv", "--no-renames",
+            "--no-color",
+        ], input_bytes="".join(
+            f"{commit}\n" for commit in commits).encode("ascii"))
+        if diff is None or diff[0] != 0:
+            return None
+        patch_ids = _probe(
+            ["-C", team_root, "patch-id", "--verbatim"],
+            input_bytes=diff[1] or b"")
+        if patch_ids is None or patch_ids[0] != 0:
+            return None
+        try:
+            patch_output = (patch_ids[1] or b"").decode("ascii", errors="strict")
+        except (AttributeError, UnicodeDecodeError):
+            return None
+        records = {}
+        for line in patch_output.splitlines():
+            match = re.fullmatch(
+                rf"({oid_pattern}) ({oid_pattern})", line.lower())
+            if match is None:
+                return None
+            patch_id, commit = match.groups()
+            if commit not in commits or commit in records:
+                return None
+            records[commit] = patch_id
+        if set(records) != set(commits):
+            return None
+        return [records[commit] for commit in commits]
+
+    old_fingerprints = _patch_fingerprints(old_only)
+    new_fingerprints = _patch_fingerprints(new_only)
+    if old_fingerprints is None or new_fingerprints is None:
+        return False
+    old_counts, new_counts = Counter(old_fingerprints), Counter(new_fingerprints)
+    return all(new_counts[patch_id] >= count
+               for patch_id, count in old_counts.items())
 
 
 def _push_pending_snapshot_is_current(
@@ -4497,7 +4631,8 @@ def _push_pending_snapshot_is_current(
 
 def _advance_push_pending_if_unchanged(
         team_root: str, snapshot_content: str, target_key: str,
-        final_identity: dict | None, target: dict | None) -> bool:
+        final_identity: dict | None, target: dict | None,
+        deadline=None) -> bool:
     """CAS-advance H1 to a proven descendant without losing other checkouts.
 
     The caller holds the publication interlock and edit gate.  Validation and
@@ -4518,8 +4653,9 @@ def _advance_push_pending_if_unchanged(
     })
     old_target = _validated_pending_target(team_root, old_entry)
     if (old_identity is None or old_target != stored_target
-            or _pending_head_ancestry(
-                team_root, old_identity["head"], final["head"]) is not True):
+            or not _pending_head_covered_by_history(
+                team_root, old_identity["head"], final["head"],
+                timeout=_PENDING_IDENTITY_TIMEOUT, deadline=deadline)):
         return False
 
     with _push_pending_ledger_lock(team_root) as locked:
@@ -4575,13 +4711,6 @@ def reconcile_current_pending(
         return ReconcileResult(
             ok=False, action="checkout-changed",
             detail="pending entry does not match the current branch")
-    if _pending_head_ancestry(
-            team_root, pending_identity["head"], current["head"]) is not True:
-        return ReconcileResult(
-            ok=False, action="pending-history-changed",
-            detail="recorded pending head is not an ancestor of current HEAD",
-            final_identity=current)
-
     validated_target = _validated_pending_target(team_root, entry)
     if validated_target is None:
         return ReconcileResult(
@@ -4605,6 +4734,16 @@ def reconcile_current_pending(
         remote_fingerprint=validated_target["remote_fingerprint"],
         push_endpoint=binding[0],
     )
+    if not _pending_head_covered_by_history(
+            team_root, pending_identity["head"], current["head"],
+            timeout=min(_PENDING_IDENTITY_TIMEOUT, max(1, timeout)),
+            deadline=deadline):
+        return ReconcileResult(
+            ok=False, action="pending-history-changed",
+            detail=("recorded pending head is neither an ancestor nor a proven "
+                    "patch-equivalent part of current HEAD"),
+            final_identity=current)
+
     guard = (snapshot_content, target_key, validated_target)
     return do_reconcile(
         team_root, timeout=timeout, deadline=deadline,
@@ -4640,10 +4779,26 @@ def write_push_pending(
             team_root, target, _PENDING_IDENTITY_TIMEOUT)
         if target_payload is None:
             return False
-    with _push_pending_ledger_lock(team_root) as locked:
-        if not locked:
-            return False
-        try:
+    pending_path = push_pending_path(team_root)
+    target_keys = (
+        "remote", "destination", "reconcile_ref", "set_upstream",
+        "remote_fingerprint")
+
+    def _new_entry() -> dict:
+        entry = {
+            "branch": identity["branch"],
+            "head": identity["head"],
+            "written_at": datetime.now().isoformat(timespec="seconds"),
+            "nonce": os.urandom(8).hex(),
+        }
+        if target_payload is not None:
+            entry.update(target_payload)
+        return entry
+
+    try:
+        with _push_pending_ledger_lock(team_root) as locked:
+            if not locked:
+                return False
             current = _read_private_text(push_pending_path(team_root))
             if not current.available:
                 return False
@@ -4663,44 +4818,81 @@ def write_push_pending(
             if isinstance(existing, dict):
                 existing_head = str(existing.get("head") or "").lower()
                 existing_target = {
-                    key: existing.get(key)
-                    for key in (
-                        "remote", "destination", "reconcile_ref", "set_upstream",
-                        "remote_fingerprint")
-                    if key in existing
+                    key: existing.get(key) for key in target_keys if key in existing
                 }
                 if existing_head and existing_head != identity["head"]:
-                    old_in_new = _pending_head_ancestry(
-                        team_root, existing_head, identity["head"])
-                    new_in_old = _pending_head_ancestry(
-                        team_root, identity["head"], existing_head)
-                    targets_match = (not existing_target
-                                     or existing_target == target_payload)
-                    if new_in_old is True and targets_match:
-                        # The existing pending head already publishes the newer
-                        # request's full history. Preserve its immutable nonce/head.
-                        return True
-                    if old_in_new is not True or not targets_match:
-                        # A reset/recommit or target change cannot overwrite the
-                        # only durable record of the older unpublished commit.
-                        return False
+                    snapshot_content = current.content
+                    snapshot_entry = dict(existing)
                 elif (existing_head == identity["head"] and existing_target
                       and existing_target != target_payload):
                     return False
-            entry = {
-                "branch": identity["branch"],
-                "head": identity["head"],
-                "written_at": datetime.now().isoformat(timespec="seconds"),
-                # coarse mtime FS에서도 같은 초 재기록을 구분하는 고유 판별자.
-                "nonce": os.urandom(8).hex(),
-            }
-            if target_payload is not None:
-                entry.update(target_payload)
-            entries[identity["key"]] = entry
-            payload = _serialize_pending_entries(team_root, entries)
-            return _write_private_text(push_pending_path(team_root), payload)
-        except (OSError, ValueError):
-            return False  # ledger 기록 실패는 커밋을 막지 않는다 — 가시화는 호출부 몫
+                else:
+                    existing = None
+            if not isinstance(existing, dict):
+                entries[identity["key"]] = _new_entry()
+                return _write_private_text(
+                    pending_path, _serialize_pending_entries(team_root, entries))
+    except (OSError, ValueError):
+        return False  # ledger 기록 실패는 커밋을 막지 않는다 — 가시화는 호출부 몫
+
+    # Probe outside the state lock, then require an exact ledger + entry CAS.
+    old_identity = _validated_pending_identity(team_root, {
+        "key": identity["key"],
+        "branch": str(snapshot_entry.get("branch") or ""),
+        "head": str(snapshot_entry.get("head") or ""),
+    })
+    if old_identity is None or old_identity.get("key") != identity["key"]:
+        return False
+    existing_target = {
+        key: snapshot_entry.get(key) for key in target_keys
+        if key in snapshot_entry
+    }
+    targets_match = (not existing_target or existing_target == target_payload)
+    new_in_old = _pending_head_ancestry(
+        team_root, identity["head"], old_identity["head"])
+    if new_in_old is True:
+        if not targets_match:
+            return False
+        preserve_existing = True
+    elif new_in_old is not False:
+        return False
+    else:
+        old_in_new = _pending_head_ancestry(
+            team_root, old_identity["head"], identity["head"])
+        if old_in_new is True:
+            if not targets_match:
+                return False
+        elif old_in_new is False:
+            stored_target = _validated_pending_target(team_root, snapshot_entry)
+            if stored_target is None or stored_target != target_payload:
+                return False
+        else:
+            return False
+        if not _pending_head_covered_by_history(
+                team_root, old_identity["head"], identity["head"]):
+            return False
+        preserve_existing = False
+
+    try:
+        with _push_pending_ledger_lock(team_root) as locked:
+            if not locked:
+                return False
+            current = _read_private_text(pending_path)
+            if (not current.available
+                    or current.content != snapshot_content):
+                return False
+            entries = _pending_entries(current.content)
+            current_entry = entries.get(identity["key"])
+            if (not isinstance(current_entry, dict)
+                    or current_entry != snapshot_entry):
+                return False
+            if preserve_existing:
+                return True
+            entries[identity["key"]] = _new_entry()
+            return _write_private_text(
+                pending_path, _serialize_pending_entries(team_root, entries))
+    except (OSError, ValueError):
+        return False
 
 
 def read_push_pending_state(team_root: str) -> PushPendingRead:

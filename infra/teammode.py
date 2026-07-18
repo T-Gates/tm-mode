@@ -2665,18 +2665,20 @@ def cmd_commit(team_root: Path, message: str, push: bool,
             _git_ops.kick_push_worker(
                 str(team_root), str(INFRA / "hooks" / "push-worker.py"))
         else:
-            # ledger를 못 쓰면 rc0이 "복구 예약됨"으로 오해된다. warning도 best-effort로
-            # 남기되 stderr + rc1을 확정 신호로 제공한다.
+            # False may be safe history/target/CAS refusal as well as state I/O
+            # failure.  Keep the original push detail without inventing a cause.
             failed_detail = _t(
                 "cmd_commit_pending_write_failed_marker", lang,
-                "커밋됨; push-pending 기록 실패 — push 미보장"
-                "(XDG state 쓰기 오류); 원래 push 실패: {detail}",
+                "push-pending 상태를 안전하게 갱신하지 못했습니다 — "
+                "커밋은 보존됐지만 자동 push 복구는 예약되지 않았습니다; "
+                "원래 push 실패: {detail}",
                 detail=safe_detail)
             _git_ops.write_sync_warning(str(team_root), failed_detail)
             print(_t(
                 "cmd_commit_pending_write_failed", lang,
-                "[warning] tm-mode commit: push-pending 기록 실패 — "
-                "커밋은 보존됐지만 push 복구가 예약되지 않았습니다: {detail}",
+                "[warning] tm-mode commit: push-pending 상태를 안전하게 "
+                "갱신하지 못했습니다 — 커밋은 보존됐지만 자동 push 복구는 "
+                "예약되지 않았습니다. 원래 push 실패: {detail}",
                 detail=safe_detail), file=sys.stderr)
             recovery_state_failed = True
 

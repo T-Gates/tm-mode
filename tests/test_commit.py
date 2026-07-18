@@ -584,6 +584,8 @@ def test_cmd_commit_push_failure_records_sanitized_warning_and_kicks_worker(
 def test_cmd_commit_pending_write_failure_is_nonzero_and_visible(
         monkeypatch, tmp_path, capsys):
     """ledger를 못 쓰면 성공처럼 끝내지 않고 sanitized 경고와 rc1을 낸다."""
+    (tmp_path / "team.config.json").write_text(
+        '{"team":{"locale":"ko_KR"}}', encoding="utf-8")
     raw = "fatal token=super-secret-value"
     calls = {}
     identity = {"key": "branch:session", "branch": "session", "head": "b" * 40}
@@ -608,8 +610,12 @@ def test_cmd_commit_pending_write_failure_is_nonzero_and_visible(
     rendered = calls["warning"] + "\n" + captured.out + "\n" + captured.err
     assert rc == 1
     assert "push-pending" in captured.err
+    assert "push-pending 상태를 안전하게 갱신하지 못했습니다" in rendered
+    assert "커밋은 보존됐지만 자동 push 복구는 예약되지 않았습니다" in rendered
     assert "super-secret-value" not in rendered
     assert "[redacted]" in rendered
+    assert "XDG" not in rendered
+    assert "권한" not in rendered
     assert "kick" not in calls
 
 

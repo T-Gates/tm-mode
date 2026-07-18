@@ -116,12 +116,11 @@ MESSAGES = {
             "[teammode] Auto-commit push failed — the commit was preserved and "
             "a pending retry was recorded: {detail}",
         "hook_ac_pending_write_failed_marker":
-            "Committed; failed to record push-pending — push is not guaranteed "
-            "(XDG state write error); original push failure: {detail}",
+            "Could not safely update push-pending state; the commit was preserved, "
+            "but automatic push recovery was not scheduled. Original push failure: {detail}",
         "hook_ac_pending_write_failed_print":
-            "[teammode] Failed to record push-pending — the push was not "
-            "scheduled (the commit itself is preserved). Check XDG state write "
-            "permissions. Original push failure: {detail}",
+            "[teammode] Could not safely update push-pending state; the commit was "
+            "preserved, but automatic push recovery was not scheduled. Original push failure: {detail}",
         "hook_ac_commit_deferred_marker":
             "Auto-commit deferred (changes remain uncommitted): {detail}",
         "hook_ac_commit_deferred_print":
@@ -276,11 +275,12 @@ MESSAGES = {
         "cmd_commit_push_pending_marker":
             "tm-mode commit push failed (commit preserved): {detail}",
         "cmd_commit_pending_write_failed_marker":
-            "Committed; failed to record push-pending — publication is not "
-            "guaranteed (XDG state write error); original push failure: {detail}",
+            "Could not safely update push-pending state; the commit was preserved, "
+            "but automatic push recovery was not scheduled. Original push failure: {detail}",
         "cmd_commit_pending_write_failed":
-            "[warning] tm-mode commit: failed to record push-pending — the "
-            "commit was preserved but push recovery was not scheduled: {detail}",
+            "[warning] tm-mode commit: could not safely update push-pending "
+            "state; the commit was preserved, but automatic push recovery was "
+            "not scheduled. Original push failure: {detail}",
         "cmd_commit_done":
             "tm-mode commit — committed{suffix}: {detail}",
         "cmd_commit_skipped":

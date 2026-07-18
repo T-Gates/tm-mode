@@ -1269,8 +1269,8 @@ def test_auto_commit_windows_writer_fallback_finishes_before_manifest_timeout(
     warning의 durable write가 auto-commit manifest cap 전에 끝나야 한다.
 
     첫 index.lock 경로 12s + 1s backoff + retry do_commit 총예산 45s 후,
-    실제 write_push_pending의 check-ref/cat-file 검증과 실제 fallback
-    write_sync_warning을 통과시킨다. cat-file은 Windows run_git의
+    실제 write_push_pending의 check-ref/exact OID rev-parse 검증과 실제 fallback
+    write_sync_warning을 통과시킨다. rev-parse는 Windows run_git의
     timeout 1s + taskkill 5s + drain 2s 상한을 모사한다.
     """
     manifest = json.loads(
@@ -1315,10 +1315,12 @@ def test_auto_commit_windows_writer_fallback_finishes_before_manifest_timeout(
         if "check-ref-format" in args:
             clock["now"] += timeout
             return 0, "", ""
-        if "cat-file" in args:
+        if args == [
+                "-C", str(root), "rev-parse", "--verify", "--end-of-options",
+                f"{identity['head']}^{{commit}}"]:
             # Windows kill_group: taskkill timeout 5s + communicate drain 2s.
             clock["now"] += timeout + 5 + 2
-            raise subprocess.TimeoutExpired(cmd="git cat-file", timeout=timeout)
+            raise subprocess.TimeoutExpired(cmd="git rev-parse", timeout=timeout)
         raise AssertionError(args)
 
     monkeypatch.setattr(git_ops, "do_commit", timed_do_commit)
