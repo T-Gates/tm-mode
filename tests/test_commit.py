@@ -153,6 +153,10 @@ def _hang_remote(tmp_path, repo, remote="origin"):
 
 # ── git_ops.do_commit ──
 
+def test_git_ops_exposes_do_commit():
+    assert hasattr(go, "do_commit")
+
+
 def test_do_commit_stages_and_commits(local_repo):
     (local_repo / "new.txt").write_text("hi\n")
     res = go.do_commit(str(local_repo), message="add new", push=False)
@@ -461,6 +465,15 @@ def test_do_commit_push_uses_captured_main_refspec_after_checkout_switch(
         upstream, "rev-parse", "refs/heads/other").stdout.strip() == remote_other_before
 
 
+def test_do_commit_push_no_remote_commit_still_ok(local_repo):
+    # 원격 없음: 커밋은 성공해야 하고 push 실패는 비치명(커밋 보존).
+    (local_repo / "g.txt").write_text("v\n")
+    res = go.do_commit(str(local_repo), message="local only", push=True)
+    # 커밋 자체는 됐다
+    log = _git(local_repo, "log", "--oneline").stdout
+    assert "local only" in log
+
+
 # ── commit 동사 (엔진) ──
 
 def test_commit_verb_commits(local_repo):
@@ -500,6 +513,16 @@ def test_commit_verb_no_changes_graceful(local_repo):
     r = _run_engine(local_repo, "commit", "--message", "nothing to do")
     # 변경 없음 → 비치명(크래시 없음)
     assert "Traceback" not in r.stderr
+
+
+def test_commit_verb_push_no_remote_graceful(local_repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    env = {**os.environ, "TEAMMODE_DISABLE_PUSH_WORKER": "1"}
+    (local_repo / "j.txt").write_text("v\n")
+    r = _run_engine(local_repo, "commit", "--message", "p", "--push", env=env)
+    assert "Traceback" not in r.stderr
+    # 커밋은 보존
+    assert "p" in _git(local_repo, "log", "--oneline").stdout
 
 
 def test_commit_verb_push_no_remote_records_recovery_state(

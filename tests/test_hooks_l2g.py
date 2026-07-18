@@ -98,6 +98,33 @@ def test_auto_commit_no_marker_is_noop(fake_repo):
     assert _git(fake_repo, "status", "--short").stdout.strip().startswith("??")
 
 
+def test_auto_commit_active_commits(fake_repo):
+    """.teammode-active 있으면 발동 — 지목 파일이 커밋된다."""
+    (fake_repo / ".teammode-active").write_text("")
+    (fake_repo / "doc.md").write_text("hello\n")
+    before = _commit_count(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": [str(fake_repo / "doc.md")], "agent": "claude"}
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
+    assert proc.returncode == 0
+    assert _commit_count(fake_repo) == before + 1
+    assert "doc.md" in _git(fake_repo, "show", "--name-only", "HEAD").stdout
+
+
+def test_auto_commit_accepts_normalized_relative_file(fake_repo):
+    """Codex apply_patch normalize 가 내는 repo-relative files 도 커밋한다."""
+    (fake_repo / ".teammode-active").write_text("")
+    (fake_repo / "relative.md").write_text("normalized relative path\n")
+    before = _commit_count(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": ["relative.md"], "agent": "codex"}
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=fake_repo)
+    assert proc.returncode == 0
+    assert _commit_count(fake_repo) == before + 1
+    assert "relative.md" in _git(
+        fake_repo, "show", "--name-only", "HEAD").stdout
+
+
 def test_auto_commit_rejects_relative_parent_traversal(fake_repo, tmp_path):
     """상대경로 지원이 team root 밖 파일로 확장되면 안 된다."""
     (fake_repo / ".teammode-active").write_text("")
@@ -429,6 +456,17 @@ def test_manifest_includes_both_l2g_hooks():
     scripts = {e.get("script") for e in entries}
     assert "auto-commit.py" in scripts
     assert "confirm-action.py" in scripts
+
+
+def test_auto_commit_manifest_covers_foreground_push_budget():
+    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(e for e in entries if e.get("script") == "auto-commit.py")
+    # Windows pending identity timeout(taskkill+drain) 뒤 fallback warning의
+    # lock/fsync까지 runner cap 전에 durable 해야 하므로 70s 계약을 고정한다.
+    assert entry["timeout"] >= 70
+    note = entry.get("_timeout_note", "")
+    assert "foreground" in note.lower()
+    assert "PUSH_TOTAL_BUDGET" in note
 
 
 def test_manifest_no_duplicate_event_script_pairs():

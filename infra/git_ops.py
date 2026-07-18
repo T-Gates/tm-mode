@@ -4478,7 +4478,7 @@ def _pending_head_ancestry(
         timeout: int = _PENDING_IDENTITY_TIMEOUT) -> bool | None:
     """Return whether older is an ancestor of newer; None means unprovable."""
     try:
-        rc, _, _ = run_git(
+        rc, _, _ = _run_physical_history_git(
             ["-C", team_root, "merge-base", "--is-ancestor", older, newer],
             timeout=timeout)
     except (OSError, subprocess.SubprocessError):
@@ -4488,6 +4488,19 @@ def _pending_head_ancestry(
     if rc == 1:
         return False
     return None
+
+
+def _run_physical_history_git(args: list, timeout: float, **kwargs):
+    """Run a history proof against stored objects, never replace/graft views."""
+    env_overrides = dict(kwargs.pop("env_overrides", {}) or {})
+    env_overrides.update({
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_GRAFT_FILE": os.devnull,
+    })
+    return run_git(
+        ["--no-replace-objects", "-c", "advice.graftFileDeprecated=false",
+         *args],
+        timeout=timeout, env_overrides=env_overrides, **kwargs)
 
 
 def _pending_head_covered_by_history(
@@ -4509,7 +4522,7 @@ def _pending_head_covered_by_history(
         if remaining <= 0:
             return None
         try:
-            return run_git(
+            return _run_physical_history_git(
                 args, timeout=remaining, input_text=input_text,
                 input_bytes=input_bytes)
         except (OSError, subprocess.SubprocessError):
@@ -6107,6 +6120,69 @@ def _run_exact_publication_push(
             return 1, "", blocker, ""
         return _run_exact_publication_push_locked(
             team_root, endpoint, destination, tracking_ref, head, timeout)
+
+
+def _push_plain_locked(team_root: str, timeout: int = NET_TIMEOUT):
+    """**plain push only** — push-worker 전용 (#45 정정: plain-push-only).
+
+    worker 는 로컬 히스토리를 절대 건드리지 않는다(rebase/fetch 복구 금지) —
+    worker 가 rebase 복구 중일 때 사용자가 편집하면 다음 auto-commit 훅의
+    add/commit 이 index.lock 으로 실패하고, 훅은 예외를 삼켜 exit 0 이므로
+    **편집 커밋이 조용히 유실**된다. push 지연보다 명백히 나쁜 회귀라 경합
+    표면을 push 로 한정한다. 정합 복구는 기존 채널(session-start do_reconcile·
+    teammode pull)에 위임한다.
+
+    - 성공 → (True, detail)
+    - upstream 미설정만 `push -u origin HEAD` 1회 (이슈 #34 와 동일 사유 —
+      새 브랜치 평문 push 는 영원히 실패하므로).
+    - non-ff → (False, "non-fast-forward") — 복구 없음, 마커만(호출부 몫).
+    - 그 외 실패/타임아웃 → (False, detail). 절대 예외를 전파하지 않는다.
+    """
+    try:
+        prc, pout, perr = _run_publication_push_locked(
+            ["-C", team_root, *http_timeout_opts(timeout), "push"],
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "push timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"push exec error: {exc}"
+    if prc == 0:
+        return True, "pushed"
+
+    combined = (perr or "") + "\n" + (pout or "")
+    if _is_no_upstream(combined):
+        try:
+            urc, uout, uerr = _run_publication_push_locked(
+                ["-C", team_root, *http_timeout_opts(timeout),
+                 "push", "-u", "origin", "HEAD"],
+                timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, "push -u timeout"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"push -u exec error: {exc}"
+        if urc == 0:
+            return True, "pushed (set upstream)"
+        ucombined = (uerr or "") + "\n" + (uout or "")
+        if _is_non_fast_forward(ucombined):
+            return False, "non-fast-forward"
+        return False, f"push -u failed: {ucombined.strip()[:200]}"
+
+    if _is_non_fast_forward(combined):
+        return False, "non-fast-forward"
+    return False, f"push failed: {combined.strip()[:200]}"
+
+
+def push_plain(team_root: str, timeout: int = NET_TIMEOUT):
+    """Interlocked plain push; re-probe residue after lock acquisition."""
+    lock_timeout = max(0.05, min(float(timeout), 1.0))
+    with _publication_interlock(
+            team_root, lock_timeout) as (acquired, detail):
+        if not acquired:
+            return False, detail
+        blocker = publication_blocker_detail(team_root, lock_timeout)
+        if blocker:
+            return False, blocker
+        return _push_plain_locked(team_root, timeout)
 
 
 def _is_non_fast_forward(text: str) -> bool:
