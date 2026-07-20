@@ -146,6 +146,45 @@ def _git_rc(repo: Path, *args: str) -> int:
         ["git", "-C", str(repo), *args], capture_output=True).returncode
 
 
+def _git_subcommand(args) -> str:
+    iterator = iter(args)
+    for arg in iterator:
+        if arg in ("-C", "-c"):
+            next(iterator, None)
+            continue
+        if str(arg).startswith("-"):
+            continue
+        return str(arg)
+    return ""
+
+
+def _write_test_xattr(path: Path, name: str, value: bytes) -> None:
+    if hasattr(os, "setxattr"):
+        try:
+            os.setxattr(path, name, value, follow_symlinks=False)
+        except OSError as exc:
+            pytest.skip(f"filesystem xattrs unavailable: {exc}")
+        return
+    if sys.platform == "darwin" and Path("/usr/bin/xattr").is_file():
+        wrote = subprocess.run(
+            ["/usr/bin/xattr", "-w", "-x", "--", name, value.hex(),
+             str(path)], capture_output=True, text=True, check=False)
+        if wrote.returncode != 0:
+            pytest.skip(f"filesystem xattrs unavailable: {wrote.stderr}")
+        return
+    pytest.skip("filesystem xattrs unavailable")
+
+
+def _read_test_xattr(path: Path, name: str) -> bytes:
+    if hasattr(os, "getxattr"):
+        return os.getxattr(path, name, follow_symlinks=False)
+    read = subprocess.run(
+        ["/usr/bin/xattr", "-p", "-x", "--", name, str(path)],
+        capture_output=True, text=True, check=False)
+    assert read.returncode == 0, read.stderr
+    return bytes.fromhex("".join(read.stdout.split()))
+
+
 def _external_rebase_pending_head(
         origin: Path, work: Path, other_path: Path, *, prefix: str,
         rebase: bool = True) -> tuple:
@@ -1269,6 +1308,176 @@ def test_pending_reconcile_merges_remote_without_rewriting_recorded_head(
     assert git_ops.read_push_pending(str(work)) == ""
 
 
+def test_pending_merge_shadows_branch_merge_options_with_proven_strategy(
+        xdg, tmp_path, monkeypatch):
+    """Command-scope empty config must override even multi-value local options."""
+    origin, work = _clone_pair(tmp_path)
+    _commit_file(work, "local-option.md", "local pending\n")
+    pending_head = _git_text(work, "rev-parse", "HEAD")
+    assert git_ops.write_push_pending(str(work)) is True
+    snapshot = git_ops.read_push_pending(str(work))
+    key = git_ops.pending_entry_key_for_current_checkout(str(work), snapshot)
+
+    other = _clone_other(origin, tmp_path / "pending-options-other")
+    _commit_file(other, "remote-option.md", "remote pending\n")
+    subprocess.run(
+        ["git", "-C", str(other), "push", "-q"],
+        check=True, capture_output=True)
+    for merge_options in ("-s ours", "--no-edit"):
+        subprocess.run(
+            ["git", "-C", str(work), "config", "--add",
+             "branch.main.mergeOptions", merge_options],
+            check=True, capture_output=True)
+
+    forward_merges = []
+    real_run_bound_git = git_ops._run_bound_git
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (_git_subcommand(args) == "merge" and "--abort" not in args):
+            forward_merges.append((tuple(args), kwargs.get("extra_env") or {}))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(git_ops, "_run_bound_git", observe_mutation)
+
+    result = git_ops.reconcile_current_pending(str(work), snapshot, key)
+
+    assert result.ok and result.action == "merged", result.detail
+    assert len(forward_merges) == 1
+    merge_args, merge_env = forward_merges[0]
+    assert "--strategy=ort" in merge_args
+    assert merge_env == {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "branch.main.mergeOptions",
+        "GIT_CONFIG_VALUE_0": "",
+    }
+    assert (work / "local-option.md").read_text(
+        encoding="utf-8") == "local pending\n"
+    assert (work / "remote-option.md").read_text(
+        encoding="utf-8") == "remote pending\n"
+    merged = _git_text(work, "rev-parse", "HEAD")
+    assert _git_rc(work, "merge-base", "--is-ancestor", pending_head, merged) == 0
+
+
+def test_pending_merge_invokes_proven_modern_strategy_and_preserves_both_sides(
+        xdg, tmp_path, monkeypatch):
+    """The materialized merge-tree and actual merge must both use merge-ort."""
+    origin, work = _clone_pair(tmp_path)
+    _commit_file(work, "local-twohead.md", "local pending\n")
+    pending_head = _git_text(work, "rev-parse", "HEAD")
+    assert git_ops.write_push_pending(str(work)) is True
+    snapshot = git_ops.read_push_pending(str(work))
+    key = git_ops.pending_entry_key_for_current_checkout(str(work), snapshot)
+
+    other = _clone_other(origin, tmp_path / "pending-twohead-other")
+    _commit_file(other, "remote-twohead.md", "remote pending\n")
+    subprocess.run(
+        ["git", "-C", str(other), "push", "-q"],
+        check=True, capture_output=True)
+    remote_head = _git_text(other, "rev-parse", "HEAD")
+    forward_merges = []
+    real_run_bound_git = git_ops._run_bound_git
+
+    def observe_merge(team_root, txn, args, timeout, **kwargs):
+        if (_git_subcommand(args) == "merge" and "--abort" not in args):
+            forward_merges.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(git_ops, "_run_bound_git", observe_merge)
+
+    result = git_ops.reconcile_current_pending(str(work), snapshot, key)
+
+    assert result.ok and result.action == "merged", result.detail
+    assert len(forward_merges) == 1
+    assert "--strategy=ort" in forward_merges[0]
+    assert (work / "local-twohead.md").read_text(
+        encoding="utf-8") == "local pending\n"
+    assert (work / "remote-twohead.md").read_text(
+        encoding="utf-8") == "remote pending\n"
+    merged = _git_text(work, "rev-parse", "HEAD")
+    assert _git_rc(work, "merge-base", "--is-ancestor", pending_head, merged) == 0
+    assert _git_rc(work, "merge-base", "--is-ancestor", remote_head, merged) == 0
+
+
+@pytest.mark.parametrize("driver_source", ("attribute", "default", "unused"))
+def test_pending_merge_defers_external_merge_driver_before_preflight(
+        xdg, tmp_path, monkeypatch, driver_source):
+    """merge-tree must never run any repository-configured shell driver."""
+    origin, work = _clone_pair(tmp_path)
+    shared = work / "driver-shared.txt"
+    shared.write_text("base\n", encoding="utf-8")
+    tracked = ["driver-shared.txt"]
+    if driver_source == "attribute":
+        (work / ".gitattributes").write_text(
+            "driver-shared.txt merge=evil\n", encoding="utf-8")
+        tracked.append(".gitattributes")
+    subprocess.run(
+        ["git", "-C", str(work), "add", *tracked],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qm", "merge driver base"],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(work), "push", "-q"],
+        check=True, capture_output=True)
+    other = _clone_other(origin, tmp_path / f"driver-{driver_source}-other")
+
+    shared.write_text("local pending\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qam", "local driver side"],
+        check=True, capture_output=True)
+    pending_head = _git_text(work, "rev-parse", "HEAD")
+    assert git_ops.write_push_pending(str(work)) is True
+    snapshot = git_ops.read_push_pending(str(work))
+    key = git_ops.pending_entry_key_for_current_checkout(str(work), snapshot)
+
+    (other / "driver-shared.txt").write_text(
+        "remote pending\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(other), "commit", "-qam", "remote driver side"],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(other), "push", "-q"],
+        check=True, capture_output=True)
+
+    sentinel = work / "EXTERNAL_MERGE_DRIVER_RAN"
+    subprocess.run(
+        ["git", "-C", str(work), "config", "merge.evil.driver",
+         f"touch {sentinel} && cp %B %A"], check=True, capture_output=True)
+    if driver_source == "default":
+        subprocess.run(
+            ["git", "-C", str(work), "config", "merge.default", "evil"],
+            check=True, capture_output=True)
+
+    index_path = _git_path(work, "index")
+    index_before = index_path.read_bytes()
+    forbidden_calls = []
+    real_run_bound_git = git_ops._run_bound_git
+
+    def observe_preflight_or_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["merge-tree", "--write-tree"]
+                or args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")):
+            forbidden_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(
+        git_ops, "_run_bound_git", observe_preflight_or_mutation)
+
+    result = git_ops.reconcile_current_pending(str(work), snapshot, key)
+
+    assert not result.ok
+    assert "custom merge driver" in result.detail
+    assert forbidden_calls == []
+    assert not sentinel.exists()
+    assert _git_text(work, "rev-parse", "HEAD") == pending_head
+    assert index_path.read_bytes() == index_before
+    assert shared.read_text(encoding="utf-8") == "local pending\n"
+    assert git_ops.read_push_pending(str(work)) == snapshot
+
+
 @pytest.mark.parametrize("legacy_merge_tree", [False, True])
 def test_pending_disjoint_logs_ignore_unrelated_parent_macl_and_preserve_xattr(
         xdg, tmp_path, monkeypatch, legacy_merge_tree):
@@ -1375,6 +1584,95 @@ def test_pending_disjoint_logs_ignore_unrelated_parent_macl_and_preserve_xattr(
     assert git_ops.read_push_pending(str(work)) == ""
     assert git_ops.read_sync_warning(str(work)) == ""
     assert read_parent_xattr() == before_xattr
+
+
+def test_legacy_pending_merge_preserves_shared_parent_macl(
+        xdg, tmp_path, monkeypatch):
+    """Legacy disjoint merge keeps a parent anchored by a common leaf."""
+    origin, work = _clone_pair(tmp_path)
+    shared_parent = work / "memory" / "team" / "sessions" / "shared"
+    shared_parent.mkdir(parents=True)
+    anchor = shared_parent / "anchor.md"
+    anchor.write_text("common anchor\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(work), "add", str(anchor.relative_to(work))],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qm", "shared parent base"],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(work), "push", "-q"],
+        check=True, capture_output=True)
+    other = _clone_other(origin, tmp_path / "legacy-shared-parent-other")
+
+    alice_log = shared_parent / "alice.md"
+    alice_log.write_text("alice local\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(work), "add", str(alice_log.relative_to(work))],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-qm", "alice local"],
+        check=True, capture_output=True)
+    assert git_ops.write_push_pending(str(work)) is True
+    snapshot = git_ops.read_push_pending(str(work))
+    key = git_ops.pending_entry_key_for_current_checkout(str(work), snapshot)
+
+    bob_log = other / "memory" / "team" / "sessions" / "shared" / "bob.md"
+    bob_log.parent.mkdir(parents=True, exist_ok=True)
+    bob_log.write_text("bob remote\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(other), "add", str(bob_log.relative_to(other))],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(other), "commit", "-qm", "bob remote"],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(other), "push", "-q"],
+        check=True, capture_output=True)
+
+    attr_name = ("com.tm-mode.legacy-shared-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.legacy-shared-parent")
+    expected_xattr = b"legacy shared metadata\x00\xff"
+    _write_test_xattr(shared_parent, attr_name, expected_xattr)
+    before_xattr = _read_test_xattr(shared_parent, attr_name)
+    before_parent = os.lstat(shared_parent)
+    real_xattr_names = git_ops._nofollow_xattr_names
+    real_run_bound_git = git_ops._run_bound_git
+    forward_merges = []
+
+    def shared_parent_macl(path):
+        if Path(path) == shared_parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    def emulate_legacy_merge_tree(
+            team_root, txn, args, timeout, **kwargs):
+        if args[:2] == ["merge-tree", "--write-tree"]:
+            return 129, "", "error: unknown option `write-tree'\nusage: git merge-tree"
+        if (_git_subcommand(args) == "merge" and "--abort" not in args):
+            forward_merges.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(
+        git_ops, "_nofollow_xattr_names", shared_parent_macl)
+    monkeypatch.setattr(
+        git_ops, "_run_bound_git", emulate_legacy_merge_tree)
+
+    result = git_ops.reconcile_current_pending(str(work), snapshot, key)
+
+    assert result.ok and result.action == "merged", result.detail
+    assert len(forward_merges) == 1
+    assert "--strategy=recursive" in forward_merges[0]
+    assert anchor.read_text(encoding="utf-8") == "common anchor\n"
+    assert alice_log.read_text(encoding="utf-8") == "alice local\n"
+    assert (work / bob_log.relative_to(other)).read_text(
+        encoding="utf-8") == "bob remote\n"
+    after_parent = os.lstat(shared_parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(shared_parent, attr_name) == before_xattr
 
 
 def test_legacy_merge_tree_fallback_rejects_upstream_directory_rename(
@@ -1520,7 +1818,7 @@ def test_pending_reconcile_conflict_rolls_back_and_preserves_ledger(
     real_run_bound_git = git_ops._run_bound_git
 
     def observe_merge(team_root, txn, args, timeout, **kwargs):
-        if args and args[0] == "merge":
+        if (_git_subcommand(args) == "merge" and "--abort" not in args):
             merge_attempts.append(tuple(args))
         return real_run_bound_git(
             team_root, txn, args, timeout, **kwargs)
@@ -1531,6 +1829,7 @@ def test_pending_reconcile_conflict_rolls_back_and_preserves_ledger(
 
     assert not result.ok and result.action == "conflict"
     assert merge_attempts, "conflict fixture never crossed the mutation boundary"
+    assert "--strategy=ort" in merge_attempts[0]
     assert _git_text(work, "rev-parse", "HEAD") == pending_h1
     assert (work / "shared.txt").read_text(encoding="utf-8") == "local H1\n"
     assert index_path.read_bytes() == index_before

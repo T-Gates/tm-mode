@@ -726,6 +726,33 @@ def _watched_path_snapshot(path):
     return "file", path.stat().st_mode & 0o777, path.read_bytes()
 
 
+def _write_test_xattr(path, name, value):
+    if all(hasattr(os, attr) for attr in ("setxattr", "getxattr")):
+        try:
+            os.setxattr(path, name, value, follow_symlinks=False)
+        except OSError as exc:
+            pytest.skip(f"filesystem xattrs unavailable: {exc}")
+        return
+    if sys.platform == "darwin" and Path("/usr/bin/xattr").is_file():
+        wrote = subprocess.run(
+            ["/usr/bin/xattr", "-w", "-x", "--", name, value.hex(),
+             str(path)], capture_output=True, text=True, check=False)
+        if wrote.returncode != 0:
+            pytest.skip(f"filesystem xattrs unavailable: {wrote.stderr}")
+        return
+    pytest.skip("filesystem xattr writer unavailable")
+
+
+def _read_test_xattr(path, name):
+    if hasattr(os, "getxattr"):
+        return os.getxattr(path, name, follow_symlinks=False)
+    read = subprocess.run(
+        ["/usr/bin/xattr", "-p", "-x", "--", name, str(path)],
+        capture_output=True, text=True, check=False)
+    assert read.returncode == 0, read.stderr
+    return bytes.fromhex("".join(read.stdout.split()))
+
+
 @pytest.mark.parametrize("index_flag", ["assume-unchanged", "skip-worktree"])
 @pytest.mark.parametrize("reconcile_mode", ["fast-forward", "rebase"])
 def test_bound_reconcile_defers_hidden_index_flags_before_mutation(
@@ -868,6 +895,130 @@ def test_bound_reconcile_ignored_collision_honors_git_ignorecase_and_nfc(
     assert _git(clone, "rev-parse", "refs/heads/main").stdout.strip() == before[0]
     assert index_path.read_bytes() == before[1]
     assert _watched_path_snapshot(watched) == before[2]
+
+
+@pytest.mark.parametrize("toggle_replace_overlay", [False, True])
+def test_bound_rebase_defers_ignored_path_from_intermediate_replay_tree(
+        cloned_repo, monkeypatch, toggle_replace_overlay):
+    """A change-then-delete replay path can still overwrite ignored local bytes."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    ignored = clone / "transient.bin"
+    (clone / ".gitignore").write_text("transient.bin\n")
+    _git(clone, "add", ".gitignore")
+    _git(clone, "commit", "-m", "ignore transient replay path")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    (work / "remote-only.txt").write_text("remote\n")
+    _git(work, "add", "remote-only.txt")
+    _git(work, "commit", "-m", "remote disjoint advance")
+    _git(work, "push")
+
+    ignored.write_bytes(b"temporary tracked bytes\n")
+    _git(clone, "add", "-f", ignored.name)
+    _git(clone, "commit", "-m", "add transient replay path")
+    add_commit = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    add_parent = _git(clone, "rev-parse", "HEAD^").stdout.strip()
+    _git(clone, "rm", ignored.name)
+    _git(clone, "commit", "-m", "remove transient replay path")
+    ignored.write_bytes(b"LOCAL IGNORED SECRET\x00\xff")
+    ignored.chmod(0o751)
+    assert _git(clone, "status", "--porcelain=v1").stdout == ""
+
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (
+        identity["head"], index_path.read_bytes(),
+        _watched_path_snapshot(ignored))
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+    overlay_installed = {"value": False}
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        command = _git_subcommand(args)
+        if command == "rev-list" and not overlay_installed["value"]:
+            response = real_run_bound_git(
+                team_root, txn, args, timeout, **kwargs)
+            if toggle_replace_overlay:
+                _git(clone, "replace", add_commit, add_parent)
+                overlay_installed["value"] = True
+            return response
+        if (command == "stash" and "create" in args
+                and overlay_installed["value"]):
+            _git(clone, "replace", "-d", add_commit)
+            overlay_installed["value"] = False
+        if (command == "rebase" or command == "merge"
+                or (command == "reset" and "--hard" in args)):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
+
+    try:
+        result = go.do_reconcile(
+            str(clone), expected_identity=identity, _target=target,
+            _allow_bound_mutation=True)
+    finally:
+        if overlay_installed["value"]:
+            _git(clone, "replace", "-d", add_commit)
+
+    assert result.ok is False
+    assert "untracked path collision" in result.detail
+    assert mutation_calls == []
+    assert _git(clone, "rev-parse", "refs/heads/main").stdout.strip() == before[0]
+    assert index_path.read_bytes() == before[1]
+    assert _watched_path_snapshot(ignored) == before[2]
+
+
+def test_bound_fast_forward_preserves_hidden_dirty_submodule_bytes(
+        cloned_repo, tmp_path):
+    """A clean-looking superproject must not recursively reset a submodule."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+
+    submodule_origin = tmp_path / "submodule-origin"
+    subprocess.run(
+        ["git", "init", "-q", "--initial-branch=main",
+         str(submodule_origin)], check=True, capture_output=True)
+    _git(submodule_origin, "config", "user.name", "t")
+    _git(submodule_origin, "config", "user.email", "t@t")
+    submodule_file = submodule_origin / "data.txt"
+    submodule_file.write_bytes(b"submodule baseline\n")
+    _git(submodule_origin, "add", submodule_file.name)
+    _git(submodule_origin, "commit", "-m", "submodule baseline")
+
+    subprocess.run(
+        ["git", "-C", str(clone), "-c", "protocol.file.allow=always",
+         "submodule", "add", str(submodule_origin), "sm"],
+        check=True, capture_output=True, text=True)
+    _git(clone, "commit", "-m", "add submodule")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    (work / "remote-after-submodule.txt").write_text("remote\n")
+    _git(work, "add", "remote-after-submodule.txt")
+    _git(work, "commit", "-m", "remote advance after submodule")
+    _git(work, "push")
+
+    _git(clone, "config", "submodule.recurse", "true")
+    _git(clone, "config", "submodule.sm.ignore", "all")
+    watched = clone / "sm" / "data.txt"
+    watched.write_bytes(b"HIDDEN LOCAL SUBMODULE SECRET\x00\xff")
+    assert _git(clone, "status", "--porcelain=v1").stdout == ""
+    before = watched.read_bytes()
+    identity, target = _bound_main_identity_and_target(clone)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok and result.action == "fast-forward", result.detail
+    assert (clone / "remote-after-submodule.txt").read_text() == "remote\n"
+    assert watched.read_bytes() == before
 
 
 @pytest.mark.parametrize("staged", [False, True], ids=["unstaged", "staged"])
@@ -1043,10 +1194,12 @@ def test_bound_reconcile_defers_transform_introduced_by_upstream_candidate(
 
 @pytest.mark.parametrize("reconcile_mode", ["fast-forward", "rebase"])
 @pytest.mark.parametrize(
-    "candidate_cleanup_failure", [False, True], ids=["clean", "fsync-fails"])
+    "candidate_cleanup_failure,toggle_replace_overlay", [
+        (False, False), (False, True), (True, False),
+    ], ids=["clean", "replace-overlay", "fsync-fails"])
 def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
         cloned_repo, tmp_path, monkeypatch, reconcile_mode,
-        candidate_cleanup_failure):
+        candidate_cleanup_failure, toggle_replace_overlay):
     """Git without check-attr --source still proves the exact candidate tree."""
     clone, work = cloned_repo.clone, cloned_repo.work
     _git(clone, "pull", "--ff-only")
@@ -1070,6 +1223,7 @@ def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
     _git(work, "commit", "-m", "candidate adds old-git filter")
     _git(work, "push")
     upstream_oid = _git(work, "rev-parse", "HEAD").stdout.strip()
+    upstream_parent = _git(work, "rev-parse", "HEAD^").stdout.strip()
     if reconcile_mode == "rebase":
         (clone / "old-git-local.txt").write_text("local\n")
         _git(clone, "add", "old-git-local.txt")
@@ -1084,6 +1238,8 @@ def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
     real_fsync_parent = go._fsync_parent_dir
     observations = []
     cleanup_failure = {"seen": False}
+    overlay_installed = {"value": False}
+    mutation_calls = []
 
     def emulate_git_without_check_attr_source(args, timeout, **kwargs):
         subcommand = _git_subcommand(args)
@@ -1091,6 +1247,11 @@ def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
             str(arg) for arg in args if str(arg).startswith("--source=")]
         if subcommand == "check-attr" and source_args:
             observations.append(("source-rejected", source_args[0], ""))
+            if (toggle_replace_overlay
+                    and source_args[0] == f"--source={upstream_oid}"
+                    and not overlay_installed["value"]):
+                _git(clone, "replace", upstream_oid, upstream_parent)
+                overlay_installed["value"] = True
             return 129, "", "error: unknown option `source'"
         if subcommand == "read-tree":
             observations.append((
@@ -1106,6 +1267,21 @@ def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
 
     monkeypatch.setattr(
         go, "run_git", emulate_git_without_check_attr_source)
+    real_run_bound_git = go._run_bound_git
+
+    def observe_bound_mutation(team_root, txn, args, timeout, **kwargs):
+        command = _git_subcommand(args)
+        if (command == "stash" and "create" in args
+                and overlay_installed["value"]):
+            _git(clone, "replace", "-d", upstream_oid)
+            overlay_installed["value"] = False
+        if (command in {"merge", "rebase"}
+                or (command == "reset" and "--hard" in args)):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_run_bound_git", observe_bound_mutation)
     if candidate_cleanup_failure:
         def fail_candidate_cleanup_fsync(path):
             if (Path(path).name.startswith("attr-index-")
@@ -1117,9 +1293,13 @@ def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
         monkeypatch.setattr(
             go, "_fsync_parent_dir", fail_candidate_cleanup_fsync)
 
-    res = go.do_reconcile(
-        str(clone), expected_identity=identity, _target=target,
-        _allow_bound_mutation=True)
+    try:
+        res = go.do_reconcile(
+            str(clone), expected_identity=identity, _target=target,
+            _allow_bound_mutation=True)
+    finally:
+        if overlay_installed["value"]:
+            _git(clone, "replace", "-d", upstream_oid)
 
     assert res.ok is False
     if candidate_cleanup_failure:
@@ -1128,6 +1308,7 @@ def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
         assert "recovery cleanup failed" in res.detail
     else:
         assert "upstream working-tree transform" in res.detail
+        assert mutation_calls == []
     assert any(
         kind == "source-rejected" for kind, _source, _index in observations)
     read_tree = [item for item in observations if item[0] == "read-tree"]
@@ -1159,9 +1340,9 @@ def test_bound_candidate_transform_uses_safe_old_git_attribute_fallback(
 
 
 @pytest.mark.parametrize("reconcile_mode", ["fast-forward", "rebase"])
-def test_bound_old_git_attribute_fallback_allows_safe_candidate_reconcile(
+def test_bound_old_git_attribute_fallback_allows_fast_forward_and_defers_rebase(
         cloned_repo, monkeypatch, reconcile_mode):
-    """The compatibility fallback must allow, not merely defer, safe trees."""
+    """Candidate attrs can fall back, but exact replay paths require --source."""
     clone, work = cloned_repo.clone, cloned_repo.work
     _git(clone, "pull", "--ff-only")
     _git(work, "fetch", "origin")
@@ -1211,13 +1392,6 @@ def test_bound_old_git_attribute_fallback_allows_safe_candidate_reconcile(
         str(clone), expected_identity=identity, _target=target,
         _allow_bound_mutation=True)
 
-    assert res.ok is True, res.detail
-    assert res.action == (
-        "fast-forward" if reconcile_mode == "fast-forward" else "rebased")
-    assert res.final_identity == {
-        "key": "branch:main", "branch": "main",
-        "head": _git(clone, "rev-parse", "refs/heads/main").stdout.strip(),
-    }
     read_tree = [item for item in observations if item[0] == "read-tree"]
     cached = [item for item in observations if item[0] == "cached"]
     assert any(source == identity["head"]
@@ -1226,8 +1400,22 @@ def test_bound_old_git_attribute_fallback_allows_safe_candidate_reconcile(
                for _kind, source, _index in read_tree)
     assert {index for _kind, _source, index in read_tree} == {
         index for _kind, _source, index in cached}
-    assert _git(
-        clone, "merge-base", "--is-ancestor", upstream_oid, "HEAD").returncode == 0
+    if reconcile_mode == "rebase":
+        assert res.ok is False
+        assert "mutation-path proof unavailable" in res.detail
+        assert _git(
+            clone, "rev-parse", "refs/heads/main").stdout.strip() == identity["head"]
+    else:
+        assert res.ok is True, res.detail
+        assert res.action == "fast-forward"
+        assert res.final_identity == {
+            "key": "branch:main", "branch": "main",
+            "head": _git(
+                clone, "rev-parse", "refs/heads/main").stdout.strip(),
+        }
+        assert _git(
+            clone, "merge-base", "--is-ancestor", upstream_oid,
+            "HEAD").returncode == 0
     assert dirty.read_bytes() == before_raw
     assert _git(
         clone, "status", "--porcelain=v1", "-z").stdout == before_status
@@ -1237,6 +1425,159 @@ def test_bound_old_git_attribute_fallback_allows_safe_candidate_reconcile(
     assert _git(
         clone, "for-each-ref", "--format=%(refname)",
         "refs/tm-mode/reconcile").stdout.strip() == ""
+
+
+def test_bound_old_git_rebase_defers_generated_df_conflict_path_before_mutation(
+        cloned_repo, monkeypatch):
+    """Old Git cannot prove merge-ort's synthetic D/F conflict paths exactly."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    (clone / ".gitignore").write_text("d~HEAD*\n")
+    base_dir = clone / "d"
+    base_dir.mkdir()
+    (base_dir / "base").write_text("base\n")
+    _git(clone, "add", ".gitignore", "d/base")
+    _git(clone, "commit", "-m", "add directory conflict base")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    (base_dir / "local").write_text("local\n")
+    _git(clone, "add", "d/local")
+    _git(clone, "commit", "-m", "local keeps directory")
+    _git(work, "rm", "-r", "d")
+    (work / "d").write_text("upstream file\n")
+    _git(work, "add", "d")
+    _git(work, "commit", "-m", "upstream replaces directory")
+    _git(work, "push")
+
+    ignored = clone / "d~HEAD"
+    ignored.write_bytes(b"IGNORED RECOVERY SECRET\x00\xff")
+    assert _git(
+        clone, "status", "--porcelain=v1", "-z",
+        "--untracked-files=all").stdout == ""
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (identity["head"], index_path.read_bytes(), ignored.read_bytes())
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+
+    def emulate_old_git(team_root, txn, args, timeout, **kwargs):
+        if (args and args[0] == "check-attr"
+                and any(str(arg).startswith("--source=") for arg in args)):
+            return 129, "", "error: unknown option `source'\nusage: git check-attr"
+        command = _git_subcommand(args)
+        if (command in {"merge", "rebase"}
+                or (command == "reset" and "--hard" in args)):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_run_bound_git", emulate_old_git)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is False
+    assert "mutation-path proof unavailable" in result.detail
+    assert mutation_calls == []
+    assert _git(clone, "rev-parse", "refs/heads/main").stdout.strip() == before[0]
+    assert index_path.read_bytes() == before[1]
+    assert ignored.is_file() and ignored.read_bytes() == before[2]
+
+
+def test_bound_rebase_proves_more_than_thirty_two_local_commits(
+        cloned_repo, monkeypatch):
+    """Long local histories use one immutable rev-list snapshot."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    (work / "remote-after-long-pending.txt").write_text("remote\n")
+    _git(work, "add", "remote-after-long-pending.txt")
+    _git(work, "commit", "-m", "remote after long pending")
+    _git(work, "push")
+
+    local_state = clone / "long-pending" / "state.txt"
+    local_state.parent.mkdir()
+    original_local_head = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    replay_parent = original_local_head
+    for index in range(33):
+        local_state.write_text(f"local {index}\n")
+        _git(clone, "add", local_state.relative_to(clone).as_posix())
+        replay_tree = _git(clone, "write-tree").stdout.strip()
+        replay_parent = _git(
+            clone, "commit-tree", replay_tree, "-p", replay_parent,
+            "-m", f"long pending {index:02d}").stdout.strip()
+    _git(
+        clone, "update-ref", "refs/heads/main", replay_parent,
+        original_local_head)
+
+    rev_list_calls = []
+    real_run_bound_git = go._run_bound_git
+
+    def observe_rev_list(team_root, txn, args, timeout, **kwargs):
+        if args and args[0] == "rev-list":
+            rev_list_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_run_bound_git", observe_rev_list)
+    identity, target = _bound_main_identity_and_target(clone)
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok and result.action == "rebased", result.detail
+    assert len(rev_list_calls) == 1
+    assert (clone / "remote-after-long-pending.txt").read_text() == "remote\n"
+    assert local_state.read_text() == "local 32\n"
+
+
+def test_bound_rebase_replay_capture_limit_defers_before_mutation(
+        cloned_repo, monkeypatch):
+    """The single-snapshot stdout bound fails closed without touching user state."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    (work / "pagination-remote.txt").write_text("remote\n")
+    _git(work, "add", "pagination-remote.txt")
+    _git(work, "commit", "-m", "pagination remote")
+    _git(work, "push")
+    for index in range(2):
+        path = clone / f"pagination-local-{index}.txt"
+        path.write_text(f"local {index}\n")
+        _git(clone, "add", path.name)
+        _git(clone, "commit", "-m", f"pagination local {index}")
+    _git(clone, "fetch", "origin")
+
+    identity, _target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (
+        identity["head"], index_path.read_bytes(),
+        tuple((clone / f"pagination-local-{index}.txt").read_bytes()
+              for index in range(2)))
+    txn, detail = go._begin_bound_index_tx(
+        str(clone), identity, go.DEFAULT_TIMEOUT)
+    assert txn is not None, detail
+    monkeypatch.setattr(go, "_BOUND_REBASE_PROOF_CAPTURE_LIMIT", 1)
+    try:
+        proof = go._bound_worktree_mutation_paths(
+            str(clone), txn, go.time.monotonic() + 20,
+            mode="rebase",
+            upstream_source=_git(
+                clone, "rev-parse", "refs/remotes/origin/main").stdout.strip())
+        assert proof is None
+        assert _git(
+            clone, "rev-parse", "refs/heads/main").stdout.strip() == before[0]
+        assert index_path.read_bytes() == before[1]
+        assert tuple((clone / f"pagination-local-{index}.txt").read_bytes()
+                     for index in range(2)) == before[2]
+    finally:
+        assert go._remove_bound_tx_dir(txn)
+        assert go._release_bound_lock(txn)[0]
 
 
 @pytest.mark.parametrize("reconcile_mode", ["fast-forward", "rebase"])
@@ -1472,6 +1813,507 @@ def test_bound_fast_forward_checks_casefold_alias_metadata_before_mutation(
     assert read_xattr() == before_xattr
 
 
+def test_bound_rebase_ignores_stable_parent_macl_and_preserves_xattr(
+        cloned_repo, monkeypatch):
+    """Disjoint member logs must not inspect a parent Git cannot recreate."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    alice_parent = clone / "memory" / "team" / "sessions" / "alice"
+    alice_parent.mkdir(parents=True)
+    alice_log = alice_parent / "2026-07-20.md"
+    alice_log.write_text("alice baseline\n")
+    _git(clone, "add", "memory/team/sessions/alice")
+    _git(clone, "commit", "-m", "add alice log baseline")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    bob_log = work / "memory" / "team" / "sessions" / "bob" / "2026-07-20.md"
+    bob_log.parent.mkdir(parents=True)
+    bob_log.write_text("bob remote log\n")
+    _git(work, "add", "memory/team/sessions/bob/2026-07-20.md")
+    _git(work, "commit", "-m", "bob remote log")
+    _git(work, "push")
+    remote_head = _git(work, "rev-parse", "HEAD").stdout.strip()
+
+    alice_log.write_text("alice local log\n")
+    _git(clone, "add", "memory/team/sessions/alice/2026-07-20.md")
+    _git(clone, "commit", "-m", "alice local log")
+
+    attr_name = ("com.tm-mode.stable-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.stable-parent")
+    requested_xattr = b"stable parent metadata\x00\xff"
+    _write_test_xattr(alice_parent, attr_name, requested_xattr)
+    before_xattr = _read_test_xattr(alice_parent, attr_name)
+    before_parent = os.lstat(alice_parent)
+
+    real_xattr_names = go._nofollow_xattr_names
+
+    def stable_parent_macl(path):
+        if Path(path) == alice_parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", stable_parent_macl)
+    identity, target = _bound_main_identity_and_target(clone)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is True, result.detail
+    assert result.action == "rebased"
+    assert _git(
+        clone, "merge-base", "--is-ancestor", remote_head,
+        "HEAD").returncode == 0
+    assert alice_log.read_text() == "alice local log\n"
+    assert (clone / bob_log.relative_to(work)).read_text() == "bob remote log\n"
+    after_parent = os.lstat(alice_parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(alice_parent, attr_name) == before_xattr
+
+
+def test_bound_fast_forward_defers_xattr_when_parent_children_are_replaced(
+        cloned_repo, monkeypatch):
+    """Tree presence alone is unsafe when Git replaces every child inode."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    replaced_parent = clone / "replaced-parent"
+    replaced_parent.mkdir()
+    old_child = replaced_parent / "old.txt"
+    old_child.write_text("old\n")
+    _git(clone, "add", "replaced-parent/old.txt")
+    _git(clone, "commit", "-m", "add replace-parent baseline")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    _git(work, "rm", "replaced-parent/old.txt")
+    new_child = work / "replaced-parent" / "new.txt"
+    new_child.parent.mkdir()
+    new_child.write_text("new\n")
+    _git(work, "add", "replaced-parent/new.txt")
+    _git(work, "commit", "-m", "replace every parent child")
+    _git(work, "push")
+
+    attr_name = ("com.tm-mode.replaced-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.replaced-parent")
+    _write_test_xattr(
+        replaced_parent, attr_name, b"replacement would lose this\x00\xff")
+    before_xattr = _read_test_xattr(replaced_parent, attr_name)
+    before_parent = os.lstat(replaced_parent)
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (identity["head"], index_path.read_bytes(), old_child.read_bytes())
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+    real_xattr_names = go._nofollow_xattr_names
+
+    def replaced_parent_macl(path):
+        if Path(path) == replaced_parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")
+                or "rebase" in args):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", replaced_parent_macl)
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is False
+    assert "non-recoverable parent directory metadata xattrs" in result.detail
+    assert mutation_calls == []
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == before[0]
+    assert index_path.read_bytes() == before[1]
+    assert old_child.read_bytes() == before[2]
+    assert not (clone / new_child.relative_to(work)).exists()
+    after_parent = os.lstat(replaced_parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(replaced_parent, attr_name) == before_xattr
+
+
+def test_bound_fast_forward_untracked_leaf_anchors_parent_xattr(
+        cloned_repo, monkeypatch):
+    """A proven non-colliding untracked leaf prevents parent recreation."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    parent = clone / "untracked-anchor-parent"
+    parent.mkdir()
+    old_child = parent / "old.txt"
+    old_child.write_text("old\n")
+    _git(clone, "add", "untracked-anchor-parent/old.txt")
+    _git(clone, "commit", "-m", "add untracked anchor baseline")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    _git(work, "rm", "untracked-anchor-parent/old.txt")
+    new_child = work / "untracked-anchor-parent" / "new.txt"
+    new_child.parent.mkdir()
+    new_child.write_text("new\n")
+    _git(work, "add", "untracked-anchor-parent/new.txt")
+    _git(work, "commit", "-m", "replace tracked children upstream")
+    _git(work, "push")
+
+    untracked_anchor = parent / "keep.bin"
+    untracked_anchor.write_bytes(b"untracked anchor\x00\xff")
+    attr_name = ("com.tm-mode.untracked-anchor-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.untracked-anchor-parent")
+    _write_test_xattr(parent, attr_name, b"untracked parent metadata\x00\xff")
+    before_xattr = _read_test_xattr(parent, attr_name)
+    before_parent = os.lstat(parent)
+    before_status = _git(
+        clone, "status", "--porcelain=v1", "-z").stdout
+    identity, target = _bound_main_identity_and_target(clone)
+    real_xattr_names = go._nofollow_xattr_names
+
+    def parent_macl(path):
+        if Path(path) == parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", parent_macl)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is True, result.detail
+    assert result.action == "fast-forward"
+    assert not old_child.exists()
+    assert (clone / new_child.relative_to(work)).read_text() == "new\n"
+    assert untracked_anchor.read_bytes() == b"untracked anchor\x00\xff"
+    assert _git(clone, "status", "--porcelain=v1", "-z").stdout == before_status
+    after_parent = os.lstat(parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(parent, attr_name) == before_xattr
+
+
+def test_bound_rebase_does_not_chain_different_phantom_parent_anchors(
+        cloned_repo, monkeypatch):
+    """Original commit trees cannot stand in for actual replay tree states."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    parent = clone / "replay-parent"
+    parent.mkdir()
+    for name in ("p.txt", "r.txt", "t.txt"):
+        (parent / name).write_text(f"{name}\n")
+    _git(clone, "add", "replay-parent")
+    _git(clone, "commit", "-m", "add replay parent baseline")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    _git(work, "rm", "replay-parent/p.txt")
+    _git(work, "commit", "-m", "upstream removes p")
+    _git(work, "push")
+
+    _git(clone, "rm", "replay-parent/t.txt")
+    _git(clone, "commit", "-m", "local replay removes t")
+    _git(clone, "rm", "replay-parent/r.txt")
+    (parent / "t.txt").write_text("t restored\n")
+    _git(clone, "add", "replay-parent/t.txt")
+    _git(clone, "commit", "-m", "local replay swaps r for t")
+
+    attr_name = ("com.tm-mode.replay-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.replay-parent")
+    _write_test_xattr(parent, attr_name, b"replay parent metadata\x00\xff")
+    before_xattr = _read_test_xattr(parent, attr_name)
+    before_parent = os.lstat(parent)
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (
+        identity["head"], index_path.read_bytes(),
+        tuple(sorted(
+            (child.name, child.read_bytes()) for child in parent.iterdir())))
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+    real_xattr_names = go._nofollow_xattr_names
+
+    def replay_parent_macl(path):
+        if Path(path) == parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")
+                or "rebase" in args):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", replay_parent_macl)
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is False
+    assert "non-recoverable parent directory metadata xattrs" in result.detail
+    assert mutation_calls == []
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == before[0]
+    assert index_path.read_bytes() == before[1]
+    assert tuple(sorted(
+        (child.name, child.read_bytes()) for child in parent.iterdir())) == before[2]
+    after_parent = os.lstat(parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(parent, attr_name) == before_xattr
+
+
+def test_bound_rebase_defers_parent_without_one_global_rollback_anchor(
+        cloned_repo, monkeypatch):
+    """Different forward anchors cannot prove the direct rollback transition."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    parent = clone / "rotating-parent"
+    parent.mkdir()
+    for name in ("a.txt", "b.txt"):
+        (parent / name).write_text(f"{name}\n")
+    _git(clone, "add", "rotating-parent")
+    _git(clone, "commit", "-m", "add rotating parent baseline")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    remote_leaf = work / "remote-rotating.txt"
+    remote_leaf.write_text("remote\n")
+    _git(work, "add", remote_leaf.name)
+    _git(work, "commit", "-m", "remote rotating advance")
+    _git(work, "push")
+    _git(clone, "rm", "rotating-parent/a.txt")
+    (parent / "c.txt").write_text("c.txt\n")
+    _git(clone, "add", "rotating-parent/c.txt")
+    _git(clone, "commit", "-m", "rotate a to c")
+    _git(clone, "rm", "rotating-parent/b.txt")
+    (parent / "d.txt").write_text("d.txt\n")
+    _git(clone, "add", "rotating-parent/d.txt")
+    _git(clone, "commit", "-m", "rotate b to d")
+    (parent / "a.txt").write_text("a restored\n")
+    _git(clone, "add", "rotating-parent/a.txt")
+    _git(clone, "commit", "-m", "restore a anchor")
+
+    attr_name = ("com.tm-mode.rotating-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.rotating-parent")
+    _write_test_xattr(parent, attr_name, b"rotating parent metadata\x00\xff")
+    before_xattr = _read_test_xattr(parent, attr_name)
+    before_parent = os.lstat(parent)
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (
+        identity["head"], index_path.read_bytes(),
+        tuple(sorted(
+            (child.name, child.read_bytes()) for child in parent.iterdir())))
+    mutation_calls = []
+    real_xattr_names = go._nofollow_xattr_names
+    real_run_bound_git = go._run_bound_git
+
+    def rotating_parent_macl(path):
+        if Path(path) == parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")
+                or "rebase" in args):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", rotating_parent_macl)
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is False
+    assert "non-recoverable parent directory metadata xattrs" in result.detail
+    assert mutation_calls == []
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == before[0]
+    assert index_path.read_bytes() == before[1]
+    assert tuple(sorted(
+        (child.name, child.read_bytes()) for child in parent.iterdir())) == before[2]
+    after_parent = os.lstat(parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(parent, attr_name) == before_xattr
+
+
+def test_bound_fast_forward_dirty_leaf_keeps_stable_parent_xattr(
+        cloned_repo, monkeypatch):
+    """A dirty content rewrite keeps its path and cannot empty the parent."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    stable_parent = clone / "dirty-stable-parent"
+    stable_parent.mkdir()
+    dirty_leaf = stable_parent / "leaf.txt"
+    dirty_leaf.write_text("baseline\n")
+    _git(clone, "add", "dirty-stable-parent/leaf.txt")
+    _git(clone, "commit", "-m", "add dirty parent baseline")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    remote_leaf = work / "remote-only" / "leaf.txt"
+    remote_leaf.parent.mkdir()
+    remote_leaf.write_text("remote\n")
+    _git(work, "add", "remote-only/leaf.txt")
+    _git(work, "commit", "-m", "remote disjoint advance")
+    _git(work, "push")
+
+    dirty_leaf.write_bytes(b"dirty local bytes\x00\xff")
+    attr_name = ("com.tm-mode.dirty-stable-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.dirty-stable-parent")
+    _write_test_xattr(
+        stable_parent, attr_name, b"dirty stable metadata\x00\xff")
+    before_xattr = _read_test_xattr(stable_parent, attr_name)
+    before_parent = os.lstat(stable_parent)
+    before_status = _git(
+        clone, "status", "--porcelain=v1", "-z").stdout
+    identity, target = _bound_main_identity_and_target(clone)
+    real_xattr_names = go._nofollow_xattr_names
+
+    def stable_parent_macl(path):
+        if Path(path) == stable_parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", stable_parent_macl)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is True, result.detail
+    assert result.action == "fast-forward"
+    assert dirty_leaf.read_bytes() == b"dirty local bytes\x00\xff"
+    assert _git(clone, "status", "--porcelain=v1", "-z").stdout == before_status
+    assert (clone / remote_leaf.relative_to(work)).read_text() == "remote\n"
+    after_parent = os.lstat(stable_parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(stable_parent, attr_name) == before_xattr
+
+
+def test_bound_rebase_defers_xattr_on_parent_that_may_be_recreated(
+        cloned_repo, monkeypatch):
+    """A parent absent at the upstream reset point still needs xattr safety."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    volatile_parent = clone / "volatile-parent"
+    volatile_parent.mkdir()
+    base_file = volatile_parent / "base.txt"
+    base_file.write_text("base\n")
+    _git(clone, "add", "volatile-parent/base.txt")
+    _git(clone, "commit", "-m", "add volatile parent baseline")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    _git(work, "rm", "volatile-parent/base.txt")
+    _git(work, "commit", "-m", "remove volatile parent upstream")
+    _git(work, "push")
+
+    local_file = volatile_parent / "local.txt"
+    local_file.write_text("local replay\n")
+    _git(clone, "add", "volatile-parent/local.txt")
+    _git(clone, "commit", "-m", "recreate volatile parent locally")
+
+    attr_name = ("com.tm-mode.volatile-parent"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.volatile-parent")
+    requested_xattr = b"must not be lost\x00\xff"
+    _write_test_xattr(volatile_parent, attr_name, requested_xattr)
+    before_xattr = _read_test_xattr(volatile_parent, attr_name)
+    before_parent = os.lstat(volatile_parent)
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (identity["head"], index_path.read_bytes())
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+    real_xattr_names = go._nofollow_xattr_names
+
+    def volatile_parent_macl(path):
+        if Path(path) == volatile_parent:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")
+                or "rebase" in args):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", volatile_parent_macl)
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is False
+    assert "non-recoverable parent directory metadata xattrs" in result.detail
+    assert mutation_calls == []
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == before[0]
+    assert index_path.read_bytes() == before[1]
+    assert base_file.read_text() == "base\n"
+    assert local_file.read_text() == "local replay\n"
+    after_parent = os.lstat(volatile_parent)
+    assert (after_parent.st_dev, after_parent.st_ino) == (
+        before_parent.st_dev, before_parent.st_ino)
+    assert _read_test_xattr(volatile_parent, attr_name) == before_xattr
+
+
+def test_bound_metadata_rejects_casefold_file_directory_prefix_alias(
+        cloned_repo):
+    """A stable Foo/child cannot hide an incoming file named foo."""
+    clone = cloned_repo.clone
+    alias_child = clone / "Foo" / "child.txt"
+    alias_child.parent.mkdir()
+    alias_child.write_text("tracked child\n")
+    _git(clone, "add", "Foo/child.txt")
+    _git(clone, "commit", "-m", "add prefix alias fixture")
+    _git(clone, "config", "core.ignorecase", "true")
+    identity, _target = _bound_main_identity_and_target(clone)
+    txn, detail = go._begin_bound_index_tx(
+        str(clone), identity, go.DEFAULT_TIMEOUT)
+    assert txn is not None, detail
+
+    try:
+        issue = go._bound_worktree_metadata_issue(
+            str(clone), txn,
+            deadline=go.time.monotonic() + go.DEFAULT_TIMEOUT,
+            mutation_paths=("foo",), stable_parent_paths=("Foo",))
+        assert issue == "ambiguous filesystem path aliases"
+    finally:
+        assert go._remove_bound_tx_dir(txn)
+        go._release_bound_lock(txn)
+
+
 def test_bound_rebase_checks_metadata_on_change_then_revert_replay_path(
         cloned_repo, monkeypatch):
     """Rebase touches every replayed commit path, even with equal endpoint trees."""
@@ -1698,6 +2540,35 @@ def test_bound_metadata_scan_rechecks_shared_deadline_per_entry(
     finally:
         assert go._remove_bound_tx_dir(txn)
         go._release_bound_lock(txn)
+
+
+def test_bound_untracked_collision_rechecks_deadline_during_cpu_scan(
+        monkeypatch):
+    """Large in-memory path scans must not run past the shared hook budget."""
+    outputs = iter((
+        "\0".join(f"untracked-{index}" for index in range(64)) + "\0",
+        "", "", ""))
+
+    def fake_bound_git(_root, _txn, args, _timeout, **_kwargs):
+        if _git_subcommand(args) == "config":
+            return 1, "", ""
+        return 0, next(outputs), ""
+
+    clock_calls = {"count": 0}
+
+    def expiring_monotonic():
+        clock_calls["count"] += 1
+        return 1000.0 if clock_calls["count"] <= 5 else 1003.0
+
+    monkeypatch.setattr(go, "_run_bound_git", fake_bound_git)
+    monkeypatch.setattr(go.time, "monotonic", expiring_monotonic)
+
+    collision = go._bound_untracked_tree_collision(
+        "/unused", object(), "local", "upstream", deadline=1003.0,
+        mutation_paths=tuple(f"replay-{index}" for index in range(64)))
+
+    assert collision is None
+    assert clock_calls["count"] > 5
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin provenance xattr")
