@@ -1501,10 +1501,18 @@ def test_bound_rebase_proves_more_than_thirty_two_local_commits(
 
     local_state = clone / "long-pending" / "state.txt"
     local_state.parent.mkdir()
+    original_local_head = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    replay_parent = original_local_head
     for index in range(33):
         local_state.write_text(f"local {index}\n")
         _git(clone, "add", local_state.relative_to(clone).as_posix())
-        _git(clone, "commit", "-m", f"long pending {index:02d}")
+        replay_tree = _git(clone, "write-tree").stdout.strip()
+        replay_parent = _git(
+            clone, "commit-tree", replay_tree, "-p", replay_parent,
+            "-m", f"long pending {index:02d}").stdout.strip()
+    _git(
+        clone, "update-ref", "refs/heads/main", replay_parent,
+        original_local_head)
 
     rev_list_calls = []
     real_run_bound_git = go._run_bound_git
