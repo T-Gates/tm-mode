@@ -375,6 +375,82 @@ def test_bound_fast_forward_blocks_checkout_at_mutation_boundary(
     _assert_transaction_clean(transaction[0])
 
 
+@pytest.mark.parametrize("hook_name", ["post-merge", "reference-transaction"])
+def test_bound_fast_forward_disables_repository_hook_side_effects(
+        cloned_repo, hook_name):
+    """Repository hooks must not mutate paths outside the proven FF delta."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    protected = clone / "protected.txt"
+    protected.write_bytes(b"protected bytes\n")
+    _git(clone, "add", protected.name)
+    _git(clone, "commit", "-m", "add protected path")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    (work / "remote-only.txt").write_text("remote advance\n", encoding="utf-8")
+    _git(work, "add", "remote-only.txt")
+    _git(work, "commit", "-m", "remote-only advance")
+    _git(work, "push")
+
+    attr_name = ("com.tm-mode.hook-protected"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.hook-protected")
+    expected_xattr = b"hook-protected metadata\x00\xff"
+    if all(hasattr(os, name) for name in ("setxattr", "getxattr")):
+        try:
+            os.setxattr(
+                protected, attr_name, expected_xattr, follow_symlinks=False)
+        except OSError as exc:
+            pytest.skip(f"filesystem xattrs unavailable: {exc}")
+
+        def read_xattr():
+            return os.getxattr(
+                protected, attr_name, follow_symlinks=False)
+    elif sys.platform == "darwin" and Path("/usr/bin/xattr").is_file():
+        wrote = subprocess.run(
+            ["/usr/bin/xattr", "-w", "-x", "--", attr_name,
+             expected_xattr.hex(), str(protected)],
+            capture_output=True, text=True, check=False)
+        if wrote.returncode != 0:
+            pytest.skip(f"filesystem xattrs unavailable: {wrote.stderr}")
+
+        def read_xattr():
+            read = subprocess.run(
+                ["/usr/bin/xattr", "-p", "-x", "--", attr_name,
+                 str(protected)],
+                capture_output=True, text=True, check=False)
+            assert read.returncode == 0, read.stderr
+            return bytes.fromhex("".join(read.stdout.split()))
+    else:
+        pytest.skip("filesystem xattrs unavailable")
+    before_xattr = read_xattr()
+
+    hooks = clone / ".githooks"
+    hooks.mkdir()
+    hook_marker = clone / ".post-merge-ran"
+    hook = hooks / hook_name
+    hook.write_text(
+        "#!/bin/sh\n"
+        "rm -f protected.txt\n"
+        "printf 'protected bytes\\n' > protected.txt\n"
+        "printf 'ran\\n' > .post-merge-ran\n",
+        encoding="utf-8")
+    hook.chmod(0o700)
+    _git(clone, "config", "core.hooksPath", str(hooks))
+
+    identity, target = _bound_main_identity_and_target(clone)
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is True and result.action == "fast-forward", result.detail
+    assert hook_marker.exists() is False
+    assert protected.read_bytes() == b"protected bytes\n"
+    assert read_xattr() == before_xattr
+
+
 def test_bound_reconcile_foreign_index_lock_defers_without_mutation(
         cloned_repo, monkeypatch):
     """A competing real index.lock must stop reconcile before mutation or push."""
@@ -1167,7 +1243,7 @@ def test_bound_old_git_attribute_fallback_allows_safe_candidate_reconcile(
 @pytest.mark.parametrize(
     "metadata_kind", ["mode", "xattr", "hardlink", "flags", "acl"])
 def test_bound_reconcile_defers_nonrecoverable_tracked_metadata_before_mutation(
-        cloned_repo, tmp_path, reconcile_mode, metadata_kind):
+        cloned_repo, tmp_path, monkeypatch, reconcile_mode, metadata_kind):
     """reset/stash must not normalize inode metadata Git cannot reproduce."""
     if metadata_kind in {"flags", "acl"} and sys.platform != "darwin":
         pytest.skip("Darwin inode metadata contract")
@@ -1181,8 +1257,8 @@ def test_bound_reconcile_defers_nonrecoverable_tracked_metadata_before_mutation(
     _git(clone, "push")
     _git(work, "fetch", "origin")
     _git(work, "reset", "--hard", "origin/main")
-    (work / "remote-metadata.txt").write_text("remote\n")
-    _git(work, "add", "remote-metadata.txt")
+    (work / tracked.name).write_bytes(b"remote replacement\n")
+    _git(work, "add", tracked.name)
     _git(work, "commit", "-m", "remote metadata advance")
     _git(work, "push")
     if reconcile_mode == "rebase":
@@ -1190,7 +1266,6 @@ def test_bound_reconcile_defers_nonrecoverable_tracked_metadata_before_mutation(
         _git(clone, "add", "local-metadata.txt")
         _git(clone, "commit", "-m", "local metadata advance")
 
-    tracked.write_bytes(b"LOCAL DIRTY BYTES\x00\xff")
     linked = tmp_path / "metadata-hardlink"
     attr_name = ("com.tm-mode.worktree-test" if sys.platform == "darwin"
                  else "user.tm-mode.worktree-test")
@@ -1252,11 +1327,27 @@ def test_bound_reconcile_defers_nonrecoverable_tracked_metadata_before_mutation(
             current.st_uid, current.st_gid, current.st_nlink,
             getattr(current, "st_flags", 0), attrs, acl_text)
 
+    # Bound rebase safety performs a read-only Git diff before the private-index
+    # transaction.  Refresh its canonical stat cache now so the before snapshot
+    # measures reconcile mutation rather than that ordinary lstat refresh.
+    _git(clone, "update-index", "--refresh", check=False)
     identity, target = _bound_main_identity_and_target(clone)
     index_path = _real_index_path(clone)
     remote_before = _git(
         cloned_repo.upstream, "rev-parse", "refs/heads/main").stdout.strip()
     before = (identity["head"], index_path.read_bytes(), metadata_snapshot())
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")
+                or "rebase" in args):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
     try:
         res = go.do_reconcile(
             str(clone), expected_identity=identity, _target=target,
@@ -1268,12 +1359,180 @@ def test_bound_reconcile_defers_nonrecoverable_tracked_metadata_before_mutation(
             clone, "rev-parse", "refs/heads/main").stdout.strip() == before[0]
         assert index_path.read_bytes() == before[1]
         assert metadata_snapshot() == before[2]
+        assert mutation_calls == []
         assert _git(
             cloned_repo.upstream, "rev-parse",
             "refs/heads/main").stdout.strip() == remote_before
     finally:
         if metadata_kind == "flags":
             os.chflags(tracked, 0, follow_symlinks=False)
+
+
+def test_bound_fast_forward_checks_casefold_alias_metadata_before_mutation(
+        cloned_repo, monkeypatch):
+    """A casefold-equivalent upstream path can replace the tracked inode."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    tracked = clone / "Foo"
+    tracked.write_bytes(b"case-preserved bytes\n")
+    _git(clone, "add", tracked.name)
+    _git(clone, "commit", "-m", "add case alias fixture")
+    _git(clone, "push")
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+
+    blob = subprocess.run(
+        ["git", "-C", str(work), "hash-object", "-w", "--stdin"],
+        input="lowercase alias bytes\n", capture_output=True, text=True,
+        check=True).stdout.strip()
+    entries = [
+        line for line in _git(work, "ls-tree", "HEAD").stdout.splitlines()
+        if line]
+    entries.append(f"100644 blob {blob}\tfoo")
+    entries.sort(key=lambda line: line.split("\t", 1)[1].encode("utf-8"))
+    alias_tree = subprocess.run(
+        ["git", "-C", str(work), "mktree"],
+        input="\n".join(entries) + "\n", capture_output=True, text=True,
+        check=True).stdout.strip()
+    base_head = _git(work, "rev-parse", "HEAD").stdout.strip()
+    alias_commit = subprocess.run(
+        ["git", "-C", str(work), "commit-tree", alias_tree,
+         "-p", base_head],
+        input="add casefold alias\n", capture_output=True, text=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        }, check=True).stdout.strip()
+    _git(work, "update-ref", "refs/heads/main", alias_commit, base_head)
+    _git(work, "push")
+    tree_paths = _git(
+        work, "ls-tree", "-r", "--name-only", alias_commit).stdout.splitlines()
+    assert "Foo" in tree_paths and "foo" in tree_paths
+
+    _git(clone, "config", "core.ignorecase", "true")
+    attr_name = ("com.tm-mode.case-alias"
+                 if sys.platform == "darwin"
+                 else "user.tm-mode.case-alias")
+    expected_xattr = b"case alias metadata\x00\xff"
+    if all(hasattr(os, name) for name in ("setxattr", "getxattr")):
+        try:
+            os.setxattr(
+                tracked, attr_name, expected_xattr, follow_symlinks=False)
+        except OSError as exc:
+            pytest.skip(f"filesystem xattrs unavailable: {exc}")
+
+        def read_xattr():
+            return os.getxattr(
+                tracked, attr_name, follow_symlinks=False)
+    elif sys.platform == "darwin" and Path("/usr/bin/xattr").is_file():
+        wrote = subprocess.run(
+            ["/usr/bin/xattr", "-w", "-x", "--", attr_name,
+             expected_xattr.hex(), str(tracked)],
+            capture_output=True, text=True, check=False)
+        if wrote.returncode != 0:
+            pytest.skip(f"filesystem xattrs unavailable: {wrote.stderr}")
+
+        def read_xattr():
+            read = subprocess.run(
+                ["/usr/bin/xattr", "-p", "-x", "--", attr_name,
+                 str(tracked)],
+                capture_output=True, text=True, check=False)
+            assert read.returncode == 0, read.stderr
+            return bytes.fromhex("".join(read.stdout.split()))
+    else:
+        pytest.skip("filesystem xattrs unavailable")
+    before_xattr = read_xattr()
+
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    index_before = index_path.read_bytes()
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")
+                or "rebase" in args):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is False
+    assert "non-recoverable tracked path xattrs" in result.detail
+    assert mutation_calls == []
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == identity["head"]
+    assert index_path.read_bytes() == index_before
+    assert tracked.read_bytes() == b"case-preserved bytes\n"
+    assert read_xattr() == before_xattr
+
+
+def test_bound_rebase_checks_metadata_on_change_then_revert_replay_path(
+        cloned_repo, monkeypatch):
+    """Rebase touches every replayed commit path, even with equal endpoint trees."""
+    clone, work = cloned_repo.clone, cloned_repo.work
+    _git(clone, "pull", "--ff-only")
+    replayed = clone / "replayed-metadata.txt"
+    replayed.write_text("baseline\n")
+    _git(clone, "add", replayed.name)
+    _git(clone, "commit", "-m", "add replay metadata fixture")
+    _git(clone, "push")
+
+    _git(work, "fetch", "origin")
+    _git(work, "reset", "--hard", "origin/main")
+    (work / "remote-replay.txt").write_text("remote\n")
+    _git(work, "add", "remote-replay.txt")
+    _git(work, "commit", "-m", "remote replay advance")
+    _git(work, "push")
+
+    replayed.write_text("transient local value\n")
+    _git(clone, "add", replayed.name)
+    _git(clone, "commit", "-m", "change replayed metadata path")
+    replayed.write_text("baseline\n")
+    _git(clone, "add", replayed.name)
+    _git(clone, "commit", "-m", "revert replayed metadata path")
+
+    real_xattr_names = go._nofollow_xattr_names
+
+    def replayed_path_xattrs(path):
+        if Path(path) == replayed:
+            return (b"com.apple.macl",)
+        return real_xattr_names(path)
+
+    monkeypatch.setattr(go, "_nofollow_xattr_names", replayed_path_xattrs)
+    identity, target = _bound_main_identity_and_target(clone)
+    index_path = _real_index_path(clone)
+    before = (
+        identity["head"], index_path.read_bytes(), replayed.read_bytes())
+    mutation_calls = []
+    real_run_bound_git = go._run_bound_git
+
+    def observe_mutation(team_root, txn, args, timeout, **kwargs):
+        if (args[:2] == ["reset", "--hard"]
+                or (args and args[0] == "merge")
+                or "rebase" in args):
+            mutation_calls.append(tuple(args))
+        return real_run_bound_git(
+            team_root, txn, args, timeout, **kwargs)
+
+    monkeypatch.setattr(go, "_run_bound_git", observe_mutation)
+
+    result = go.do_reconcile(
+        str(clone), expected_identity=identity, _target=target,
+        _allow_bound_mutation=True)
+
+    assert result.ok is False
+    assert "non-recoverable tracked path xattrs" in result.detail
+    assert mutation_calls == []
+    assert _git(
+        clone, "rev-parse", "refs/heads/main").stdout.strip() == before[0]
+    assert index_path.read_bytes() == before[1]
+    assert replayed.read_bytes() == before[2]
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin gid inheritance")
@@ -1431,7 +1690,9 @@ def test_bound_metadata_scan_rechecks_shared_deadline_per_entry(
     monkeypatch.setattr(go.time, "monotonic", advancing_monotonic)
     try:
         issue = go._bound_worktree_metadata_issue(
-            str(clone), txn, deadline=1005.0)
+            str(clone), txn, deadline=1005.0,
+            mutation_paths=tuple(
+                f"deadline-{index}.txt" for index in range(12)))
         assert issue is None
         assert clock["now"] >= 1005.0
     finally:
