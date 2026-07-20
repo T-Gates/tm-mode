@@ -287,6 +287,7 @@ _REPO_REDIRECT_ENV = frozenset({
     "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
 })
 _REPO_CONFIG_ENTRY_ENV_RE = re.compile(r"^GIT_CONFIG_(?:KEY|VALUE)_\d+$")
+_GIT_DISABLED_HOOKS_PATH = "/dev/null"
 
 
 def _is_repo_scoped_git(args: list) -> bool:
@@ -1593,8 +1594,14 @@ def _run_bound_git(
         team_root: str, txn: _BoundIndexTxn, args: list[str], timeout: int,
         *, proof_raw: bool = False, input_text: str | None = None):
     try:
+        # Repository/global hooks can mutate arbitrary worktree paths that are
+        # outside the proven operation delta.  Disable them for this child only
+        # using Git's documented per-command path; do not alter or delete the
+        # repository's configured hooks.
         return run_git(
-            ["-C", team_root, *args], timeout=timeout,
+            ["-C", team_root, "-c",
+             f"core.hooksPath={_GIT_DISABLED_HOOKS_PATH}", *args],
+            timeout=timeout,
             env_overrides={"GIT_INDEX_FILE": str(txn.work_index)},
             output_errors="surrogateescape" if proof_raw else "replace",
             input_text=input_text)
@@ -1686,10 +1693,234 @@ def _probe_process_umask(timeout: int) -> int | None:
     return int(raw, 8)
 
 
+def _bound_legacy_disjoint_merge_paths(
+        team_root: str, txn: _BoundIndexTxn, deadline: float, *,
+        upstream_source: str, reserve: int = 0) -> tuple[str, ...] | None:
+    """Prove a disjoint merge path set without modern ``merge-tree``.
+
+    Git before 2.38 cannot materialize an exact prospective merge tree.  It is
+    still safe to recover the common session-log case when both sides have one
+    merge base, neither side has detected renames, and the endpoint path sets
+    have no file/directory overlap.  Anything more complex fails closed.
+    """
+    oid_pattern = r"[0-9a-f]{40}|[0-9a-f]{64}"
+
+    def _run_paths(args: list[str]) -> tuple[str, ...] | None:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, output, _ = _run_bound_git(
+                team_root, txn, args, probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0 or (output and not output.endswith("\0")):
+            return None
+        return tuple(path for path in (output or "").split("\0") if path)
+
+    probe_timeout = _deadline_timeout(
+        deadline, DEFAULT_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return None
+    try:
+        rc, bases_output, _ = _run_bound_git(
+            team_root, txn,
+            ["merge-base", "--all", txn.original_head, upstream_source],
+            probe_timeout, proof_raw=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    bases = [
+        line.strip().lower()
+        for line in (bases_output or "").splitlines() if line.strip()]
+    if (rc != 0 or len(bases) != 1
+            or re.fullmatch(oid_pattern, bases[0]) is None):
+        return None
+    merge_base = bases[0]
+
+    local_renames = _run_paths([
+        "diff-tree", "-r", "--no-commit-id", "--name-only", "-z", "-M",
+        "--diff-filter=R", merge_base, txn.original_head, "--"])
+    upstream_renames = _run_paths([
+        "diff-tree", "-r", "--no-commit-id", "--name-only", "-z", "-M",
+        "--diff-filter=R", merge_base, upstream_source, "--"])
+    if (local_renames is None or upstream_renames is None
+            or local_renames or upstream_renames):
+        return None
+    local_paths = _run_paths([
+        "diff-tree", "-r", "--no-commit-id", "--name-only", "-z",
+        "--no-renames", merge_base, txn.original_head, "--"])
+    upstream_paths = _run_paths([
+        "diff-tree", "-r", "--no-commit-id", "--name-only", "-z",
+        "--no-renames", merge_base, upstream_source, "--"])
+    if local_paths is None or upstream_paths is None:
+        return None
+
+    def _prefixes(path: str) -> tuple[str, ...]:
+        parts = path.split("/")
+        if (not parts or any(
+                not part or part in {".", ".."} for part in parts)):
+            return ()
+        return tuple("/".join(parts[:index])
+                     for index in range(1, len(parts) + 1))
+
+    local_set = set(local_paths)
+    upstream_set = set(upstream_paths)
+    if (any(not _prefixes(path) for path in local_set | upstream_set)
+            or any(set(_prefixes(path)) & local_set for path in upstream_set)
+            or any(set(_prefixes(path)) & upstream_set for path in local_set)):
+        return None
+    return tuple(dict.fromkeys(upstream_paths))
+
+
+def _bound_worktree_mutation_paths(
+        team_root: str, txn: _BoundIndexTxn, deadline: float, *, mode: str,
+        upstream_source: str, reserve: int = 0) -> tuple[str, ...] | None:
+    """Return only paths the bound reset/operation can materialize or replace.
+
+    The private transaction first resets dirty index/worktree paths back to the
+    captured local HEAD.  A fast-forward then checks out the upstream delta; a
+    rebase checks out the full local/upstream tree delta; and a pending-safe
+    merge checks out only the prospective merge result relative to local HEAD.
+    Computing that merge tree with Git plumbing keeps disjoint local-only paths
+    out of the metadata proof without guessing about renames or content merges.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def _add_nul_paths(output: str) -> bool:
+        if output and not output.endswith("\0"):
+            return False
+        for path in (output or "").split("\0"):
+            if path and path not in seen:
+                seen.add(path)
+                paths.append(path)
+        return True
+
+    dirty_commands = (
+        ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff",
+         "--no-textconv", "--"],
+        ["diff", "--cached", "--name-only", "-z", "--no-renames",
+         "--no-ext-diff", "--no-textconv", txn.original_head, "--"],
+    )
+    for command in dirty_commands:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, output, _ = _run_bound_git(
+                team_root, txn, list(command), probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0 or not _add_nul_paths(output or ""):
+            return None
+
+    operation_target: str | None = upstream_source
+    replay_commits: list[str] = []
+    if mode == "merge":
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, merge_output, merge_error = _run_bound_git(
+                team_root, txn,
+                ["merge-tree", "--write-tree", "--no-messages",
+                 txn.original_head, upstream_source],
+                probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        unsupported = (rc == 129 and (
+            "unknown option" in (merge_error or "").lower()
+            or "usage:" in (merge_error or "").lower()))
+        if unsupported:
+            legacy_paths = _bound_legacy_disjoint_merge_paths(
+                team_root, txn, deadline, upstream_source=upstream_source,
+                reserve=reserve)
+            if legacy_paths is None:
+                return None
+            for path in legacy_paths:
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+            operation_target = None
+        else:
+            lines = (merge_output or "").splitlines()
+            operation_target = lines[0].strip().lower() if lines else ""
+        # A content conflict returns 1 and appends stage records after the exact
+        # AUTO_MERGE tree OID.  The records are diagnostic; diff-tree validates
+        # and scopes the worktree mutation from that first tree directly.
+        if (not unsupported and (
+                rc not in {0, 1}
+                or re.fullmatch(
+                    r"[0-9a-f]{40}|[0-9a-f]{64}",
+                    operation_target) is None)):
+            return None
+    elif mode == "rebase":
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, commits_output, _ = _run_bound_git(
+                team_root, txn,
+                ["rev-list", "--reverse", "--topo-order", "--no-merges",
+                 "--cherry-pick", "--right-only",
+                 f"{upstream_source}...{txn.original_head}"],
+                probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0:
+            return None
+        replay_commits = [
+            line.strip().lower()
+            for line in (commits_output or "").splitlines() if line.strip()]
+        if any(re.fullmatch(
+                r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None
+               for commit in replay_commits):
+            return None
+    elif mode != "fast-forward":
+        return None
+
+    if operation_target is not None:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, operation_output, _ = _run_bound_git(
+                team_root, txn,
+                ["diff-tree", "-r", "--no-commit-id", "--name-only", "-z",
+                 "--no-renames", txn.original_head, operation_target, "--"],
+                probe_timeout, proof_raw=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0 or not _add_nul_paths(operation_output or ""):
+            return None
+
+    if replay_commits:
+        probe_timeout = _deadline_timeout(
+            deadline, DEFAULT_TIMEOUT, reserve=reserve)
+        if not probe_timeout:
+            return None
+        try:
+            rc, replay_output, _ = _run_bound_git(
+                team_root, txn,
+                ["diff-tree", "--stdin", "--root", "-r", "--no-commit-id",
+                 "--name-only", "-z", "--no-renames"],
+                probe_timeout, proof_raw=True,
+                input_text="\n".join(replay_commits) + "\n")
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if rc != 0 or not _add_nul_paths(replay_output or ""):
+            return None
+    return tuple(paths)
+
+
 def _bound_worktree_metadata_issue(
         team_root: str, txn: _BoundIndexTxn, deadline: float,
-        reserve: int = 0, *, local_source: str | None = None,
-        upstream_source: str | None = None) -> str | None:
+        reserve: int = 0, *, mutation_paths: tuple[str, ...]) -> str | None:
     """Prove reset/stash cannot erase tracked-path metadata before mutation.
 
     Git only reconstructs blob bytes plus its executable/symlink bit.  Exact
@@ -1716,9 +1947,43 @@ def _bound_worktree_metadata_issue(
     if rc != 0 or (out and not out.endswith("\0")):
         return None
 
+    probe_timeout = _deadline_timeout(
+        deadline, DEFAULT_TIMEOUT, reserve=reserve)
+    if not probe_timeout:
+        return None
+    try:
+        irc, ignorecase_out, _ = _run_bound_git(
+            team_root, txn,
+            ["config", "--bool", "--get", "core.ignorecase"],
+            probe_timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if irc == 0:
+        raw_ignorecase = (ignorecase_out or "").strip().lower()
+        if raw_ignorecase not in {"true", "false"}:
+            return None
+        ignorecase = raw_ignorecase == "true"
+    elif irc == 1:
+        ignorecase = False
+    else:
+        return None
+
+    def _filesystem_key(path: str) -> str:
+        normalized = "/".join(
+            unicodedata.normalize("NFC", part) for part in path.split("/"))
+        return normalized.casefold() if ignorecase else normalized
+
+    mutation_path_by_key: dict[str, str] = {}
+    for path in mutation_paths:
+        key = _filesystem_key(path)
+        previous = mutation_path_by_key.get(key)
+        if previous is not None and previous != path:
+            return "ambiguous filesystem path aliases"
+        mutation_path_by_key[key] = path
+
     entries: list[tuple[str, str]] = []
-    candidate_paths: list[str] = []
-    seen_candidate_paths: set[str] = set()
+    entry_path_by_key: dict[str, str] = {}
+    filesystem_alias_collision = False
     for record in (out or "").split("\0"):
         if not record:
             continue
@@ -1730,50 +1995,16 @@ def _bound_worktree_metadata_issue(
         if (stage != "0"
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", object_id)):
             return None
-        entries.append((path, git_mode))
-        if path not in seen_candidate_paths:
-            seen_candidate_paths.add(path)
-            candidate_paths.append(path)
-
-    # The current private index is necessary for partial-commit/staged paths,
-    # while exact local/upstream trees add rename and newly tracked targets that
-    # do not exist in that index yet.  Their parent directories can determine
-    # ownership, ACL, flags, xattrs, and creation mode after reset/rebase.
-    for source in (local_source, upstream_source):
-        if source is None:
+        key = _filesystem_key(path)
+        if key not in mutation_path_by_key:
             continue
-        probe_timeout = _deadline_timeout(
-            deadline, DEFAULT_TIMEOUT, reserve=reserve)
-        if not probe_timeout:
-            return None
-        try:
-            rc, tree_out, _ = _run_bound_git(
-                team_root, txn,
-                ["ls-tree", "-r", "-z", "--full-tree", source, "--"],
-                probe_timeout, proof_raw=True)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        if rc != 0 or (tree_out and not tree_out.endswith("\0")):
-            return None
-        for record in (tree_out or "").split("\0"):
-            if not record:
-                continue
-            try:
-                header, path = record.split("\t", 1)
-                git_mode, object_type, object_id = header.split(" ")
-            except ValueError:
-                return None
-            valid_entry = (
-                (git_mode in {"100644", "100755", "120000"}
-                 and object_type == "blob")
-                or (git_mode == "160000" and object_type == "commit"))
-            if (not valid_entry
-                    or not re.fullmatch(
-                        r"[0-9a-f]{40}|[0-9a-f]{64}", object_id)):
-                return None
-            if path not in seen_candidate_paths:
-                seen_candidate_paths.add(path)
-                candidate_paths.append(path)
+        previous = entry_path_by_key.get(key)
+        if previous is not None and previous != path:
+            return "ambiguous filesystem path aliases"
+        entry_path_by_key[key] = path
+        if path != mutation_path_by_key[key]:
+            filesystem_alias_collision = True
+        entries.append((path, git_mode))
 
     acl_libc = None
     checked_parents: set[Path] = set()
@@ -1839,7 +2070,7 @@ def _bound_worktree_metadata_issue(
     # inodes.  Stop at the first missing component: Git will create that suffix
     # with the already-proved process umask beneath the nearest safe existing
     # ancestor.  A file/symlink component is rejected by _parent_issue.
-    for relative in candidate_paths:
+    for relative in mutation_paths:
         if not _deadline_timeout(deadline, DEFAULT_TIMEOUT, reserve=reserve):
             return None
         components = relative.split("/")
@@ -1927,6 +2158,8 @@ def _bound_worktree_metadata_issue(
             getattr(after, "st_flags", 0))
         if after_proof != before_proof:
             return None
+    if filesystem_alias_collision:
+        return "ambiguous filesystem path aliases"
     return ""
 
 
@@ -2801,11 +3034,18 @@ def _bound_reconcile_transaction_locked(
             return _pre_mutation_failure(
                 "bound reconcile deferred: untracked path collision")
 
+        mutation_paths = _bound_worktree_mutation_paths(
+            team_root, txn, deadline, mode=mode,
+            upstream_source=upstream_oid,
+            reserve=_BOUND_RECONCILE_RECOVERY_RESERVE)
+        if mutation_paths is None:
+            return _pre_mutation_failure(
+                "bound reconcile mutation-path proof unavailable")
+
         metadata_issue = _bound_worktree_metadata_issue(
             team_root, txn, deadline,
             reserve=_BOUND_RECONCILE_RECOVERY_RESERVE,
-            local_source=txn.original_head,
-            upstream_source=upstream_oid)
+            mutation_paths=mutation_paths)
         if metadata_issue is None:
             return _pre_mutation_failure(
                 "bound reconcile tracked metadata proof unavailable")
@@ -3312,7 +3552,15 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT,
     if not fetch_timeout:
         return ReconcileResult(
             ok=False, action="error", detail="reconcile budget exhausted before fetch")
-    fetch_args = ["-C", team_root, *http_timeout_opts(fetch_timeout)]
+    # A fetch can invoke reference-transaction before the bound index
+    # transaction exists.  Suppress repository hooks for every identity-bound
+    # fetch as well, otherwise they can mutate unproved worktree paths before
+    # the metadata snapshot.  Unbound/manual reconcile keeps normal hook policy.
+    bound_hook_args = (
+        ["-c", f"core.hooksPath={_GIT_DISABLED_HOOKS_PATH}"]
+        if bound_identity is not None else [])
+    fetch_args = [
+        "-C", team_root, *http_timeout_opts(fetch_timeout), *bound_hook_args]
     if _target is not None and _target.push_endpoint:
         # Reconcile the actual publication endpoint, not merely remote.<name>.url:
         # a separate pushurl may point at a fork whose branch has advanced.  A
@@ -3353,7 +3601,7 @@ def do_reconcile(team_root: str, timeout: int = NET_TIMEOUT,
                 detail="missing remote branch tracking state unavailable")
         try:
             drc, _, derr = run_git(
-                ["-C", team_root, "update-ref", "-d",
+                ["-C", team_root, *bound_hook_args, "update-ref", "-d",
                  _target.reconcile_ref, tracked],
                 timeout=min(DEFAULT_TIMEOUT, fetch_timeout))
         except (OSError, subprocess.SubprocessError) as exc:
