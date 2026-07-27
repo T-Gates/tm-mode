@@ -6773,8 +6773,7 @@ def publication_blocker_detail(
                 ("merge head", admin_dir / "MERGE_HEAD"),
                 ("merge message", admin_dir / "MERGE_MSG"),
                 ("merge mode", admin_dir / "MERGE_MODE"),
-                ("merge autostash", admin_dir / "MERGE_AUTOSTASH"),
-                ("auto merge", admin_dir / "AUTO_MERGE")):
+                ("merge autostash", admin_dir / "MERGE_AUTOSTASH")):
             try:
                 os.lstat(path)
             except FileNotFoundError:
