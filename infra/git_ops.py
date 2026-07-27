@@ -4701,6 +4701,22 @@ def clear_sync_warning(team_root: str) -> None:
             _remove_private_file(sync_warning_path(team_root))
 
 
+def clear_sync_warning_if_matches(team_root: str, detail: str) -> bool:
+    """현재 sync-warning 마커가 detail(우리가 쓴 그 문구)과 정확히 일치할 때만 제거한다.
+
+    compare-and-delete — 정합 충돌 등 다른 원인으로 쓰인 경고는 건드리지 않는다.
+    빈 ledger가 유발한 stale 'checkout 불일치' 경고만 골라 지우는 데 쓴다.
+    """
+    expected = sanitize_git_detail(detail)
+    with _push_pending_ledger_lock(team_root) as locked:
+        if not locked:
+            return False
+        current = _read_private_text(sync_warning_path(team_root))
+        if not current.available or current.content != expected:
+            return False
+        return _remove_private_file(sync_warning_path(team_root))
+
+
 # ── push-pending ledger (#45 async push) ───────────────────────────
 # auto-commit 훅의 foreground publication 이 실패했을 때 detach push-worker 가 fallback
 # 을 맡는다. 이 ledger 가 "커밋됐지만 아직 push 안 됨" 상태의 correctness 소스 —
@@ -4844,6 +4860,11 @@ def _pending_entries(snapshot_content: str) -> dict[str, dict]:
         str(key): value for key, value in payload["entries"].items()
         if isinstance(key, str) and isinstance(value, dict)
     }
+
+
+def has_pending_entries(snapshot_content: str) -> bool:
+    """v2 ledger에 실제 push-pending entry가 하나라도 있는가(공개 헬퍼)."""
+    return bool(_pending_entries(snapshot_content))
 
 
 def _serialize_pending_entries(team_root: str, entries: dict[str, dict]) -> str:

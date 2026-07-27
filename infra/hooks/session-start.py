@@ -610,6 +610,19 @@ def _recover_push_pending(team_root: str, lang: str = "ko", deadline=None) -> No
             team_root, pending_state.content)
         if not pending_snapshot:
             return
+        if not _git_ops.has_pending_entries(pending_snapshot):
+            # 밀린 push 가 0건이면 복구할 것도, checkout 불일치로 경고할 것도 없다.
+            # (bind 는 빈 ledger 에도 원본 문자열(truthy)을 리턴하므로 위 가드를
+            #  통과한다.)  과거 이 경로가 남긴 stale '불일치' 경고가 표시 중이면 —
+            # 그 문구와 정확히 일치할 때만 지워(다른 경고는 보존) 매 세션 재생성
+            # 루프를 끊는다.
+            stale = _t("hook_ss_push_pending_checkout_mismatch", lang,
+                       "push pending 대상 checkout 불일치 — 현재 branch에서는 "
+                       "자동 처리하지 않음: {targets}",
+                       targets=_git_ops.pending_target_summary(
+                           pending_snapshot, team_root))
+            _git_ops.clear_sync_warning_if_matches(team_root, stale)
+            return
         pending_target_key = _git_ops.pending_entry_key_for_current_checkout(
             team_root, pending_snapshot)
         if not pending_target_key:
