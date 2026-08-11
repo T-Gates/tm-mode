@@ -43,7 +43,7 @@ python -m pytest -q maintainer_tests  # upstream-only release/docs/package contr
 | `infra/install.py` + `infra/install_lib.py` | Bootstrap — hook wiring, skill deploy, env injection; gated by `--dry-run`/`--yes` |
 | `infra/git_ops.py` | Shared git operations + sync planning |
 | `infra/agents/<name>/` | Per-agent adapters (Claude `settings.json`, Codex `config.toml`) |
-| `infra/hooks/` | Shared hooks — session-start, auto-commit, push-worker, kb-write-guard, and others |
+| `infra/hooks/` | Shared hooks — session-start main sync, scoped auto-commit, kb-write-guard, edit-mutex cleanup, and others |
 | `infra/skills/{base,core,util}/` | Skills in three tiers — see §6 for the activation rules |
 | `infra/mcp/` | MCP OAuth helper code supporting L2 service connections |
 | `infra/credentials.py`, `infra/i18n.py`, `infra/io_encoding.py`, `infra/providers.py`, `infra/workday.py` | Supporting engine modules |

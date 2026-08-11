@@ -153,7 +153,7 @@ Use the team's session-log headings in its language. For example, a Korean team 
 | Mistake | Correct Method |
 |------|------------|
 | Ending OFF without a session log | Always record the session log first |
-| Manually force-pushing after an auto-sync warning | Resolve or retry with `tm-mode pull` without rewriting remote history |
+| Manually force-pushing after an auto-sync warning | Resolve or retry with `python3 infra/teammode.py pull --root .` without rewriting remote history |
 | Inferring and fixing the name from git/account/email | `git user.name` is only a *suggested value* — confirm with the user |
 | Skipping pull on ON | Always update first, and continue even if it fails |
 | Guessing the repo path from the `TEAMMODE_HOME` environment variable | Explicit `--root .` is required (engine policy A) |

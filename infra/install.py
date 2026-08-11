@@ -464,13 +464,18 @@ def _autocommit_scaffold(team_root: Path, member_name: str, out) -> None:
         str(team_root),
         message=f"team setup: register {member_name} + memory scaffold [auto]",
         push=True, paths=["memory", "team.config.json"])
+    _detail = _git_ops.sanitize_git_detail(
+        getattr(_cr, "detail", "") or "scaffold commit/main sync failed")
     if getattr(_cr, "pushed", False):
         out("[push] pushed memory/members to the team repo.")
-    elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
-        _detail = _git_ops.sanitize_git_detail(
-            getattr(_cr, "detail", "") or "main sync failed")
-        out(f"[push] committed — main sync failed ({_detail}). "
-            "Run `tm-mode pull` after checking.")
+    elif getattr(_cr, "committed", False):
+        out(f"[warning] scaffold committed, but main sync failed ({_detail}). "
+            "After checking, run "
+            "`python3 infra/teammode.py pull --root .`.")
+    elif not getattr(_cr, "ok", False):
+        out(f"[warning] scaffold commit failed; changes may remain uncommitted "
+            f"({_detail}). Review and commit the scoped scaffold changes, then run "
+            "`python3 infra/teammode.py pull --root .`.")
 
 
 def _email_is_push_safe(email) -> bool:

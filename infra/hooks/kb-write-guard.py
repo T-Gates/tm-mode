@@ -435,8 +435,9 @@ def _begin_edit_mutex(root: str, data: dict, lang: str) -> bool:
         _deny_edit_mutex(reason, lang)
         return False
     try:
-        acquired = (_git_ops.acquire_edit_mutex(root, token)
-                    and _git_ops.owns_edit_mutex(root, token))
+        # acquire=True is the core's atomic acquired-and-owned proof. A second
+        # lock probe only spends the 2s PreToolUse budget and adds no safety.
+        acquired = _git_ops.acquire_edit_mutex(root, token)
     except Exception:  # noqa: BLE001 — lock state failure is fail-closed
         acquired = False
     if acquired:

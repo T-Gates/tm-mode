@@ -33,8 +33,9 @@ check_reset: 내 파일 mtime 변화 또는 날짜(06시 컷 기준) 바뀜 → 
 
 ⚠️ 레포 최신화는 더 이상 여기서(매 프롬프트) 하지 않는다 — 의도가 "상시 최신화"에서
 "세션 시작 1회"로 바뀌었다(2026-06-17, P0 hook hang). UserPromptSubmit 은 동기 블로킹
-훅이라 매 프롬프트 git pull 이 hang 시 작업을 막는 트리거였다. 세션당 1회 pull 은
-session-start.py(SessionStart)가 담당하고, 세션 중 최신화는 `teammode pull` 수동이다.
+훅이라 매 프롬프트 git pull 이 hang 시 작업을 막는 트리거였다. 세션 시작 main 동기화는
+session-start.py(SessionStart)가 담당하고, 세션 중 최신화는
+`python3 infra/teammode.py pull --root .`로 수동 실행한다.
 """
 from __future__ import annotations
 

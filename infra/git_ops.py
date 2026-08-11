@@ -30,6 +30,19 @@ DEFAULT_TIMEOUT = 2
 NET_TIMEOUT = 10
 PUSH_TOTAL_BUDGET = 45
 
+# A timed-out Git child may spend up to five seconds in Windows taskkill and
+# two more seconds draining pipes. Keep that tail plus private error-state I/O
+# outside every network subprocess timeout.
+_PROCESS_KILL_DRAIN_RESERVE = 7
+_MUTEX_RELEASE_RESERVE = 0.25
+_ERROR_STATE_WRITE_RESERVE = DEFAULT_TIMEOUT + _MUTEX_RELEASE_RESERVE
+_NETWORK_FAILURE_RESERVE = (
+    _PROCESS_KILL_DRAIN_RESERVE + _ERROR_STATE_WRITE_RESERVE)
+_FINAL_STATE_RESERVE = (
+    2 * DEFAULT_TIMEOUT + _MUTEX_RELEASE_RESERVE)
+# pull --rebase additionally needs a bounded abort and an unmerged-index proof.
+_REBASE_FAILURE_RESERVE = 20
+
 
 @dataclass
 class PullResult:
@@ -299,8 +312,9 @@ def do_pull(team_root: str, timeout: int = NET_TIMEOUT) -> PullResult:
     except (OSError, subprocess.SubprocessError) as exc:
         return PullResult(ok=False, detail=f"exec error: {exc}")
     if rc == 0:
-        return PullResult(ok=True, detail=(out or "").strip()[:200])
-    return PullResult(ok=False, detail=((err or out) or "").strip()[:200])
+        return PullResult(ok=True, detail=sanitize_git_detail(out or ""))
+    return PullResult(
+        ok=False, detail=sanitize_git_detail((err or out) or ""))
 
 
 def _ahead_behind_raw(team_root: str, timeout: int):
@@ -675,6 +689,7 @@ def clear_last_sync_error(team_root: str) -> bool:
 _HOOK_MUTEX_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 _EDIT_MUTEX_TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
 _EDIT_MUTEX_TTL_SECONDS = 15 * 60
+_EDIT_MUTEX_LOCK_TIMEOUT = _MUTEX_RELEASE_RESERVE
 
 
 def hook_edit_mutex_token(data: dict | None) -> str:
@@ -736,7 +751,7 @@ def acquire_edit_mutex(team_root: str, token: str) -> bool:
         return False
     path = _edit_mutex_path(team_root)
     with private_state_lock(
-        team_root, "edit-mutex", DEFAULT_TIMEOUT
+        team_root, "edit-mutex", _EDIT_MUTEX_LOCK_TIMEOUT
     ) as acquired:
         if not acquired:
             return False
@@ -762,7 +777,7 @@ def owns_edit_mutex(team_root: str, token: str) -> bool:
         return False
     path = _edit_mutex_path(team_root)
     with private_state_lock(
-        team_root, "edit-mutex", DEFAULT_TIMEOUT
+        team_root, "edit-mutex", _EDIT_MUTEX_LOCK_TIMEOUT
     ) as acquired:
         if not acquired:
             return False
@@ -784,7 +799,7 @@ def release_edit_mutex(team_root: str, token: str) -> bool:
         return False
     path = _edit_mutex_path(team_root)
     with private_state_lock(
-        team_root, "edit-mutex", DEFAULT_TIMEOUT
+        team_root, "edit-mutex", _EDIT_MUTEX_LOCK_TIMEOUT
     ) as acquired:
         if not acquired:
             return False
@@ -836,12 +851,18 @@ def _repo_sync_lock(
     team_root: str, timeout: float = DEFAULT_TIMEOUT
 ):
     """Serialize new and older tm-mode publication code in one Git common dir."""
-    common = _git_common_dir(team_root, max(0.05, float(timeout)))
+    lock_deadline = time.monotonic() + max(0.05, float(timeout))
+    common_timeout = _remaining_timeout(lock_deadline, DEFAULT_TIMEOUT)
+    if common_timeout <= 0:
+        yield False
+        return
+    common = _git_common_dir(team_root, common_timeout)
     if common is None:
         yield False
         return
     lock_path = common / ".tm-mode-publication.lock"
-    with _advisory_file_lock(str(lock_path), timeout) as acquired:
+    remaining = max(0.0, lock_deadline - time.monotonic())
+    with _advisory_file_lock(str(lock_path), remaining) as acquired:
         yield acquired
 
 
@@ -850,6 +871,24 @@ def _remaining_timeout(deadline: float, cap: float) -> float:
     if remaining <= 0:
         return 0.0
     return min(max(0.05, float(cap)), remaining)
+
+
+def _reserved_timeout(
+    deadline: float, cap: float, reserve: float
+) -> float:
+    remaining = float(deadline) - time.monotonic() - max(0.0, reserve)
+    if remaining <= 0:
+        return 0.0
+    return min(max(0.05, float(cap)), remaining)
+
+
+def _network_timeout(
+    deadline: float,
+    cap: float,
+    *,
+    reserve: float = _NETWORK_FAILURE_RESERVE,
+) -> float:
+    return _reserved_timeout(deadline, cap, reserve)
 
 
 def _current_branch(team_root: str, timeout: float) -> str:
@@ -890,14 +929,19 @@ def _origin_main_counts(
     return ahead, behind
 
 
-def _rebase_in_progress(
+def _rebase_state_paths(
     team_root: str, timeout: float
-) -> bool | None:
+) -> tuple[Path, Path] | None:
+    paths: list[Path] = []
+    state_deadline = time.monotonic() + max(0.0, float(timeout))
     for name in ("rebase-merge", "rebase-apply"):
+        step_timeout = _remaining_timeout(state_deadline, DEFAULT_TIMEOUT)
+        if step_timeout <= 0:
+            return None
         try:
             rc, out, _ = run_git(
                 ["-C", team_root, "rev-parse", "--git-path", name],
-                timeout=timeout,
+                timeout=step_timeout,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -906,6 +950,12 @@ def _rebase_in_progress(
             return None
         candidate = Path(raw)
         path = candidate if candidate.is_absolute() else Path(team_root) / candidate
+        paths.append(Path(os.path.abspath(path)))
+    return paths[0], paths[1]
+
+
+def _rebase_markers_present(paths: tuple[Path, Path]) -> bool | None:
+    for path in paths:
         try:
             if os.path.lexists(path):
                 return True
@@ -914,19 +964,70 @@ def _rebase_in_progress(
     return False
 
 
-def _abort_new_rebase(team_root: str) -> tuple[bool, str]:
+def _rebase_in_progress(
+    team_root: str, timeout: float
+) -> bool | None:
+    paths = _rebase_state_paths(team_root, timeout)
+    return None if paths is None else _rebase_markers_present(paths)
+
+
+def _abort_new_rebase(
+    team_root: str,
+    timeout: float,
+    rebase_paths: tuple[Path, Path],
+) -> tuple[bool, str]:
+    """Abort only this call's rebase and prove repository operation state is clear."""
+    cleanup_deadline = time.monotonic() + max(0.0, float(timeout))
+    abort_timeout = _reserved_timeout(
+        cleanup_deadline, DEFAULT_TIMEOUT, _PROCESS_KILL_DRAIN_RESERVE)
+    if abort_timeout <= 0:
+        return False, "rebase cleanup deadline exhausted before abort"
+    abort_ok = False
+    abort_detail = ""
     try:
         rc, out, err = run_git(
             ["-C", team_root, "rebase", "--abort"],
-            timeout=DEFAULT_TIMEOUT,
+            timeout=abort_timeout,
         )
     except subprocess.TimeoutExpired:
-        return False, "rebase abort timeout"
+        rc, out, err = -1, "", "rebase abort timeout"
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"rebase abort error: {exc}"
+        rc, out, err = -1, "", f"rebase abort error: {exc}"
     if rc == 0:
-        return True, "new rebase aborted"
-    return False, f"rebase abort failed: {((err or out) or '').strip()[:200]}"
+        abort_ok = True
+        abort_detail = "rebase abort completed"
+    else:
+        abort_detail = (
+            "rebase abort failed: " + ((err or out) or "").strip())
+
+    markers = _rebase_markers_present(rebase_paths)
+    if markers is None:
+        return False, f"{abort_detail}; rebase marker verification unavailable"
+    if markers:
+        return False, f"{abort_detail}; rebase marker remains"
+
+    verify_timeout = _reserved_timeout(
+        cleanup_deadline, DEFAULT_TIMEOUT, _PROCESS_KILL_DRAIN_RESERVE)
+    if verify_timeout <= 0:
+        return False, f"{abort_detail}; unmerged index verification deadline exhausted"
+    try:
+        urc, uout, uerr = run_git(
+            ["-C", team_root, "ls-files", "--unmerged"],
+            timeout=verify_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"{abort_detail}; unmerged index verification timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"{abort_detail}; unmerged index verification error: {exc}"
+    if urc != 0:
+        return False, (
+            f"{abort_detail}; unmerged index verification failed: "
+            f"{((uerr or uout) or '').strip()}")
+    if (uout or "").strip():
+        return False, f"{abort_detail}; unmerged index entries remain"
+    if not abort_ok:
+        return False, abort_detail
+    return True, "new rebase aborted; rebase markers and unmerged index clear"
 
 
 def _is_non_fast_forward(text: str) -> bool:
@@ -974,11 +1075,23 @@ def sync_main(
         if not is_git_worktree(team_root):
             return _sync_failure(
                 team_root, "error", "not a git work tree")
+        # Read-only preflight precedes both mutexes. A non-main SessionStart must
+        # not touch FETCH_HEAD, remote-tracking refs, or the repository lock.
+        preflight_branch = _current_branch(team_root, DEFAULT_TIMEOUT)
+        if preflight_branch != "main":
+            current = preflight_branch or "detached"
+            return _sync_failure(
+                team_root,
+                "not-main",
+                f"sync requires main branch (current: {current})",
+            )
         if deadline is None:
             deadline = time.monotonic() + PUSH_TOTAL_BUDGET
         else:
             deadline = float(deadline)
-        if _remaining_timeout(deadline, DEFAULT_TIMEOUT) <= 0:
+        if _reserved_timeout(
+            deadline, DEFAULT_TIMEOUT, _ERROR_STATE_WRITE_RESERVE
+        ) <= 0:
             return _sync_failure(
                 team_root, "error", "main sync deadline exhausted")
 
@@ -989,7 +1102,8 @@ def sync_main(
             if not edit_acquired:
                 return _sync_failure(
                     team_root, "busy", "edit mutex unavailable")
-            lock_timeout = _remaining_timeout(deadline, DEFAULT_TIMEOUT)
+            lock_timeout = _reserved_timeout(
+                deadline, DEFAULT_TIMEOUT, _ERROR_STATE_WRITE_RESERVE)
             if lock_timeout <= 0:
                 return _sync_failure(
                     team_root, "busy", "main sync deadline exhausted")
@@ -998,8 +1112,8 @@ def sync_main(
                     return _sync_failure(
                         team_root, "busy", "repository sync lock unavailable")
 
-                branch_timeout = _remaining_timeout(
-                    deadline, DEFAULT_TIMEOUT)
+                branch_timeout = _reserved_timeout(
+                    deadline, DEFAULT_TIMEOUT, _ERROR_STATE_WRITE_RESERVE)
                 if branch_timeout <= 0:
                     return _sync_failure(
                         team_root, "error", "main sync deadline exhausted")
@@ -1019,8 +1133,8 @@ def sync_main(
 
                 for attempt in range(2):
                     if attempt:
-                        branch_timeout = _remaining_timeout(
-                            deadline, DEFAULT_TIMEOUT)
+                        branch_timeout = _reserved_timeout(
+                            deadline, DEFAULT_TIMEOUT, _ERROR_STATE_WRITE_RESERVE)
                         if branch_timeout <= 0:
                             return _sync_failure(
                                 team_root,
@@ -1040,7 +1154,7 @@ def sync_main(
                                 behind=last_behind,
                             )
 
-                    fetch_timeout = _remaining_timeout(deadline, timeout)
+                    fetch_timeout = _network_timeout(deadline, timeout)
                     if fetch_timeout <= 0:
                         return _sync_failure(
                             team_root,
@@ -1057,6 +1171,7 @@ def sync_main(
                                 *http_timeout_opts(
                                     max(1, int(fetch_timeout))),
                                 "fetch",
+                                "--no-tags",
                                 "origin",
                                 "main",
                             ],
@@ -1076,11 +1191,11 @@ def sync_main(
                             team_root,
                             "fetch-failed",
                             f"fetch origin main failed: "
-                            f"{((ferr or fout) or '').strip()[:200]}",
+                            f"{((ferr or fout) or '').strip()}",
                         )
 
-                    count_timeout = _remaining_timeout(
-                        deadline, DEFAULT_TIMEOUT)
+                    count_timeout = _reserved_timeout(
+                        deadline, DEFAULT_TIMEOUT, _ERROR_STATE_WRITE_RESERVE)
                     if count_timeout <= 0:
                         return _sync_failure(
                             team_root,
@@ -1099,8 +1214,8 @@ def sync_main(
                     saw_ahead = saw_ahead or last_ahead > 0
 
                     if last_behind:
-                        state_timeout = _remaining_timeout(
-                            deadline, DEFAULT_TIMEOUT)
+                        state_timeout = _reserved_timeout(
+                            deadline, DEFAULT_TIMEOUT, _ERROR_STATE_WRITE_RESERVE)
                         if state_timeout <= 0:
                             return _sync_failure(
                                 team_root,
@@ -1109,9 +1224,12 @@ def sync_main(
                                 ahead=last_ahead,
                                 behind=last_behind,
                             )
-                        preexisting = _rebase_in_progress(
+                        rebase_paths = _rebase_state_paths(
                             team_root, state_timeout)
-                        if preexisting is None:
+                        preexisting = (
+                            None if rebase_paths is None
+                            else _rebase_markers_present(rebase_paths))
+                        if preexisting is None or rebase_paths is None:
                             return _sync_failure(
                                 team_root,
                                 "pull-failed",
@@ -1128,7 +1246,11 @@ def sync_main(
                                 behind=last_behind,
                             )
 
-                        pull_timeout = _remaining_timeout(deadline, timeout)
+                        pull_timeout = _network_timeout(
+                            deadline,
+                            timeout,
+                            reserve=_REBASE_FAILURE_RESERVE,
+                        )
                         if pull_timeout <= 0:
                             return _sync_failure(
                                 team_root,
@@ -1144,35 +1266,46 @@ def sync_main(
                                     "-C",
                                     team_root,
                                     "-c",
+                                    "rebase.updateRefs=false",
+                                    "-c",
                                     "rebase.autoStash=false",
                                     *http_timeout_opts(
                                         max(1, int(pull_timeout))),
                                     "pull",
+                                    "--no-tags",
                                     "--rebase",
                                     "origin",
                                     "main",
                                 ],
                                 timeout=pull_timeout,
                             )
-                            pull_text = (
-                                ((perr or pout) or "").strip()[:200])
+                            pull_text = ((perr or pout) or "").strip()
                         except subprocess.TimeoutExpired as exc:
                             prc = -1
                             pull_text = (
                                 "pull --rebase timeout; "
-                                + _timeout_detail(exc).strip()[:160])
+                                + _timeout_detail(exc).strip())
                         except (OSError, subprocess.SubprocessError) as exc:
                             prc = -1
                             pull_text = f"pull --rebase error: {exc}"
 
                         if prc != 0:
-                            post_state = _rebase_in_progress(
-                                team_root, DEFAULT_TIMEOUT)
+                            post_state = _rebase_markers_present(rebase_paths)
                             abort_detail = ""
                             new_rebase = post_state is True
+                            cleanup_ok = post_state is not None
+                            if post_state is None:
+                                abort_detail = (
+                                    "post-failure rebase marker verification "
+                                    "unavailable; no abort attempted")
                             if new_rebase:
-                                _aborted, abort_detail = _abort_new_rebase(
-                                    team_root)
+                                cleanup_budget = max(
+                                    0.0,
+                                    float(deadline) - time.monotonic()
+                                    - _ERROR_STATE_WRITE_RESERVE,
+                                )
+                                cleanup_ok, abort_detail = _abort_new_rebase(
+                                    team_root, cleanup_budget, rebase_paths)
                             action = (
                                 "conflict"
                                 if new_rebase
@@ -1184,6 +1317,8 @@ def sync_main(
                                 f"{pull_text or 'unknown failure'}")
                             if abort_detail:
                                 detail += f"; {abort_detail}"
+                            if not cleanup_ok:
+                                detail += "; rebase cleanup incomplete"
                             return _sync_failure(
                                 team_root,
                                 action,
@@ -1193,8 +1328,8 @@ def sync_main(
                             )
                         rebased = True
 
-                    branch_timeout = _remaining_timeout(
-                        deadline, DEFAULT_TIMEOUT)
+                    branch_timeout = _reserved_timeout(
+                        deadline, DEFAULT_TIMEOUT, _ERROR_STATE_WRITE_RESERVE)
                     if branch_timeout <= 0:
                         return _sync_failure(
                             team_root,
@@ -1212,7 +1347,7 @@ def sync_main(
                             behind=last_behind,
                         )
 
-                    push_timeout = _remaining_timeout(deadline, timeout)
+                    push_timeout = _network_timeout(deadline, timeout)
                     if push_timeout <= 0:
                         return _sync_failure(
                             team_root,
@@ -1226,11 +1361,17 @@ def sync_main(
                             [
                                 "-C",
                                 team_root,
+                                "-c",
+                                "push.followTags=false",
+                                "-c",
+                                "push.recurseSubmodules=check",
                                 *http_timeout_opts(
                                     max(1, int(push_timeout))),
                                 "push",
+                                "--no-follow-tags",
+                                "--recurse-submodules=check",
                                 "origin",
-                                "main:main",
+                                "refs/heads/main:refs/heads/main",
                             ],
                             timeout=push_timeout,
                         )
@@ -1238,7 +1379,7 @@ def sync_main(
                         return _sync_failure(
                             team_root,
                             "push-failed",
-                            "push origin main:main timeout",
+                            "push origin refs/heads/main timeout",
                             ahead=last_ahead,
                             behind=last_behind,
                         )
@@ -1246,7 +1387,7 @@ def sync_main(
                         return _sync_failure(
                             team_root,
                             "push-failed",
-                            f"push origin main:main error: {exc}",
+                            f"push origin refs/heads/main error: {exc}",
                             ahead=last_ahead,
                             behind=last_behind,
                         )
@@ -1257,14 +1398,13 @@ def sync_main(
                         return _sync_failure(
                             team_root,
                             "push-failed",
-                            f"push origin main:main failed: "
-                            f"{push_text.strip()[:200]}",
+                            f"push origin refs/heads/main failed: "
+                            f"{push_text.strip()}",
                             ahead=last_ahead,
                             behind=last_behind,
                         )
 
-                    verify_fetch_timeout = _remaining_timeout(
-                        deadline, timeout)
+                    verify_fetch_timeout = _network_timeout(deadline, timeout)
                     if verify_fetch_timeout <= 0:
                         return _sync_failure(
                             team_root,
@@ -1281,6 +1421,7 @@ def sync_main(
                                 *http_timeout_opts(
                                     max(1, int(verify_fetch_timeout))),
                                 "fetch",
+                                "--no-tags",
                                 "origin",
                                 "main",
                             ],
@@ -1307,13 +1448,13 @@ def sync_main(
                             team_root,
                             "fetch-failed",
                             f"final fetch origin main failed: "
-                            f"{((verr or vout) or '').strip()[:200]}",
+                            f"{((verr or vout) or '').strip()}",
                             ahead=last_ahead,
                             behind=last_behind,
                         )
 
-                    verify_timeout = _remaining_timeout(
-                        deadline, DEFAULT_TIMEOUT)
+                    verify_timeout = _reserved_timeout(
+                        deadline, DEFAULT_TIMEOUT, _FINAL_STATE_RESERVE)
                     if verify_timeout <= 0:
                         return _sync_failure(
                             team_root,
@@ -1342,7 +1483,15 @@ def sync_main(
                             behind=final_behind,
                         )
 
-                    clear_last_sync_error(team_root)
+                    if not clear_last_sync_error(team_root):
+                        return _sync_failure(
+                            team_root,
+                            "error",
+                            "final main sync is 0/0 but last sync error "
+                            "could not be cleared",
+                            ahead=0,
+                            behind=0,
+                        )
                     if rebased:
                         action = "rebased"
                     elif saw_ahead:
@@ -1471,7 +1620,7 @@ def do_commit(
             if arc != 0:
                 return _record_commit_failure(
                     team_root,
-                    f"add failed: {((aerr or aout) or '').strip()[:200]}",
+                    f"add failed: {((aerr or aout) or '').strip()}",
                     push=push,
                 )
 
@@ -1502,11 +1651,12 @@ def do_commit(
             if crc != 0:
                 return _record_commit_failure(
                     team_root,
-                    f"commit failed: {((cerr or cout) or '').strip()[:200]}",
+                    f"commit failed: {((cerr or cout) or '').strip()}",
                     push=push,
                 )
 
-            commit_detail = (cout or "").strip()[:200] or "committed"
+            commit_detail = sanitize_git_detail(
+                (cout or "").strip() or "committed")
             if not push:
                 return CommitResult(
                     ok=True,
@@ -1584,7 +1734,7 @@ def fetch_upstream(team_root: str, remote: str = "upstream",
     try:
         rc, out, err = run_git(
             ["-C", team_root, *http_timeout_opts(timeout),
-             "fetch", "--quiet", remote],
+             "fetch", "--quiet", "--no-tags", remote],
             timeout=timeout)
     except subprocess.TimeoutExpired:
         return FetchResult(ok=False, detail="fetch timeout")
@@ -1592,7 +1742,8 @@ def fetch_upstream(team_root: str, remote: str = "upstream",
         return FetchResult(ok=False, detail=f"fetch exec error: {exc}")
     if rc == 0:
         return FetchResult(ok=True, detail="fetched")
-    return FetchResult(ok=False, detail=((err or out) or "").strip()[:200])
+    return FetchResult(
+        ok=False, detail=sanitize_git_detail((err or out) or ""))
 
 
 def has_common_ancestor(team_root: str, upstream_ref: str = "upstream/main",
@@ -1817,7 +1968,12 @@ def _push_existing_workflow_strip_commit(team_root: str,
     try:
         prc, pout, perr = _run_publication_push(
             team_root,
-            ["-C", team_root, *http_timeout_opts(NET_TIMEOUT), "push"],
+            ["-C", team_root,
+             "-c", "push.followTags=false",
+             "-c", "push.recurseSubmodules=check",
+             *http_timeout_opts(NET_TIMEOUT),
+             "push", "--no-follow-tags", "--recurse-submodules=check",
+             "origin", "refs/heads/main:refs/heads/main"],
             timeout=NET_TIMEOUT)
     except subprocess.TimeoutExpired:
         return WorkflowStripResult(
@@ -1835,12 +1991,13 @@ def _push_existing_workflow_strip_commit(team_root: str,
     return WorkflowStripResult(
         ok=False, changed=True, committed=True, pushed=False,
         detail=_workflow_remote_still_contains_message(
-            f"push failed: {((perr or pout) or '').strip()[:200]}"))
+            f"push failed: {((perr or pout) or '').strip()}"))
 
 
 def _workflow_remote_still_contains_message(reason: str) -> str:
+    safe_reason = sanitize_git_detail(reason, limit=200)
     return (
-        f"{reason}. The remote repository still contains .github/workflows. "
+        f"{safe_reason}. The remote repository still contains .github/workflows. "
         "Fix: re-run the setup after git push works, or delete .github/workflows "
         "from the repository on GitHub manually.")
 
@@ -1882,7 +2039,8 @@ def strip_template_workflows(team_root: str,
     if rc != 0:
         return WorkflowStripResult(
             ok=False, changed=True,
-            detail=f"add failed: {((err or out) or '').strip()[:200]}")
+            detail=sanitize_git_detail(
+                f"add failed: {((err or out) or '').strip()}"))
 
     if not _has_staged_changes(root, timeout):
         return WorkflowStripResult(
@@ -1907,12 +2065,17 @@ def strip_template_workflows(team_root: str,
         return WorkflowStripResult(
             ok=False, changed=True,
             detail=_workflow_remote_still_contains_message(
-                f"commit failed: {((err or out) or '').strip()[:200]}"))
+                f"commit failed: {((err or out) or '').strip()}"))
 
     try:
         prc, pout, perr = _run_publication_push(
             root,
-            ["-C", root, *http_timeout_opts(NET_TIMEOUT), "push"],
+            ["-C", root,
+             "-c", "push.followTags=false",
+             "-c", "push.recurseSubmodules=check",
+             *http_timeout_opts(NET_TIMEOUT),
+             "push", "--no-follow-tags", "--recurse-submodules=check",
+             "origin", "refs/heads/main:refs/heads/main"],
             timeout=NET_TIMEOUT)
     except subprocess.TimeoutExpired:
         return WorkflowStripResult(
@@ -1927,7 +2090,7 @@ def strip_template_workflows(team_root: str,
         return WorkflowStripResult(
             ok=False, changed=True, committed=True, pushed=False,
             detail=_workflow_remote_still_contains_message(
-                f"push failed: {((perr or pout) or '').strip()[:200]}"))
+                f"push failed: {((perr or pout) or '').strip()}"))
 
     return WorkflowStripResult(
         ok=True, changed=True, committed=True, pushed=True,
@@ -2239,7 +2402,7 @@ def _checkout_chunks(team_root: str, ref: str, paths: list, timeout: int):
         except (OSError, subprocess.SubprocessError) as exc:
             return False, f"checkout exec error: {exc}"
         if rc != 0:
-            return False, ((err or out) or "").strip()[:200]
+            return False, sanitize_git_detail((err or out) or "")
     return True, ""
 
 
@@ -2402,7 +2565,7 @@ def _git_rm_chunks(team_root: str, paths: list, timeout: int):
         except (OSError, subprocess.SubprocessError) as exc:
             return False, f"git rm exec error: {exc}"
         if rc != 0:
-            return False, ((err or out) or "").strip()[:200]
+            return False, sanitize_git_detail((err or out) or "")
     return True, ""
 
 
@@ -2663,7 +2826,8 @@ def sync_from_upstream(team_root: str, remote: str = "upstream",
     if rc != 0:
         return SyncResult(ok=False, paths=tuple(paths),
                           pathspecs=tuple(pathspecs),
-                          detail=f"checkout 실패: {((err or out) or '').strip()[:200]}")
+                          detail=sanitize_git_detail(
+                              f"checkout 실패: {((err or out) or '').strip()}"))
 
     return SyncResult(ok=True, changed=True, paths=tuple(paths),
                       pathspecs=tuple(pathspecs), diff=diff,

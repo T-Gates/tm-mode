@@ -31,7 +31,8 @@ MESSAGES = {
             "[teammode] Team mode active — session start context:",
         "hook_ss_sync_warn":
             "⚠️ [sync error] The last automatic main sync failed. Check and "
-            "resolve via `teammode pull` or manual cleanup: {warn}",
+            "resolve via `python3 infra/teammode.py pull --root .` or manual "
+            "cleanup: {warn}",
         "hook_ss_sync_failed":
             "[teammode] Main sync failed (non-fatal): {detail}",
         "hook_ss_sync_status":
@@ -194,9 +195,9 @@ MESSAGES = {
         "cmd_log_recorded":
             "tm-mode log — recorded {author}/{date}.md",
         "cmd_pull_updated":
-            "tm-mode pull — updated: {detail}",
+            "`python3 infra/teammode.py pull --root .` — updated: {detail}",
         "cmd_pull_skipped":
-            "tm-mode pull — skipped (non-fatal): {detail}",
+            "`python3 infra/teammode.py pull --root .` — skipped (non-fatal): {detail}",
         "cmd_commit_push_failed_suffix":
             " (main sync failed — commit preserved)",
         "cmd_commit_sync_failed":

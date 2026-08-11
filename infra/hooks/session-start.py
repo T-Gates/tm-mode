@@ -401,8 +401,8 @@ def _record_fetch_time(state_path: str, now: float) -> None:
         pass
 
 
-def _maybe_sync_main(team_root: str, deadline=None) -> None:
-    """맥락 주입 전에 main을 한 번 즉시 동기화한다. 실패는 advisory."""
+def _maybe_sync_main(team_root: str, deadline=None):
+    """맥락 주입 전에 main을 동기화하고 결과를 돌려준다. 실패는 advisory."""
     lang = _hook_lang(team_root)
     try:
         if _git_ops is None:
@@ -420,8 +420,9 @@ def _maybe_sync_main(team_root: str, deadline=None) -> None:
                 "hook_ss_sync_failed", lang,
                 "[teammode] main 동기화 실패(비치명): {detail}",
                 detail=detail), file=sys.stderr)
+        return result
     except Exception:  # noqa: BLE001 — 철칙: 무슨 일이 있어도 세션·주입을 막지 않는다
-        pass
+        return None
 
 
 def _upstream_fetch_state_path() -> str:
@@ -559,7 +560,8 @@ def _build_context(root: Path, lang: str = "ko", deadline=None) -> str | None:
                 lines.append(_t(
                     "hook_ss_sync_warn", lang,
                     "⚠️ [동기화 오류] 마지막 main 자동 동기화가 실패했습니다. "
-                    "확인 후 `teammode pull` 또는 수동 정리가 필요합니다: {warn}",
+                    "확인 후 `python3 infra/teammode.py pull --root .` 또는 "
+                    "수동 정리가 필요합니다: {warn}",
                     warn=warn))
             ahead_timeout = _remaining_timeout(deadline, _git_ops.DEFAULT_TIMEOUT)
             ahead, behind = ((0, 0) if not ahead_timeout else
@@ -685,10 +687,12 @@ def main() -> int:
 
     # 매 SessionStart main 즉시 동기화 — 맥락 주입 전에 수행, 실패 무해(철칙).
     sync_deadline = deadline - _SESSION_CONTEXT_RESERVE
-    _maybe_sync_main(str(root), deadline=sync_deadline)
+    sync_result = _maybe_sync_main(str(root), deadline=sync_deadline)
     # upstream(제품) 캐시도 스로틀 적용해 새로 고침 — 안 하면 계속 켜둔 인스턴스에서
-    # 엔진 업데이트 알림이 fetch 시점 이후의 변화를 영원히 못 본다(위 함수 docstring).
-    _maybe_fetch_upstream(str(root), deadline=sync_deadline)
+    # 엔진 업데이트 알림이 fetch 시점 이후의 변화를 영원히 못 본다. 단, non-main은
+    # 팀 sync preflight가 보장한 zero-Git-mutation 계약을 유지해야 하므로 건너뛴다.
+    if getattr(sync_result, "action", "") != "not-main":
+        _maybe_fetch_upstream(str(root), deadline=sync_deadline)
 
     # 팀 locale → 주입 언어(PR-i1). config 1회 읽기 — 실패는 ko/en 폴백 계약이 흡수.
     # locale 판정용 config 1회 open — session-start 는 세션당 1회만 실행되므로
