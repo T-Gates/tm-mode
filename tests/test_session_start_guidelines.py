@@ -15,9 +15,8 @@ HOOK = REPO / "infra" / "hooks" / "session-start.py"
 
 
 def _run_hook(payload: dict, team_root: Path, extra_env=None):
-    # 격리 XDG_STATE_HOME(conftest 주입)을 명시 전달 — 최소 env 라 자동상속이 안 되고,
-    # 누락 시 session-start 의 auto-pull 이 실 ~/.local/state/teammode/last-pull 에 쓴다
-    # (CI 가드 발화). test_install_golden._env / test_install_l1e._hook_env 동형.
+    # 격리 XDG_STATE_HOME(conftest 주입)을 명시 전달 — 최소 env라 자동상속이 안 되고,
+    # 누락 시 SessionStart의 private state가 실 ~/.local/state/teammode에 샐 수 있다.
     env = {"TEAMMODE_HOME": str(team_root), "PATH": "/usr/bin:/bin"}
     if "XDG_STATE_HOME" in os.environ:
         env["XDG_STATE_HOME"] = os.environ["XDG_STATE_HOME"]

@@ -30,7 +30,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -219,12 +218,6 @@ def test_session_start_injects_context_via_codex_normalize(tmp_path):
     root = _make_team_root(tmp_path)
     env = _scrubbed_env(tmp_path, {"TEAMMODE_HOME": str(root)})
 
-    # 세션당 1회 정합(auto-pull)을 스로틀로 스킵 — 방금 정합한 것으로 시딩
-    # (tmp 루트는 git 레포가 아니고 네트워크도 안 된다: 결정적으로 우회).
-    last_pull = Path(env["XDG_STATE_HOME"]) / "teammode" / "last-pull"
-    last_pull.parent.mkdir(parents=True, exist_ok=True)
-    last_pull.write_text(repr(time.time()), encoding="utf-8")
-
     sid = "codex-e2e-start"
     wire = {"hook_event_name": "SessionStart", "session_id": sid}
     proc = _run_codex_normalize(root, "session-start.py", json.dumps(wire), env)
@@ -300,8 +293,8 @@ def test_session_start_engine_update_notice_via_codex_normalize(tmp_path):
 
     _make_team_root 는 git 레포가 아니므로 여기서 별도로 git init 하고, 진짜
     upstream(bare) 을 만든다. 여기서도 fetch 를 미리 한 번 해두지만(결정성 목적일
-    뿐 — 훅 자신도 이제 세션마다 스로틀 적용 fetch 를 한다, 아래 last_pull 시딩과는
-    별개의 last-upstream-fetch state), 훅의 fetch 유무·스로틀 자체는
+    뿐 — 훅 자신도 제품 upstream에는 스로틀 적용 fetch를 한다), 훅의 fetch
+    유무·스로틀 자체는
     tests/test_session_start_engine_update_notice.py 에서 이미 별도 검증했으므로,
     여기서는 "Codex 경로로도 같은 알림 결과가 나온다"만 좁게 확인한다.
     """
@@ -332,10 +325,6 @@ def test_session_start_engine_update_notice_via_codex_normalize(tmp_path):
     _git(root, "fetch", "upstream")  # 결정성 목적의 사전 fetch(훅도 스스로 fetch 함)
 
     env = _scrubbed_env(tmp_path, {"TEAMMODE_HOME": str(root)})
-    last_pull = Path(env["XDG_STATE_HOME"]) / "teammode" / "last-pull"
-    last_pull.parent.mkdir(parents=True, exist_ok=True)
-    last_pull.write_text(repr(time.time()), encoding="utf-8")
-
     wire = {"hook_event_name": "SessionStart", "session_id": "codex-e2e-notice"}
     proc = _run_codex_normalize(root, "session-start.py", json.dumps(wire), env)
 

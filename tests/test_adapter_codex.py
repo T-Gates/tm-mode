@@ -105,18 +105,14 @@ def test_file_edit_translated_to_apply_patch(env):
     assert "PostToolUse" in text
 
 
-def test_terminal_cleanup_registered_but_unsupported_failure_skipped(env, capsys):
+def test_exact_failure_cleanup_is_skipped_when_event_is_unsupported(env, capsys):
     env.write_manifest([
         {"event": "PostToolUseFailure", "match": {"action": "file_edit"},
          "script": "edit-lease-cleanup.py", "fallback": "runtime"},
-        {"event": "Stop", "script": "edit-lease-cleanup.py"},
-        {"event": "SubagentStop", "script": "edit-lease-cleanup.py"},
     ])
     env.make_adapter().sync(mode="on")
 
     text = env.config.read_text(encoding="utf-8")
-    assert "[[hooks.Stop]]" in text
-    assert "[[hooks.SubagentStop]]" in text
     assert "[[hooks.PostToolUseFailure]]" not in text
     assert "PostToolUseFailure" in capsys.readouterr().out
 

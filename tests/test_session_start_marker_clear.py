@@ -1,211 +1,133 @@
-"""이슈 #23 (codex 리뷰) — session-start 의 sync-warning 마커 제거 조건.
+"""SessionStart integration with immediate main sync and last-sync-error."""
 
-마커는 **실제 origin 정합이 입증된** 경우(up-to-date/fast-forward/rebased & ahead==0)
-에만 지운다. no-upstream·ahead-only·fetch-failed·conflict·error 는 직전 push 실패가
-미해결이므로 마커를 보존해 push 실패 가시성을 유지한다.
-"""
+from __future__ import annotations
+
 import importlib.util
-import sys
+import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[1]
-SESSION_START = REPO / "infra" / "hooks" / "session-start.py"
-sys.path.insert(0, str(REPO / "infra"))
 
-import git_ops as go  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+HOOK = ROOT / "infra" / "hooks" / "session-start.py"
 
 
-def _load_session_start():
-    spec = importlib.util.spec_from_file_location("session_start_mod", SESSION_START)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-class _FakeAutoPull:
-    DEFAULT_THROTTLE_SECONDS = 300
-
-    @staticmethod
-    def should_pull(state, now, throttle):
-        return True   # 스로틀 통과(항상 정합 시도)
+def _load_hook():
+    spec = importlib.util.spec_from_file_location(
+        "session_start_simple_sync_under_test", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 class _FakeGitOps:
-    """do_reconcile 결과를 고정하고 write/clear 호출을 기록."""
+    NET_TIMEOUT = 10
+    DEFAULT_TIMEOUT = 2
 
-    def __init__(self, result):
-        self._result = result
-        self.writes = []
-        self.cleared = 0
+    def __init__(self, result, *, warning="", ahead=0, behind=0):
+        self.result = result
+        self.warning = warning
+        self.ahead = ahead
+        self.behind = behind
+        self.sync_calls = []
 
-    def do_reconcile(self, team_root, **kwargs):
-        assert kwargs.get("_allow_bound_mutation") is True
-        return self._result
+    def sync_main(self, team_root, **kwargs):
+        self.sync_calls.append((team_root, kwargs))
+        return self.result
 
-    def write_sync_warning(self, team_root, detail):
-        self.writes.append((team_root, detail))
+    @staticmethod
+    def sanitize_git_detail(detail):
+        return str(detail)
 
-    def clear_sync_warning(self, team_root):
-        self.cleared += 1
-        self.cleared_root = team_root
+    def read_last_sync_error(self, _team_root):
+        return self.warning
 
-    def clear_sync_warning_if_fully_published(self, team_root):
-        self.clear_sync_warning(team_root)
-        return True
+    def ahead_behind(self, _team_root, timeout=2):
+        return self.ahead, self.behind
 
-    def read_push_pending_state(self, team_root):
-        return go.PushPendingRead("", True)
-
-    def bind_legacy_pending_to_current_checkout(self, team_root, snapshot):
-        return snapshot
-
-    def pending_entry_key_for_current_checkout(self, team_root, snapshot):
+    @staticmethod
+    def read_upstream_notice(_team_root, timeout=2):
         return ""
 
 
-def _run(result, tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))  # 실 상태 무접촉
-    mod = _load_session_start()
-    fake = _FakeGitOps(result)
-    monkeypatch.setattr(mod, "_git_ops", fake)
-    monkeypatch.setattr(mod, "_auto_pull", _FakeAutoPull)
-    mod._maybe_auto_pull("/team/alpha")
-    return fake
+class _FakeEngine:
+    @staticmethod
+    def _read_index(_root):
+        return "# INDEX\n"
+
+    @staticmethod
+    def _collect_members(_root):
+        return []
+
+    @staticmethod
+    def _read_local_notice(_root):
+        return ""
 
 
-# ── 마커 보존(미해결) ──
+def test_session_start_sync_is_immediate_and_not_pull_throttled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_hook()
+    fake = _FakeGitOps(SimpleNamespace(ok=True, action="up-to-date", detail=""))
+    monkeypatch.setattr(module, "_git_ops", fake)
 
-def test_no_upstream_preserves_marker(tmp_path, monkeypatch):
-    # 핵심 버그: no-upstream 은 ok=True·ahead=0 이지만 정합이 입증된 게 아니다.
-    res = go.ReconcileResult(ok=True, action="no-upstream", ahead=0, behind=0)
-    fake = _run(res, tmp_path, monkeypatch)
-    assert fake.cleared == 0       # 마커 지우면 안 됨
-    assert fake.writes == []
+    module._maybe_sync_main(str(tmp_path))
+    module._maybe_sync_main(str(tmp_path))
 
-
-def test_ahead_only_preserves_marker(tmp_path, monkeypatch):
-    res = go.ReconcileResult(ok=True, action="ahead-only", ahead=2, behind=0)
-    fake = _run(res, tmp_path, monkeypatch)
-    assert fake.cleared == 0
-    assert fake.writes == []
-
-
-# ── 마커 제거(정합 입증) ──
-
-def test_up_to_date_clears_marker(tmp_path, monkeypatch):
-    res = go.ReconcileResult(ok=True, action="up-to-date", ahead=0, behind=0)
-    fake = _run(res, tmp_path, monkeypatch)
-    assert fake.cleared == 1
+    assert len(fake.sync_calls) == 2
+    assert all(call[0] == str(tmp_path) for call in fake.sync_calls)
+    assert all(call[1]["timeout"] == fake.NET_TIMEOUT for call in fake.sync_calls)
+    assert not hasattr(module, "_pull_state_path")
 
 
-def test_fast_forward_clears_marker(tmp_path, monkeypatch):
-    res = go.ReconcileResult(ok=True, action="fast-forward", ahead=0, behind=3)
-    fake = _run(res, tmp_path, monkeypatch)
-    assert fake.cleared == 1
+def test_session_start_sync_failure_is_advisory_and_localized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    module = _load_hook()
+    fake = _FakeGitOps(SimpleNamespace(
+        ok=False, action="fetch-failed", detail="network unavailable"))
+    monkeypatch.setattr(module, "_git_ops", fake)
+    monkeypatch.setattr(module, "_hook_lang", lambda _root: "en")
+
+    module._maybe_sync_main(str(tmp_path))
+
+    stderr = capsys.readouterr().err
+    assert "network unavailable" in stderr
+    assert not re.search(r"[가-힣]", stderr)
 
 
-def test_rebased_ahead_zero_clears_marker(tmp_path, monkeypatch):
-    res = go.ReconcileResult(ok=True, action="rebased", ahead=0, behind=2, diverged=True)
-    fake = _run(res, tmp_path, monkeypatch)
-    assert fake.cleared == 1
+def test_session_start_sync_success_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    module = _load_hook()
+    fake = _FakeGitOps(SimpleNamespace(
+        ok=True, action="up-to-date", detail="main synchronized"))
+    monkeypatch.setattr(module, "_git_ops", fake)
+
+    module._maybe_sync_main(str(tmp_path))
+
+    assert capsys.readouterr().err == ""
 
 
-def test_rebased_with_unpushed_ahead_preserves_marker(tmp_path, monkeypatch):
-    # rebase 됐지만 미push 로컬 커밋이 남았으면(ahead>0) 아직 origin 정합 미완 → 보존.
-    res = go.ReconcileResult(ok=True, action="rebased", ahead=1, behind=2, diverged=True)
-    fake = _run(res, tmp_path, monkeypatch)
-    assert fake.cleared == 0
+def test_context_surfaces_last_sync_error_without_mutating_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_hook()
+    fake = _FakeGitOps(
+        SimpleNamespace(ok=False),
+        warning="push origin main failed",
+        ahead=1,
+        behind=2,
+    )
+    monkeypatch.setattr(module, "_git_ops", fake)
+    monkeypatch.setattr(module, "_engine", _FakeEngine)
+    monkeypatch.setattr(module, "_slog_rules_mod", None)
 
+    context = module._build_context(tmp_path, "en")
 
-def test_pending_reconcile_runs_before_exact_worker_restart(
-        tmp_path, monkeypatch):
-    """current pending uses ancestry-preserving recovery before exact worker."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    mod = _load_session_start()
-
-    class _OrderingGitOps(_FakeGitOps):
-        DEFAULT_TIMEOUT = 2
-
-        def __init__(self):
-            super().__init__(
-                go.ReconcileResult(ok=True, action="rebased", ahead=1, behind=1,
-                                   diverged=True))
-            self.events = []
-
-        def do_reconcile(self, team_root, **kwargs):
-            self.events.append("reconcile")
-            return super().do_reconcile(team_root, **kwargs)
-
-        def read_push_pending_state(self, team_root):
-            return go.PushPendingRead("pending", True)
-
-        def bind_legacy_pending_to_current_checkout(self, team_root, snapshot):
-            return snapshot
-
-        def pending_entry_key_for_current_checkout(self, team_root, snapshot):
-            return "branch:main"
-
-        def pending_target_summary(self, snapshot, team_root=None):
-            return "branch main"
-
-        def reconcile_current_pending(
-                self, team_root, snapshot, target_key, **kwargs):
-            self.events.append("pending-reconcile")
-            return go.ReconcileResult(
-                ok=True, action="merged", ahead=1, behind=1,
-                diverged=True)
-
-        def _ahead_behind_raw(self, team_root, timeout):
-            raise AssertionError(
-                "current checkout state must not drive pending recovery")
-
-        def kick_push_worker(self, team_root, worker):
-            self.events.append("kick")
-            return True
-
-    fake = _OrderingGitOps()
-    monkeypatch.setattr(mod, "_git_ops", fake)
-    monkeypatch.setattr(mod, "_auto_pull", _FakeAutoPull)
-
-    mod._maybe_auto_pull(str(tmp_path))
-
-    assert fake.events == ["pending-reconcile", "kick"]
-
-
-# ── 충돌은 마커 기록(가시화) ──
-
-def test_conflict_writes_marker(tmp_path, monkeypatch):
-    res = go.ReconcileResult(ok=False, action="conflict", ahead=1, behind=1,
-                             diverged=True, detail="CONFLICT")
-    fake = _run(res, tmp_path, monkeypatch)
-    assert len(fake.writes) == 1
-    assert fake.cleared == 0
-
-
-def test_conflict_marker_content_english_for_en_locale_team(tmp_path, monkeypatch):
-    """i18n(적대검수 — long tail): 마커 내용 자체가 lang 을 따른다.
-
-    write_sync_warning 의 detail 은 나중에 session-start 의 hook_ss_sync_warn
-    (이미 i18n 라우팅된 wrapper)의 {warn} 자리에 그대로 삽입되므로, 마커 자체가
-    lang 에 안 맞으면 en 팀도 wrapper 안에 한글 상세가 섞인다(addendum 2 에서
-    발견한 것과 동일 클래스). 여기서는 실제 team_root(tmp_path)에 en_US 팀 config 를
-    둬 _hook_lang 이 진짜로 "en" 을 돌려주게 만들고, 마커 CONTENT 를 직접 검사한다.
-    """
-    import json
-    import re
-    (tmp_path / "team.config.json").write_text(
-        json.dumps({"team": {"name": "acme", "locale": "en_US"}}), encoding="utf-8")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    mod = _load_session_start()
-    res = go.ReconcileResult(ok=False, action="conflict", ahead=1, behind=1,
-                             diverged=True, detail="CONFLICT")
-    fake = _FakeGitOps(res)
-    monkeypatch.setattr(mod, "_git_ops", fake)
-    monkeypatch.setattr(mod, "_auto_pull", _FakeAutoPull)
-    mod._maybe_auto_pull(str(tmp_path))
-    assert len(fake.writes) == 1
-    _, detail = fake.writes[0]
-    assert not re.search(r"[가-힣]", detail), f"en 팀 마커 내용에 한글 섞임: {detail!r}"
-    assert "conflict" in detail.lower()
+    assert "push origin main failed" in context
+    assert "ahead 1 / behind 2" in context
+    assert fake.warning == "push origin main failed"

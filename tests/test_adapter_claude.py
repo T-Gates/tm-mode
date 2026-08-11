@@ -138,18 +138,16 @@ def test_action_translated_to_matcher(env):
     assert "Write|Edit" in matchers
 
 
-def test_failure_and_terminal_cleanup_hooks_registered(env):
+def test_exact_failure_cleanup_hook_registered(env):
     env.write_manifest([
         {"event": "PostToolUseFailure", "match": {"action": "file_edit"},
          "script": "edit-lease-cleanup.py", "fallback": "runtime"},
-        {"event": "Stop", "script": "edit-lease-cleanup.py"},
-        {"event": "SubagentStop", "script": "edit-lease-cleanup.py"},
     ])
     env.make_adapter().sync(mode="on")
 
     commands = _all_commands(_load(env.settings))
     events = {event for event, _matcher, _command in commands}
-    assert {"PostToolUseFailure", "Stop", "SubagentStop"} <= events
+    assert events == {"PostToolUseFailure"}
     failure_matchers = [
         matcher for event, matcher, _command in commands
         if event == "PostToolUseFailure"]

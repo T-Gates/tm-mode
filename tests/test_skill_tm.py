@@ -94,35 +94,36 @@ def test_skill_md_off_fallback_push_is_scoped():
     assert "Do not force-push" in text
 
 
-def test_skill_md_off_checks_publication_and_pending_before_removing_hooks():
-    """OFF는 exact fallback 뒤 ahead=0 + usable empty ledger를 확인해야 한다."""
+def test_skill_md_off_checks_main_sync_and_last_error_before_removing_hooks():
+    """OFF는 scoped fallback 뒤 main 0/0 + 빈 last error를 확인해야 한다."""
     text = SKILL_MD.read_text(encoding="utf-8")
     fallback = text.index(
         'teammode.py commit --root . --paths '
         '"memory/team/sessions/<name>/<date>.md"')
     ahead_check = text.index(
-        "git rev-list --count --left-right '@{u}...HEAD'", fallback)
-    pending_check = text.index("read_push_pending_state", ahead_check)
-    absolute_root = text.index('os.path.abspath(".")', pending_check)
+        "git rev-list --count --left-right 'origin/main...main'", fallback)
+    error_check = text.index("read_last_sync_error", ahead_check)
+    absolute_root = text.index('os.path.abspath(".")', error_check)
     turn_off = text.index("teammode.py off --root . --install", absolute_root)
 
-    assert fallback < ahead_check < pending_check < absolute_root < turn_off
+    assert fallback < ahead_check < error_check < absolute_root < turn_off
+    assert "behind=0" in text[ahead_check:turn_off]
     assert "ahead=0" in text[ahead_check:turn_off]
-    assert "available=1 pending=0" in text[pending_check:turn_off]
+    assert "empty `last_sync_error`" in text[error_check:turn_off]
 
 
-def test_skill_md_off_keeps_team_mode_active_when_publication_is_unresolved():
-    """ahead/pending 판정 실패 시 off를 실행하지 않고 복구 훅을 유지해야 한다."""
+def test_skill_md_off_keeps_team_mode_active_when_main_sync_is_unresolved():
+    """0/0 또는 last-error 판정 실패 시 off를 실행하지 않고 훅을 유지한다."""
     text = SKILL_MD.read_text(encoding="utf-8")
-    gate = text.index("git rev-list --count --left-right '@{u}...HEAD'")
+    gate = text.index("git rev-list --count --left-right 'origin/main...main'")
     turn_off = text.index("teammode.py off --root . --install", gate)
     gate_text = text[gate:turn_off].lower()
 
     assert "do not run step 3" in gate_text
     assert "keep the hooks" in gate_text
     assert ".teammode-active" in gate_text
-    for unresolved in ("missing upstream", "ahead > 0", "ledger unavailable",
-                       "pending content"):
+    for unresolved in ("missing `origin/main`", "non-zero ahead/behind",
+                       "non-empty last sync error"):
         assert unresolved in gate_text
 
 

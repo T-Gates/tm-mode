@@ -29,8 +29,8 @@ def _hook_env(team_root: Path, extra_env=None):
     """훅 subprocess 격리 env — conftest(_isolate_pull_state)가 os.environ 에 박은
     격리 XDG_STATE_HOME 을 명시 전달한다(최소 env 라 자동상속이 안 됨).
 
-    누락 시 session-start 의 auto-pull 이 expanduser("~") 폴백으로 **실**
-    ~/.local/state/teammode/last-pull 에 쓴다(CI 가드 발화). test_install_golden._env 동형.
+    누락 시 SessionStart private state가 expanduser("~") 폴백으로 **실**
+    ~/.local/state/teammode 아래에 기록된다(CI 가드 발화). test_install_golden._env 동형.
     """
     env = {"TEAMMODE_HOME": str(team_root), "PATH": "/usr/bin:/bin"}
     if "XDG_STATE_HOME" in os.environ:
@@ -408,10 +408,10 @@ def test_future_claim_and_lock_contention_fail_open(tmp_path, monkeypatch):
     hook._settle_resume_generation(root, corrupt_token, completed=False, now=1_003)
 
     @contextlib.contextmanager
-    def unavailable_lock(_root):
+    def unavailable_lock(_root, _purpose, *_args, **_kwargs):
         yield False
 
-    monkeypatch.setattr(hook._git_ops, "_push_pending_ledger_lock", unavailable_lock)
+    monkeypatch.setattr(hook._git_ops, "private_state_lock", unavailable_lock)
     lock_run, lock_token = hook._begin_resume_generation(data, root, now=1_004)
 
     assert future_run and future_token
@@ -545,7 +545,7 @@ def test_codex_known_main_failure_releases_resume_claim(
     monkeypatch.setattr(hook, "_team_root", lambda: str(team))
     monkeypatch.setattr(hook, "_warn_if_stale_home", lambda _root: None)
     monkeypatch.setattr(hook, "_persist_session_relay", lambda _data: None)
-    monkeypatch.setattr(hook, "_maybe_auto_pull", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hook, "_maybe_sync_main", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hook, "_maybe_fetch_upstream", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hook, "_hook_lang", lambda _root: "ko")
     data = {
