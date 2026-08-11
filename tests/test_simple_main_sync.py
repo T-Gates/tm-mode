@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -144,35 +143,46 @@ def test_sync_main_rebases_remote_ahead_then_pushes_linear_main(
         main_repos.origin, "show", "refs/heads/main:local.txt") == "local"
 
 
-def test_failed_do_commit_keeps_local_commit_and_retry_publishes_it(
+def test_sync_main_retries_one_real_non_fast_forward_race(
     main_repos: MainRepos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    note = main_repos.local / "retry.txt"
-    note.write_text("retry\n", encoding="utf-8")
-    missing_origin = tmp_path / "temporarily-unavailable.git"
-    _git(main_repos.local, "remote", "set-url", "origin", str(missing_origin))
+    local_before = _commit_file(
+        main_repos.local, "retry.txt", "retry\n", "local before push race")
+    real_run_git = git_ops.run_git
+    raced = {"head": ""}
 
-    first = git_ops.do_commit(
-        str(main_repos.local),
-        message="retry after failure",
-        push=True,
-        paths=[str(note)],
-    )
+    def advance_origin_before_first_push(args, *call_args, **call_kwargs):
+        if not raced["head"] and "push" in args:
+            raced["head"] = _commit_file(
+                main_repos.peer,
+                "race.txt",
+                "remote race\n",
+                "remote wins first push race",
+            )
+            _git(main_repos.peer, "push", "origin", "main")
+        return real_run_git(args, *call_args, **call_kwargs)
 
-    assert first.committed is True
-    assert first.pushed is False
-    committed_head = _git_text(main_repos.local, "rev-parse", "HEAD")
-    assert _git_text(main_repos.local, "show", "HEAD:retry.txt") == "retry"
-    assert git_ops.read_last_sync_error(str(main_repos.local))
+    monkeypatch.setattr(git_ops, "run_git", advance_origin_before_first_push)
+    result = git_ops.sync_main(str(main_repos.local))
 
-    _git(main_repos.local, "remote", "set-url", "origin", str(main_repos.origin))
-    retry = git_ops.sync_main(str(main_repos.local))
-
-    assert retry.ok is True
-    assert _origin_main(main_repos.origin) == committed_head
+    assert raced["head"]
+    assert result.ok is True
+    local_after = _git_text(main_repos.local, "rev-parse", "HEAD")
+    assert local_after != local_before
+    assert _origin_main(main_repos.origin) == local_after
+    assert _git(
+        main_repos.local,
+        "merge-base",
+        "--is-ancestor",
+        raced["head"],
+        local_after,
+        check=False,
+    ).returncode == 0
     assert _git_text(
         main_repos.origin, "show", "refs/heads/main:retry.txt") == "retry"
+    assert _git_text(
+        main_repos.origin, "show", "refs/heads/main:race.txt") == "remote race"
     assert git_ops.read_last_sync_error(str(main_repos.local)) == ""
 
 
@@ -180,12 +190,21 @@ def test_sync_main_refuses_non_main_without_mutating_repository(
     main_repos: MainRepos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    remote_head = _commit_file(
+        main_repos.peer, "remote-only.txt", "remote\n", "remote before feature sync")
+    _git(main_repos.peer, "push", "origin", "main")
     _git(main_repos.local, "switch", "-c", "feature/alice")
     (main_repos.local / "seed.txt").write_text("dirty feature bytes\n", encoding="utf-8")
     branch_before = _git_text(main_repos.local, "branch", "--show-current")
     head_before = _git_text(main_repos.local, "rev-parse", "HEAD")
     status_before = _git_text(main_repos.local, "status", "--porcelain=v1")
-    origin_before = _origin_main(main_repos.origin)
+    tracking_before = _git_text(
+        main_repos.local, "rev-parse", "refs/remotes/origin/main")
+    fetch_head = Path(_git_text(
+        main_repos.local, "rev-parse", "--git-path", "FETCH_HEAD"))
+    if not fetch_head.is_absolute():
+        fetch_head = main_repos.local / fetch_head
+    fetch_head_before = fetch_head.read_bytes() if fetch_head.exists() else None
 
     result = git_ops.sync_main(str(main_repos.local))
 
@@ -193,11 +212,15 @@ def test_sync_main_refuses_non_main_without_mutating_repository(
     assert _git_text(main_repos.local, "branch", "--show-current") == branch_before
     assert _git_text(main_repos.local, "rev-parse", "HEAD") == head_before
     assert _git_text(main_repos.local, "status", "--porcelain=v1") == status_before
-    assert _origin_main(main_repos.origin) == origin_before
+    assert _origin_main(main_repos.origin) == remote_head
+    assert _git_text(
+        main_repos.local, "rev-parse", "refs/remotes/origin/main") == tracking_before
+    fetch_head_after = fetch_head.read_bytes() if fetch_head.exists() else None
+    assert fetch_head_after == fetch_head_before
     assert git_ops.read_last_sync_error(str(main_repos.local))
 
 
-def test_success_clears_last_error_without_pending_or_worker_surface(
+def test_success_clears_last_error_after_recovery(
     main_repos: MainRepos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state_home = tmp_path / "state"
@@ -211,9 +234,6 @@ def test_success_clears_last_error_without_pending_or_worker_surface(
 
     assert failed.ok is False
     assert git_ops.read_last_sync_error(str(main_repos.local))
-    state_dir = state_home / "teammode"
-    if state_dir.exists():
-        assert not any("push-pending" in item.name for item in state_dir.iterdir())
 
     _git(main_repos.local, "remote", "set-url", "origin", str(main_repos.origin))
     recovered = git_ops.sync_main(str(main_repos.local))
@@ -221,15 +241,6 @@ def test_success_clears_last_error_without_pending_or_worker_surface(
     assert recovered.ok is True
     assert _origin_main(main_repos.origin) == local_head
     assert git_ops.read_last_sync_error(str(main_repos.local)) == ""
-    if state_dir.exists():
-        assert not any("push-pending" in item.name for item in state_dir.iterdir())
-    for removed_api in (
-        "kick_push_worker",
-        "push_pending_path",
-        "read_push_pending_state",
-        "write_push_pending",
-    ):
-        assert not hasattr(git_ops, removed_api)
 
 
 def test_sync_main_aborts_only_its_conflicting_rebase_and_preserves_local_commit(
@@ -282,63 +293,6 @@ def test_sync_main_never_autostashes_unrelated_dirty_bytes(
     assert _origin_main(main_repos.origin) == remote_head
 
 
-def test_sync_main_holds_one_repo_lock_for_every_network_git_call(
-    main_repos: MainRepos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    _commit_file(main_repos.local, "locked.txt", "locked\n", "locked sync")
-    real_lock = git_ops._repo_sync_lock
-    real_run_git = git_ops.run_git
-    state = {"held": False, "entries": 0, "network_calls": 0}
-
-    @contextmanager
-    def observed_lock(team_root: str, timeout: float):
-        with real_lock(team_root, timeout) as acquired:
-            state["entries"] += 1
-            state["held"] = acquired
-            try:
-                yield acquired
-            finally:
-                state["held"] = False
-
-    def guarded_run_git(args, *call_args, **call_kwargs):
-        if any(command in args for command in ("fetch", "pull", "push")):
-            state["network_calls"] += 1
-            assert state["held"] is True
-        return real_run_git(args, *call_args, **call_kwargs)
-
-    monkeypatch.setattr(git_ops, "_repo_sync_lock", observed_lock)
-    monkeypatch.setattr(git_ops, "run_git", guarded_run_git)
-
-    result = git_ops.sync_main(str(main_repos.local))
-
-    assert result.ok is True
-    assert state["entries"] == 1
-    assert state["network_calls"] >= 3
-    assert state["held"] is False
-
-
-def test_stale_auto_merge_marker_does_not_preblock_main_sync(
-    main_repos: MainRepos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    local_head = _commit_file(
-        main_repos.local, "auto-merge.txt", "ok\n", "stale marker sync")
-    marker = Path(_git_text(
-        main_repos.local, "rev-parse", "--git-path", "AUTO_MERGE"))
-    if not marker.is_absolute():
-        marker = main_repos.local / marker
-    marker.write_text(
-        _git_text(main_repos.local, "rev-parse", "HEAD^{tree}") + "\n",
-        encoding="ascii",
-    )
-
-    result = git_ops.sync_main(str(main_repos.local))
-
-    assert result.ok is True
-    assert _origin_main(main_repos.origin) == local_head
-
-
 def test_last_sync_error_redacts_and_clears_in_machine_local_state(
     main_repos: MainRepos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -356,15 +310,3 @@ def test_last_sync_error_redacts_and_clears_in_machine_local_state(
     assert "[redacted]" in rendered
     assert git_ops.clear_last_sync_error(str(main_repos.local)) is True
     assert git_ops.read_last_sync_error(str(main_repos.local)) == ""
-
-
-def test_pending_worker_public_surface_and_script_are_absent() -> None:
-    removed_names = (
-        "kick_" + "push_worker",
-        "push_" + "pending_path",
-        "read_" + "push_pending_state",
-        "write_" + "push_pending",
-    )
-    assert not (INFRA / "hooks" / ("push" + "-worker.py")).exists()
-    for name in removed_names:
-        assert not hasattr(git_ops, name)

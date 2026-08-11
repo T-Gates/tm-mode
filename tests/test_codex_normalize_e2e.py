@@ -237,6 +237,60 @@ def test_session_start_injects_context_via_codex_normalize(tmp_path):
     assert relay.is_file(), f"세션 relay 파일이 있어야 한다: {relay}"
 
 
+def test_resume_and_compact_emit_once_per_transcript_generation(tmp_path):
+    root = _make_team_root(tmp_path)
+    env = _scrubbed_env(tmp_path, {"TEAMMODE_HOME": str(root)})
+    transcript = tmp_path / "root-session.jsonl"
+
+    def write_generation(timestamp: str) -> None:
+        transcript.write_text(
+            "\n".join(
+                (
+                    json.dumps(
+                        {"type": "session_meta", "payload": {"id": "root-session"}}
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": timestamp,
+                            "type": "turn_context",
+                            "payload": {"turn_id": "turn-reused"},
+                        }
+                    ),
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    def run(source: str) -> subprocess.CompletedProcess:
+        wire = {
+            "hook_event_name": "SessionStart",
+            "session_id": "root-session",
+            "source": source,
+            "transcript_path": str(transcript),
+        }
+        return _run_codex_normalize(
+            root, "session-start.py", json.dumps(wire), env
+        )
+
+    write_generation("2026-07-14T14:35:11Z")
+    resumed = run("resume")
+    same_generation_compact = run("compact")
+    write_generation("2026-07-14T14:36:11Z")
+    next_generation = run("compact")
+
+    assert all(
+        proc.returncode == 0
+        for proc in (resumed, same_generation_compact, next_generation)
+    )
+    assert resumed.stdout.strip()
+    assert not same_generation_compact.stdout.strip()
+    assert next_generation.stdout.strip()
+    for proc in (resumed, next_generation):
+        context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "[teammode]" in context
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 4. 미지/변형 wire — fail-open-quietly (비-guard 훅)
 # ═══════════════════════════════════════════════════════════════════════

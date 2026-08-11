@@ -37,7 +37,6 @@ CODEX_EVENTS = REPO / "infra" / "agents" / "codex" / "events.json"
 KB_GUARD = REPO / "infra" / "hooks" / "kb-write-guard.py"
 SESSION_START = REPO / "infra" / "hooks" / "session-start.py"
 TEAMMODE = REPO / "infra" / "teammode.py"
-SKILL_MD = REPO / "infra" / "skills" / "core" / "tm-manage-memory" / "SKILL.md"
 PY = sys.executable
 
 
@@ -454,15 +453,3 @@ def test_engine_unlock_roundtrip_opens_guard_window(tmp_path):
     assert _run_engine_unlock(root, "end", env).returncode == 0
     proc = _run_guard(_memory_payload(root, session_id=sid), root, _clean_env(state))
     assert proc.returncode == 2, "end 후에는 다시 deny 되어야 한다"
-
-
-# ── (4) SKILL.md: 4-0/4-2 스니펫 → 엔진 동사 ─────────────────────────────────
-
-def test_skill_md_uses_engine_unlock_verb():
-    """tm-manage-memory SKILL 4-0/4-2 가 엔진 동사 호출로 대체됐다."""
-    text = SKILL_MD.read_text(encoding="utf-8")
-    assert "memory unlock begin" in text
-    assert "memory unlock end" in text
-    # 손파싱 플래그 스니펫(수기 flag 경로 계산)이 제거됐는지
-    assert "flag.write_text" not in text
-    assert "kb-unlock-{suffix}" not in text

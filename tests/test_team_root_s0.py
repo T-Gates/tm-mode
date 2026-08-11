@@ -11,6 +11,7 @@
 """
 import json
 import runpy
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -180,15 +181,34 @@ def test_codex_adapter_team_root_param_overrides_default(tmp_path):
 
 
 def test_codex_main_team_root_cli_option_accepted(tmp_path):
-    """codex adapter main()이 --team-root 를 오류 없이 파싱한다."""
+    """Codex sync pins the selected team root and member into managed hooks."""
     root = _scaffold_team_root(tmp_path)
     mod = _load_codex()
+    config = tmp_path / "config.toml"
     rc = mod["main"]([
         "--team-root", str(root),
-        "--config", str(tmp_path / "config.toml"),
-        "install-mcp",
+        "--member", "alice",
+        "--config", str(config),
+        "sync", "--on",
     ])
     assert rc == 0
+    text = config.read_text(encoding="utf-8")
+    assert "# teammode-hooks-start" in text
+    command_line = next(
+        line for line in text.splitlines() if line.startswith("command = ")
+    )
+    encoded = command_line.split("=", 1)[1].strip()
+    command = encoded[1:-1] if encoded.startswith("'") else json.loads(encoded)
+    tokens = shlex.split(command)
+    assert tokens[0] == "env"
+    assignments = {}
+    for token in tokens[1:]:
+        if "=" not in token:
+            break
+        key, value = token.split("=", 1)
+        assignments[key] = value
+    assert assignments["TEAMMODE_HOME"] == str(root.resolve())
+    assert assignments["TEAMMODE_MEMBER"] == "alice"
 
 
 def test_codex_main_without_team_root_still_works(tmp_path):

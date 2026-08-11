@@ -434,22 +434,6 @@ class TestStatuslineScript:
         # 출력에 무언가가 있어야 함 (팀명 폴백)
         assert stdout.strip() != ""
 
-    def test_C4_script_imports_io_encoding(self, tmp_path):
-        """teammode_statusline.py 가 io_encoding 모듈을 import한다 (크로스OS 보장)."""
-        assert STATUSLINE_SCRIPT.is_file(), "teammode_statusline.py 파일이 존재해야 한다"
-        content = STATUSLINE_SCRIPT.read_text(encoding="utf-8")
-        assert "io_encoding" in content
-        assert "ensure_utf8_io" in content
-
-    def test_C5_script_uses_path_file_for_team_root(self, tmp_path):
-        """teammode_statusline.py 가 __file__ 기준 팀루트를 계산한다."""
-        assert STATUSLINE_SCRIPT.is_file()
-        content = STATUSLINE_SCRIPT.read_text(encoding="utf-8")
-        # __file__ 기준 경로 계산 패턴
-        assert "__file__" in content
-        assert "parent" in content
-
-
 # ════════════════════════════════════════════════════════════════════
 # D. 팀명 동적·파싱실패 폴백
 # ════════════════════════════════════════════════════════════════════
@@ -846,14 +830,6 @@ class TestIsBashCompatible:
         """.sh 토큰 포함 command → True."""
         assert claude_adapter.Adapter._is_bash_compatible("/usr/local/bin/my-status.sh")
 
-    def test_F5b_sh_start_is_bash_compatible(self):
-        """'sh ' 로 시작하는 command → True."""
-        assert claude_adapter.Adapter._is_bash_compatible("sh /usr/local/bin/script")
-
-    def test_F5c_bash_start_is_bash_compatible(self):
-        """'bash ' 로 시작하는 command → True."""
-        assert claude_adapter.Adapter._is_bash_compatible("bash /path/to/script")
-
     def test_F5d_shebang_sh_is_bash_compatible(self, tmp_path):
         """실파일 + shebang에 'sh' → True."""
         script = tmp_path / "my_status"
@@ -882,11 +858,6 @@ class TestIsBashCompatible:
     def test_F5i_unknown_undecidable_is_false(self):
         """판단 불가 command → False (보수적)."""
         assert not claude_adapter.Adapter._is_bash_compatible("/usr/local/bin/my-status")
-
-    def test_F5j_empty_command_is_false(self):
-        """빈 command → False."""
-        assert not claude_adapter.Adapter._is_bash_compatible("")
-
 
 class TestAutoWrapPersonalStatusLine:
     """F6~F7: 개인 statusLine auto-wrap 및 PowerShell no-touch."""

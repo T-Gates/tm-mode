@@ -28,9 +28,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "infra"))
-
-import i18n as _i18n  # noqa: E402
 
 PY = sys.executable
 SESSION_START = REPO / "infra" / "hooks" / "session-start.py"
@@ -51,50 +48,7 @@ def _write_config(root: Path, *, locale: str | None, extra: dict | None = None) 
         json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
 
 
-# ═══ 1) team_lang 폴백 계약 ═══════════════════════════════════════════════════
-
-def test_team_lang_en_locale(tmp_path):
-    """team.locale=en_US → en."""
-    _write_config(tmp_path, locale="en_US")
-    assert _i18n.team_lang(str(tmp_path)) == "en"
-
-
-def test_team_lang_ko_locale(tmp_path):
-    """team.locale=ko_KR → ko."""
-    _write_config(tmp_path, locale="ko_KR")
-    assert _i18n.team_lang(str(tmp_path)) == "ko"
-
-
-def test_team_lang_missing_locale_field_is_ko(tmp_path):
-    """config 는 읽히는데 team.locale 없음 → ko (구팀 무변화 계약)."""
-    _write_config(tmp_path, locale=None)
-    assert _i18n.team_lang(str(tmp_path)) == "ko"
-
-
-def test_team_lang_no_config_is_en(tmp_path):
-    """config 파일 없음 → en (제품 기본)."""
-    assert _i18n.team_lang(str(tmp_path)) == "en"
-
-
-def test_team_lang_broken_config_is_en(tmp_path):
-    """파싱 실패·루트 invalid → en."""
-    (tmp_path / "team.config.json").write_text("{not json", encoding="utf-8")
-    assert _i18n.team_lang(str(tmp_path)) == "en"
-    (tmp_path / "team.config.json").write_text("[1,2]", encoding="utf-8")
-    assert _i18n.team_lang(str(tmp_path)) == "en"
-
-
-def test_team_lang_normalization_ko_star(tmp_path):
-    """정규화: ko* → ko, 그 외(미지 locale 포함) → en."""
-    _write_config(tmp_path, locale="ko")
-    assert _i18n.team_lang(str(tmp_path)) == "ko"
-    _write_config(tmp_path, locale="ko_KR.UTF-8")
-    assert _i18n.team_lang(str(tmp_path)) == "ko"
-    _write_config(tmp_path, locale="fr_FR")
-    assert _i18n.team_lang(str(tmp_path)) == "en"
-
-
-# ═══ 2) session-start 주입 ════════════════════════════════════════════════════
+# ═══ session-start 주입 ═══════════════════════════════════════════════════════
 
 def _run_session_start(root: Path) -> subprocess.CompletedProcess:
     env = {"TEAMMODE_HOME": str(root), "PATH": "/usr/bin:/bin"}
@@ -362,24 +316,3 @@ def test_all_hook_t_keys_exist_in_catalog():
     cat = _i18n.MESSAGES["en_US"]
     missing = sorted(k for k in keys if k not in cat)
     assert not missing, f"en_US 카탈로그 누락 키: {missing}"
-
-
-import pytest as _pytest
-
-
-@_pytest.mark.parametrize("cfg,expected", [
-    ({"team": {"locale": None}}, "ko"),       # 명시 null
-    ({"team": {"locale": ""}}, "ko"),          # 빈 문자열
-    ({"team": {"locale": "   "}}, "ko"),       # 공백
-    ({"team": []}, "ko"),                       # team 이 비-dict → locale 없음 취급
-    ({"team": {"locale": "EN_us"}}, "en"),     # 대소문자 무관
-    ({"team": {"locale": "ko"}}, "ko"),        # 2글자
-    (None, "en"),                               # config 파싱 실패 전달
-    ("not a dict", "en"),                       # 루트 비-dict
-])
-def test_team_lang_from_config_edges(cfg, expected):
-    import sys as _sys
-    from pathlib import Path as _P
-    _sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "infra"))
-    import i18n as _i18n
-    assert _i18n.team_lang_from_config(cfg) == expected

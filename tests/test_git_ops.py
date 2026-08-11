@@ -118,23 +118,102 @@ def behind_clone(tmp_path: Path):
     return type("BehindClone", (), {"origin": origin, "seed": seed, "clone": clone})()
 
 
-@pytest.mark.parametrize("message", [
-    " ! [rejected] main -> main (non-fast-forward)",
-    " ! [rejected] main -> main (fetch first)",
-    "Updates were rejected because the remote contains work that you do not have locally",
-])
-def test_non_fast_forward_patterns_are_bounded(message: str) -> None:
-    assert git_ops._is_non_fast_forward(message) is True
+def test_upstream_sync_and_scoped_commit_preserve_instance_util(
+    tmp_path: Path,
+) -> None:
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+    team = tmp_path / "team"
 
+    upstream.mkdir()
+    _git(upstream, "init", "--bare", ".")
+    seed.mkdir()
+    _git(seed, "init", "-b", "main", ".")
+    _configure(seed)
+    (seed / "infra" / "skills" / "util").mkdir(parents=True)
+    (seed / "infra" / "engine.py").write_text("v1\n", encoding="utf-8")
+    (seed / "infra" / "skills" / "util" / ".gitkeep").write_text(
+        "v1\n", encoding="utf-8"
+    )
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "upstream v1")
+    _git(seed, "remote", "add", "origin", str(upstream))
+    _git(seed, "push", "-u", "origin", "main")
 
-@pytest.mark.parametrize("message", [
-    "fatal: Authentication failed",
-    "fatal: Could not resolve host",
-    " ! [remote rejected] main -> main (pre-receive hook declined)",
-    "Everything up-to-date",
-])
-def test_non_fast_forward_does_not_match_unrelated_failures(message: str) -> None:
-    assert git_ops._is_non_fast_forward(message) is False
+    team.mkdir()
+    _git(team, "init", "-b", "main", ".")
+    _configure(team)
+    util_file = (
+        team
+        / "infra"
+        / "skills"
+        / "util"
+        / "acme-schedule"
+        / "SKILL.md"
+    )
+    util_file.parent.mkdir(parents=True)
+    (team / "infra" / "engine.py").write_text("team-old\n", encoding="utf-8")
+    util_file.write_text("committed custom util\n", encoding="utf-8")
+    _git(team, "add", ".")
+    _git(team, "commit", "-m", "team instance")
+    _git(team, "remote", "add", "upstream", str(upstream))
+
+    (seed / "infra" / "engine.py").write_text("v2\n", encoding="utf-8")
+    (seed / "infra" / "skills" / "util" / ".gitkeep").write_text(
+        "upstream touched util\n", encoding="utf-8"
+    )
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "upstream v2")
+    _git(seed, "push", "origin", "main")
+
+    util_file.write_text("uncommitted custom util\n", encoding="utf-8")
+    _git(team, "add", "--", str(util_file.relative_to(team)))
+    util_bytes_before = util_file.read_bytes()
+    util_status_before = _git(
+        team,
+        "status",
+        "--porcelain=v1",
+        "--",
+        "infra/skills/util",
+    ).stdout
+
+    result = git_ops.sync_from_upstream(str(team))
+
+    assert result.ok is True and result.changed is True
+    assert result.blocked is False
+    assert (team / "infra" / "engine.py").read_text(encoding="utf-8") == "v2\n"
+    assert util_file.read_bytes() == util_bytes_before
+    assert not (team / "infra" / "skills" / "util" / ".gitkeep").exists()
+    assert _git(
+        team,
+        "status",
+        "--porcelain=v1",
+        "--",
+        "infra/skills/util",
+    ).stdout == util_status_before
+    assert ":(exclude)infra/skills/util" in result.pathspecs
+
+    committed = git_ops.do_commit(
+        str(team),
+        "engine sync",
+        push=False,
+        paths=list(result.pathspecs),
+    )
+
+    assert committed.committed is True, committed.detail
+    committed_paths = _git(
+        team, "show", "--format=", "--name-only", "HEAD"
+    ).stdout.splitlines()
+    assert "infra/engine.py" in committed_paths
+    assert not any(path.startswith("infra/skills/util") for path in committed_paths)
+    assert util_file.read_bytes() == util_bytes_before
+    assert _git(
+        team,
+        "status",
+        "--porcelain=v1",
+        "--",
+        "infra/skills/util",
+    ).stdout == util_status_before
 
 
 def test_git_env_disables_interactive_prompts_without_disabling_helpers() -> None:
@@ -261,14 +340,6 @@ def test_do_pull_fast_forwards_and_non_git_is_non_raising(
     plain = tmp_path / "plain"
     plain.mkdir()
     assert git_ops.do_pull(str(plain)).ok is False
-
-
-def test_git_ops_keeps_generic_pull_and_runner_safety_surfaces() -> None:
-    for name in (
-        "run_git", "git_env", "kill_group", "is_git_worktree",
-        "do_pull", "PullResult",
-    ):
-        assert hasattr(git_ops, name), f"git_ops missing generic surface: {name}"
 
 
 def test_pull_command_fast_forwards_and_localizes_english(behind_clone) -> None:

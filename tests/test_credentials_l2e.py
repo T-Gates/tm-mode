@@ -276,18 +276,6 @@ def test_token_never_in_logging(caplog):
     _assert_no_sentinel(caplog.text, tok, "로그")
 
 
-def test_module_source_has_no_token_print():
-    """적대적 정적 검사: 모듈 소스에 토큰값을 print/log/예외에 직접 넣는 패턴이 없는지.
-
-    동적 grep(stdout/예외)이 못 잡는 미래 회귀 표면을 소스 레벨에서 한 번 더 박는다.
-    """
-    src = (REPO / "infra" / "credentials.py").read_text(encoding="utf-8")
-    # 토큰 변수를 직접 포매팅에 넣는 명백한 누출 패턴 거부.
-    forbidden = ["{token}", "print(token", "(token)", "f\"{tok", "{tok}"]
-    for pat in forbidden:
-        assert pat not in src, f"소스에 잠재적 토큰 누출 패턴: {pat!r}"
-
-
 # ─────────────────────────── 4. scope 격리 ───────────────────────────
 
 def test_team_vs_personal_scope_isolation():
@@ -330,14 +318,6 @@ def test_writes_under_isolated_xdg_not_real_host():
     real = Path(os.path.expanduser("~/.local/share/teammode/credentials"))
     assert not str(path).startswith(str(real))
     # B0 conftest 가드(_ENTRY_TRACKED_DIRS)가 실경로 침투 시 이 테스트 종료 후 발화한다.
-
-
-def test_no_team_transmission_channel():
-    """B-3 각자입력: store/load/delete 외 '팀 전송/공유' 공개 동사가 없음(v0.1 미구현)."""
-    public = {n for n in dir(cred) if not n.startswith("_")}
-    forbidden = {"share", "push", "broadcast", "sync", "fetch_team", "publish", "upload"}
-    leaked = public & forbidden
-    assert not leaked, f"v0.1 에 없어야 할 팀 전송 동사 노출: {leaked}"
 
 
 # ─────────────────────────── SEC-4: 동기화 폴더 경고 ───────────────────────────

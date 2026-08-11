@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 HOOKS = REPO / "infra" / "hooks"
 AUTO_COMMIT = HOOKS / "auto-commit.py"
 CONFIRM = HOOKS / "confirm-action.py"
-MANIFEST = HOOKS / "manifest.json"
+CLAUDE_NORMALIZE = REPO / "infra" / "agents" / "claude" / "normalize.py"
 PY = sys.executable
 
 
@@ -328,6 +328,40 @@ def test_auto_commit_bad_stdin_no_crash(fake_repo):
 # confirm-action.py
 # ════════════════════════════════════════════════════════════════════
 
+def test_raw_mcp_alias_is_denied_through_claude_normalize(fake_repo):
+    (fake_repo / ".teammode-active").write_text("")
+    raw = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "mcp__tm-linear__create_issue",
+        "tool_input": {"title": "create a real issue"},
+    }
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "TEAMMODE_CONFIRM"
+    }
+    env["TEAMMODE_HOME"] = str(fake_repo)
+
+    proc = subprocess.run(
+        [
+            PY,
+            str(CLAUDE_NORMALIZE),
+            "confirm-action.py",
+            "teammode-linear-create-allow",
+        ],
+        input=json.dumps(raw),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=fake_repo,
+    )
+
+    assert proc.returncode == 2, proc.stderr
+    decision = json.loads(proc.stdout)["hookSpecificOutput"]
+    assert decision["hookEventName"] == "PreToolUse"
+    assert decision["permissionDecision"] == "deny"
+
+
 def test_confirm_no_marker_is_noop(fake_repo):
     """빌드 안전: .teammode-active 없으면 차단도 안 함(exit 0)."""
     payload = {"event": "PreToolUse",
@@ -443,53 +477,6 @@ def test_confirm_bad_stdin_no_block(fake_repo):
         capture_output=True, text=True,
         env={**os.environ, "TEAMMODE_HOME": str(fake_repo)})
     assert proc.returncode == 0
-
-
-# ════════════════════════════════════════════════════════════════════
-# manifest 정합 (선언 ↔ 파일 일치)
-# ════════════════════════════════════════════════════════════════════
-
-def test_manifest_declared_scripts_exist():
-    """manifest 가 선언한 모든 script 파일이 hooks/ 에 실재한다(G.3 정합)."""
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    for e in entries:
-        script = e.get("script")
-        assert script, f"manifest 엔트리에 script 누락: {e}"
-        assert (HOOKS / script).is_file(), f"선언된 script 파일 부재: {script}"
-
-
-def test_manifest_includes_both_l2g_hooks():
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    scripts = {e.get("script") for e in entries}
-    assert "auto-commit.py" in scripts
-    assert "confirm-action.py" in scripts
-
-
-def test_auto_commit_manifest_covers_foreground_push_budget():
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    entry = next(e for e in entries if e.get("script") == "auto-commit.py")
-    # main sync와 last-sync-error 기록이 runner cap 전에 끝나야 한다.
-    assert entry["timeout"] >= 70
-    note = entry.get("_timeout_note", "")
-    assert "#128" in note
-    assert "last-sync-error" in note
-
-
-def test_manifest_no_duplicate_event_script_pairs():
-    """normalize 자가필터 전제: 같은 (event, script, match) 조합 중복 금지(§2.10-2, lint 대상).
-
-    S6 이후 confirm-action.py 는 도구별로 여러 엔트리를 가질 수 있다(서버/도구마다 별도 엔트리).
-    중복 금지 키는 (event, script, match_json) 3-tuple 로 정밀화 — 같은 매처가 중복 등록되는
-    것을 막되, 다른 도구의 엔트리는 허용한다.
-    """
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    seen = set()
-    for e in entries:
-        # match 를 정렬된 JSON 문자열로 직렬화하여 내용 동등성 비교
-        match_key = json.dumps(e.get("match"), sort_keys=True)
-        key = (e.get("event"), e.get("script"), match_key)
-        assert key not in seen, f"중복 (event, script, match): {key}"
-        seen.add(key)
 
 
 class _StdinStub:

@@ -23,6 +23,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "infra"))
 
@@ -71,6 +73,28 @@ def _codex(root, tmp_path):
         python="python3", team_root=str(root),
         providers_dir=str(REPO / "providers"),
     )
+
+
+@pytest.mark.parametrize(
+    ("agent", "active_status"),
+    (("claude", b'"statusLine"'), ("codex", b"statusMessage")),
+)
+def test_plain_sync_preserves_on_hooks_and_status_bytes(
+    tmp_path, agent, active_status,
+):
+    root = _scaffold(tmp_path, {})
+    adapter = _claude(root, tmp_path) if agent == "claude" else _codex(root, tmp_path)
+
+    adapter.sync(mode="on")
+    settings = Path(adapter.settings_path)
+    on_bytes = settings.read_bytes()
+
+    assert b"session-start.py" in on_bytes
+    assert active_status in on_bytes
+
+    adapter.sync(mode=None)
+
+    assert settings.read_bytes() == on_bytes
 
 
 # ── claude: 감지 → placeholder 미등록 + 안내 ──

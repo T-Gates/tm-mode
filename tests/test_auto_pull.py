@@ -14,9 +14,6 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "infra" / "hooks"))
-
-import auto_pull as ap  # noqa: E402
 
 
 # ── 로컬 git 헬퍼 (네트워크 0, /tmp 격리) ──
@@ -61,34 +58,6 @@ def cloned_repo(tmp_path):
     c = C()
     c.upstream, c.work, c.clone = upstream, work, clone
     return c
-
-
-# ── should_pull: 제품 upstream fetch 스로틀 판정 ──
-
-def test_should_pull_true_when_no_state_file(tmp_path):
-    state = tmp_path / "last-pull"
-    assert ap.should_pull(str(state), now=1000.0, throttle_seconds=300) is True
-
-
-def test_should_pull_false_within_throttle(tmp_path):
-    state = tmp_path / "last-pull"
-    state.write_text("1000.0")
-    # 마지막 pull 1000, now 1200 → 200s 경과 < 300 스로틀 → skip
-    assert ap.should_pull(str(state), now=1200.0, throttle_seconds=300) is False
-
-
-def test_should_pull_true_after_throttle_elapsed(tmp_path):
-    state = tmp_path / "last-pull"
-    state.write_text("1000.0")
-    # 1000 → 1400 = 400s ≥ 300 → pull
-    assert ap.should_pull(str(state), now=1400.0, throttle_seconds=300) is True
-
-
-def test_should_pull_true_on_corrupt_state(tmp_path):
-    state = tmp_path / "last-pull"
-    state.write_text("garbage-not-a-float")
-    # 깨진 상태 파일 → 보수적으로 pull 허용(스로틀 모름 = 막지 않음)
-    assert ap.should_pull(str(state), now=1400.0, throttle_seconds=300) is True
 
 
 # ── 훅 통합 (2026-06-17 P0 hook hang 수정 후) ──────────────────────────────

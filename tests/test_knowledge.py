@@ -22,6 +22,7 @@ import runpy
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -294,6 +295,100 @@ def test_knowledge_delete_removes_file_and_index_row(tmp_path):
     if idx.is_file():
         text = idx.read_text(encoding="utf-8")
         assert "to-delete.md" not in text, "INDEX 행이 제거되지 않았다"
+
+
+@pytest.mark.parametrize(
+    "original_bytes",
+    [
+        None,
+        (
+            "---\n"
+            "author: bob\n"
+            "weight: 📎\n"
+            "created_at: 2026-01-01\n"
+            "updated_at: 2026-01-01\n"
+            "---\n"
+            "원본 내용.\n"
+        ).encode("utf-8"),
+    ],
+    ids=["new-file-removed", "existing-file-restored"],
+)
+def test_knowledge_write_rolls_back_file_when_index_update_fails(
+    tmp_path, original_bytes,
+):
+    """INDEX upsert 실패 시 write 단계를 신규/기존 파일 모두 롤백한다."""
+    target = _knowledge_path(tmp_path, "team", "atomic-write.md")
+    target.parent.mkdir(parents=True)
+    if original_bytes is not None:
+        target.write_bytes(original_bytes)
+
+    mod = runpy.run_path(str(ENGINE), run_name="__write_rollback_test__")
+
+    def fail_index_update(*_args, **_kwargs):
+        raise OSError("injected INDEX update failure")
+
+    args = [
+        "memory", "write",
+        "--folder", "team",
+        "--filename", target.name,
+        "--content", "교체 내용.\n",
+        "--author", "bob",
+        "--weight", "📎",
+        "--date", "2026-08-12",
+        "--root", str(tmp_path),
+    ]
+    with mock.patch.dict(
+        mod["main"].__globals__, {"_index_upsert": fail_index_update}
+    ):
+        rc = mod["main"](args)
+
+    assert rc == 2
+    if original_bytes is None:
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == original_bytes
+
+
+def test_knowledge_delete_restores_index_when_unlink_fails(tmp_path):
+    """INDEX 행 제거 후 document unlink 실패 시 INDEX 원문을 복원한다."""
+    target = _knowledge_path(tmp_path, "team", "atomic-delete.md")
+    target.parent.mkdir(parents=True)
+    document_bytes = (
+        "---\nauthor: bob\nweight: 📎\n"
+        "created_at: 2026-01-01\nupdated_at: 2026-01-01\n---\n"
+        "삭제 롤백 검증.\n"
+    ).encode("utf-8")
+    target.write_bytes(document_bytes)
+
+    index_path = _index_path(tmp_path, "team")
+    index_bytes = (
+        "| 가중치 | 경로 | 내용 | 편집일 |\n"
+        "|--------|------|------|--------|\n"
+        "| 📎 | `memory/team/atomic-delete.md` | 삭제 롤백 검증. | 2026-01-01 |\n"
+    ).encode("utf-8")
+    index_path.write_bytes(index_bytes)
+
+    mod = runpy.run_path(str(ENGINE), run_name="__delete_rollback_test__")
+    original_unlink = Path.unlink
+    resolved_target = target.resolve()
+
+    def fail_target_unlink(path, missing_ok=False):
+        if path.resolve() == resolved_target:
+            raise OSError("injected document unlink failure")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    args = [
+        "memory", "delete",
+        "--path", "team/atomic-delete.md",
+        "--author", "bob",
+        "--root", str(tmp_path),
+    ]
+    with mock.patch.object(Path, "unlink", fail_target_unlink):
+        rc = mod["main"](args)
+
+    assert rc == 2
+    assert target.read_bytes() == document_bytes
+    assert index_path.read_bytes() == index_bytes
 
 
 # ── C-3: traversal 차단 ───────────────────────────────────────────────
