@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recover edit leases at exact failure or verified terminal scope boundaries."""
+"""Release the exact edit mutex token after a failed file tool call."""
 
 from __future__ import annotations
 
@@ -18,22 +18,6 @@ def _team_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def _terminal_cleanup_allowed(data: dict) -> bool:
-    """Reject broad/ambiguous terminal boundaries before touching markers."""
-    event = data.get("event")
-    if event == "SubagentStop":
-        return bool(str(data.get("agent_id") or "").strip())
-    if data.get("agent") != "claude":
-        return True
-    if event != "Stop":
-        return True
-    raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
-    background = raw.get("background_tasks")
-    if background is None:
-        background = data.get("background_tasks")
-    return isinstance(background, list) and not background
-
-
 def main() -> int:
     try:
         data = json.loads(sys.stdin.read() or "{}")
@@ -42,25 +26,16 @@ def main() -> int:
     if not isinstance(data, dict) or _git_ops is None:
         return 0
 
-    event = data.get("event")
-    root = _team_root()
-    if event == "PostToolUseFailure":
-        # Failure carries the exact tool_use_id on Claude.  Codex deliberately
-        # does not register this unsupported event.
-        owner = _git_ops.hook_edit_lease_owner(data)
-        if owner:
-            _git_ops.end_hook_edit_lease(root, owner)
+    if data.get("event") != "PostToolUseFailure":
         return 0
-
-    if event not in {"Stop", "SubagentStop"}:
-        return 0
-    if not _terminal_cleanup_allowed(data):
-        return 0
-    scope = _git_ops.hook_edit_lease_scope(data)
-    agent = str(data.get("agent") or "").strip().lower()
-    runtime = _git_ops._current_hook_runtime_identity(agent)
-    if scope and runtime is not None:
-        _git_ops.end_hook_edit_leases_for_scope(root, scope, runtime)
+    # Claude failure events carry the exact tool_use_id. Codex does not expose
+    # this event; a lost token there is recovered by the core mutex TTL.
+    try:
+        token = _git_ops.hook_edit_mutex_token(data)
+        if token:
+            _git_ops.release_edit_mutex(_team_root(), token)
+    except Exception:  # noqa: BLE001 — cleanup cannot block lifecycle teardown
+        pass
     return 0
 
 

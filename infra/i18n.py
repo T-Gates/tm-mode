@@ -30,9 +30,10 @@ MESSAGES = {
         "hook_ss_header":
             "[teammode] Team mode active — session start context:",
         "hook_ss_sync_warn":
-            "⚠️ [sync warning] Local commits have not been pushed to origin — "
-            "risk of diverging from teammates. Check and resolve via "
-            "`teammode pull`/manual cleanup: {warn}",
+            "⚠️ [sync error] The last automatic main sync failed. Check and "
+            "resolve via `teammode pull` or manual cleanup: {warn}",
+        "hook_ss_sync_failed":
+            "[teammode] Main sync failed (non-fatal): {detail}",
         "hook_ss_sync_status":
             "--- origin sync status (team-shared) --- ahead {ahead} / "
             "behind {behind}",
@@ -43,86 +44,12 @@ MESSAGES = {
         "hook_ss_stale_home_warn":
             "[teammode] TEAMMODE_HOME is not a valid team root: {root} — "
             "if the repo moved/was renamed, update TEAMMODE_HOME in your shell profile",
-        "hook_ss_reconcile_conflict_marker":
-            "Session-start reconcile conflict (rebase abort) — manual cleanup needed: {detail}",
-        "hook_ss_reconcile_conflict_print":
-            "[teammode] Session reconcile failed: diverged from origin then hit a rebase "
-            "conflict — manual cleanup needed. behind={behind} ahead={ahead}",
-        "hook_ss_reconcile_skipped":
-            "[teammode] Session reconcile skipped (non-fatal): {action} — {detail}",
-        "hook_ss_pending_merge_conflict_marker":
-            "Push-pending reconcile conflict (merge abort) — manual cleanup "
-            "needed: {detail}",
-        "hook_ss_pending_reconcile_failed_marker":
-            "Automatic push-pending reconcile deferred — manual review needed: "
-            "{action} — {detail}",
-        "hook_ss_pending_reconcile_skipped":
-            "[teammode] Automatic push-pending reconcile skipped (non-fatal): "
-            "{action} — {detail}",
-        "hook_ss_push_pending_no_upstream":
-            "[teammode] A push is still pending but the remote can't be judged — "
-            "restarting the worker (will use `push -u` if this is a new branch).",
-        "hook_ss_push_worker_restart_failed":
-            "[teammode] Worker restart failed — will retry on the next commit/session.",
-        "hook_ss_push_pending_ahead":
-            "[teammode] A previous session's push is still pending (ahead={ahead}) — "
-            "restarting the worker.",
-        "hook_ss_push_pending_rekick":
-            "[teammode] A previous session's push is still pending — restarting "
-            "the worker for its stored destination.",
-        "hook_ss_push_pending_checkout_mismatch":
-            "Push pending targets a different checkout; preserving it on the "
-            "current branch: {targets}",
-        "hook_ss_push_pending_checkout_mismatch_print":
-            "[teammode] Preserved push pending for another checkout. Switch to "
-            "that branch to retry: {targets}",
-        # session-log-remind (UserPromptSubmit) — #45 pending-age 경고
-        "hook_rm_push_pending_age":
-            "[teammode] A push has been pending for {minutes} minutes — the worker "
-            "may have been lost. It will retry on the next edit commit, and a "
-            "session restart is guaranteed to retry it.",
-
-        # push-worker.py (detach push process, #45) — sync-warning marker content.
-        # These get read back later into hook_ss_sync_warn's {warn} slot, so they
-        # must render in the target locale (same class of bug as the
-        # session-start/auto-commit marker fixes).
-        "push_worker_non_ff_marker":
-            "push pending; non-fast-forward — delegated to session-start reconcile",
-        "push_worker_drain_limit_marker":
-            "push pending; worker drain limit reached — commit burst or repeated "
-            "rewrite (session-start recovery will retry)",
-        "push_worker_checkout_mismatch_marker":
-            "push pending targets a different checkout; preserved on the current "
-            "branch: {targets}",
-
         # auto-commit (PostToolUse/file_edit) — scaffolding added from scratch
         # (long-tail cluster). The commit message itself ("chore(teammode): ..."
         # is a git artifact and is NOT routed — already English, stays as-is.
-        "hook_ac_push_worker_disabled":
-            "[teammode] push-worker disabled (TEAMMODE_DISABLE_PUSH_WORKER) — "
-            "push is delegated to session-start recovery.",
-        "hook_ac_push_worker_start_failed":
-            "[teammode] push-worker failed to start — the pending push will be "
-            "retried at session start.",
-        "hook_ac_prior_push_pending":
-            "[teammode] A prior auto-commit's push is still pending — "
-            "foreground publication will retry it; the worker remains fallback.",
-        "hook_ac_prior_push_other_checkout":
-            "[teammode] Preserving push pending for another checkout while "
-            "publishing this edit separately: {targets}",
-        "hook_ac_push_failed_marker":
-            "Auto-commit push failed (commit preserved): {detail}",
-        "hook_ac_push_failed_print":
-            "[teammode] Auto-commit push failed — the commit was preserved and "
-            "a pending retry was recorded: {detail}",
-        "hook_ac_pending_write_failed_marker":
-            "Could not safely update push-pending state; the commit was preserved, "
-            "but automatic push recovery was not scheduled. Original push failure: {detail}",
-        "hook_ac_pending_write_failed_print":
-            "[teammode] Could not safely update push-pending state; the commit was "
-            "preserved, but automatic push recovery was not scheduled. Original push failure: {detail}",
-        "hook_ac_commit_deferred_marker":
-            "Auto-commit deferred (changes remain uncommitted): {detail}",
+        "hook_ac_sync_failed_print":
+            "[teammode] Auto-commit sync failed — the local commit was "
+            "preserved: {detail}",
         "hook_ac_commit_deferred_print":
             "[teammode] Auto-commit deferred — changes remain uncommitted: "
             "{detail}",
@@ -271,16 +198,10 @@ MESSAGES = {
         "cmd_pull_skipped":
             "tm-mode pull — skipped (non-fatal): {detail}",
         "cmd_commit_push_failed_suffix":
-            " (push failed — commit preserved)",
-        "cmd_commit_push_pending_marker":
-            "tm-mode commit push failed (commit preserved): {detail}",
-        "cmd_commit_pending_write_failed_marker":
-            "Could not safely update push-pending state; the commit was preserved, "
-            "but automatic push recovery was not scheduled. Original push failure: {detail}",
-        "cmd_commit_pending_write_failed":
-            "[warning] tm-mode commit: could not safely update push-pending "
-            "state; the commit was preserved, but automatic push recovery was "
-            "not scheduled. Original push failure: {detail}",
+            " (main sync failed — commit preserved)",
+        "cmd_commit_sync_failed":
+            "tm-mode commit — the local commit was preserved, but main sync "
+            "failed: {detail}",
         "cmd_commit_done":
             "tm-mode commit — committed{suffix}: {detail}",
         "cmd_commit_skipped":
@@ -650,17 +571,17 @@ MESSAGES = {
             "skill (engine: python infra/teammode.py memory write …).",
         "hook_kb_stderr_blocked":
             "[teammode] KB write blocked: {reason}",
-        "hook_edit_lease_deny_busy":
+        "hook_edit_mutex_deny_busy":
             "The file edit was not started because another session is changing "
             "the shared checkout. Retry shortly: {detail}",
-        "hook_edit_lease_deny_unavailable":
+        "hook_edit_mutex_deny_unavailable":
             "The edit synchronization module could not be loaded, so the file "
             "edit was blocked conservatively. Retry after resynchronizing hooks.",
-        "hook_edit_lease_deny_identity":
-            "The hook payload has no exact session/tool identity, so safe automatic "
+        "hook_edit_mutex_deny_identity":
+            "The hook payload has no exact tool identity, so safe automatic "
             "reconciliation cannot be guaranteed. Resynchronize the agent hooks "
             "and retry.",
-        "hook_edit_lease_stderr_blocked":
+        "hook_edit_mutex_stderr_blocked":
             "[teammode] File edit deferred: {reason}",
 
         # confirm-action

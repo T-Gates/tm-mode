@@ -459,21 +459,18 @@ def _done_message(det: dict) -> str:
 
 
 def _autocommit_scaffold(team_root: Path, member_name: str, out) -> None:
-    """scaffold·members·config 자동 커밋+push. push 실패해도 커밋 보존 +
-    sync-warning 마커로 가시화(런타임 auto-commit 와 동일 패턴, 이슈 #5).
-    """
+    """scaffold·members·config를 scoped commit 후 main에 즉시 동기화한다."""
     _cr = _git_ops.do_commit(
         str(team_root),
         message=f"team setup: register {member_name} + memory scaffold [auto]",
         push=True, paths=["memory", "team.config.json"])
     if getattr(_cr, "pushed", False):
-        _git_ops.clear_sync_warning_if_fully_published(str(team_root))
         out("[push] pushed memory/members to the team repo.")
     elif getattr(_cr, "ok", False) or getattr(_cr, "committed", False):
         _detail = _git_ops.sanitize_git_detail(
-            getattr(_cr, "detail", "") or "push failed")
-        _git_ops.write_sync_warning(str(team_root), _detail)
-        out(f"[push] committed — push failed ({_detail}). Run `git push` after checking.")
+            getattr(_cr, "detail", "") or "main sync failed")
+        out(f"[push] committed — main sync failed ({_detail}). "
+            "Run `tm-mode pull` after checking.")
 
 
 def _email_is_push_safe(email) -> bool:

@@ -166,7 +166,7 @@ def normalize(raw: dict, events: dict) -> dict:
             out["session_id"] = _sid.strip()
             break
 
-    # Pre/PostToolUse pair correlation for the shared-worktree edit lease.
+    # Pre/PostToolUse pair correlation for the shared-worktree edit mutex.
     # Session id alone is insufficient when one session has parallel tool calls:
     # a first Post could otherwise release the second tool's reservation.
     for _tool_id_key in ("tool_use_id", "toolUseId"):
