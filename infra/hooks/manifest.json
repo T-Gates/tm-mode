@@ -6,7 +6,7 @@
     "mode": "on",
     "enforcement": "advisory",
     "_timeout_unit": "seconds",
-    "_timeout_note": "SessionStart hard budget 50s(동기화 cutoff 40s + context reserve 10s). do_reconcile·pending recovery·upstream fetch가 absolute deadline을 공유하고 optional Git 장식은 예산 소진 시 생략해 runner 60s kill 전에 context JSON을 출력한다."
+    "_timeout_note": "SessionStart hard budget 50s(동기화 cutoff 40s + context reserve 10s). main sync와 upstream fetch가 absolute deadline을 공유하고 optional Git 장식은 예산 소진 시 생략해 runner 60s kill 전에 context JSON을 출력한다."
   },
   {
     "event": "UserPromptSubmit",
@@ -24,7 +24,7 @@
     "fallback": "runtime",
     "enforcement": "block",
     "_timeout_unit": "seconds",
-    "_timeout_note": "#19 foreground push 복구: PUSH_TOTAL_BUDGET(45s) + 첫 로컬 index.lock 실패 경로(실패 commit 직전 identity probe 포함 최대 12s) + 재시도 대기 1s + 1s-capped branch/HEAD 검증·ledger lock·fsync·worker 정리 여유. runner 70s kill 전에 pending/sync-warning fallback을 durable 기록한다."
+    "_timeout_note": "#128 scoped commit + main 즉시 동기화. 첫 index.lock 실패는 1초 뒤 한 번만 재시도하며 runner 70s kill 전에 last-sync-error를 기록한다."
   },
   {
     "event": "PostToolUseFailure",
@@ -35,24 +35,6 @@
     "enforcement": "advisory",
     "_timeout_unit": "seconds",
     "_note": "Claude exact failure lifecycle cleanup. Codex 0.144.4 does not expose PostToolUseFailure and explicitly maps this event to null."
-  },
-  {
-    "event": "Stop",
-    "script": "edit-lease-cleanup.py",
-    "timeout": 2,
-    "mode": "on",
-    "enforcement": "advisory",
-    "_timeout_unit": "seconds",
-    "_note": "Release only the exact turn plus verified runtime scope; never session-wide."
-  },
-  {
-    "event": "SubagentStop",
-    "script": "edit-lease-cleanup.py",
-    "timeout": 2,
-    "mode": "on",
-    "enforcement": "advisory",
-    "_timeout_unit": "seconds",
-    "_note": "Release only the exact subagent turn plus verified runtime scope."
   },
   {
     "event": "PreToolUse",

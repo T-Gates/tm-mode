@@ -22,13 +22,11 @@ normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다
   - **자동 push(6/23 철학)**: do_commit(push=True) — "원격 동기화는 사람 결정" 폐기.
     팀 레포는 공유 자산이라 매 자동 커밋 즉시 push 한다. **push 실패는 비차단** —
     do_commit 이 push 실패해도 로컬 커밋을 보존(ok=True·pushed=False)하고 hook 은 exit 0.
-  - **foreground reconcile + fallback(#19·#45)**: do_commit 의 bounded publication이
-    먼저 fetch/status 정합을 확인한다. 안전한 worktree mutation 예약을 확보하지 못하거나
-    non-ff이면 상세 sync-warning + pending ledger 를 기록하고 immutable-target worker 를
-    kick 한다. worker 는 히스토리와 현재 checkout을 건드리지 않는다.
-  - **push 실패 가시화(이슈 #23)**: 비차단은 유지하되 **조용히 묻지 않는다**. push 못 한
-    채 커밋만 쌓이면(committed & not pushed) 상세 sync-warning 마커 + stderr 경고를 남겨
-    다음 세션 시작(session-start)이 크게 표면화한다. 확인된 push 성공 시에만 지운다.
+  - **main 즉시 동기화(#128)**: do_commit 이 scoped commit 뒤 main 전용 fetch →
+    pull --rebase → push 를 한 번에 수행한다. 실패는 last-sync-error 로 남고 다음
+    SessionStart가 Git 상태만 보고 다시 시도한다.
+  - **동기화 실패 가시화**: 비차단은 유지하되 **조용히 묻지 않는다**. 로컬 커밋은
+    보존하고 sanitized detail을 stderr에 출력한다.
   - **add -A 금지(P1-4)**: do_commit 에 paths= 로 정규스키마가 지목한 `files` 만 넘긴다.
     무차별 스테이징(add -A)은 토큰패턴 파일·무관 변경까지 끌어와 오염·유출 위험.
   - **실패 비차단**: 어떤 예외도 삼키고 항상 exit 0. 자동 커밋·push 실패가 작업을 막지 않는다.
@@ -119,10 +117,6 @@ def _warn_if_stale_home(root: str) -> None:
         pass  # 경고 실패가 훅을 막지 않는다(철칙: 비차단)
 
 
-_WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "push-worker.py")
-
-
 def _literal_repo_pathspecs(root: str, files) -> list[str]:
     """정규 hook 파일을 repo 내부 Git literal pathspec 으로 제한한다.
 
@@ -156,31 +150,14 @@ def _literal_repo_pathspecs(root: str, files) -> list[str]:
     return paths
 
 
-def _kick_push_worker(root: str) -> None:
-    """push-worker detach kick(#45) — 공용 git_ops.kick_push_worker 위임(드리프트 방지).
-
-    spawn 실패/조기사망해도 pending ledger 가 남아 session-start recovery 가
-    재kick 한다(ledger 가 안전장치). kill-switch 로 생략된 경우는 경고 없이 침묵.
-    """
-    if _git_ops is None:
+def _release_edit_mutex(root: str, token: str) -> None:
+    """Release one exact tool token without letting cleanup block the editor."""
+    if _git_ops is None or not token:
         return
-    ok = _git_ops.kick_push_worker(root, _WORKER_PATH)
-    if not ok:
-        try:
-            lang = _hook_lang(root)
-            if os.environ.get("TEAMMODE_DISABLE_PUSH_WORKER") == "1":
-                # codex P2: kill-switch 가 프로덕션 셸에 남으면 무음 pending 만
-                # 쌓인다 — 비활성 사실을 확실히 표면화(테스트도 이 줄은 무해).
-                print(_t("hook_ac_push_worker_disabled", lang,
-                         "[teammode] push-worker 비활성(TEAMMODE_DISABLE_PUSH_WORKER)"
-                         " — push 는 세션 시작 recovery 에 위임됩니다."),
-                      file=sys.stderr)
-            else:
-                print(_t("hook_ac_push_worker_start_failed", lang,
-                         "[teammode] push-worker 시작 실패 — pending 은 세션 시작 시 "
-                         "재시도됩니다."), file=sys.stderr)
-        except (OSError, UnicodeError):
-            pass
+    try:
+        _git_ops.release_edit_mutex(root, token)
+    except Exception:  # noqa: BLE001 — hook cleanup is always non-blocking
+        pass
 
 
 def main() -> int:
@@ -196,20 +173,18 @@ def main() -> int:
     root = _team_root()
     _warn_if_stale_home(root)  # 스테일 TEAMMODE_HOME 표면화(이슈 #9a) — 거동 불변
     lang = _hook_lang(root)  # i18n(적대검수 — long tail): 이하 경고들이 공유
-    lease_owner = (
-        _git_ops.hook_edit_lease_owner(data) if _git_ops is not None else "")
+    edit_token = (
+        _git_ops.hook_edit_mutex_token(data) if _git_ops is not None else "")
 
     # ── 1. 빌드 안전 핵심: .teammode-active 없으면 즉시 no-op ──
     # 어떤 git 작업보다 먼저. 마커 부재 = teammode off = 자동 커밋 절대 금지.
     if not os.path.isfile(os.path.join(root, ".teammode-active")):
-        if lease_owner:
-            _git_ops.end_hook_edit_lease(root, lease_owner)
+        _release_edit_mutex(root, edit_token)
         return 0
 
     # ── 2. file_edit 발동만 처리 ──
     if data.get("action") != "file_edit":
-        if lease_owner:
-            _git_ops.end_hook_edit_lease(root, lease_owner)
+        _release_edit_mutex(root, edit_token)
         return 0
 
     if _git_ops is None:
@@ -227,46 +202,13 @@ def main() -> int:
         stamp = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         message = f"chore(teammode): auto-commit {stamp} KST"
 
-        # ── 3.5 잔존 pending 즉시 가시화(#45) — '한 편집 늦은' 경고 1줄 ──
-        # 이전 편집의 push 가 아직 미완이면(worker 지연/실패) 조용히 묻지 않는다.
-        # 비차단: 경고만 남기고 이번 전경 commit/push 복구는 정상 진행한다.
-        pending_state = _git_ops.read_push_pending_state(root)
-        pending_snapshot = (
-            _git_ops.bind_legacy_pending_to_current_checkout(
-                root, pending_state.content)
-            if pending_state.available else "")
-        pending_target_key = (
-            _git_ops.pending_entry_key_for_current_checkout(root, pending_snapshot)
-            if pending_snapshot else "")
-        if pending_target_key:
-            print(_t("hook_ac_prior_push_pending", lang,
-                     "[teammode] 이전 auto-commit 의 push 미완(pending) — "
-                     "전경 publication 이 재시도하고 worker 는 fallback 으로 "
-                     "대기합니다."), file=sys.stderr)
-        elif pending_snapshot:
-            targets = _git_ops.pending_target_summary(pending_snapshot, root)
-            print(_t("hook_ac_prior_push_other_checkout", lang,
-                     "[teammode] 다른 checkout의 push pending을 보존합니다. "
-                     "현재 편집은 별도로 publication합니다: {targets}",
-                     targets=targets), file=sys.stderr)
-
-        # ── 4. paths 만 스테이징 + bounded foreground publication(#19) ──
-        # fetch/status와 exact push를 한 예산 안에서 수행한다. exact PreToolUse lease가
-        # 있고, ledger를 읽을 수 있으며, 현재 checkout을 가리키는 immutable pending이
-        # 없을 때만 ff/rebase한다. 기존 H1 pending을 둔 채 H2를 rebase하면 H1의 OID가
-        # 바뀌어 worker가 영구 non-ff가 되므로 해당 경로는 commit+pending으로 보존한다.
-        may_reconcile_worktree = bool(
-            lease_owner
-            and pending_state.available
-            and _git_ops.pending_allows_current_checkout_reconcile(
-                root, pending_snapshot))
-        mutation_kwargs = ({
-            "_allow_bound_mutation": True,
-            "_edit_lease_owner": lease_owner,
-        } if may_reconcile_worktree else {})
+        # ── 4. paths 만 스테이징 + main 즉시 동기화(#128) ──
+        # PreToolUse가 잡은 정확한 tool token을 core에 넘겨 commit→sync 동안 같은
+        # edit mutex를 유지한다. 별도 비동기 복구 상태는 만들지 않는다.
+        commit_kwargs = {"_edit_token": edit_token} if edit_token else {}
         result = _git_ops.do_commit(
             root, message=message, push=True, paths=paths,
-            reconcile_before_push=True, **mutation_kwargs)
+            **commit_kwargs)
 
         # index.lock 경합(다른 git 프로세스와 겹침)은 1s 후 1회만 재시도(#45).
         if (not getattr(result, "committed", False)
@@ -274,78 +216,24 @@ def main() -> int:
             _time.sleep(1)
             result = _git_ops.do_commit(
                 root, message=message, push=True, paths=paths,
-                reconcile_before_push=True, **mutation_kwargs)
+                **commit_kwargs)
 
-        # ── 5. 커밋 성공 → foreground 성공 정리 또는 worker fallback(#45) ──
+        # ── 5. core 결과만 표면화 — last-sync-error 수명주기는 git_ops 소유 ──
         if getattr(result, "committed", False):
-            if getattr(result, "pushed", False):
-                # 시작 때 본 pending 만 compare-and-delete 한다. 그 사이 다른 훅이 새
-                # nonce 를 썼다면 절대 지우지 않는다(#45 clear race 차단).
-                if (pending_target_key
-                        and _git_ops.pending_entry_covered_by_publication(
-                            root, pending_snapshot, pending_target_key,
-                            getattr(result, "pending_identity", None),
-                            getattr(result, "pending_target", None))):
-                    _git_ops.clear_push_pending_if_unchanged(
-                        root, pending_snapshot, pending_target_key)
-                success_detail = getattr(result, "detail", "") or ""
-                if ("upstream setup skipped:" in success_detail
-                        or "tracking update skipped:" in success_detail):
-                    _git_ops.write_sync_warning(
-                        root, _git_ops.sanitize_git_detail(success_detail))
-                else:
-                    _git_ops.clear_sync_warning_after_exact_publication(
-                        root, getattr(result, "pending_identity", None),
-                        getattr(result, "pending_target", None))
-            else:
+            if not getattr(result, "pushed", False):
                 detail = _git_ops.sanitize_git_detail(
                     getattr(result, "detail", "") or
-                    "unknown auto-commit push failure")
-                if _git_ops.write_push_pending(
-                        root, getattr(result, "pending_identity", None) or {},
-                        target=getattr(result, "pending_target", None)):
-                    _git_ops.write_sync_warning(
-                        root, _t("hook_ac_push_failed_marker", lang,
-                                 "auto-commit push 실패(커밋 보존): {detail}",
-                                 detail=detail))
-                    print(_t(
-                        "hook_ac_push_failed_print", lang,
-                        "[teammode] auto-commit push 실패 — 커밋은 보존했고 "
-                        "pending 재시도를 기록했습니다: {detail}", detail=detail),
-                        file=sys.stderr)
-                    _kick_push_worker(root)
-                else:
-                    # False includes history/target/CAS refusal, not only I/O;
-                    # keep the original push detail without guessing a cause.
-                    # 마커는 나중에 session-start 의 locale wrapper 안에 삽입되므로
-                    # marker content 자체도 현재 팀 locale 로 렌더링한다.
-                    _git_ops.write_sync_warning(
-                        root, _t("hook_ac_pending_write_failed_marker", lang,
-                                "push-pending 상태를 안전하게 갱신하지 못했습니다 — "
-                                "커밋은 보존됐지만 자동 push 복구는 예약되지 "
-                                "않았습니다; 원래 push 실패: {detail}",
-                                detail=detail))
-                    print(_t(
-                        "hook_ac_pending_write_failed_print", lang,
-                        "[teammode] push-pending 상태를 안전하게 갱신하지 "
-                        "못했습니다 — 커밋은 보존됐지만 자동 push 복구는 "
-                        "예약되지 않았습니다. 원래 push 실패: {detail}",
-                        detail=detail),
-                        file=sys.stderr)
+                    "unknown auto-commit sync failure")
+                print(_t(
+                    "hook_ac_sync_failed_print", lang,
+                    "[teammode] auto-commit 동기화 실패 — 로컬 커밋은 "
+                    "보존했습니다: {detail}", detail=detail), file=sys.stderr)
         else:
-            # Pre-commit interlock/blocker and real add/commit failures have no
-            # commit identity, so a push-pending entry would be false.  They
-            # still must not disappear silently: retain a sanitized diagnostic
-            # for SessionStart and tell the current hook caller immediately.
+            # 실제 add/commit 실패는 현재 호출자에게 즉시 표면화한다.
             raw_detail = getattr(result, "detail", "") or "unknown commit failure"
             if ("nothing to commit" not in raw_detail.lower()
                     and "no paths to stage" not in raw_detail.lower()):
                 detail = _git_ops.sanitize_git_detail(raw_detail)
-                _git_ops.write_sync_warning(
-                    root, _t(
-                        "hook_ac_commit_deferred_marker", lang,
-                        "auto-commit 보류(변경 미커밋): {detail}",
-                        detail=detail))
                 print(_t(
                     "hook_ac_commit_deferred_print", lang,
                     "[teammode] auto-commit 보류 — 변경은 커밋되지 않았습니다: "
@@ -353,11 +241,7 @@ def main() -> int:
     except Exception:  # noqa: BLE001 — 철칙: 자동 커밋·push 실패가 작업을 막지 않는다
         return 0
     finally:
-        if lease_owner:
-            try:
-                _git_ops.end_hook_edit_lease(root, lease_owner)
-            except Exception:  # noqa: BLE001 — cleanup failure must not block work
-                pass
+        _release_edit_mutex(root, edit_token)
 
     return 0
 

@@ -214,7 +214,7 @@ Spec: [docs/spec/](docs/spec/README.md) — the single authoritative SPEC v0.4 (
 | `infra/install.py` + `install_lib.py` | **Bootstrap.** Hook wiring, skill deploy, env. `--dry-run`/`--yes` gates | `tests/test_install_*.py` |
 | `infra/git_ops.py` | **Shared git ops** + sync planning (validation plan/apply) — never raises, timeouts, killpg | `tests/test_git_ops.py` |
 | `infra/agents/<name>/` | **Adapters.** Render per-agent config (Claude settings.json · Codex config.toml) | `infra/hooks/manifest.json`(single source), `events.json` |
-| `infra/hooks/` | **Shared hooks.** session-start(context injection)·auto-commit(foreground publication)·push-worker(async fallback)·kb-write-guard(memory write governance) | per-hook tests |
+| `infra/hooks/` | **Shared hooks.** session-start(context injection + main sync)·auto-commit(scoped commit + main sync)·kb-write-guard(memory write governance)·edit mutex cleanup | per-hook tests |
 | `infra/skills/` | **Skills.** base(deployed to both agents)·core(tm-onboard·tm-connect·tm-memory…)·util. **Engine = mechanical, skills = judgment** | `docs/spec/skills.md` |
 | `conformance/check.py` | **Conformance.** Machine-checks that an instance honors the spec contracts | golden scenarios |
 | `providers/*.json` | **L2 provider packs.** Data for service slots (issues/chat/docs/calendar) | `infra/skills/core/tm-connect/` |
@@ -224,7 +224,8 @@ One session cycle:
 
 ```
 session start
-  └ session-start hook: team origin reconcile (once) + recent session logs
+  └ session-start hook: main sync (fetch → pull --rebase if behind → push)
+    + recent session logs
     + memory INDEX + guidelines injected
   └ (on `tm on`) auto_update_on_start: detect upstream engine/validation lag
     — applying is `tm-mode update` only
@@ -234,9 +235,8 @@ while working
     skills; your own session log is exempt)
 recording
   └ agent appends the session log → auto-commit hook: scoped local commit
-    + bounded foreground reconcile/push (fetch → dirty-path overlap guard
-      → rebase --autostash → exact commit push)
-      └ on failure only: branch-bound pending ledger + detached plain-push fallback
+    + main sync (fetch → pull --rebase if behind → push)
+      └ sync failure: preserve the local commit + record last-sync-error
 ```
 
 Design principles:
@@ -427,7 +427,7 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
 | `infra/install.py` + `install_lib.py` | **부트스트랩.** 훅 배선·스킬 배포·env 주입. `--dry-run`/`--yes` 게이트 | `tests/test_install_*.py`, golden 시나리오 |
 | `infra/git_ops.py` | **git 공통.** fetch/pull/commit/push + 동기화 판정(validation plan/apply) — 전부 무raise·타임아웃·killpg | `tests/test_git_ops.py`, `test_validation_sync.py` |
 | `infra/agents/<name>/` | **어댑터.** 에이전트별 설정 파일 렌더(Claude settings.json · Codex config.toml). 공통 훅을 각 에이전트 이벤트에 배선 | `infra/hooks/manifest.json`(훅 선언 단일 소스), `events.json` |
-| `infra/hooks/` | **공통 훅.** session-start(맥락 주입)·auto-commit(전경 publication)·push-worker(비동기 fallback)·kb-write-guard(메모리 쓰기 거버넌스) 등. 에이전트 무관 — 정규화된 stdin 계약 | `manifest.json`, `tests/test_kb_write_guard.py` 등 훅별 테스트 |
+| `infra/hooks/` | **공통 훅.** session-start(맥락 주입 + main 동기화)·auto-commit(경로 한정 커밋 + main 동기화)·kb-write-guard(메모리 쓰기 거버넌스)·edit mutex 정리 등. 에이전트 무관 — 정규화된 stdin 계약 | `manifest.json`, `tests/test_kb_write_guard.py` 등 훅별 테스트 |
 | `infra/skills/` | **스킬.** base(양 에이전트 공통 배포)·core(tm-onboard·tm-connect·tm-memory…)·util(인스턴스 이식용). **엔진=기계, 스킬=판단** — 판단이 필요한 일은 스킬 문서가, 기계적 실행은 엔진 동사가 담당 | `docs/spec/skills.md` |
 | `conformance/check.py` | **호환 검사.** 인스턴스가 스펙 계약을 지키는지 기계 검증 | golden 시나리오 |
 | `providers/*.json` | **L2 provider 팩.** 서비스 연결(issues/chat/docs/calendar 슬롯)의 발급 안내·MCP 실행정보 데이터 | `infra/skills/core/tm-connect/` |
@@ -436,7 +436,8 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
 
 ```
 에이전트 세션 시작
-  └ session-start 훅: 팀 원격(origin) 정합(세션당 1회) + 팀원별 최근 세션로그
+  └ session-start 훅: main 동기화(fetch → 뒤처졌으면 pull --rebase → push)
+    + 팀원별 최근 세션로그
     + memory INDEX + 가이드라인 주입
   └ (tm on 시) auto_update_on_start: upstream 엔진/검증층 뒤처짐 감지·알림
     — 적용은 tm-mode update 에서만
@@ -445,9 +446,8 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
   └ kb-write-guard 훅: memory/ 직접 Edit 차단(관리 스킬 경유 강제, 본인 세션로그 예외)
 세션 중 기록
   └ 에이전트가 세션로그 이어쓰기 → auto-commit 훅: 경로 한정 로컬 커밋
-    + 제한시간 내 전경 reconcile/push(fetch → dirty 경로 겹침 검사
-      → rebase --autostash → 정확한 커밋 push)
-      └ 실패할 때만: branch별 pending 장부 + detached plain-push fallback
+    + main 동기화(fetch → 뒤처졌으면 pull --rebase → push)
+      └ 동기화 실패: 로컬 커밋 보존 + last-sync-error 기록
 ```
 
 ### 설계 철칙 (PR 전에 알아야 할 것)

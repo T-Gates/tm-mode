@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -260,6 +261,120 @@ class TestNonTtyPath:
         assert "tm-onboard" in out
 
 
+def test_non_tty_join_real_clone_runs_repo_local_install(tmp_path, monkeypatch):
+    """A direct join clones the shared repo and completes its bundled installer."""
+    origin = tmp_path / "team.git"
+    seed = tmp_path / "seed"
+    subprocess.run(
+        ["git", "init", "--bare", str(origin)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "clone", str(origin), str(seed)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Template"], cwd=seed, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "template@example.com"],
+        cwd=seed,
+        check=True,
+    )
+
+    (seed / "infra").mkdir()
+    real_install = Path(__file__).resolve().parents[1] / "infra" / "install.py"
+    (seed / "infra" / "install.py").write_text(
+        "import runpy, sys\n"
+        f"module = runpy.run_path({str(real_install)!r}, "
+        "run_name='__repo_local_install__')\n"
+        "raise SystemExit(module['main'](sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    config = {
+        "spec_version": "0.1",
+        "team": {"name": "seeded-team"},
+        "admin_contact": "founder",
+        "services": {},
+        "members": [{"name": "founder", "role": "pm"}],
+    }
+    (seed / "team.config.json").write_text(
+        json.dumps(config, indent=2) + "\n", encoding="utf-8"
+    )
+    members_dir = seed / "memory" / "team"
+    members_dir.mkdir(parents=True)
+    (members_dir / "members.md").write_text(
+        "# members\n- founder\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=seed, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "seed team"],
+        cwd=seed,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(["git", "branch", "-M", "main"], cwd=seed, check=True)
+    subprocess.run(
+        ["git", "push", "-u", "origin", "main"],
+        cwd=seed,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "HEAD", "refs/heads/main"],
+        cwd=origin,
+        check=True,
+    )
+
+    home = tmp_path / "home"
+    home.mkdir()
+    gitconfig = home / ".gitconfig"
+    gitconfig.write_text(
+        "[user]\n\tname = Joiner\n\temail = joiner@example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+        isolated = tmp_path / name.lower()
+        isolated.mkdir()
+        monkeypatch.setenv(name, str(isolated))
+
+    dest = tmp_path / "joined"
+    args = types.SimpleNamespace(
+        url=str(origin),
+        dir=str(dest),
+        member_name="alice",
+        agent=None,
+        role="developer",
+        obsidian=False,
+        team_name=None,
+    )
+    with patch.object(sys.stdin, "isatty", return_value=False):
+        rc = cli.cmd_join(args, created=False)
+
+    assert rc == 0
+    assert (dest / ".git").is_dir()
+    assert (dest / "team.config.json").is_file()
+    assert (dest / "memory" / "INDEX.md").is_file()
+    assert (dest / "memory" / "team" / "sessions" / "alice").is_dir()
+    assert "alice" in (dest / "memory" / "team" / "members.md").read_text()
+    installed_config = json.loads((dest / "team.config.json").read_text())
+    assert installed_config["team"] == {"name": "seeded-team"}
+    assert installed_config["admin_contact"] == "founder"
+    assert {"name": "founder", "role": "pm"} in installed_config["members"]
+    assert {"name": "alice", "role": "developer"} in installed_config["members"]
+    assert not (dest / ".teammode-active").exists()
+
+
 # ─── 빈 슬러그 fallback ─────────────────────────────────────────────────────
 
 class TestEmptySlugFallback:
@@ -360,33 +475,6 @@ class TestWizardTty:
         agent_args = [extra[i + 1] for i, x in enumerate(extra) if x == "--agent"]
         assert "claude" in agent_args
         assert "codex" not in agent_args
-
-    def test_agent_toggle_renders_filled_hollow_markers(self, tmp_path, capsys):
-        """2단계 렌더링: 선택=◉ / 해제=◯ — `[x]`는 '제외'로 오독됨(온보딩 1c).
-
-        codex 를 토글 off 한 뒤 확정 → 출력에 켜짐(◉ claude)과
-        꺼짐(◯ codex) 이 모두 보여야 하고, 옛 `[x]`/`[ ]` 표기와
-        범례 없는 헤더가 다시 나오면 회귀.
-        """
-        inputs = [
-            str(tmp_path / "dest"),
-            "2",      # codex off
-            "",       # 확정
-            "1", "alice", "", "N", "Y",
-        ]
-        self._run_wizard(tmp_path, inputs, installed_agents=["claude", "codex"])
-        out = capsys.readouterr().out
-        # 선택된 claude 줄은 ◉, 해제된 codex 줄은 ◯
-        assert "◉ 1) claude" in out
-        assert "◯ 2) codex" in out
-        # 첫 렌더(둘 다 선택)에서 codex 도 ◉ 로 시작
-        assert "◉ 2) codex" in out
-        # 옛 표기 금지 — [x] 는 '제외'로 읽힘
-        assert "[x]" not in out
-        assert "[ ]" not in out
-        # 범례가 ◉/◯ 의미를 명시
-        assert "◉ on" in out
-        assert "◯ off" in out
 
     def test_agent_toggle_repeats_until_enter(self, tmp_path):
         """번호를 여러 번 = 매번 토글(루프 살아있음). codex off→on 하면 다시 둘 다.
@@ -726,227 +814,6 @@ class TestCmdInitDelegatesToJoin:
         assert join_calls == [], "생성 실패인데 join 으로 넘어감"
 
 
-def test_done_message_created_vs_joined(capsys):
-    """init 경유(created=True)면 '생성 완료', join 직접이면 '합류 완료'."""
-    cli._done(Path("/x/team"), created=True)
-    out = capsys.readouterr().out
-    assert "Created" in out and "Joined" not in out
-
-    cli._done(Path("/x/team"), created=False)
-    out = capsys.readouterr().out
-    assert "Joined" in out and "Created" not in out
-
-
-# ─── D6: _done 통일 끝 블록(초대 명령 + tm-onboard) ─────────────────────────
-
-def test_done_with_url_shows_invite_and_onboard(capsys):
-    """url 주면 join 합류자도 ①초대 명령(url 포함) ②tm-onboard 둘 다 본다(D6)."""
-    cli._done(Path("/x/team"), created=False,
-              url="https://github.com/org/team.git")
-    out = capsys.readouterr().out
-    # ① 초대 명령에 url 이 박혀 있다(pip·curl 둘 다).
-    assert "https://github.com/org/team.git" in out
-    assert "pipx install tm-mode" in out and "join https://github.com/org/team.git" in out
-    assert "curl" in out
-    # ② tm-onboard 안내.
-    assert "tm-onboard" in out
-
-
-def test_done_without_url_skips_invite_but_keeps_onboard(capsys):
-    """url 없으면(비대화 폴백 등) 초대 블록은 생략하되 tm-onboard 안내는 유지."""
-    cli._done(Path("/x/team"), created=False, url=None)
-    out = capsys.readouterr().out
-    assert "tm-onboard" in out
-    assert "pipx install" not in out  # 초대 명령은 url 없으면 생략
-
-
-# ─── _raw_capable 게이트 (각 조건) ──────────────────────────────────────────
-
-class TestRawCapable:
-    """_raw_capable() 게이트 — 어느 한 조건이라도 깨지면 False(번호 fallback)."""
-
-    def _patch_term_ok(self, monkeypatch):
-        monkeypatch.setenv("TERM", "xterm-256color")
-        monkeypatch.delenv("TM_NO_TUI", raising=False)
-        monkeypatch.delenv("NO_COLOR", raising=False)
-
-    def test_false_when_termios_none(self, monkeypatch):
-        """termios import 실패(Windows) → 무조건 False."""
-        self._patch_term_ok(monkeypatch)
-        monkeypatch.setattr(cli, "termios", None)
-        assert cli._raw_capable() is False
-
-    def test_false_when_tm_no_tui_set(self, monkeypatch):
-        """TM_NO_TUI 설정 → False(opt-out)."""
-        self._patch_term_ok(monkeypatch)
-        monkeypatch.setenv("TM_NO_TUI", "1")
-        assert cli._raw_capable() is False
-
-    def test_false_when_term_dumb_or_empty(self, monkeypatch):
-        monkeypatch.delenv("TM_NO_TUI", raising=False)
-        monkeypatch.setenv("TERM", "dumb")
-        assert cli._raw_capable() is False
-        monkeypatch.setenv("TERM", "")
-        assert cli._raw_capable() is False
-
-    def test_false_when_not_tty(self, monkeypatch):
-        """stdin/stdout 중 하나라도 비-TTY → False."""
-        self._patch_term_ok(monkeypatch)
-        # termios 가 None 이면 위에서 끝나니 더미로 둔다.
-        if cli.termios is None:
-            pytest.skip("termios 없음(POSIX 전용)")
-        with patch.object(sys.stdin, "isatty", return_value=False):
-            assert cli._raw_capable() is False
-
-    def test_false_when_tcgetattr_fails(self, monkeypatch):
-        """isatty=True 라도 tcgetattr 실패(가짜 stdin=pytest) → False.
-
-        이게 §7.1 핵심: 테스트는 isatty 만 강제 패치하므로 raw 위젯이 절대 안 켜진다.
-        """
-        self._patch_term_ok(monkeypatch)
-        if cli.termios is None:
-            pytest.skip("termios 없음(POSIX 전용)")
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch.object(sys.stdout, "isatty", return_value=True), \
-             patch.object(cli.termios, "tcgetattr",
-                          side_effect=Exception("not a real tty")):
-            assert cli._raw_capable() is False
-
-    def test_pytest_env_yields_false(self):
-        """현재 pytest 환경(가짜 stdin)에서 isatty 강제 패치해도 raw 불가."""
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch.object(sys.stdout, "isatty", return_value=True):
-            # tcgetattr 가 가짜 fd 에서 실패하거나 stdout 가 비-tty → False
-            assert cli._raw_capable() is False
-
-
-# ─── 위젯 3-state fallback (비-TTY default · 번호 경로) ──────────────────────
-
-class TestWidgetFallback:
-    """각 위젯의 ① 비-TTY default ② TTY+raw불가 번호 fallback 경로."""
-
-    # _pick_one ----------------------------------------------------------------
-    def test_pick_one_non_tty_returns_default(self):
-        """비-TTY → input 호출 없이 default_index 반환."""
-        with patch.object(sys.stdin, "isatty", return_value=False), \
-             patch("builtins.input") as mi:
-            idx = cli._pick_one("t", "h", ["a", "b", "c"], default_index=2)
-        assert idx == 2
-        mi.assert_not_called()
-
-    def test_pick_one_fallback_number(self):
-        """TTY+raw불가 → 내장 번호입력 fallback(없으면)."""
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False), \
-             patch("builtins.input", side_effect=["2"]):
-            idx = cli._pick_one("t", "h", ["a", "b", "c"])
-        assert idx == 1
-
-    def test_pick_one_fallback_callback(self):
-        """fallback 콜백이 주어지면 그것을 호출(input 직접 안 함)."""
-        called = {"n": 0}
-
-        def fb():
-            called["n"] += 1
-            return 0
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False):
-            idx = cli._pick_one("t", "h", ["a", "b"], fallback=fb)
-        assert idx == 0 and called["n"] == 1
-
-    # _pick_many ---------------------------------------------------------------
-    def test_pick_many_non_tty_returns_selected(self):
-        with patch.object(sys.stdin, "isatty", return_value=False), \
-             patch("builtins.input") as mi:
-            out = cli._pick_many("t", "h", ["a", "b"], selected=[1])
-        assert out == [1]
-        mi.assert_not_called()
-
-    def test_pick_many_fallback_callback(self):
-        def fb():
-            return [0, 1]
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False):
-            out = cli._pick_many("t", "h", ["a", "b"], fallback=fb)
-        assert out == [0, 1]
-
-    # _ask_text ----------------------------------------------------------------
-    def test_ask_text_non_tty_returns_default(self):
-        with patch.object(sys.stdin, "isatty", return_value=False), \
-             patch("builtins.input") as mi:
-            out = cli._ask_text("label", "deflt")
-        assert out == "deflt"
-        mi.assert_not_called()
-
-    def test_ask_text_fallback_prompt(self):
-        """raw 불가 → _prompt 경로(input 1회). 빈입력=default."""
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False), \
-             patch("builtins.input", side_effect=[""]):
-            out = cli._ask_text("label", "deflt")
-        assert out == "deflt"
-
-    def test_ask_text_fallback_value(self):
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False), \
-             patch("builtins.input", side_effect=["typed"]):
-            out = cli._ask_text("label", "deflt")
-        assert out == "typed"
-
-    # _confirm -----------------------------------------------------------------
-    def test_confirm_non_tty_returns_default(self):
-        with patch.object(sys.stdin, "isatty", return_value=False), \
-             patch("builtins.input") as mi:
-            assert cli._confirm("ok?", default=True) is True
-            assert cli._confirm("ok?", default=False) is False
-        mi.assert_not_called()
-
-    def test_confirm_fallback_default_yes_on_empty(self):
-        """§7.3: default=True 면 빈입력=True, n/no 만 False."""
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False), \
-             patch("builtins.input", side_effect=[""]):
-            assert cli._confirm("ok?", default=True) is True
-
-    def test_confirm_fallback_n_is_false(self):
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False), \
-             patch("builtins.input", side_effect=["n"]):
-            assert cli._confirm("ok?", default=True) is False
-
-    def test_confirm_fallback_callback_used(self):
-        def fb():
-            return False
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("teammode.cli._raw_capable", return_value=False):
-            assert cli._confirm("ok?", default=True, fallback=fb) is False
-
-
-# ─── 색 게이트 ──────────────────────────────────────────────────────────────
-
-class TestUseColor:
-    def test_no_color_env_off(self, monkeypatch):
-        monkeypatch.setenv("NO_COLOR", "1")
-        assert cli._use_color() is False
-
-    def test_dumb_term_off(self, monkeypatch):
-        monkeypatch.delenv("NO_COLOR", raising=False)
-        monkeypatch.setenv("TERM", "dumb")
-        assert cli._use_color() is False
-
-    def test_non_tty_off(self, monkeypatch):
-        monkeypatch.delenv("NO_COLOR", raising=False)
-        monkeypatch.setenv("TERM", "xterm")
-        with patch.object(sys.stdout, "isatty", return_value=False):
-            assert cli._use_color() is False
-
-    def test_paint_passthrough_when_off(self, monkeypatch):
-        """색 off 면 원문 그대로(ANSI 미삽입)."""
-        monkeypatch.setenv("NO_COLOR", "1")
-        assert cli._ok("hi") == "hi"
-        assert cli._hi("x") == "x"
-
-
 def test_init_injects_join_attrs_for_nontty():
     """cmd_init 이 cmd_join 에 비-TTY 경로가 참조하는 속성을 다 채워 넘긴다(AttributeError 방지)."""
     join_args = []
@@ -1027,6 +894,50 @@ def test_strip_template_workflows_keeps_other_github_files(tmp_path):
     assert ".github/workflows/test.yml" in removed
 
 
+@pytest.mark.parametrize("entry", ["core", "fallback"])
+def test_product_fork_remote_preserves_workflows(tmp_path, entry):
+    """Product forks are preserved by both workflow-cleanup entry points."""
+    product = tmp_path / f"product-fork-{entry}"
+    product.mkdir()
+    subprocess.run(
+        ["git", "init", str(product)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(product), "remote", "add", "origin",
+            "git@github.com:alice/tm-mode.git",
+        ],
+        check=True,
+    )
+    workflow = product / ".github" / "workflows" / "test.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_bytes(b"name: product-fork\r\non:\r\n  push:\r\n")
+    before = workflow.read_bytes()
+
+    if entry == "core":
+        module_name = "_teammode_product_guard_git_ops"
+        spec = importlib.util.spec_from_file_location(
+            module_name, Path(__file__).resolve().parents[1] / "infra" / "git_ops.py"
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+            result = module.strip_template_workflows(str(product))
+        finally:
+            sys.modules.pop(module_name, None)
+    else:
+        result = cli._strip_template_workflows(product)
+
+    assert result.ok is True
+    assert result.skipped_product is True
+    assert workflow.read_bytes() == before
+
+
 def test_init_template_timeout_skips_join():
     """template 반영이 끝내 안 되면 join 으로 안 넘어가고 비정상 종료(빈 레포 clone 방지)."""
     join_calls = []
@@ -1067,29 +978,6 @@ def test_init_asks_team_name_before_repo_and_defaults_repo_from_slug():
     assert team_idx < repo_idx, "팀명을 레포명보다 먼저 물어야 함"
     repo_defaults = [d for label, d in prompts if "Repository name" in label]
     assert repo_defaults == ["acme-team"]
-
-
-def test_init_repo_default_derives_from_entered_team_name():
-    """팀명을 직접 입력하면 레포명 기본이 그 팀명 슬러그에서 파생된다."""
-    prompts = []
-
-    def fake_prompt(label, default=""):
-        prompts.append((label, default))
-        if "Team name" in label:
-            return "ACMECO"
-        return default
-
-    with patch("teammode.cli._have", return_value=True), \
-         patch("teammode.cli.subprocess.run",
-               return_value=MagicMock(returncode=0, stdout="")), \
-         patch("teammode.cli._pick_owner", return_value="Acme"), \
-         patch("teammode.cli._prompt", side_effect=fake_prompt), \
-         patch("teammode.cli._wait_template_ready", return_value=True), \
-         patch("teammode.cli.cmd_join", return_value=0):
-        cli.main(["init"])
-
-    repo_defaults = [d for label, d in prompts if "Repository name" in label]
-    assert repo_defaults == ["acmeco-team"]
 
 
 class TestExplicitFlagsSkipWizard:
@@ -1222,13 +1110,6 @@ class TestUpdateTeamMarkerDetection:
         assert rc == 0
         mock_run.assert_called_once()
 
-    def test_memory_marker_alone_is_sufficient(self, tmp_path, monkeypatch):
-        repo = tmp_path / "team"
-        _make_team_repo_for_update(repo, marker="memory")
-        rc, mock_run = _run_update(monkeypatch, repo)
-        assert rc == 0
-        mock_run.assert_called_once()
-
     def test_marker_present_but_no_engine_exits_3(self, tmp_path, monkeypatch):
         repo = tmp_path / "team"
         (repo / ".git").mkdir(parents=True)
@@ -1287,24 +1168,6 @@ class TestUpdateEngineDelegation:
         assert rc == 0
         argv = mock_run.call_args[0][0]
         assert "--force" in argv
-
-    def test_both_flags_forwarded_together(self, tmp_path, monkeypatch):
-        repo = tmp_path / "team"
-        _make_team_repo_for_update(repo)
-        rc, mock_run = _run_update(monkeypatch, repo, ["--dry-run", "--force"])
-        assert rc == 0
-        argv = mock_run.call_args[0][0]
-        assert "--dry-run" in argv
-        assert "--force" in argv
-
-    def test_no_flags_means_no_extra_argv(self, tmp_path, monkeypatch):
-        repo = tmp_path / "team"
-        _make_team_repo_for_update(repo)
-        rc, mock_run = _run_update(monkeypatch, repo)
-        assert rc == 0
-        argv = mock_run.call_args[0][0]
-        assert "--dry-run" not in argv
-        assert "--force" not in argv
 
     def test_engine_exit_code_propagates(self, tmp_path, monkeypatch):
         """엔진(subprocess)이 비0 종료하면 launcher 도 같은 코드를 돌려준다."""

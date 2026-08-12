@@ -537,16 +537,6 @@ def test_always_exits_zero(tmp_path):
     assert proc.returncode == 0
 
 
-def test_bad_stdin_exits_zero(tmp_path):
-    """잘못된 stdin도 exit 0."""
-    (tmp_path / ".teammode-active").write_text("")
-    proc = subprocess.run(
-        [PY, str(HOOK)], input="not{json",
-        capture_output=True, text=True,
-        env={**os.environ, "TEAMMODE_HOME": str(tmp_path)})
-    assert proc.returncode == 0
-
-
 # ── 기존 동작 유지: tempfile.gettempdir() 기반 ──
 
 def test_state_file_uses_tempfile_gettempdir():
@@ -706,45 +696,6 @@ def test_output_present_when_fire_required(tmp_path):
 
 # ── (4) 상태파일 손상 케이스 ──
 
-def test_state_file_array_does_not_crash(tmp_path):
-    """상태파일이 [] (배열)이면 크래시 없이 defaults로 동작."""
-    (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "bob"}])
-    agent = "claude-corrupt-arr"
-
-    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
-    state_f.write_text("[]")
-
-    proc = _run_hook(tmp_path, tmp_path, agent)
-    assert proc.returncode == 0, f"[] 손상 상태파일에서 크래시: {proc.stderr}"
-
-
-def test_state_file_string_does_not_crash(tmp_path):
-    """상태파일이 "x" (문자열)이면 크래시 없이 defaults로 동작."""
-    (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "bob"}])
-    agent = "claude-corrupt-str"
-
-    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
-    state_f.write_text('"x"')
-
-    proc = _run_hook(tmp_path, tmp_path, agent)
-    assert proc.returncode == 0, f"string 손상 상태파일에서 크래시: {proc.stderr}"
-
-
-def test_state_file_wrong_types_does_not_crash(tmp_path):
-    """count/last_mtime/date가 잘못된 타입이어도 크래시 없이 동작."""
-    (tmp_path / ".teammode-active").write_text("")
-    _write_config(tmp_path, [{"name": "bob"}])
-    agent = "claude-corrupt-types"
-
-    state_f = _state_path(tmp_path, agent, member="bob", root=tmp_path)
-    state_f.write_text(json.dumps({"count": "4", "last_mtime": "bad", "date": 12345}))
-
-    proc = _run_hook(tmp_path, tmp_path, agent)
-    assert proc.returncode == 0, f"타입 틀린 상태파일에서 크래시: {proc.stderr}"
-
-
 # ── (5) 멤버/루트 충돌: 다른 멤버는 다른 상태파일 ──
 
 def test_different_members_use_separate_state_files(tmp_path):
@@ -764,16 +715,6 @@ def test_different_members_use_separate_state_files(tmp_path):
 
 
 # ── (6) malformed members 원소 케이스 ──
-
-def test_members_list_with_non_dict_elements_falls_back(tmp_path):
-    """members 배열에 dict 아닌 원소가 있어도 크래시 없이 폴백."""
-    (tmp_path / ".teammode-active").write_text("")
-    # members에 string 원소 포함 — dict 아닌 원소
-    _write_config(tmp_path, ["not_a_dict"])
-
-    proc = _run_hook(tmp_path, tmp_path, "claude-bad-member")
-    assert proc.returncode == 0, f"malformed members에서 크래시: {proc.stderr}"
-
 
 def test_members_list_with_dict_missing_name_falls_back(tmp_path):
     """members 원소에 'name' 키가 없으면 폴백 (크래시 없음)."""

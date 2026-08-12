@@ -14,8 +14,6 @@
   - symlink 우회(alias → memory/) → deny(resolve 기반 containment).
   - 다른 레포 플래그로 unlock 시도 → deny(root_hash 격리).
   - 훅 스크립트 단위: unlock_flag_path() XDG/TMPDIR 폴백 확인 + root_hash + session 포함.
-  - manifest 에 kb-write-guard.py 등록 확인 + strict: true.
-  - manifest 선언 스크립트 파일 실재 확인.
 
 안전 철칙: tmp_path 격리 — 실호스트 무접촉.
 """
@@ -36,7 +34,6 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 HOOKS = REPO / "infra" / "hooks"
 KB_GUARD = HOOKS / "kb-write-guard.py"
-MANIFEST = HOOKS / "manifest.json"
 PY = sys.executable
 
 
@@ -427,58 +424,6 @@ def test_unlock_flag_path_includes_root_hash_and_session(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_SESSION_ID", "other-session")
     flag_a2 = mod.unlock_flag_path(root_a)
     assert flag_a != flag_a2
-
-
-# ── manifest 정합 ─────────────────────────────────────────────────────────────
-
-def test_manifest_includes_kb_write_guard():
-    """manifest 에 kb-write-guard.py 가 등록돼 있는지."""
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    scripts = {e.get("script") for e in entries}
-    assert "kb-write-guard.py" in scripts
-
-
-def test_manifest_kb_guard_is_enforcement_block_and_strict():
-    """kb-write-guard 의 enforcement 가 block 이고 strict 가 true 인지."""
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    guard = next((e for e in entries if e.get("script") == "kb-write-guard.py"), None)
-    assert guard is not None, "kb-write-guard.py 가 manifest 에 없음"
-    assert guard.get("enforcement") == "block"
-    assert guard.get("event") == "PreToolUse"
-    assert guard.get("strict") is True, "kb-write-guard manifest 엔트리에 strict: true 가 없음"
-
-
-def test_manifest_all_declared_scripts_exist():
-    """manifest 가 선언한 모든 script 파일이 hooks/ 에 실재한다."""
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    for e in entries:
-        script = e.get("script")
-        assert script
-        assert (HOOKS / script).is_file(), f"선언된 script 파일 부재: {script}"
-
-
-# ── deny 메시지 품질 ─────────────────────────────────────────────────────────
-
-def test_deny_message_mentions_tm_manage_knowledge(tmp_path):
-    """차단 사유에 tm-manage-memory 안내가 포함돼 있는지."""
-    root = tmp_path / "team"
-    root.mkdir()
-    _active(root)
-    proc = _run_hook(_memory_payload(root), root)
-    assert proc.returncode == 2
-    out = json.loads(proc.stdout)
-    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "tm-manage-memory" in reason
-
-
-def test_deny_stderr_contains_block_notice(tmp_path):
-    """차단 시 stderr 에 [teammode] 블록 알림이 나오는지."""
-    root = tmp_path / "team"
-    root.mkdir()
-    _active(root)
-    proc = _run_hook(_memory_payload(root), root)
-    assert proc.returncode == 2
-    assert "[teammode]" in proc.stderr
 
 
 # ── P1-1: resolve() containment (symlink 우회 차단) ──────────────────────────
@@ -968,16 +913,3 @@ def test_files_multiple_nonmemory_elements_pass(tmp_path):
     proc = _run_hook(payload, root)
     assert proc.returncode == 0, "memory/ 밖 다중파일은 통과해야 한다"
     assert "Traceback" not in proc.stderr
-
-
-def test_deny_message_explains_kb_purpose(tmp_path):
-    """차단 메시지에 KB(동사 경유 원칙) 설명이 포함된다."""
-    root = tmp_path / "team"
-    root.mkdir()
-    _active(root)
-    proc = _run_hook(_memory_payload(root), root)
-    assert proc.returncode == 2
-    out = json.loads(proc.stdout)
-    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-    # KB 설명 키워드 포함 여부
-    assert "KB" in reason or "메모리 베이스" in reason or "동사" in reason

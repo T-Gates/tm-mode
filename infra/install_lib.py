@@ -1567,8 +1567,8 @@ def plan_install(*, team_root, agents, member_name, role, team_name_default,
     plan.autopush = {
         "enabled_on_yes": bool(real_host_install),
         "condition": "when --yes (real install) and not --settings isolation",
-        "note": "auto-commit scaffold changes + attempt push — push failure is non-fatal"
-                " (surfaced as a sync-warning)",
+        "note": "auto-commit scoped scaffold changes + attempt main sync — sync "
+                "failure is non-fatal (surfaced as last-sync-error)",
     }
 
     if "codex" in agents:

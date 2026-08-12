@@ -18,7 +18,7 @@ An L1 core skill that turns team mode on or off. ON updates the repo, wires the 
 
 - Write code, create issues, connect services, or automatically call other skills — this skill only toggles team mode.
 - Query issue trackers, calendars, or chat (L2 services) — those are outside the L1 core scope. Once L2 services are connected, other skills handle them.
-- Push unrelated code or force-push. Automatic publication is limited to files named by the active hook; recovery never rewrites remote history.
+- Push unrelated code or force-push. Automatic scoped commits are limited to files named by the active hook; main sync never rewrites remote history.
 
 ## Environment
 
@@ -92,19 +92,19 @@ An L1 core skill that turns team mode on or off. ON updates the repo, wires the 
    - `<name>`: the English name confirmed with the user. If it has not been confirmed, ask first, using `git config user.name` only as a suggested value.
    - Content: summarize the session work (see "Session Log Format" below).
 
-2. **Verify publication / fallback commit**: The Edit/Write in step 1 normally triggers the active auto-commit hook, which commits only the named session-log file and performs a bounded foreground push. If the session-log path is still modified or untracked after the hook returns, use this scoped fallback:
+2. **Verify main sync / fallback commit**: The Edit/Write in step 1 normally triggers the active auto-commit hook, which commits only the named session-log file and immediately syncs main. If the session-log path is still modified or untracked after the hook returns, use this scoped fallback:
    ```bash
    python3 infra/teammode.py commit --root . --paths "memory/team/sessions/<name>/<date>.md" --message "session: <이름> <날짜>" --push
    ```
    - Limit the staging scope to the exact session-log file from step 1 — do **not** sweep in all of `memory/` or the rest of the working tree.
-   - Do not create a duplicate commit when the hook already committed the log. Do not force-push. A non-ff failure is recovered by the bounded foreground path; unresolved failures remain visible in the branch-bound pending ledger and sync warning.
-   - After the hook/fallback returns, run both publication checks:
+   - Do not create a duplicate commit when the hook already committed the log. Do not force-push. The core performs one main-only fetch/rebase/push flow; unresolved failures remain visible in `last-sync-error`.
+   - After the hook/fallback returns, run both sync checks:
      ```bash
-     git rev-list --count --left-right '@{u}...HEAD'
-     python3 -c 'import os, sys; sys.path.insert(0, "infra"); import git_ops; state = git_ops.read_push_pending_state(os.path.abspath(".")); print(f"available={int(state.available)} pending={int(bool(state.content))}"); raise SystemExit(0 if state.available and not state.content else 1)'
+     git rev-list --count --left-right 'origin/main...main'
+     python3 -c 'import os, sys; sys.path.insert(0, "infra"); import git_ops; error = git_ops.read_last_sync_error(os.path.abspath(".")); print("last_sync_error=" + (error or "")); raise SystemExit(1 if error else 0)'
      ```
-     The first command must succeed and its second number must be `0` (`ahead=0`). The second command must exit successfully and print `available=1 pending=0`.
-   - Treat a missing upstream, `ahead > 0`, ledger unavailable, or pending content as unresolved publication. **Do not run step 3.** Keep the hooks and `.teammode-active` intact, report the unresolved state, and leave team mode on so SessionStart can retry safely. Never delete the marker or pending ledger manually.
+     The first command must succeed and print `0 0` (`behind=0`, `ahead=0`). The second command must exit successfully with an empty `last_sync_error`.
+   - Treat a missing `origin/main`, non-zero ahead/behind, or non-empty last sync error as unresolved sync. **Do not run step 3.** Keep the hooks and `.teammode-active` intact, report the unresolved state, and leave team mode on so SessionStart can retry from Git state. Never delete the error marker manually.
 
 3. **Turn team mode off**: `python3 infra/teammode.py off --root . --install`
    - The engine performs adapter sync with `mode=off`, deletes the `.teammode-active` marker, and prints the farewell. **The banner is not in engine stdout** (toolkit pattern, same as ON).
@@ -153,7 +153,7 @@ Use the team's session-log headings in its language. For example, a Korean team 
 | Mistake | Correct Method |
 |------|------------|
 | Ending OFF without a session log | Always record the session log first |
-| Manually force-pushing after an auto-push warning | Keep the scoped pending state; resolve/retry without rewriting remote history |
+| Manually force-pushing after an auto-sync warning | Resolve or retry with `python3 infra/teammode.py pull --root .` without rewriting remote history |
 | Inferring and fixing the name from git/account/email | `git user.name` is only a *suggested value* — confirm with the user |
 | Skipping pull on ON | Always update first, and continue even if it fails |
 | Guessing the repo path from the `TEAMMODE_HOME` environment variable | Explicit `--root .` is required (engine policy A) |

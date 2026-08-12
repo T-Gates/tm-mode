@@ -75,6 +75,9 @@ def test_I1_introducer_full_run(tmp_path):
     assert cfg["services"] == {}
     assert (team / "memory" / "team" / "sessions" / "heidi").is_dir()
     assert (team / "memory" / "banner.txt").is_file()
+    settings = json.loads((iso / "claude" / "settings.json").read_text())
+    assert settings["env"]["TEAMMODE_HOME"] == str(team.resolve())
+    assert settings["env"]["TEAMMODE_MEMBER"] == "heidi"
     # 첫 세션로그 미생성(M2)
     assert list((team / "memory" / "team" / "sessions" / "heidi").iterdir()) == []
     # verify: 설치 검증은 돌되, 활성화는 opt-in — 기본 install 은 팀모드를 켜지 않는다.

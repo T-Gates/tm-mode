@@ -400,7 +400,7 @@ def _deny(reason: str, lang: str = "ko") -> None:
                         "[teammode] KB 쓰기 차단: {reason}", reason=reason) + "\n")
 
 
-def _deny_edit_lease(reason: str, lang: str = "ko") -> None:
+def _deny_edit_mutex(reason: str, lang: str = "ko") -> None:
     """Deny a file tool that cannot join the shared-worktree edit barrier."""
     print(json.dumps({
         "hookSpecificOutput": {
@@ -410,41 +410,43 @@ def _deny_edit_lease(reason: str, lang: str = "ko") -> None:
         }
     }, ensure_ascii=False))
     sys.stderr.write(_t(
-        "hook_edit_lease_stderr_blocked", lang,
+        "hook_edit_mutex_stderr_blocked", lang,
         "[teammode] 파일 편집 보류: {reason}", reason=reason) + "\n")
 
 
-def _begin_edit_lease(root: str, data: dict, lang: str) -> bool:
-    """Reserve this exact session/tool call after every governance check passes."""
+def _begin_edit_mutex(root: str, data: dict, lang: str) -> bool:
+    """Reserve this exact tool call after every governance check passes."""
     if _git_ops is None:
         if not os.path.exists(os.path.join(root, ".git")):
             return True  # non-repository fixtures cannot run Git reconciliation
         reason = _t(
-            "hook_edit_lease_deny_unavailable", lang,
+            "hook_edit_mutex_deny_unavailable", lang,
             "편집 동기화 모듈을 불러오지 못해 보수적으로 차단했습니다. 다시 시도하세요.")
-        _deny_edit_lease(reason, lang)
+        _deny_edit_mutex(reason, lang)
         return False
-    owner = _git_ops.hook_edit_lease_owner(data)
-    metadata = _git_ops.hook_edit_lease_metadata(data) if owner else None
-    if not owner or metadata is None:
+    token = _git_ops.hook_edit_mutex_token(data)
+    if not token:
         if not _git_ops.is_git_worktree(root):
             return True
         reason = _t(
-            "hook_edit_lease_deny_identity", lang,
-            "세션/도구 식별자가 없어 안전한 자동 정합을 보장할 수 없습니다. "
+            "hook_edit_mutex_deny_identity", lang,
+            "도구 식별자가 없어 안전한 자동 정합을 보장할 수 없습니다. "
             "에이전트 훅을 다시 동기화한 뒤 재시도하세요.")
-        _deny_edit_lease(reason, lang)
+        _deny_edit_mutex(reason, lang)
         return False
-    ok, detail = _git_ops.begin_hook_edit_lease(
-        root, owner, metadata=metadata)
-    if ok:
+    try:
+        # acquire=True is the core's atomic acquired-and-owned proof. A second
+        # lock probe only spends the 2s PreToolUse budget and adds no safety.
+        acquired = _git_ops.acquire_edit_mutex(root, token)
+    except Exception:  # noqa: BLE001 — lock state failure is fail-closed
+        acquired = False
+    if acquired:
         return True
-    safe_detail = _git_ops.sanitize_git_detail(detail or "edit lease unavailable")
     reason = _t(
-        "hook_edit_lease_deny_busy", lang,
+        "hook_edit_mutex_deny_busy", lang,
         "다른 세션의 정합 작업과 겹쳐 파일 편집을 시작하지 않았습니다. "
-        "잠시 후 다시 시도하세요: {detail}", detail=safe_detail)
-    _deny_edit_lease(reason, lang)
+        "잠시 후 다시 시도하세요: {detail}", detail="edit mutex busy")
+    _deny_edit_mutex(reason, lang)
     return False
 
 
@@ -573,12 +575,12 @@ def main() -> int:
 
     # memory/ 파일을 하나도 안 건드리면 통과 (정상 다중파일 편집 포함)
     if not needs_unlock:
-        return 0 if _begin_edit_lease(root, data, lang) else 2
+        return 0 if _begin_edit_mutex(root, data, lang) else 2
 
     # ── 5. memory/ 파일 포함 → unlock 플래그 확인 ──
     if _is_unlock_valid(root, data):
-        # 스킬이 플래그를 세운 구간 → governance 통과 후 edit lease 등록.
-        return 0 if _begin_edit_lease(root, data, lang) else 2
+        # 스킬이 플래그를 세운 구간 → governance 통과 후 edit mutex 등록.
+        return 0 if _begin_edit_mutex(root, data, lang) else 2
 
     _deny(_t(
         "hook_kb_deny_direct_edit", lang,

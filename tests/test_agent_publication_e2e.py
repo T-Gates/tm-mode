@@ -98,7 +98,6 @@ def test_raw_posttooluse_publishes_through_normalize(agent: str, tmp_path: Path)
     env.update({
         "TEAMMODE_HOME": str(work),
         "XDG_STATE_HOME": str(state_home),
-        "TEAMMODE_DISABLE_PUSH_WORKER": "1",
     })
     normalize = REPO / "infra" / "agents" / agent / "normalize.py"
     proc = subprocess.run(
