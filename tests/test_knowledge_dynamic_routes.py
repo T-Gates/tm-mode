@@ -25,7 +25,7 @@ def _run(root: Path, *argv):
 
 
 def _init_git(root: Path) -> None:
-    subprocess.run(["git", "init", str(root)], capture_output=True)
+    subprocess.run(["git", "init", "-b", "main", str(root)], capture_output=True)
     subprocess.run(["git", "-C", str(root), "config", "user.email", "t@t.com"],
                    capture_output=True)
     subprocess.run(["git", "-C", str(root), "config", "user.name", "T"],

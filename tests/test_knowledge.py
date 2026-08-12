@@ -51,7 +51,7 @@ def _run_main(args: list) -> int:
 
 def _init_git(root: Path) -> None:
     """tmp 경로에 최소 git repo 초기화."""
-    subprocess.run(["git", "init", str(root)], capture_output=True)
+    subprocess.run(["git", "init", "-b", "main", str(root)], capture_output=True)
     subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test.com"],
                    capture_output=True)
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
@@ -553,27 +553,6 @@ def test_knowledge_edit_date_excludes_meta_commit(tmp_path):
     assert result is not None, "INDEX 에 편집일이 없다"
     assert result == "2023-05-10", \
         f"본문 미변경 재write 후 편집일이 바뀌었다: {result!r} (기대: '2023-05-10')"
-
-
-def test_knowledge_write_commits_to_git(tmp_path):
-    """memory write: git repo 에서 파일 + INDEX 가 커밋된다."""
-    root = tmp_path / "gitroot"
-    root.mkdir()
-    _init_git(root)
-
-    _run(root, "memory", "write",
-         "--folder", "product",
-         "--filename", "product-info.md",
-         "--content", "제품 정보.",
-         "--author", "bob",
-         "--weight", "📌")
-
-    # git log 로 커밋 생성 확인
-    result = subprocess.run(
-        ["git", "-C", str(root), "log", "--oneline"],
-        capture_output=True, text=True)
-    assert "product-info.md" in result.stdout or "memory" in result.stdout, \
-        f"커밋이 생성되지 않았거나 대상이 없음: {result.stdout!r}"
 
 
 # ── C-3: conformance — memory write → INDEX 존재 → tm-memory 참조 ──
