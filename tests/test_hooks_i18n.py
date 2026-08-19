@@ -11,8 +11,7 @@
   1) i18n.team_lang 폴백 4케이스
   2) session-start 주입 — en 팀 = 영어 라벨 + guidelines.en.md, ko 팀 = 기존 한국어
   3) session-log-remind — en 팀 리마인더가 영어
-  4) kb-write-guard — en 팀 deny 가 영어 (__file__ 루트 계약: 훅+i18n 을 tmp 루트에 복사)
-  5) confirm-action — en 팀 deny 가 영어
+  4) confirm-action — en 팀 deny 가 영어
 
 안전 철칙: 실 호스트 무접촉 — 전부 tmp_path 격리.
 """
@@ -32,7 +31,6 @@ REPO = Path(__file__).resolve().parents[1]
 PY = sys.executable
 SESSION_START = REPO / "infra" / "hooks" / "session-start.py"
 REMIND = REPO / "infra" / "hooks" / "session-log-remind.py"
-KB_GUARD = REPO / "infra" / "hooks" / "kb-write-guard.py"
 CONFIRM = REPO / "infra" / "hooks" / "confirm-action.py"
 
 
@@ -195,73 +193,7 @@ def test_remind_ko_team_stays_korean(tmp_path):
     assert "세션로그 미작성" in obj["systemMessage"]
 
 
-# ═══ 4) kb-write-guard ═══════════════════════════════════════════════════════
-# 이 훅은 TEAMMODE_HOME 무신뢰 — __file__ 기준 팀 루트. 픽스처는 훅(+i18n)을
-# tmp 루트에 복사해 __file__ 이 tmp 루트를 가리키게 한다(test_kb_write_guard 패턴).
-
-def _install_guard(root: Path, *, with_i18n: bool) -> Path:
-    hooks_dir = root / "infra" / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-    dst = hooks_dir / "kb-write-guard.py"
-    shutil.copy2(str(KB_GUARD), str(dst))
-    if with_i18n:
-        shutil.copy2(str(REPO / "infra" / "i18n.py"), str(root / "infra" / "i18n.py"))
-    return dst
-
-
-def _run_guard(root: Path, *, with_i18n: bool) -> subprocess.CompletedProcess:
-    guard = _install_guard(root, with_i18n=with_i18n)
-    payload = {
-        "event": "PreToolUse", "action": "file_edit",
-        "files": [str(root / "memory" / "x.md")],
-        "tool": {"kind": "builtin", "name": "Write"},
-        "agent": "claude", "raw": {},
-    }
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("TEAMMODE_HOME", "CLAUDE_SESSION_ID",
-                        "CLAUDE_CODE_SESSION_ID")}
-    return subprocess.run([PY, str(guard)], input=json.dumps(payload),
-                          capture_output=True, text=True, env=env)
-
-
-def test_kb_guard_en_team_denies_in_english(tmp_path):
-    root = tmp_path / "team"
-    root.mkdir()
-    _write_config(root, locale="en_US")
-    (root / ".teammode-active").write_text("")
-    proc = _run_guard(root, with_i18n=True)
-    assert proc.returncode == 2
-    reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "Direct edits under memory/" in reason, f"영어 deny 아님: {reason!r}"
-    assert "tm-manage-memory" in reason
-    assert "직접 편집" not in reason
-
-
-def test_kb_guard_ko_team_denies_in_korean(tmp_path):
-    root = tmp_path / "team"
-    root.mkdir()
-    _write_config(root, locale="ko_KR")
-    (root / ".teammode-active").write_text("")
-    proc = _run_guard(root, with_i18n=True)
-    assert proc.returncode == 2
-    reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "직접 편집은 금지" in reason
-    assert "tm-manage-memory" in reason
-
-
-def test_kb_guard_without_i18n_module_falls_back_korean(tmp_path):
-    """부분 배포(i18n.py 부재) → 종전 한국어 deny 유지(무해 강등)."""
-    root = tmp_path / "team"
-    root.mkdir()
-    _write_config(root, locale="en_US")  # locale 이 en 이어도 i18n 부재면 ko 폴백
-    (root / ".teammode-active").write_text("")
-    proc = _run_guard(root, with_i18n=False)
-    assert proc.returncode == 2
-    reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "직접 편집은 금지" in reason
-
-
-# ═══ 5) confirm-action ═══════════════════════════════════════════════════════
+# ═══ 4) confirm-action ═══════════════════════════════════════════════════════
 
 def _run_confirm(root: Path) -> subprocess.CompletedProcess:
     payload = {

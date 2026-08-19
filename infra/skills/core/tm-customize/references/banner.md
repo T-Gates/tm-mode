@@ -9,7 +9,7 @@ The ASCII art shown at the top when running `tm on` (turning team mode on). It i
 
 ## ⚠️ Guard (Mandatory)
 
-`banner.txt` is under `memory/`, so the `kb-write-guard` hook **blocks Edit/Write tools**. Write it only through **Bash** (`cp`, `tee`, etc.).
+`banner.txt` is under `memory/`. Writing it through **Bash** (`cp`, `tee`, etc.) keeps the exact bytes — Edit/Write tools may normalise the ASCII art.
 
 ```bash
 # ✅ Correct

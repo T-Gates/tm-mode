@@ -223,27 +223,6 @@ MESSAGES = {
             "[info] The issues slot is not connected. Connect "
             "services.issues in team.config.json (tm-connect).",
 
-        # ── cmd_memory_unlock ──
-        "cmd_memory_unlock_bad_subaction":
-            "[error] memory unlock: requires a begin or end sub-action — "
-            "usage: teammode.py memory unlock {begin|end} --root <team-root>",
-        "cmd_memory_unlock_guard_load_failed":
-            "[error] memory unlock: could not load infra/hooks/kb-write-guard.py "
-            "(single source for the flag path convention).",
-        "cmd_memory_unlock_no_session_id":
-            "[error] memory unlock: could not determine the session id — no "
-            "CLAUDE_SESSION_ID/CLAUDE_CODE_SESSION_ID env and no SessionStart "
-            "relay file. Run this from within an agent session.",
-        "cmd_memory_unlock_begin_write_failed":
-            "[error] memory unlock begin: failed to create the flag — {exc}",
-        "cmd_memory_unlock_begin_done":
-            "teammode memory unlock begin — edit window open (session={session_id}, "
-            "source={source}, TTL {ttl}s): {flag}",
-        "cmd_memory_unlock_end_remove_failed":
-            "[error] memory unlock end: failed to remove the flag — {exc}",
-        "cmd_memory_unlock_end_done":
-            "teammode memory unlock end — edit window closed (session={session_id}): {flag}",
-
         # ── cmd_util ──
         "cmd_util_member_required":
             "[error] util {action}: --member <name> is required.",
@@ -537,53 +516,6 @@ MESSAGES = {
             "Record it as your first action",
         "hook_rm_sys_weak":
             "📝 Session log not written — {count} prompts so far",
-
-        # kb-write-guard
-        "hook_kb_deny_parse":
-            "Failed to parse hook input — blocking conservatively (fail-closed).",
-        "hook_kb_deny_not_dict":
-            "Hook input is not a JSON object (dict) — blocking conservatively "
-            "(fail-closed).",
-        "hook_kb_deny_files_not_list":
-            "Malformed input — the files field is not a list (fail-closed). "
-            "Retry with the canonical schema or use the tm-manage-memory skill.",
-        "hook_kb_deny_files_item":
-            "Malformed input — a files element is not a string (fail-closed). "
-            "Retry with the canonical schema or use the tm-manage-memory skill.",
-        "hook_kb_deny_raw_not_dict":
-            "Malformed input — the raw field is not a dict (fail-closed). "
-            "Retry with the canonical schema or use the tm-manage-memory skill.",
-        "hook_kb_deny_tool_input_not_dict":
-            "Malformed input — raw.tool_input is not a dict (fail-closed). "
-            "Retry with the canonical schema or use the tm-manage-memory skill.",
-        "hook_kb_deny_no_path":
-            "Could not determine the memory/ path — blocking conservatively "
-            "(fail-closed). Retry with a canonical schema that includes the "
-            "file path, or use the tm-manage-memory skill.",
-        "hook_kb_deny_resolve_error":
-            "Error while checking the memory/ path — blocking conservatively "
-            "(fail-closed). Use the tm-manage-memory skill.",
-        "hook_kb_deny_direct_edit":
-            "Direct edits under memory/ are not allowed. "
-            "The KB (memory base) follows the 'verbs only' principle — instead "
-            "of direct Edit/Write, engine verbs record to shared team memory "
-            "without conflicts. "
-            "Add, update, or delete memory only through the tm-manage-memory "
-            "skill (engine: python infra/teammode.py memory write …).",
-        "hook_kb_stderr_blocked":
-            "[teammode] KB write blocked: {reason}",
-        "hook_edit_mutex_deny_busy":
-            "The file edit was not started because another session is changing "
-            "the shared checkout. Retry shortly: {detail}",
-        "hook_edit_mutex_deny_unavailable":
-            "The edit synchronization module could not be loaded, so the file "
-            "edit was blocked conservatively. Retry after resynchronizing hooks.",
-        "hook_edit_mutex_deny_identity":
-            "The hook payload has no exact tool identity, so safe automatic "
-            "reconciliation cannot be guaranteed. Resynchronize the agent hooks "
-            "and retry.",
-        "hook_edit_mutex_stderr_blocked":
-            "[teammode] File edit deferred: {reason}",
 
         # confirm-action
         "hook_ca_deny_manifest":

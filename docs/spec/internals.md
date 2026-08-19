@@ -119,7 +119,7 @@ At session start, implementations inject team memory into context. Injecting eve
 
 > Keep only **one copy of the content** for hooks, skills, and MCP, and let the `agents/<name>/` adapter **translate notation, registration methods, and input schemas that differ by agent**. The design goal is to attach a new agent by adding only an adapter, but the current reference has detection and wiring paths hardcoded in `install_lib._AGENT_HOME_DIRS` and `_AGENT_WIRE`, so adding a new agent also requires modifying the install_lib maps in addition to the `agents/<name>/` files.
 >
-> The ground truth for this section is `infra/agents/{claude,codex}/{adapter.py,normalize.py,events.json}`, `infra/hooks/{manifest.json,session-start.py,session-log-remind.py,auto_pull.py,auto-commit.py,edit-lease-cleanup.py,confirm-action.py,kb-write-guard.py}`, `infra/git_ops.py`, and `infra/io_encoding.py` in the working tree as of 2026-08-11. This section describes the checked-in implementation contract; historical implementation notes remain in Appendix C.
+> The ground truth for this section is `infra/agents/{claude,codex}/{adapter.py,normalize.py,events.json}`, `infra/hooks/{manifest.json,session-start.py,session-log-remind.py,auto_pull.py,auto-commit.py,edit-lease-cleanup.py,confirm-action.py}`, `infra/git_ops.py`, and `infra/io_encoding.py` in the working tree as of 2026-08-11. This section describes the checked-in implementation contract; historical implementation notes remain in Appendix C.
 
 ### 2.1 Directory Structure
 
@@ -132,8 +132,7 @@ infra/
 │   ├── auto_pull.py              #   manifest 엔트리 아님. upstream fetch throttle 판정
 │   ├── auto-commit.py            #   PostToolUse/file_edit 경로 한정 커밋 + main 동기화
 │   ├── edit-lease-cleanup.py      #   PostToolUseFailure exact edit-mutex cleanup
-│   ├── confirm-action.py          #   PreToolUse/linear.create_issue 확인 차단
-│   └── kb-write-guard.py          #   PreToolUse/file_edit memory 직접 편집 차단
+│   └── confirm-action.py          #   PreToolUse/linear.create_issue 확인 차단
 ├── skills/
 │   └── base/<skill>/SKILL.md     # 공통 스킬 원본. 현 구현은 base만 설치(오버라이드 없음)
 ├── agents/
@@ -189,7 +188,6 @@ The reference build declares six entries in `infra/hooks/manifest.json`. All dec
 | `PostToolUse` | `action: file_edit` | `auto-commit.py` | (base) | runtime | block | — | ✅ |
 | `PostToolUseFailure` | `action: file_edit` | `edit-lease-cleanup.py` | on | (drop) | advisory | — | ✅ |
 | `PreToolUse` | `mcp: {server: linear, tool: create_issue}` | `confirm-action.py` | (base) | runtime | block | true | ✅ |
-| `PreToolUse` | `action: file_edit` | `kb-write-guard.py` | on | runtime | block | true | ✅ |
 
 Summary of the registered scripts and their directly coupled sync helper:
 
@@ -201,7 +199,6 @@ Summary of the registered scripts and their directly coupled sync helper:
 | `auto-commit.py` | ✅ `PostToolUse` | canonical JSON stdin | no-op on event/action mismatch, `.teammode-active` missing, `git_ops` missing, no valid repo-local files, or exception | validates canonical `files` as repo-local literal pathspecs, borrows the exact PreToolUse edit-mutex token, and runs path-scoped `do_commit(push=True)`. The core creates the scoped local commit and immediately performs main sync (fetch → pull --rebase when behind → push). Sync failure preserves the local commit and records sanitized `last-sync-error`; no asynchronous publication state is created. Retries `index.lock` once after 1s, releases the exact token, and always exits 0 |
 | `edit-lease-cleanup.py` | ✅ `PostToolUseFailure` | canonical JSON stdin | derives the exact tool token from the failed Claude tool call; other events are no-ops. Codex does not register the unsupported failure event | releases only that edit-mutex token, is fail-open, and exits 0; lost tokens recover through the core TTL |
 | `confirm-action.py` | ✅ `PreToolUse` | canonical JSON stdin + first argv marker | passes on event mismatch, `.teammode-active` missing, target MCP mismatch, or human allow signal | without allow, deny JSON stdout + stderr, exit 2 |
-| `kb-write-guard.py` | ✅ `PreToolUse` | canonical JSON stdin | allows non-memory edits and valid engine unlocks; atomically acquires the exact edit mutex for allowed file-edit tools; blocks direct governed-memory edits | blocking response + stderr, exit 2; otherwise exit 0 |
 
 **SessionStart dedupe contract (0.4).** For Codex native inputs whose `source` is `resume` or `compact`, normalize must provide a non-empty `session_id`, and the raw input must identify a transcript whose latest valid `turn_context` JSONL row can be read. `session-start.py` hashes the session id, canonical transcript path, latest `turn_id`, and row digest into one generation key; `source` is deliberately excluded, so a resume callback and later-drained compact callbacks for the same logical turn collapse together. Startup/clear sources bypass this rule, and missing or malformed evidence fails open. Claim acquire, timestamp capture, owner-token settlement, running-lease expiry, and completed cooldown are serialized under a purpose-scoped private-state lock. Only the owner may settle a claim; failure releases it for retry.
 
@@ -496,7 +493,7 @@ Current normalize always outputs `event`, `agent`, and `raw`. If stdin is empty,
 ### 2.11 Cross-Agent (Claude ↔ Codex)
 
 - **Shared translation core (reference)**: the Codex adapter inherits Claude `Adapter` to reuse the translation core (events.json-based), and redefines only Codex-specific **config format (TOML block) + fallback handling**. Codex normalize imports functions from Claude normalize and rebinds only the path constants (events.json and manifest) into the Codex context.
-- **Codex lifecycle support**: Codex supports six of the seven canonical events in events.json. `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SubagentStop` map to the same names; `PostToolUseFailure` is explicitly `null`, so the failure cleanup entry is omitted with a warning instead of being silently registered. Blocking hooks with `enforcement: block`, such as `confirm-action.py` and `kb-write-guard.py`, are registered as `[[hooks.PreToolUse]]` in `config.toml`, so exit-2 blocking takes effect. Actual Codex hook input has the shape `tool_name`/`tool_input` (or top-level `name`/`input`), and apply_patch carries the patch string in `tool_input.command` (captured 2026-06-21) — normalize converts file headers into canonical `files[]`.
+- **Codex lifecycle support**: Codex supports six of the seven canonical events in events.json. `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SubagentStop` map to the same names; `PostToolUseFailure` is explicitly `null`, so the failure cleanup entry is omitted with a warning instead of being silently registered. Blocking hooks with `enforcement: block`, such as `confirm-action.py`, are registered as `[[hooks.PreToolUse]]` in `config.toml`, so exit-2 blocking takes effect. Actual Codex hook input has the shape `tool_name`/`tool_input` (or top-level `name`/`input`), and apply_patch carries the patch string in `tool_input.command` (captured 2026-06-21) — normalize converts file headers into canonical `files[]`.
 - **Codex PreToolUse blocking semantics (verified in practice, 2026-07-03, codex-cli 0.142.5)**: Codex implements the Claude-compatible PreToolUse wire — `PreToolUsePermissionDecisionWire` parses `hookEventName`/`permissionDecision`/`permissionDecisionReason` from hook stdout JSON. **exit 2 = blocked**, and stderr is the channel for the block reason. `permissionDecision` supports only `"deny"` (`allow`/`ask` unsupported). Passing is exit 0 + no output. The output of the reference blocking hook (deny JSON stdout + nonempty stderr + exit 2) satisfies this contract as-is, so it is common to Claude and Codex.
 - Independent implementations do not need to use the `agents/` directory structure or Python as-is. What must be preserved is **the declaration format (manifest.json and events.json) and meaning**, not the implementation language or file layout (§6 C2).
 - Codex MCP registration limitations are surfaced honestly. `install-mcp` writes only comment placeholders (§2.8-3 — real blocks forbidden) to `config.toml`, and the user may need to supplement real launchable MCP server definitions.
@@ -563,7 +560,7 @@ The argv parser (`_parse_args`) is a hand-written parser, not `argparse`.
 - Boolean flags: `--install`, `--json`, `--push`, `--dry-run`. The default values are all `False`.
 - A `--flag` outside the whitelist is ignored. In that case, the next token is not consumed as a value. Therefore a non-flag token after an unknown Boolean flag may become the verb or a positional.
 - The first non-flag token becomes `verb`, and subsequent non-flag tokens are accumulated in `positionals` in order. Even if a value-taking flag appears between the verb and subaction, as in `issue --root <root> create`, `create` remains a positional.
-- Verbs that use extra positionals: `issue` (first positional=action), `memory` (first positional=action write/delete/route/unlock; for `route` and `unlock`, second positional=subaction), and `util` (first positional=action add/remove/list). Other known verbs do not use positionals.
+- Verbs that use extra positionals: `issue` (first positional=action), `memory` (first positional=action write/delete/route; for `route`, second positional=subaction), and `util` (first positional=action add/remove/list). Other known verbs do not use positionals.
 
 ### 3.1 on / off (via settings — `--root` + (`--settings` or `--install`) required)
 
@@ -854,7 +851,7 @@ The altitude of `issue` is the same as `context`. The engine checks whether the 
 
 ### 3.6 memory (memory-file CRUD — `--root` required, first positional = action)
 
-A machine-owned verb for memory files under `memory/`. **Judgment (content, classification, and final weight) belongs to the skill; the machine work (validation, files, INDEX, and commit) belongs to this verb**. Actions are `write` | `delete` | `route` | `unlock`.
+A machine-owned verb for memory files under `memory/`. **Judgment (content, classification, and final weight) belongs to the skill; the machine work (validation, files, INDEX, and commit) belongs to this verb**. Actions are `write` | `delete` | `route`.
 
 **write** — all of `--folder --filename --content --author --weight` are required:
 
@@ -868,8 +865,6 @@ A machine-owned verb for memory files under `memory/`. **Judgment (content, clas
 **delete** — `--path --author` required: delete file + remove folder INDEX row + session-log backlink + commit (push nonblocking). Missing files are idempotent exit 0 (but OS exceptions such as EACCES from stat are exit 2 — no false success). Rejects deleting `INDEX.md`. Allowed/blocked folder rules are the same as write.
 
 **route** — subaction `upsert` (`--path --desc --author` required) | `remove` (`--path --author`): CRUD rows in the root `memory/INDEX.md` **2-column routing map** (`| 경로 | 여기에 넣는 것 |`). Preserves prose around the table, exact-matches backtick tokens (distinguishes folder rows/file rows), atomic write, idempotent, commit (push nonblocking). `--desc` must not be guessed (required argument). Lightweight traversal guard (blocking `memory/` escape and table-breaking characters).
-
-**unlock** — subaction `begin` | `end`: create/remove the KB direct-edit unlock flag for kb-write-guard (mode 0600). Session id prefers env (`CLAUDE_SESSION_ID`), and falls back to hook relay if absent. TTL (300s) is enforced by the guard — lingering begin flags also expire. The single source of truth for the flag path convention is `infra/hooks/kb-write-guard.py`.
 
 ### 3.7 util (instance utility skill management — `--root` required, first positional = action)
 

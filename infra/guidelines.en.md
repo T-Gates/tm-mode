@@ -19,9 +19,10 @@ This session is in team mode. Work by actively using the team's memory (context)
 - **Decisions**: why things were decided that way (prevents repeated debates)
 - **Architecture & tech stack**: system structure, core technologies (DB, framework, language), constraints
 
-## Memory is written through verbs
-- Do not Edit/Write `memory/` directly (that skips the INDEX and commit procedures).
+## Prefer writing memory through verbs
 - Look up with `tm-memory` / add & update with `tm-manage-memory`.
+- Editing `memory/` directly is not blocked, but it skips the INDEX update, the
+  commit and the backlink — only do it if you will handle those steps yourself.
 - When the user states a decision or memory to leave for the team, record it with `tm-manage-memory`. Accumulated memory is auto-injected into the next session.
 
 ## If you see an engine-update notice — ask first
