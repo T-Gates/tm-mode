@@ -11,7 +11,7 @@ Codex 특성(events.json 으로 데이터 표현 — 코드 분기 하드코딩 
   - mcp_tool_format = "mcp__{server}__{tool}"
 
 폴백(§11.11): events.json 에서 표현 불가로 선언된 훅은 비활성화하고 [warn] 으로 알린다.
-현재 Codex 는 PreToolUse 를 지원하므로 confirm-action/kb-write-guard 같은 차단 훅도
+현재 Codex 는 PreToolUse 를 지원하므로 confirm-action 같은 차단 훅도
 등록 대상이다.
 
 설계 원칙(#D1 — 훅 trust): **훅 command 문자열은 안정 유지(normalize 래퍼)** — Codex 는
@@ -125,7 +125,7 @@ class Adapter(BaseAdapter):
 
         Codex 는 hook command 를 셸로 실행하고(공식 hooks 문서가 command 에 `$(...)` 명령
         치환 예시를 보이는 것이 근거) command hook 에 env 필드가 없으므로, 멀티멤버 팀에서
-        '나'를 가르는 TEAMMODE_MEMBER(session-log-remind·kb-write-guard 의 단일 소스)를
+        '나'를 가르는 TEAMMODE_MEMBER(session-log-remind 의 단일 소스)를
         `env VAR=val <command>` prefix 로 전달한다. member 가 self.member·기존 prefix 둘 다
         없거나 형식이 이상하면 member 는 생략한다(하위호환·fail-safe).
         self.member 가 None 이면 현재 config.toml 에 박힌 기존 prefix 를 재사용한다(self-healing,

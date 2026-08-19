@@ -93,25 +93,10 @@ If this is correct, say "yes"; if anything should change, tell me.
 
 After confirmation is complete, call the engine verb.
 
-> **Honest explanation of the unlock flag**: The engine `memory` verb uses a separate process `open()`,
-> so it is not subject to the PreToolUse hook; going through the engine does not itself require unlock.
-> Unlock is only necessary if the skill directly touches `memory/` with the `Write`/`Edit` tools — this skill
-> never does that, so the principle is to avoid opening an unlock window(no direct-edit window needed).
-> Steps 4-0/4-2 below are reference implementations for exceptional cases that require manual editing.
-> **In the normal flow(engine path), do not run 4-0/4-2.**
-
-#### 4-0. unlock begin(start)
-
-```bash
-python3 infra/teammode.py memory unlock begin --root .
-```
-
-The engine handles the flag path contract(root_hash + session_id, XDG/TMPDIR fallback) together with
-kb-write-guard as a single source; the skill must not manually recompute the path.
-
-Session id resolution order: ① env `CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID`(Claude)
-② latest relay file left by the SessionStart hook(Codex — also works for sessions without env)
-③ explicit error if neither exists — unlock cannot be opened outside an agent session(fail-closed).
+> The engine `memory` verb writes through a separate process `open()`, so it is never subject to a
+> PreToolUse hook. Direct `Write`/`Edit` on `memory/` is no longer blocked either
+> (see `infra/migrations/0003-kb-write-guard-removal.md`) — but going through the engine is still the
+> right path, because it is what stamps frontmatter, updates INDEX.md, commits and writes backlinks.
 
 #### 4-1. Call the engine verb
 
@@ -140,16 +125,6 @@ What the engine handles(the skill must not do these directly):
 - INDEX.md row upsert/removal
 - edit date calculation(based on the body commit, excluding metadata commits)
 - do_commit(paths only, push=False)
-
-#### 4-2. unlock end(after commit completes)
-
-Immediately after the engine verb completes successfully(including commit), close the edit window(idempotent — ignore if already absent).
-
-```bash
-python3 infra/teammode.py memory unlock end --root .
-```
-
-> If a flag remains after abnormal termination(error/interruption), it expires automatically after the TTL(5 minutes).
 
 ### 5. Bidirectional Backlinks(engine automatic — verify only)
 

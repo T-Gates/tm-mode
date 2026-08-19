@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+- Removed KB write governance: the `kb-write-guard` PreToolUse hook, the `memory unlock {begin|end}` verb, and the SessionStart session relay are gone. Direct `Edit`/`Write` under `memory/` is now allowed, and "write memory through verbs" is guidance in `infra/guidelines.md` rather than an enforced rule. The deciding defect was the edit mutex: the guard resolved the team root from `__file__` instead of the edited path, so editing any file outside the team checkout still acquired the team-wide mutex and blocked every other session until the TTL expired. See `infra/migrations/0003-kb-write-guard-removal.md`.
+
 ## 0.1.7 — 2026-07-18
 
 - Recovered pending session-log publication after an external `pull --rebase` rewrites the pending commit: exact patch-equivalent coverage across publication, pending CAS advance, SessionStart reconciliation, and pending rewrite now advances the ledger to current history so ordinary push can clear it.

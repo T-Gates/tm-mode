@@ -773,8 +773,8 @@ def bootstrap(opts: il.Options, *, home: Path, python_version,
         except Exception as _e:
             err(f"[warn] failed to record agents config (non-fatal): {_e}")
 
-    # settings.json env 에 TEAMMODE_MEMBER·TEAMMODE_HOME 주입 — 가드훅(kb-write-guard)
-    # 의 본인 판정 단일 소스 + 훅 팀루트(issue #9b). 셸 프로파일과 달리 settings.json
+    # settings.json env 에 TEAMMODE_MEMBER·TEAMMODE_HOME 주입 — 훅의 본인 판정
+    # 단일 소스 + 훅 팀루트(issue #9b). 셸 프로파일과 달리 settings.json
     # env 라야 셸 종류·프로파일 스냅샷 스테일과 무관하게 훅·도구 환경에 닿는다.
     # settings_override 면 격리 경로에 박힌다.
     # ⚠️ claude 가 배선된 경우만 — codex-only 호스트에 stray ~/.claude/settings.json

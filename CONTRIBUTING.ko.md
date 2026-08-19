@@ -43,7 +43,7 @@ python -m pytest -q maintainer_tests  # 업스트림 전용 릴리스/문서/패
 | `infra/install.py` + `infra/install_lib.py` | 부트스트랩 — 훅 배선·스킬 배포·env 주입. `--dry-run`/`--yes` 게이트 |
 | `infra/git_ops.py` | git 공통 작업 + 동기화 판정 |
 | `infra/agents/<name>/` | 에이전트별 어댑터(Claude `settings.json`, Codex `config.toml`) |
-| `infra/hooks/` | 공통 훅 — session-start main 동기화·경로 한정 auto-commit·kb-write-guard·edit mutex 정리 등 |
+| `infra/hooks/` | 공통 훅 — session-start main 동기화·경로 한정 auto-commit·edit mutex 정리 등 |
 | `infra/skills/{base,core,util}/` | 3계층 스킬 — 활성화 규칙은 §6 참고 |
 | `infra/mcp/` | L2 서비스 연결을 지원하는 MCP OAuth 헬퍼 코드 |
 | `infra/credentials.py`, `infra/i18n.py`, `infra/io_encoding.py`, `infra/providers.py`, `infra/workday.py` | 엔진 보조 모듈 |

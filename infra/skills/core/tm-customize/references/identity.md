@@ -18,7 +18,7 @@ The team name and greeting are purely for display. **Changing them at any time d
 
 ## Method: Edit team.config.json Directly
 
-Critical difference from the banner: `team.config.json` is at the **team root**, so it is **not** covered by `kb-write-guard` (which is only for `memory/`) -> **you may edit it with Edit/Write tools**. Since it is JSON, Edit is safer than sed. There is no engine verb for identity changes.
+Unlike the banner, `team.config.json` is plain JSON at the **team root** -> edit it with the Edit tool (safer than sed for JSON). There is no engine verb for identity changes.
 
 1. Open `team.config.json` and change `team.name` / `team.greeting` / `team.farewell`. **Keep the JSON valid** (commas and quotation marks).
    ```jsonc

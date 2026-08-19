@@ -238,13 +238,13 @@ def _context_style(config) -> str:
 
 
 def _valid_member_name(name: str) -> bool:
-    """멤버명이 경로·지시문에 안전한 식별자인지 — teammode._validate_author·kb-write-guard 와 동일 규칙.
+    """멤버명이 경로·지시문에 안전한 식별자인지 — teammode._validate_author 와 동일 규칙.
 
     멤버명은 _my_log_path 로 경로에 join 되고 _log_kit 로 Read(...) 지시문에
     그대로 박힌다. team.config.json(레포 공유) 또는 TEAMMODE_MEMBER(env)에서 오므로
     신뢰 경계 밖이다 — '/'·'\\'·'.'·'..'·절대경로·개행·따옴표·')' 등을 차단해
     경로 traversal·컨텍스트 주입을 막는다(실패 시 폴백). ASCII 영숫자+'-_'만 허용 —
-    isalnum() 은 유니코드라 한글이 통과하지만, kb-write-guard([A-Za-z0-9_-])·_validate_author
+    isalnum() 은 유니코드라 한글이 통과하지만, _validate_author([A-Za-z0-9_-])
     (isascii 강제)와 어긋나면 한글 멤버는 리마인더는 멤버로 굳고 편집 가드는 fail-closed 가 된다.
     """
     if not name or name in (".", ".."):
