@@ -21,8 +21,14 @@
 
 ## 메모리는 동사로 쓰는 쪽이 낫다
 - 조회 `tm-memory` / 추가·수정 `tm-manage-memory`.
-- `memory/`를 직접 Edit/Write 해도 막히지는 않는다. 다만 그러면 INDEX 갱신·커밋·
-  백링크가 빠지므로, 그 절차를 손으로 대신할 각오가 있을 때만 직접 편집한다.
+- `memory/`를 직접 Edit/Write 해도 막히지는 않는다. INDEX·frontmatter·백링크는
+  직접 챙겨야 한다. 네이티브 편집 훅이 실행되면 해당 파일의 자동 커밋·push를 시도한다.
+- 셸/Python으로 직접 쓴 파일은 네이티브 편집 훅을 거치지 않는다. 쓰기 후
+  `python3 "<team-root>/infra/teammode.py" commit --root "<team-root>" --message 'docs: update team memory' --paths 'memory/team/decisions.md memory/team/INDEX.md' --push`
+  를 명시적으로 실행한다. `--paths`에는 실제로 수정한, 알고 있는 레포 상대 파일 경로만
+  공백으로 구분해 넣는다. 와일드카드나 `memory/` 전체를 지정해 무관한 변경까지
+  포함하지 않는다. 경로 자체에 공백이 있으면 이 CLI 형식으로 표현할 수 없다.
+  `--paths`를 빼거나 비워 전체 변경을 커밋하지 않는다.
 - 사용자가 팀에 남길 결정·메모리를 말하면 `tm-manage-memory`로 쌓는다. 쌓인 메모리는 다음 세션에 자동 주입된다.
 
 ## 엔진 업데이트 알림이 보이면 — 먼저 물어본다

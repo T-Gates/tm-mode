@@ -196,13 +196,13 @@ Summary of the registered scripts and their directly coupled sync helper:
 | `session-start.py` | ✅ `SessionStart` | canonical JSON stdin | no-op if event mismatch, JSON parse failure, `.teammode-active` missing, engine import/collection failure, or a duplicate Codex `resume`/`compact` reconstruction for the same transcript `turn_context` generation | when active, runs `sync_main` once per logical session generation before context collection: require current `main`, fetch `origin/main`, pull with rebase when behind, then push `main`; failure is sanitized into `last-sync-error`, and success clears it. A `not-main` result skips the separate product-upstream fetch so no Git refs or `FETCH_HEAD` are mutated. Codex `resume` and queued `compact` callbacks share one generation key; a short running lease plus completed cooldown gives concurrent duplicates one winner while failed output can retry. Main sync and the throttled product-upstream refresh share a 40-second cutoff; the next 10 seconds are reserved for context. Intended to always exit 0 |
 | `session-log-remind.py` | ✅ `UserPromptSubmit` | canonical JSON stdin | no-op if event mismatch, JSON parse failure, or `.teammode-active` missing. When active: member identification (TEAMMODE_MEMBER env first → single config fallback → fallback if absent) + age/counter decision based on my file mtime. check_reset: my file mtime changed or date changed (06:00 cutoff) → count=0 + return (does not nag). **No Git sync runs per prompt; SessionStart owns main sync.** | when needed, **`hookSpecificOutput.additionalContext`+`systemMessage` JSON stdout** (propagated by normalize re-emission). Emits strong(age≥1800 & 30-minute throttle) OR weak(count%5==0). Body defaults to **compact** (1-3 lines of dynamic state: Nth prompt, file path, offset + rule reference — the rule body is injected once by session-start via `_slog_rules.SESSION_LOG_RULES`) — opt back into the legacy long body (count/offset append kit) with `ux.session_log_remind.context_style:"full"`; also degrades to the long body if the rules module is missing (fail-to-verbose). Normal exit 0. State-file write failures are caught as OSError (safe). |
 | `auto_pull.py` | ❌ helper | function call | reads only the product-upstream fetch timestamp | exposes the fail-open `should_pull` throttle predicate; it performs no Git operation and imports no `git_ops` symbol. **Caller: session-start.py**, only for the separate 24-hour product-upstream fetch throttle |
-| `auto-commit.py` | ✅ `PostToolUse` | canonical JSON stdin | no-op on event/action mismatch, `.teammode-active` missing, `git_ops` missing, no valid repo-local files, or exception | validates canonical `files` as repo-local literal pathspecs, borrows the exact PreToolUse edit-mutex token, and runs path-scoped `do_commit(push=True)`. The core creates the scoped local commit and immediately performs main sync (fetch → pull --rebase when behind → push). Sync failure preserves the local commit and records sanitized `last-sync-error`; no asynchronous publication state is created. Retries `index.lock` once after 1s, releases the exact token, and always exits 0 |
+| `auto-commit.py` | ✅ `PostToolUse` | canonical JSON stdin | no-op on event/action mismatch, `.teammode-active` missing, `git_ops` missing, no valid repo-local files, or exception | validates canonical `files` as repo-local literal pathspecs and runs path-scoped `do_commit(push=True)` without an external edit-mutex token. The core owns the transaction mutex, creates the scoped local commit, and immediately performs main sync (fetch → pull --rebase when behind → push). Sync failure preserves the local commit and records sanitized `last-sync-error`; no asynchronous publication state is created. Retries `index.lock` once after 1s, letting the core acquire its own mutex again, and always exits 0 |
 | `edit-lease-cleanup.py` | ✅ `PostToolUseFailure` | canonical JSON stdin | derives the exact tool token from the failed Claude tool call; other events are no-ops. Codex does not register the unsupported failure event | releases only that edit-mutex token, is fail-open, and exits 0; lost tokens recover through the core TTL |
 | `confirm-action.py` | ✅ `PreToolUse` | canonical JSON stdin + first argv marker | passes on event mismatch, `.teammode-active` missing, target MCP mismatch, or human allow signal | without allow, deny JSON stdout + stderr, exit 2 |
 
 **SessionStart dedupe contract (0.4).** For Codex native inputs whose `source` is `resume` or `compact`, normalize must provide a non-empty `session_id`, and the raw input must identify a transcript whose latest valid `turn_context` JSONL row can be read. `session-start.py` hashes the session id, canonical transcript path, latest `turn_id`, and row digest into one generation key; `source` is deliberately excluded, so a resume callback and later-drained compact callbacks for the same logical turn collapse together. Startup/clear sources bypass this rule, and missing or malformed evidence fails open. Claim acquire, timestamp capture, owner-token settlement, running-lease expiry, and completed cooldown are serialized under a purpose-scoped private-state lock. Only the owner may settle a claim; failure releases it for retry.
 
-**Simple main sync contract (0.4).** An allowed edit holds one exact edit-mutex token while auto-commit stages and commits only normalized repo-local paths. The core then acquires the repository sync lock, requires the current branch to be `main`, fetches `origin/main`, runs `pull --rebase origin main` when behind, and pushes `main` to `origin/main`. It never creates or checks out a branch, configures upstream tracking, force-pushes, or stashes unrelated dirty work. A sync failure preserves the scoped local commit and writes a credential-sanitized `last-sync-error`; a fully synchronized success clears that error. SessionStart retries from Git state alone using the same flow.
+**Simple main sync contract (0.4).** Auto-commit passes only normalized repo-local paths to `do_commit`; it neither derives nor releases a tool token. The core acquires its own edit mutex for the scoped commit and keeps it through main sync, releasing it when the transaction ends. The core then acquires the repository sync lock, requires the current branch to be `main`, fetches `origin/main`, runs `pull --rebase origin main` when behind, and pushes `main` to `origin/main`. It never creates or checks out a branch, configures upstream tracking, force-pushes, or stashes unrelated dirty work. A sync failure preserves the scoped local commit and writes a credential-sanitized `last-sync-error`; a fully synchronized success clears that error. SessionStart retries from Git state alone using the same flow, with its own core-owned edit mutex.
 
 ### 2.4 Canonical Events (0.4)
 
@@ -707,7 +707,7 @@ The three verbs use `infra/git_ops.py` as a common safety layer.
 
 Common git safety mechanisms:
 
-- The default timeout is `DEFAULT_TIMEOUT = 2` seconds (pull/fetch taking more than 2 seconds is a nonfatal failure; local commit/checkout is also enough).
+- Local Git operations use `DEFAULT_TIMEOUT = 2` seconds; network operations default to `NET_TIMEOUT = 10` seconds. Main sync uses a shared `PUSH_TOTAL_BUDGET = 45` seconds, reserving time for process cleanup and error-state writes.
 - `git_env()` copies the current environment, forces `GIT_TERMINAL_PROMPT=0`, sets `GIT_SSH_COMMAND` to `ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new -oConnectTimeout=5` if it is absent, and sets `GIT_ASKPASS` to `true` if it is absent. The purpose is to avoid hanging on HTTPS/SSH credential prompts.
 - Network-related git calls get `-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=<timeout>`. This applies to pull, fetch, and push. It does not apply to merge.
 - `run_git(args, timeout)` runs `git <args>` with stdout/stderr pipes, stdin DEVNULL, and text mode. On POSIX it creates a new process group with `start_new_session=True`, and when `subprocess.TimeoutExpired` occurs, `kill_group()` sends SIGKILL to the entire process group. Kill exceptions are absorbed even on failure.
@@ -719,52 +719,33 @@ Common git safety mechanisms:
 CLI:
 
 ```
-python3 infra/teammode.py pull --root <팀루트>
+python3 infra/teammode.py pull --root <team-root>
 ```
 
-- Before execution, if it is not a git worktree, the result is `PullResult(ok=False, detail="not a git work tree")`.
-- The actual command is `git -C <team_root> -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=5 pull --ff-only --no-rebase --no-edit`.
-- On timeout, detail is `timeout`.
-- On execution exception, detail is `exec error: <exc>`.
-- If rc is 0, `ok=True`, and detail is the first 200 characters of stripped stdout. If stdout is empty, engine output substitutes `up-to-date`.
-- If rc is non-zero, `ok=False`, and detail is the first 200 characters of stripped stderr or stdout.
+- `cmd_pull` calls `git_ops.sync_main`, using the core-owned edit mutex and repository sync lock described in §2.3. The legacy `git_ops.do_pull` helper is not this CLI path.
+- It requires the checked-out branch to be `main`, fetches `origin/main`, runs `pull --rebase origin main` when behind, and pushes `main` to `origin/main`. A non-fast-forward push race permits one additional sync cycle within the same budget.
+- It does not create/check out branches, set upstream tracking, force-push, or stash unrelated changes. A pre-existing rebase is left untouched; a failed rebase started by this call gets a bounded abort and cleanup check.
+- Failure returns `MainSyncResult(ok=False)` with sanitized detail and records `last-sync-error`; verified synchronization clears that error. Network, lock, branch, and rebase failures remain nonfatal to the agent session.
 - Engine success output: `tm-mode pull — 최신화됨: <detail-or-up-to-date>` to stdout, exit 0.
 - Engine failure output: `tm-mode pull — 건너뜀(비치명): <detail>` to stderr, exit 1.
-- Because of `--ff-only`, it does not automatically create non-ff merges or conflicts.
 
 #### 3.4.2 commit
 
 CLI:
 
 ```
-python3 infra/teammode.py commit --root <팀루트> --message <메시지> [--push]
+python3 infra/teammode.py commit --root <team-root> --message <message> [--paths 'memory/team/decisions.md memory/team/INDEX.md'] [--push]
 ```
 
 - If `--message` is absent or its value is falsy, it writes `[error] commit: --message <메시지> 가 필요합니다.` to stderr and exits 2. Empty-string messages are rejected.
-- The engine CLI does not expose an option to limit paths. Therefore `git_ops.do_commit(..., paths=None)` is called, and the staging scope is the entire working tree via `git add -A`.
-- If it is not a git worktree, the result is `CommitResult(ok=False, detail="not a git work tree")`.
-- stage:
-  - The command is `git -C <team_root> add -A`.
-  - Timeout detail is `add timeout`.
-  - Execution exception detail is `add exec error: <exc>`.
-  - rc non-zero detail is `add failed: <stderr 앞 200자>`.
-- Change check:
-  - It runs `git -C <team_root> diff --cached --quiet`.
-  - If rc != 0, it treats this as staged changes present.
-  - If rc == 0 or there is an exception, it treats this as no changes.
-  - If there are no changes, the result is `CommitResult(ok=False, committed=False, detail="nothing to commit")`; it does not create empty commits.
-- commit:
-  - The command is `git -C <team_root> commit -m <message>`.
-  - Timeout detail is `commit timeout`.
-  - Execution exception detail is `commit exec error: <exc>`.
-  - rc non-zero detail is `commit failed: <stderr-or-stdout 앞 200자>`.
-  - If successful and `--push` is absent, the result is `ok=True, committed=True, pushed=False`, and detail is the first 200 characters of commit stdout.
-- push:
-  - Only when `--push` is present, it runs `git -C <team_root> -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=5 push`.
-  - If push succeeds, the result is `ok=True, committed=True, pushed=True, detail="committed and pushed"`.
-  - Push timeout, execution exception, or rc non-zero **does not revert the local commit**. The result is `ok=True, committed=True, pushed=False`, and detail is `committed; push timeout` / `committed; push exec error: ...` / `committed; push failed: ...`.
+- `--paths` is one whitespace-separated string, split and passed to `git_ops.do_commit` as Git pathspecs. It does not use the auto-commit hook's repo-local literal-path validation: use known repo-relative file paths, avoid broad directories or pathspec magic, and note that filenames containing whitespace cannot be represented by this CLI form.
+- With a non-empty `--paths`, the same scope is used for `git add -- <paths>`, `git diff --cached --quiet -- <paths>`, and `git commit -m <message> -- <paths>`. Unrelated staged and unstaged files are excluded from the commit. Omitting `--paths` (or passing an empty string) stages the whole working tree with `git add -A`.
+- The core acquires and releases the edit mutex around commit and optional main sync. With `--push`, it requires `main` before staging; without `--push`, a local commit can run on the current branch.
+- A non-Git root, unavailable mutex, or add/commit error returns `CommitResult(ok=False)` with sanitized detail. The staged-change check accepts only Git exit code 1 as a change; no changes produce `detail="nothing to commit"` and no empty commit.
+- Without `--push`, a successful local commit returns `ok=True, committed=True, pushed=False`.
+- With `--push`, the scoped local commit is created first, then `sync_main` performs the fetch/rebase/push flow in §3.4.1 while borrowing the core-owned edit token. Success returns `ok=True, committed=True, pushed=True`; sync failure preserves the local commit and returns `ok=True, committed=True, pushed=False` with sanitized detail and `last-sync-error`.
 - Engine success output:
-  - Push success: `tm-mode commit — 커밋됨 (pushed): committed and pushed`
+  - Push success: `tm-mode commit — 커밋됨 (pushed): <detail>`
   - Push requested but push failed: `tm-mode commit — 커밋됨 (push 실패·커밋은 보존): <detail>`
   - Push not requested: `tm-mode commit — 커밋됨: <detail>`
   - All exit 0. Push failure is not exit 1.
