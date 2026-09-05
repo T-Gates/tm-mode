@@ -150,16 +150,6 @@ def _literal_repo_pathspecs(root: str, files) -> list[str]:
     return paths
 
 
-def _release_edit_mutex(root: str, token: str) -> None:
-    """Release one exact tool token without letting cleanup block the editor."""
-    if _git_ops is None or not token:
-        return
-    try:
-        _git_ops.release_edit_mutex(root, token)
-    except Exception:  # noqa: BLE001 — hook cleanup is always non-blocking
-        pass
-
-
 def main() -> int:
     # ── 0. 입력 파싱 (실패해도 세션 무차단) ──
     try:
@@ -173,18 +163,14 @@ def main() -> int:
     root = _team_root()
     _warn_if_stale_home(root)  # 스테일 TEAMMODE_HOME 표면화(이슈 #9a) — 거동 불변
     lang = _hook_lang(root)  # i18n(적대검수 — long tail): 이하 경고들이 공유
-    edit_token = (
-        _git_ops.hook_edit_mutex_token(data) if _git_ops is not None else "")
 
     # ── 1. 빌드 안전 핵심: .teammode-active 없으면 즉시 no-op ──
     # 어떤 git 작업보다 먼저. 마커 부재 = teammode off = 자동 커밋 절대 금지.
     if not os.path.isfile(os.path.join(root, ".teammode-active")):
-        _release_edit_mutex(root, edit_token)
         return 0
 
     # ── 2. file_edit 발동만 처리 ──
     if data.get("action") != "file_edit":
-        _release_edit_mutex(root, edit_token)
         return 0
 
     if _git_ops is None:
@@ -203,20 +189,16 @@ def main() -> int:
         message = f"chore(teammode): auto-commit {stamp} KST"
 
         # ── 4. paths 만 스테이징 + main 즉시 동기화(#128) ──
-        # PreToolUse가 잡은 정확한 tool token을 core에 넘겨 commit→sync 동안 같은
-        # edit mutex를 유지한다. 별도 비동기 복구 상태는 만들지 않는다.
-        commit_kwargs = {"_edit_token": edit_token} if edit_token else {}
+        # The core acquires and releases its own mutex for commit and sync.
         result = _git_ops.do_commit(
-            root, message=message, push=True, paths=paths,
-            **commit_kwargs)
+            root, message=message, push=True, paths=paths)
 
         # index.lock 경합(다른 git 프로세스와 겹침)은 1s 후 1회만 재시도(#45).
         if (not getattr(result, "committed", False)
                 and "index.lock" in (getattr(result, "detail", "") or "")):
             _time.sleep(1)
             result = _git_ops.do_commit(
-                root, message=message, push=True, paths=paths,
-                **commit_kwargs)
+                root, message=message, push=True, paths=paths)
 
         # ── 5. core 결과만 표면화 — last-sync-error 수명주기는 git_ops 소유 ──
         if getattr(result, "committed", False):
@@ -240,8 +222,6 @@ def main() -> int:
                     "{detail}", detail=detail), file=sys.stderr)
     except Exception:  # noqa: BLE001 — 철칙: 자동 커밋·push 실패가 작업을 막지 않는다
         return 0
-    finally:
-        _release_edit_mutex(root, edit_token)
 
     return 0
 

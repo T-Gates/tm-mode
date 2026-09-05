@@ -81,6 +81,112 @@ def _commit_count(root):
     return int(_git(root, "rev-list", "--count", "HEAD").stdout.strip())
 
 
+NATIVE_EDIT_TOOLS = [
+    ("claude", "Edit"),
+    ("claude", "Write"),
+    ("codex", "apply_patch"),
+]
+
+
+@pytest.fixture
+def local_origin(fake_repo, tmp_path):
+    """Publish the isolated main branch to a local bare remote only."""
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(origin, "init", "--bare")
+    _git(origin, "symbolic-ref", "HEAD", "refs/heads/main")
+    _git(fake_repo, "remote", "add", "origin", str(origin))
+    _git(fake_repo, "push", "-u", "origin", "main")
+    return origin
+
+
+def _run_native_edit(agent, tool, root):
+    """Deliver a completed native edit with normal per-tool identifiers."""
+    if tool == "apply_patch":
+        tool_input = {"command": (
+            "*** Begin Patch\n*** Update File: init.txt\n@@\n"
+            "-init\n+edited\n*** End Patch\n")}
+    elif tool == "Edit":
+        tool_input = {
+            "file_path": str(root / "init.txt"),
+            "old_string": "init\n", "new_string": "edited\n",
+        }
+    else:
+        tool_input = {
+            "file_path": str(root / "init.txt"), "content": "edited\n",
+        }
+    payload = {
+        "hook_event_name": "PostToolUse", "tool_name": tool,
+        "tool_input": tool_input, "cwd": str(root),
+        "session_id": "session-alice", "tool_use_id": "call-alice",
+    }
+    normalize = REPO / "infra" / "agents" / agent / "normalize.py"
+    return _run_hook(
+        normalize, payload, root, args=["auto-commit.py"], cwd=root)
+
+
+@pytest.mark.parametrize("agent,tool", NATIVE_EDIT_TOOLS)
+@pytest.mark.parametrize("remote_ahead", [False, True])
+def test_native_edit_without_pre_hook_commits_and_syncs(
+        fake_repo, local_origin, tmp_path, agent, tool, remote_ahead):
+    """Normal host IDs need no removed PreToolUse hook to publish the edit."""
+    remote_before = _head(local_origin)
+    if remote_ahead:
+        peer = tmp_path / "peer"
+        _git(tmp_path, "clone", str(local_origin), str(peer))
+        (peer / "remote.md").write_text("peer update\n", encoding="utf-8")
+        _git(peer, "add", "--", "remote.md")
+        _git(peer, "commit", "-m", "peer update")
+        _git(peer, "push", "origin", "main")
+        remote_before = _head(local_origin)
+
+    (fake_repo / ".teammode-active").touch()
+    (fake_repo / "init.txt").write_text("edited\n", encoding="utf-8")
+    unrelated = fake_repo / "unrelated.env"
+    unrelated.write_text("leave this local\n", encoding="utf-8")
+
+    proc = _run_native_edit(agent, tool, fake_repo)
+
+    assert proc.returncode == 0
+    assert _head(fake_repo) != remote_before, proc.stderr
+    assert _head(fake_repo) == _head(local_origin), proc.stderr
+    assert _git(local_origin, "show", "main:init.txt").stdout == "edited\n"
+    assert _git(fake_repo, "show", "--format=", "--name-only", "HEAD").stdout == (
+        "init.txt\n")
+    assert _git(fake_repo, "rev-list", "--left-right", "--count",
+                "HEAD...origin/main").stdout.strip() == "0\t0"
+    assert _git(fake_repo, "status", "--porcelain=v1", "--",
+                "unrelated.env").stdout == "?? unrelated.env\n"
+    assert unrelated.read_text(encoding="utf-8") == "leave this local\n"
+    assert _git(local_origin, "ls-tree", "--name-only", "main", "--",
+                "unrelated.env", ".teammode-active").stdout == ""
+    if remote_ahead:
+        assert _git(local_origin, "show", "main:remote.md").stdout == (
+            "peer update\n")
+        assert _git(fake_repo, "merge-base", "--is-ancestor",
+                    remote_before, "HEAD", check=False).returncode == 0
+        assert _git(fake_repo, "rev-list", "--merges",
+                    remote_before + "..HEAD").stdout == ""
+
+
+@pytest.mark.parametrize("agent,tool", NATIVE_EDIT_TOOLS)
+def test_native_edit_without_active_marker_keeps_local_and_remote_unchanged(
+        fake_repo, local_origin, agent, tool):
+    """Host IDs must not bypass the team-mode off guard."""
+    before = _head(fake_repo)
+    (fake_repo / "init.txt").write_text("edited\n", encoding="utf-8")
+    status_before = _git(fake_repo, "status", "--porcelain=v1").stdout
+
+    proc = _run_native_edit(agent, tool, fake_repo)
+
+    assert proc.returncode == 0
+    assert _head(fake_repo) == before
+    assert _head(local_origin) == before
+    assert _git(fake_repo, "status", "--porcelain=v1").stdout == status_before
+    assert (fake_repo / "init.txt").read_text(encoding="utf-8") == "edited\n"
+    assert not (fake_repo / ".git" / "FETCH_HEAD").exists()
+
+
 # ════════════════════════════════════════════════════════════════════
 # auto-commit.py
 # ════════════════════════════════════════════════════════════════════
@@ -208,10 +314,10 @@ def test_auto_commit_rejects_pathspec_magic_without_staging_secret(fake_repo):
 
 
 def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
-    """main sync 실패도 비차단이며 로컬 커밋 + last error를 보존한다.
+    """A sync failure preserves the local commit and records the last error.
 
-    fake_repo 에 remote 가 없으므로 do_commit(push=True)의 push 는 실패해야 한다.
-    훅은 exit 0 을 유지하고 커밋을 롤백하지 않은 채 오류를 기록한다.
+    No remote exists, so publication fails after the scoped commit. Normal host
+    IDs must still allow the hook to commit without a preceding mutex lease.
     """
     (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "p.md").write_text("x\n")
@@ -225,12 +331,11 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
             paths=None, **kwargs):
         calls["push"] = push
         calls["paths"] = paths
-        calls["edit_token"] = kwargs.get("_edit_token")
         return real(
             team_root, message, push=push, timeout=timeout, paths=paths,
             **kwargs)
 
-    # 서브프로세스가 아닌 in-proc 로 훅 main 을 직접 호출해 do_commit 인자를 검사한다.
+    # Inspect the scoped publication call in-process while using real Git.
     monkeypatch.setattr(go, "do_commit", spy)
     monkeypatch.setenv("TEAMMODE_HOME", str(fake_repo))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
@@ -244,19 +349,70 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
         "files": [str(fake_repo / "p.md")], "agent": "claude",
         "session_id": "session-push", "tool_use_id": "tool-push",
     }
-    token = go.hook_edit_mutex_token(payload)
-    assert go.acquire_edit_mutex(str(fake_repo), token) is True
     monkeypatch.setattr("sys.stdin", _StdinStub(json.dumps(payload)))
     rc = mod.main()
     assert rc == 0
     assert calls.get("push") is True
     assert calls.get("paths") == [":(literal)p.md"]
-    assert calls.get("edit_token") == token
-    # 로컬 커밋은 동기 완주·보존(p.md 가 HEAD 에 들어감)
+    # The local commit survives the non-blocking publication failure.
     committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
     assert "p.md" in committed
     assert go.read_last_sync_error(str(fake_repo))
-    assert go.owns_edit_mutex(str(fake_repo), token) is False
+
+
+def test_auto_commit_retries_index_lock_then_publishes_scoped_edit(
+        fake_repo, local_origin, monkeypatch):
+    """A transient index lock must not strand a normal identified edit."""
+    import importlib.util
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(REPO / "infra"))
+    import git_ops as go  # noqa: E402
+
+    (fake_repo / ".teammode-active").touch()
+    (fake_repo / "init.txt").write_text("edited\n", encoding="utf-8")
+    unrelated = fake_repo / "unrelated.env"
+    unrelated.write_text("leave this local\n", encoding="utf-8")
+    before = _head(fake_repo)
+    index_lock = fake_repo / ".git" / "index.lock"
+    index_lock.touch()
+
+    spec = importlib.util.spec_from_file_location("auto_commit_retry", AUTO_COMMIT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "_git_ops", go)
+    monkeypatch.setenv("TEAMMODE_HOME", str(fake_repo))
+    payload = {
+        "event": "PostToolUse", "action": "file_edit", "agent": "claude",
+        "files": [str(fake_repo / "init.txt")],
+        "session_id": "session-alice", "tool_use_id": "call-alice",
+    }
+    monkeypatch.setattr("sys.stdin", _StdinStub(json.dumps(payload)))
+    waits = []
+
+    def release_index_lock(delay):
+        waits.append(delay)
+        assert "index.lock" in go.read_last_sync_error(str(fake_repo))
+        assert _head(fake_repo) == before
+        assert _head(local_origin) == before
+        assert _git(fake_repo, "diff", "--cached", "--name-only").stdout == ""
+        index_lock.unlink()
+
+    # Replace only this hook's delay, keeping real Git and mutex operations.
+    monkeypatch.setattr(mod, "_time", SimpleNamespace(sleep=release_index_lock))
+
+    assert mod.main() == 0
+
+    assert waits == [1]
+    assert _head(fake_repo) != before
+    assert _head(fake_repo) == _head(local_origin)
+    assert _git(local_origin, "show", "main:init.txt").stdout == "edited\n"
+    assert _git(fake_repo, "show", "--format=", "--name-only", "HEAD").stdout == (
+        "init.txt\n")
+    assert _git(fake_repo, "status", "--porcelain=v1", "--",
+                "unrelated.env").stdout == "?? unrelated.env\n"
+    assert unrelated.read_text(encoding="utf-8") == "leave this local\n"
+    assert go.read_last_sync_error(str(fake_repo)) == ""
 
 
 def test_auto_commit_nonblocking_on_git_failure(tmp_path):
@@ -284,13 +440,15 @@ def test_auto_commit_ignores_non_file_edit(fake_repo):
     assert _commit_count(fake_repo) == before
 
 
-def test_auto_commit_non_file_post_releases_correlated_edit_mutex(
-        fake_repo, monkeypatch, tmp_path):
-    """A normalization mismatch must not leave the exact tool mutex behind."""
+@pytest.mark.parametrize("active", [False, True])
+def test_auto_commit_noop_does_not_release_external_edit_mutex(
+        fake_repo, monkeypatch, tmp_path, active):
+    """An ignored event cannot release a lease owned outside auto-commit."""
     sys.path.insert(0, str(REPO / "infra"))
     import git_ops as go  # noqa: E402
 
-    (fake_repo / ".teammode-active").write_text("")
+    if active:
+        (fake_repo / ".teammode-active").touch()
     payload = {
         "event": "PostToolUse", "action": "shell_exec", "agent": "codex",
         "session_id": "session-release", "tool_use_id": "tool-release",
@@ -302,7 +460,7 @@ def test_auto_commit_non_file_post_releases_correlated_edit_mutex(
     proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
 
     assert proc.returncode == 0
-    assert go.owns_edit_mutex(str(fake_repo), token) is False
+    assert go.owns_edit_mutex(str(fake_repo), token) is True
 
 
 def test_auto_commit_no_files_is_noop(fake_repo):

@@ -39,12 +39,14 @@ TTL(15분)이 지날 때까지 **모든 세션의 모든 Edit/Write 가 멈췄�
 |---|---|---|
 | `memory/` 직접 Edit/Write | 차단(본인 세션로그만 예외) | **허용** |
 | `memory unlock begin\|end` | 편집 창을 여는 동사 | **없음** (호출하면 unknown action) |
-| 편집 뮤텍스 | 모든 Write/Edit 이 획득 | **아무도 획득하지 않음** |
+| 편집 뮤텍스 | PreToolUse 가 Write/Edit 전에 획득 | **Git core가 커밋·동기화 트랜잭션 동안 획득·해제** |
 | "동사로 쓴다" | 훅으로 강제되는 규칙 | `infra/guidelines.md` 의 **권장** |
 
 동사(`tm-manage-memory` → `python infra/teammode.py memory write …`)를 거치면
 frontmatter 스탬프·INDEX 행·커밋·백링크가 같이 간다는 사실은 그대로다.
-직접 편집을 고르면 그 절차를 손으로 대신해야 한다.
+직접 편집하면 메타데이터·INDEX·백링크를 직접 챙긴다. 네이티브 편집 훅은 해당 파일의
+자동 커밋·push를 시도한다. 셸/Python 쓰기 후에는 `infra/guidelines.md`에 따라
+변경 파일만 지정한 명시적 커밋을 실행한다.
 
 ## 인스턴스가 할 일
 
@@ -58,14 +60,17 @@ Codex 는 `[[hooks.PreToolUse]]` 에 `kb-write-guard.py` 가 없는지 본다.
 grep -c kb-write-guard ~/.claude/settings.json   # 0 이어야 한다
 ```
 
-`$XDG_STATE_HOME/teammode/` 에 남은 `kb-unlock-*` 플래그와 `sessions/` relay 파일,
-그리고 `edit-mutex-*` 마커는 아무도 읽지 않는다 — 지워도 되고 둬도 된다.
+`$XDG_STATE_HOME/teammode/` 에 남은 `kb-unlock-*` 플래그와 `sessions/` relay 파일은
+아무도 읽지 않는다 — 지워도 되고 둬도 된다. `edit-mutex-*` 마커는 Git core가
+여전히 읽고 관리하므로 이 정리 대상에 포함하지 않는다. 이전 훅이 남긴 토큰은
+core의 TTL 복구 대상이다.
 
 ## 남긴 것
 
-- `git_ops.py` 의 뮤텍스 배관(`acquire_edit_mutex` 등)과 `auto-commit`·`edit-lease-cleanup`
-  의 release 호출은 그대로 뒀다. 획득자가 사라져 `edit-lease-cleanup` 은 사실상 무동작이며,
-  걷는 범위가 auto-commit 까지 번지므로 이번 판에서 분리했다.
+- `git_ops.py` 의 뮤텍스 배관(`acquire_edit_mutex` 등)은 커밋·동기화 보호에 계속 쓴다.
+  `auto-commit` 은 도구 토큰을 넘기거나 해제하지 않고 core가 자기 토큰을 소유하게 한다.
+  `edit-lease-cleanup` 의 정확한 도구 토큰 해제는 남지만, 새 편집은 PreToolUse에서
+  토큰을 획득하지 않으므로 보통 해제할 토큰이 없다.
 - `0001`·`0002` 마이그레이션 문서는 **역사 기록이라 손대지 않았다.**
 - `tests/test_codex_trust_check.py` 의 `LIVE_*_KB_GUARD` 는 2026-07-03 실측 golden 벡터라
   그대로 둔다(합성 픽스처이므로 스크립트 실존이 필요 없다).

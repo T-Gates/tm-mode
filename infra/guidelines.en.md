@@ -21,8 +21,14 @@ This session is in team mode. Work by actively using the team's memory (context)
 
 ## Prefer writing memory through verbs
 - Look up with `tm-memory` / add & update with `tm-manage-memory`.
-- Editing `memory/` directly is not blocked, but it skips the INDEX update, the
-  commit and the backlink — only do it if you will handle those steps yourself.
+- Editing `memory/` directly is not blocked. Maintain its INDEX, frontmatter, and
+  backlinks yourself. When native edit hooks run, they attempt to auto-commit and push the edited files.
+- Direct shell/Python writes bypass native edit hooks. After writing, explicitly run
+  `python3 "<team-root>/infra/teammode.py" commit --root "<team-root>" --message 'docs: update team memory' --paths 'memory/team/decisions.md memory/team/INDEX.md' --push`.
+  Replace `--paths` with the known repo-relative file paths you actually changed,
+  separated by spaces. Avoid wildcards or all of `memory/`, preserving unrelated
+  changes. Filenames containing spaces cannot be represented by this CLI form.
+  Do not omit or empty `--paths`, which would commit the whole working tree.
 - When the user states a decision or memory to leave for the team, record it with `tm-manage-memory`. Accumulated memory is auto-injected into the next session.
 
 ## If you see an engine-update notice — ask first
