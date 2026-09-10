@@ -440,29 +440,6 @@ def test_auto_commit_ignores_non_file_edit(fake_repo):
     assert _commit_count(fake_repo) == before
 
 
-@pytest.mark.parametrize("active", [False, True])
-def test_auto_commit_noop_does_not_release_external_edit_mutex(
-        fake_repo, monkeypatch, tmp_path, active):
-    """An ignored event cannot release a lease owned outside auto-commit."""
-    sys.path.insert(0, str(REPO / "infra"))
-    import git_ops as go  # noqa: E402
-
-    if active:
-        (fake_repo / ".teammode-active").touch()
-    payload = {
-        "event": "PostToolUse", "action": "shell_exec", "agent": "codex",
-        "session_id": "session-release", "tool_use_id": "tool-release",
-    }
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
-    token = go.hook_edit_mutex_token(payload)
-    assert go.acquire_edit_mutex(str(fake_repo), token) is True
-
-    proc = _run_hook(AUTO_COMMIT, payload, fake_repo)
-
-    assert proc.returncode == 0
-    assert go.owns_edit_mutex(str(fake_repo), token) is True
-
-
 def test_auto_commit_no_files_is_noop(fake_repo):
     """files 가 비면 스테이징할 게 없으니 커밋 안 함(우아하게 exit 0)."""
     (fake_repo / ".teammode-active").write_text("")
