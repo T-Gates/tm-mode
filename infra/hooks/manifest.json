@@ -27,16 +27,6 @@
     "_timeout_note": "#128 scoped commit + main 즉시 동기화. 첫 index.lock 실패는 1초 뒤 한 번만 재시도하며 runner 70s kill 전에 last-sync-error를 기록한다."
   },
   {
-    "event": "PostToolUseFailure",
-    "match": { "action": "file_edit" },
-    "script": "edit-lease-cleanup.py",
-    "timeout": 2,
-    "mode": "on",
-    "enforcement": "advisory",
-    "_timeout_unit": "seconds",
-    "_note": "Claude exact failure lifecycle cleanup. Codex 0.144.4 does not expose PostToolUseFailure and explicitly maps this event to null."
-  },
-  {
     "event": "PreToolUse",
     "match": { "mcp": { "server": "linear", "tool": "create_issue" } },
     "script": "confirm-action.py",

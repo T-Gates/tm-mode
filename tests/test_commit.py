@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from contextlib import contextmanager
 
 import pytest
 
@@ -394,3 +396,130 @@ def test_do_commit_uses_noninteractive_git_environment(repo_with_remote) -> None
     assert result.committed is True and result.pushed is False
     assert "auth prompt guard" in _git(
         repo_with_remote.clone, "log", "--oneline").stdout
+
+
+@contextmanager
+def _held_transaction(repo, operation, pause_after):
+    """Pause after a real Git child exits; keep the parent transaction alive."""
+    ready = repo.parent / "transaction-ready"
+    script = """
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import git_ops
+root, operation, phase, ready = sys.argv[2:]
+original = git_ops.run_git
+paused = False
+def run(args, *positional, **kwargs):
+    global paused
+    result = original(args, *positional, **kwargs)
+    if phase in args and not paused:
+        paused = True
+        Path(ready).touch()
+        sys.stdin.readline()
+    return result
+git_ops.run_git = run
+result = (git_ops.sync_main(root) if operation == 'sync' else
+          git_ops.do_commit(root, 'owner', push=operation == 'publish', paths=['owner.txt']))
+print(json.dumps({'ok': result.ok, 'detail': result.detail}), flush=True)
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-B", "-c", script, str(INFRA), str(repo), operation,
+         pause_after, str(ready)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "Owner failed to reach the transaction boundary."
+        yield proc
+    finally:
+        if proc.poll() is None:
+            try:
+                out, err = proc.communicate("\n", timeout=15)
+                assert proc.returncode == 0 and json.loads(out)["ok"], (out, err)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                pytest.fail("Owner failed to finish after the transaction handshake.")
+        else:
+            proc.communicate()
+
+
+@pytest.mark.parametrize("operation,phase,contender", [
+    ("publish", "add", "local"), ("publish", "commit", "sync"),
+    ("publish", "push", "publish"), ("sync", "fetch", "local"),
+    ("local", "add", "sync"),
+])
+def test_transaction_lock_serializes_commit_and_sync_processes(
+        repo_with_remote, operation, phase, contender):
+    repo = repo_with_remote.clone
+    (repo / "owner.txt").write_text("owner\n")
+    (repo / "contender.txt").write_text("contender\n")
+    with _held_transaction(repo, operation, phase):
+        before = _git(repo, "rev-parse", "HEAD").stdout
+        started = time.monotonic()
+        result = (git_ops.sync_main(str(repo)) if contender == "sync" else
+                  git_ops.do_commit(str(repo), "contender", push=contender == "publish",
+                                    paths=["contender.txt"]))
+        assert not result.ok and time.monotonic() - started < 10
+        assert _git(repo, "rev-parse", "HEAD").stdout == before
+        assert not _git(repo, "ls-files", "--", "contender.txt").stdout
+    assert git_ops.do_commit(str(repo), "after release", paths=["contender.txt"]).ok
+
+
+def test_transaction_lock_is_shared_by_linked_worktrees(repo_with_remote, tmp_path):
+    repo = repo_with_remote.clone
+    other = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-b", "other", str(other))
+    (other / "contender.txt").write_text("contender\n")
+    with _held_transaction(repo, "sync", "fetch"):
+        result = git_ops.do_commit(str(other), "other checkout", paths=["contender.txt"])
+        assert not result.ok
+        assert not _git(other, "ls-files", "--", "contender.txt").stdout
+    assert git_ops.do_commit(str(other), "after release", paths=["contender.txt"]).ok
+
+
+def test_transaction_lock_does_not_expire_while_owner_is_alive(repo_with_remote, monkeypatch):
+    repo = repo_with_remote.clone
+    (repo / "owner.txt").write_text("owner\n")
+    (repo / "contender.txt").write_text("contender\n")
+    with _held_transaction(repo, "local", "add"):
+        future = time.time() + 3600
+        monkeypatch.setattr(git_ops.time, "time", lambda: future)
+        assert not git_ops.do_commit(str(repo), "contender", paths=["contender.txt"]).ok
+
+
+def test_transaction_lock_releases_on_process_death_without_removing_file(repo_with_remote):
+    repo = repo_with_remote.clone
+    lock_file = repo / ".git" / ".tm-mode-publication.lock"
+    lock_file.touch()
+    (repo / "owner.txt").write_text("owner\n")
+    with _held_transaction(repo, "local", "add") as owner:
+        owner.kill()
+        owner.wait(timeout=5)
+    assert lock_file.exists()
+    assert git_ops.do_commit(str(repo), "after owner death", paths=["owner.txt"]).ok
+    assert lock_file.exists()
+
+
+@pytest.mark.parametrize("marker", ["valid", "malformed"])
+def test_historical_edit_mutex_marker_does_not_block_transaction(local_repo, marker):
+    key = hashlib.sha1(os.path.normpath(str(local_repo)).encode()).hexdigest()[:16]
+    path = Path(os.environ["XDG_STATE_HOME"]) / "teammode" / ("edit-mutex-" + key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"token": "a" * 64, "created_at": time.time()})
+                    if marker == "valid" else "malformed historical marker")
+    (local_repo / "target.txt").write_text("target\n")
+    assert git_ops.do_commit(str(local_repo), "ignore old marker", paths=["target.txt"]).ok
+
+
+def test_transaction_error_releases_lock_for_next_commit(local_repo, monkeypatch):
+    (local_repo / "target.txt").write_text("target\n")
+    original = git_ops.run_git
+    with monkeypatch.context() as patch:
+        def fail_commit(args, *positional, **kwargs):
+            return (128, "", "commit failed") if "commit" in args else original(args, *positional, **kwargs)
+        patch.setattr(git_ops, "run_git", fail_commit)
+        assert not git_ops.do_commit(str(local_repo), "failure", paths=["target.txt"]).ok
+    assert git_ops.do_commit(str(local_repo), "after failure", paths=["target.txt"]).ok
