@@ -23,12 +23,20 @@ This session is in team mode. Work by actively using the team's memory (context)
 - Look up with `tm-memory` / add & update with `tm-manage-memory`.
 - Editing `memory/` directly is not blocked. Maintain its INDEX, frontmatter, and
   backlinks yourself. When native edit hooks run, they attempt to auto-commit and push the edited files.
+- An unresolved Git failure triggers a sharing-not-confirmed notice every five
+  prompts, independently of log updates. The reminder hook itself performs no Git work.
 - Direct shell/Python writes bypass native edit hooks. After writing, explicitly run
   `python3 "<team-root>/infra/teammode.py" commit --root "<team-root>" --message 'docs: update team memory' --paths 'memory/team/decisions.md memory/team/INDEX.md' --push`.
   Replace `--paths` with the known repo-relative file paths you actually changed,
   separated by spaces. Avoid wildcards or all of `memory/`, preserving unrelated
   changes. Filenames containing spaces cannot be represented by this CLI form.
   Do not omit or empty `--paths`, which would commit the whole working tree.
+- After a SessionStart sync failure or the five-prompt sharing-failure notice, make
+  the next action a check of your own session logs' actual uncommitted paths and run
+  the `commit --paths … --push` command above once. If already committed, retry sync
+  (fetch/rebase/push) once with the same engine's `pull --root "<team-root>"`.
+  Do not include other members' files, code, or changes separately staged by the user.
+  If it still fails, record the cause and wait for the next opportunity; do not loop within the event.
 - When the user states a decision or memory to leave for the team, record it with `tm-manage-memory`. Accumulated memory is auto-injected into the next session.
 
 ## If you see an engine-update notice — ask first

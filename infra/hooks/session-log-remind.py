@@ -25,8 +25,9 @@ systemMessage 거동은 스타일과 무관하게 불변.
   2. len > 1 → env TEAMMODE_MEMBER
   3. 둘 다 불가 → 전역 sessions 폴백(기존 동작 유지, degraded)
 
-상태파일: {count, last_mtime, date, last_strong_remind} JSON — 내 세션로그 mtime 추적.
-check_reset: 내 파일 mtime 변화 또는 날짜(06시 컷 기준) 바뀜 → count=0 + return(안 보챔).
+State tracks log mtime/workday and resets the writing count when either changes.
+The independent publication_count reads last-sync-error and warns every five
+prompts while sharing remains unconfirmed, even when logs are being updated.
 강발화 throttle: last_strong_remind 기준 1800초 미만이면 age≥1800 조건이라도 강발화 스킵.
 
 에이전트 무지를 유지하기 위해 출력은 시맨틱 안내문이며 mcp__·툴명 직표기 없음(§8.2).
@@ -57,6 +58,12 @@ try:
 except ImportError:
     def _ensure_utf8_io() -> None:  # 모듈 부재여도 훅은 동작(보정만 스킵)
         return
+
+try:
+    from git_ops import read_last_sync_error as _read_last_sync_error
+except ImportError:
+    def _read_last_sync_error(root):
+        return ""
 
 # workday 단일소스 재사용 (06시 컷 계산)
 try:
@@ -390,6 +397,7 @@ def _read_state(path: str) -> dict:
         "last_mtime": 0.0,
         "date": "",
         "last_strong_remind": 0.0,
+        "publication_count": 0,
     }
     try:
         with open(path, encoding="utf-8") as f:
@@ -403,6 +411,7 @@ def _read_state(path: str) -> dict:
             "last_strong_remind": _safe_float(
                 data.get("last_strong_remind"), defaults["last_strong_remind"]
             ),
+            "publication_count": max(0, _safe_int(data.get("publication_count"), 0)),
         }
     except (OSError, json.JSONDecodeError, ValueError):
         return defaults
@@ -523,27 +532,6 @@ def main() -> int:
         mtime = _current_mtime(log_path)
         age = int(time.time() - mtime) if mtime > 0 else 9999
 
-        state = _read_state(state_file)
-
-        # check_reset: 내 파일 mtime 변화 OR 날짜 바뀜 → count=0, 상태 갱신, 안 보챔
-        if mtime != state["last_mtime"] or date_str != state["date"]:
-            _write_state(state_file, {
-                "count": 0,
-                "last_mtime": mtime,
-                "date": date_str,
-                "last_strong_remind": state["last_strong_remind"],
-            })
-            return 0
-
-        # 카운터 증가 (리셋 없이 누적)
-        count = state["count"] + 1
-        _write_state(state_file, {
-            "count": count,
-            "last_mtime": mtime,
-            "date": date_str,
-            "last_strong_remind": state["last_strong_remind"],
-        })
-
     else:
         # ── 폴백(degraded): 전역 mtime 기준 ──
         # 멤버를 못 정해 경로를 특정할 수 없으므로 offset 키트는 비운다(base_guide 일반 안내만).
@@ -554,32 +542,17 @@ def main() -> int:
                     "Edit로 기록(<이름>은 members.md의 영문 이름)")
         state_file = _state_path(agent)
         age = _global_sessions_age(root)
-        g_mtime = _global_sessions_mtime(root)
+        mtime = _global_sessions_mtime(root)
         date_str = _log_date(now)
 
-        # 폴백도 상태파일 기반으로 count·last_strong_remind 를 관리 (B 해결: 0.0 고정 제거)
-        state = _read_state(state_file)
-
-        # check_reset(멤버 경로와 대칭): 전역 sessions mtime 변화 OR 날짜(06시 컷) 바뀜 →
-        # count=0 + return(안 보챔). 멤버 식별 실패 degraded 경로라 '내 파일'을 특정 못 해
-        # '누구든' 세션로그를 갱신하면 리셋되는 약한 신호지만, 멤버 env 누락 시 리마인더가
-        # 5프롬프트마다 무한 반복(issue #26)되는 것을 막는다.
-        if g_mtime != state["last_mtime"] or date_str != state["date"]:
-            _write_state(state_file, {
-                "count": 0,
-                "last_mtime": g_mtime,
-                "date": date_str,
-                "last_strong_remind": state["last_strong_remind"],
-            })
-            return 0
-
-        count = state["count"] + 1
-        _write_state(state_file, {
-            "count": count,
-            "last_mtime": g_mtime,
-            "date": date_str,
-            "last_strong_remind": state["last_strong_remind"],
-        })
+    state = _read_state(state_file)
+    writing_reset = mtime != state["last_mtime"] or date_str != state["date"]
+    count = 0 if writing_reset else state["count"] + 1
+    sync_error = _read_last_sync_error(root)
+    publication_count = state["publication_count"] + 1 if sync_error else 0
+    state.update(count=count, last_mtime=mtime, date=date_str,
+                 publication_count=publication_count)
+    _write_state(state_file, state)
 
     # ── 발사 조건 판정 — 미리 계산 후 분기 ──
     # A 해결: strong_ok/weak_ok 를 독립 계산, strong throttle 중에도 elif(약발화)로 떨어진다.
@@ -589,8 +562,8 @@ def main() -> int:
     now_ts = time.time()
     last_strong = state["last_strong_remind"]
 
-    strong_ok = (age >= 1800) and (now_ts - last_strong >= 1800)
-    weak_ok = (count >= 5) and (count % 5 == 0)
+    strong_ok = not writing_reset and (age >= 1800) and (now_ts - last_strong >= 1800)
+    weak_ok = not writing_reset and (count >= 5) and (count % 5 == 0)
 
     # compact 본문 — 동적 상태(N/경로/offset)만. 규칙은 세션 시작 1회 주입 참조.
     compact_body = _t("hook_rm_compact_body", lang,
@@ -616,23 +589,8 @@ def main() -> int:
         system_msg = _t("hook_rm_sys_strong", lang,
                         "⛔ 세션로그 미작성 — {count}번째 프롬프트째. "
                         "첫 행동으로 기록하세요", count=count)
-        # 강발화 시각 기록 (멤버·폴백 둘 다 상태파일에 저장)
-        if member is not None:
-            _write_state(state_file, {
-                "count": count,
-                "last_mtime": mtime,
-                "date": date_str,
-                "last_strong_remind": now_ts,
-            })
-        else:
-            # 폴백 강발화도 갱신된 g_mtime/date_str 를 유지 — 다음 런 check_reset 이 stale
-            # 값으로 오인 리셋하지 않게(멤버 경로 mtime/date_str 보존과 대칭).
-            _write_state(state_file, {
-                "count": count,
-                "last_mtime": g_mtime,
-                "date": date_str,
-                "last_strong_remind": now_ts,
-            })
+        state["last_strong_remind"] = now_ts
+        _write_state(state_file, state)
     elif weak_ok:
         if style == "full":
             context = (
@@ -645,6 +603,14 @@ def main() -> int:
             context = f"[teammode] {compact_body}"
         system_msg = _t("hook_rm_sys_weak", lang,
                         "📝 세션로그 미작성 — {count}번째 프롬프트째", count=count)
+
+    if publication_count and publication_count % 5 == 0:
+        publication = _t(
+            "hook_rm_publication_failed", lang,
+            "[teammode] 공유 미확인 — 마지막 Git 작업 실패: {detail}",
+            detail=sync_error)
+        context = f"{context}\n{publication}" if context else publication
+        system_msg = f"{system_msg} · {publication}" if system_msg else publication
 
     if context:
         out = {
