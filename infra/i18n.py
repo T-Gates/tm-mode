@@ -516,6 +516,8 @@ MESSAGES = {
             "Record it as your first action",
         "hook_rm_sys_weak":
             "📝 Session log not written — {count} prompts so far",
+        "hook_rm_publication_failed":
+            "[teammode] Sharing not confirmed — the last Git operation failed: {detail}",
 
         # confirm-action
         "hook_ca_deny_manifest":

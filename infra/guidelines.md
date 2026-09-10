@@ -23,12 +23,19 @@
 - 조회 `tm-memory` / 추가·수정 `tm-manage-memory`.
 - `memory/`를 직접 Edit/Write 해도 막히지는 않는다. INDEX·frontmatter·백링크는
   직접 챙겨야 한다. 네이티브 편집 훅이 실행되면 해당 파일의 자동 커밋·push를 시도한다.
+- 마지막 Git 작업의 실패가 남아 있으면 로그 작성 여부와 별개로 5프롬프트마다
+  공유 미확인을 알린다. 이 알림 훅 자체는 Git 작업을 실행하지 않는다.
 - 셸/Python으로 직접 쓴 파일은 네이티브 편집 훅을 거치지 않는다. 쓰기 후
   `python3 "<team-root>/infra/teammode.py" commit --root "<team-root>" --message 'docs: update team memory' --paths 'memory/team/decisions.md memory/team/INDEX.md' --push`
   를 명시적으로 실행한다. `--paths`에는 실제로 수정한, 알고 있는 레포 상대 파일 경로만
   공백으로 구분해 넣는다. 와일드카드나 `memory/` 전체를 지정해 무관한 변경까지
   포함하지 않는다. 경로 자체에 공백이 있으면 이 CLI 형식으로 표현할 수 없다.
   `--paths`를 빼거나 비워 전체 변경을 커밋하지 않는다.
+- SessionStart 동기화 실패나 5회 공유 실패 알림을 받으면, 다음 작업으로 본인 세션로그의
+  실제 미커밋 경로를 확인해 위 `commit --paths … --push`를 1회 실행한다. 이미 커밋됐다면
+  같은 엔진의 `pull --root "<team-root>"`로 동기화(fetch/rebase/push)를 1회 재시도한다.
+  다른 멤버·코드·사용자가 별도로 stage한 변경을 임의로 포함하지 않는다. 계속 실패하면
+  원인을 남기고 다음 기회로 넘기며, 같은 이벤트 안에서 반복하지 않는다.
 - 사용자가 팀에 남길 결정·메모리를 말하면 `tm-manage-memory`로 쌓는다. 쌓인 메모리는 다음 세션에 자동 주입된다.
 
 ## 엔진 업데이트 알림이 보이면 — 먼저 물어본다

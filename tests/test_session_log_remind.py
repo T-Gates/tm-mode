@@ -1208,3 +1208,51 @@ def test_missing_rules_module_degrades_to_full(tmp_path, monkeypatch):
     else:
         # import가 차단되지 않은 환경이면 플래그 semantics만 검증
         assert mod._context_style(str(tmp_path)) in ("compact", "full")
+
+
+@pytest.mark.parametrize("locale", ["ko", "en"])
+def test_sharing_failure_reminder_is_read_only_and_independent_of_log_updates(
+        tmp_path, monkeypatch, capsys, locale):
+    """Report unresolved sharing every five prompts, without automatic recovery."""
+    import importlib.util
+    import io
+    monkeypatch.syspath_prepend(str(REPO / "infra"))
+    import git_ops
+    spec = importlib.util.spec_from_file_location("sharing_reminder", HOOK)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    (tmp_path / ".teammode-active").touch()
+    (tmp_path / "team.config.json").write_text(json.dumps({
+        "members": [{"name": "alice"}], "team": {"locale": locale}}))
+    log = _my_log(tmp_path, "alice", _today_date_str())
+    log.parent.mkdir(parents=True)
+    log.write_text("Recent session work\n")
+    monkeypatch.setenv("TEAMMODE_HOME", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    def forbid_execution(*args, **kwargs):
+        pytest.fail("The prompt reminder must not execute Git or subprocesses.")
+
+    monkeypatch.setattr(git_ops, "run_git", forbid_execution)
+    monkeypatch.setattr(subprocess, "Popen", forbid_execution)
+    for number in range(1, 16):
+        detail = f"publication-failure-{number}"
+        if number <= 10:
+            git_ops.write_last_sync_error(str(tmp_path), detail)
+        else:
+            git_ops.clear_last_sync_error(str(tmp_path))
+        mtime = log.stat().st_mtime + 1
+        os.utime(log, (mtime, mtime))
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({
+            "event": "UserPromptSubmit", "agent": "codex", "prompt": "Continue"})))
+        assert hook.main() == 0
+        output = capsys.readouterr().out.strip()
+        if number in (5, 10):
+            context = json.loads(output)["hookSpecificOutput"]["additionalContext"]
+            assert detail in context
+            assert ("공유 미확인" if locale == "ko" else "Sharing not confirmed") in context
+            assert "미작성" not in context and "not written" not in context
+            assert "자동 복구" not in context and "retries recovery" not in context
+            assert "pull --rebase" not in context and "teammode.py" not in context
+        else:
+            assert output == ""
