@@ -56,6 +56,7 @@ def fake_repo(tmp_path):
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.name", "t")
     _git(root, "config", "user.email", "t@t")
+    (root / ".gitignore").write_text(".teammode-active\n", encoding="utf-8")
     (root / "init.txt").write_text("init\n")
     _git(root, "add", ".")
     _git(root, "commit", "-m", "initial")
@@ -129,7 +130,13 @@ def _run_native_edit(agent, tool, root):
 @pytest.mark.parametrize("remote_ahead", [False, True])
 def test_native_edit_without_pre_hook_commits_and_syncs(
         fake_repo, local_origin, tmp_path, agent, tool, remote_ahead):
-    """Normal host IDs need no removed PreToolUse hook to publish the edit."""
+    """A valid edit publishes every team-root change before rebasing and pushing."""
+    (fake_repo / "notes.md").write_text("base notes\n", encoding="utf-8")
+    (fake_repo / "remove.md").write_text("remove me\n", encoding="utf-8")
+    (fake_repo / "staged.md").write_text("base staged doc\n", encoding="utf-8")
+    _git(fake_repo, "add", "--", "notes.md", "remove.md", "staged.md")
+    _git(fake_repo, "commit", "-m", "add team docs")
+    _git(fake_repo, "push", "origin", "main")
     remote_before = _head(local_origin)
     if remote_ahead:
         peer = tmp_path / "peer"
@@ -142,8 +149,11 @@ def test_native_edit_without_pre_hook_commits_and_syncs(
 
     (fake_repo / ".teammode-active").touch()
     (fake_repo / "init.txt").write_text("edited\n", encoding="utf-8")
-    unrelated = fake_repo / "unrelated.env"
-    unrelated.write_text("leave this local\n", encoding="utf-8")
+    (fake_repo / "notes.md").write_text("dirty tracked notes\n", encoding="utf-8")
+    (fake_repo / "staged.md").write_text("already staged doc\n", encoding="utf-8")
+    _git(fake_repo, "add", "--", "staged.md")
+    (fake_repo / "remove.md").unlink()
+    (fake_repo / "new-doc.md").write_text("new team document\n", encoding="utf-8")
 
     proc = _run_native_edit(agent, tool, fake_repo)
 
@@ -151,15 +161,21 @@ def test_native_edit_without_pre_hook_commits_and_syncs(
     assert _head(fake_repo) != remote_before, proc.stderr
     assert _head(fake_repo) == _head(local_origin), proc.stderr
     assert _git(local_origin, "show", "main:init.txt").stdout == "edited\n"
-    assert _git(fake_repo, "show", "--format=", "--name-only", "HEAD").stdout == (
-        "init.txt\n")
+    assert set(_git(fake_repo, "show", "--format=", "--name-only", "HEAD").stdout.splitlines()) == {
+        "init.txt", "notes.md", "staged.md", "new-doc.md", "remove.md"}
     assert _git(fake_repo, "rev-list", "--left-right", "--count",
                 "HEAD...origin/main").stdout.strip() == "0\t0"
-    assert _git(fake_repo, "status", "--porcelain=v1", "--",
-                "unrelated.env").stdout == "?? unrelated.env\n"
-    assert unrelated.read_text(encoding="utf-8") == "leave this local\n"
+    assert _git(fake_repo, "status", "--porcelain=v1").stdout == ""
+    assert _git(local_origin, "show", "main:notes.md").stdout == (
+        "dirty tracked notes\n")
+    assert _git(local_origin, "show", "main:staged.md").stdout == (
+        "already staged doc\n")
+    assert _git(local_origin, "cat-file", "-e", "main:remove.md",
+                check=False).returncode != 0
+    assert _git(local_origin, "show", "main:new-doc.md").stdout == (
+        "new team document\n")
     assert _git(local_origin, "ls-tree", "--name-only", "main", "--",
-                "unrelated.env", ".teammode-active").stdout == ""
+                ".teammode-active").stdout == ""
     if remote_ahead:
         assert _git(local_origin, "show", "main:remote.md").stdout == (
             "peer update\n")
@@ -205,7 +221,7 @@ def test_auto_commit_no_marker_is_noop(fake_repo):
 
 
 def test_auto_commit_active_commits(fake_repo):
-    """.teammode-active 있으면 발동 — 지목 파일이 커밋된다."""
+    """.teammode-active 있으면 팀 루트 변경 전체를 커밋한다."""
     (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "doc.md").write_text("hello\n")
     before = _commit_count(fake_repo)
@@ -261,6 +277,60 @@ def test_auto_commit_relative_path_uses_hook_cwd_not_team_root_alias(
     assert "README.md" in _git(fake_repo, "status", "--short").stdout
 
 
+def test_auto_commit_accepts_absolute_team_file_from_external_cwd(
+        fake_repo, tmp_path):
+    """외부 프로젝트 cwd여도 절대경로가 팀 루트 파일이면 자동 커밋한다."""
+    (fake_repo / ".teammode-active").touch()
+    target = fake_repo / "team-doc.md"
+    target.write_text("team edit\n", encoding="utf-8")
+    external = tmp_path / "external-project"
+    external.mkdir()
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": [str(target)], "agent": "codex"}
+
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=external)
+
+    assert proc.returncode == 0
+    assert "team-doc.md" in _git(
+        fake_repo, "show", "--format=", "--name-only", "HEAD").stdout
+
+
+@pytest.mark.parametrize("raw", ["missing-edit.md", ":(top,glob)**"])
+def test_auto_commit_rejects_nonexistent_or_magic_trigger_without_sweeping(
+        fake_repo, raw):
+    """없는 파일과 Git pathspec magic은 루트 전체 자동 커밋을 발동하지 않는다."""
+    (fake_repo / ".teammode-active").touch()
+    dirty = fake_repo / "unrelated.md"
+    dirty.write_text("keep local\n", encoding="utf-8")
+    before = _head(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": [raw], "agent": "codex"}
+
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=fake_repo)
+
+    assert proc.returncode == 0
+    assert _head(fake_repo) == before
+    assert "unrelated.md" in _git(fake_repo, "status", "--short").stdout
+
+
+def test_auto_commit_accepts_staged_tracked_deletion_trigger(fake_repo):
+    """이미 stage된 tracked deletion도 유효한 파일 편집 trigger다."""
+    (fake_repo / ".teammode-active").touch()
+    deleted = fake_repo / "init.txt"
+    deleted.unlink()
+    _git(fake_repo, "add", "--", "init.txt")
+    before = _commit_count(fake_repo)
+    payload = {"event": "PostToolUse", "action": "file_edit",
+               "files": [str(deleted)], "agent": "codex"}
+
+    proc = _run_hook(AUTO_COMMIT, payload, fake_repo, cwd=fake_repo)
+
+    assert proc.returncode == 0
+    assert _commit_count(fake_repo) == before + 1
+    assert _git(fake_repo, "show", "--format=", "--name-status", "HEAD").stdout == (
+        "D\tinit.txt\n")
+
+
 def test_auto_commit_commits_deleted_repo_file_with_literal_pathspec(fake_repo):
     """literal 검증이 삭제 파일의 auto-commit 을 막지 않는다."""
     (fake_repo / ".teammode-active").write_text("")
@@ -276,13 +346,11 @@ def test_auto_commit_commits_deleted_repo_file_with_literal_pathspec(fake_repo):
         "D\tinit.txt\n")
 
 
-def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
-    """add -A 금지: 정규스키마가 지목한 파일만 스테이징, 무관/토큰 파일 제외."""
+def test_auto_commit_stages_all_team_root_changes(fake_repo):
+    """유효한 파일 편집이 확인되면 팀 루트 전체 변경을 자동 커밋한다."""
     (fake_repo / ".teammode-active").write_text("")
     (fake_repo / "target.md").write_text("commit me\n")
-    # 토큰패턴/무관 파일들 — 함께 커밋되면 안 된다.
-    _ghp_dummy = "ghp" + "_SHOULD_NOT_BE_COMMITTED"
-    (fake_repo / "secret.token").write_text(_ghp_dummy + "\n")
+    (fake_repo / "added.md").write_text("also commit me\n")
     (fake_repo / "unrelated.txt").write_text("leave me\n")
     payload = {"event": "PostToolUse", "action": "file_edit",
                "files": [str(fake_repo / "target.md")], "agent": "claude"}
@@ -290,11 +358,9 @@ def test_auto_commit_stages_only_named_files_not_add_all(fake_repo):
     assert proc.returncode == 0
     committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
     assert "target.md" in committed
-    assert "secret.token" not in committed
-    assert "unrelated.txt" not in committed
-    # 무관 파일들은 여전히 untracked 로 남아있다(스테이징 안 됨).
-    status = _git(fake_repo, "status", "--short").stdout
-    assert "secret.token" in status and "unrelated.txt" in status
+    assert "added.md" in committed
+    assert "unrelated.txt" in committed
+    assert _git(fake_repo, "status", "--porcelain=v1").stdout == ""
 
 
 def test_auto_commit_rejects_pathspec_magic_without_staging_secret(fake_repo):
@@ -353,14 +419,14 @@ def test_auto_commit_pushes_nonblocking(fake_repo, monkeypatch, tmp_path):
     rc = mod.main()
     assert rc == 0
     assert calls.get("push") is True
-    assert calls.get("paths") == [":(literal)p.md"]
+    assert calls.get("paths") == ["."]
     # The local commit survives the non-blocking publication failure.
     committed = _git(fake_repo, "show", "--name-only", "HEAD").stdout
     assert "p.md" in committed
     assert go.read_last_sync_error(str(fake_repo))
 
 
-def test_auto_commit_retries_index_lock_then_publishes_scoped_edit(
+def test_auto_commit_retries_index_lock_then_publishes_root_changes(
         fake_repo, local_origin, monkeypatch):
     """A transient index lock must not strand a normal identified edit."""
     import importlib.util
@@ -407,10 +473,9 @@ def test_auto_commit_retries_index_lock_then_publishes_scoped_edit(
     assert _head(fake_repo) != before
     assert _head(fake_repo) == _head(local_origin)
     assert _git(local_origin, "show", "main:init.txt").stdout == "edited\n"
-    assert _git(fake_repo, "show", "--format=", "--name-only", "HEAD").stdout == (
-        "init.txt\n")
-    assert _git(fake_repo, "status", "--porcelain=v1", "--",
-                "unrelated.env").stdout == "?? unrelated.env\n"
+    assert set(_git(fake_repo, "show", "--format=", "--name-only", "HEAD").stdout.splitlines()) == {
+        "init.txt", "unrelated.env"}
+    assert _git(fake_repo, "status", "--porcelain=v1").stdout == ""
     assert unrelated.read_text(encoding="utf-8") == "leave this local\n"
     assert go.read_last_sync_error(str(fake_repo)) == ""
 

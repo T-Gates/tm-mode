@@ -3,7 +3,8 @@
 
 스펙 §2.10: 이 스크립트는 **정규 입력 스키마(§2.10)만 인지**하며 특정 에이전트를 모른다.
 normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다. file_edit 발동 시,
-정규스키마가 **지목한 파일만** 스테이징해 팀 레포에 자동 커밋하고 전경 push 한다.
+정규스키마에 유효한 **팀 레포 내부 파일**이 있으면 팀 루트의 모든 변경을
+스테이징해 자동 커밋하고 전경 push 한다(.gitignore 준수).
 
 정규 입력(stdin):
   { "event": "PostToolUse", "action": "file_edit",
@@ -22,13 +23,14 @@ normalize 심(§2.10)이 원어를 정규형으로 바꿔 stdin 으로 넘긴다
   - **자동 push(6/23 철학)**: do_commit(push=True) — "원격 동기화는 사람 결정" 폐기.
     팀 레포는 공유 자산이라 매 자동 커밋 즉시 push 한다. **push 실패는 비차단** —
     do_commit 이 push 실패해도 로컬 커밋을 보존(ok=True·pushed=False)하고 hook 은 exit 0.
-  - **main 즉시 동기화(#128)**: do_commit 이 scoped commit 뒤 main 전용 fetch →
+  - **main 즉시 동기화(#128)**: do_commit 이 팀 루트 커밋 뒤 main 전용 fetch →
     pull --rebase → push 를 한 번에 수행한다. 실패는 last-sync-error 로 남고 다음
     SessionStart가 Git 상태만 보고 다시 시도한다.
   - **동기화 실패 가시화**: 비차단은 유지하되 **조용히 묻지 않는다**. 로컬 커밋은
     보존하고 sanitized detail을 stderr에 출력한다.
-  - **add -A 금지(P1-4)**: do_commit 에 paths= 로 정규스키마가 지목한 `files` 만 넘긴다.
-    무차별 스테이징(add -A)은 토큰패턴 파일·무관 변경까지 끌어와 오염·유출 위험.
+  - **팀 루트 전체 커밋**: repo 내부 `files` 검증은 발동 조건이며 커밋 범위가 아니다.
+    do_commit 에 paths=["."] 를 넘겨 신규·수정·삭제·기존 staged 변경을 포함한다.
+    팀 밖 파일 편집만으로는 발동하지 않으며 Git ignore 규칙을 따른다.
   - **실패 비차단**: 어떤 예외도 삼키고 항상 exit 0. 자동 커밋·push 실패가 작업을 막지 않는다.
 """
 from __future__ import annotations
@@ -117,13 +119,41 @@ def _warn_if_stale_home(root: str) -> None:
         pass  # 경고 실패가 훅을 막지 않는다(철칙: 비차단)
 
 
+def _tracked_deleted_file(root: str, relative: str, literal: str) -> bool:
+    """없는 경로는 index 또는 HEAD의 정확한 tracked 파일일 때만 허용한다."""
+    try:
+        indexed = subprocess.run(
+            ["git", "-C", root, "ls-files", "--cached", "-z", "--", literal],
+            capture_output=True, timeout=5, check=False)
+        if indexed.returncode != 0:
+            return False
+        encoded = os.fsencode(relative)
+        if encoded in indexed.stdout.split(b"\0"):
+            return True
+        # staged deletion은 index에서 사라지므로 HEAD의 blob도 확인한다.
+        head = subprocess.run(
+            ["git", "-C", root, "ls-tree", "-r", "-z", "HEAD", "--", literal],
+            capture_output=True, timeout=5, check=False)
+        if head.returncode != 0:
+            return False
+        for entry in head.stdout.split(b"\0"):
+            metadata, separator, path = entry.partition(b"\t")
+            columns = metadata.split()
+            if separator and path == encoded and len(columns) == 3:
+                return columns[1] == b"blob"
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return False
+
+
 def _literal_repo_pathspecs(root: str, files) -> list[str]:
     """정규 hook 파일을 repo 내부 Git literal pathspec 으로 제한한다.
 
     ``--`` 는 option 만 막고 ``:(top,glob)**`` 같은 Git pathspec magic 은 막지 못한다.
     따라서 절대경로 또는 hook cwd 기준 상대경로를 repo 내부·비디렉터리로 검증한 뒤
-    ``:(literal)`` 로 전달한다.
-    삭제된 파일도 realpath/relpath 만으로 허용해 deletion auto-commit 을 보존한다.
+    ``:(literal)`` pathspec 목록으로 반환한다. 이 목록은 발동 검증에만 사용한다.
+    실제 파일 또는 index/HEAD에 추적된 삭제 파일만 허용한다. 없는 임의 경로는
+    발동시키지 않으며 tracked 조회 오류·timeout도 no-op으로 처리한다.
     """
     root_real = os.path.realpath(root)
     paths: list[str] = []
@@ -143,7 +173,12 @@ def _literal_repo_pathspecs(root: str, files) -> list[str]:
         relative = os.path.relpath(candidate, root_real)
         if relative == os.pardir or relative.startswith(os.pardir + os.sep):
             continue
-        literal = ":(literal)" + relative.replace(os.sep, "/")
+        relative = relative.replace(os.sep, "/")
+        literal = ":(literal)" + relative
+        if not os.path.isfile(candidate):
+            if os.path.lexists(candidate) or not _tracked_deleted_file(
+                    root, relative, literal):
+                continue
         if literal not in seen:
             seen.add(literal)
             paths.append(literal)
@@ -177,28 +212,28 @@ def main() -> int:
         return 0  # git_ops 부재 → 무동작(실패 무해)
 
     try:
-        # ── 3. 정규스키마가 지목한 파일만 스테이징 (add -A 금지) ──
+        # ── 3. 팀 레포 내부 파일 편집인지 검증 — 발동 조건만 결정 ──
         files = data.get("files") or []
         # 정규화된 절대/상대경로 중 repo 내부 파일만 literal pathspec 으로 바꾼다.
-        paths = _literal_repo_pathspecs(root, files)
-        if not paths:
+        valid_paths = _literal_repo_pathspecs(root, files)
+        if not valid_paths:
             return 0
 
         kst = timezone(timedelta(hours=9))
         stamp = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         message = f"chore(teammode): auto-commit {stamp} KST"
 
-        # ── 4. paths 만 스테이징 + main 즉시 동기화(#128) ──
+        # ── 4. 팀 루트 전체 스테이징 + main 즉시 동기화(#128) ──
         # The core acquires and releases its own mutex for commit and sync.
         result = _git_ops.do_commit(
-            root, message=message, push=True, paths=paths)
+            root, message=message, push=True, paths=["."])
 
         # index.lock 경합(다른 git 프로세스와 겹침)은 1s 후 1회만 재시도(#45).
         if (not getattr(result, "committed", False)
                 and "index.lock" in (getattr(result, "detail", "") or "")):
             _time.sleep(1)
             result = _git_ops.do_commit(
-                root, message=message, push=True, paths=paths)
+                root, message=message, push=True, paths=["."])
 
         # ── 5. core 결과만 표면화 — last-sync-error 수명주기는 git_ops 소유 ──
         if getattr(result, "committed", False):

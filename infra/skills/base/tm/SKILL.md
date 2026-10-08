@@ -7,7 +7,7 @@ description: Use when the user wants to enable or disable team mode. Triggers on
 
 ## Overview
 
-An L1 core skill that turns team mode on or off. ON updates the repo, wires the engine, and injects team context. While team mode is active, session-log edits are scoped, committed, and published automatically; OFF verifies that save path before removing the hooks.
+An L1 core skill that turns team mode on or off. ON updates the repo, wires the engine, and injects team context. While team mode is active, a valid edit inside the team repo automatically commits and publishes all team-root changes, including already staged changes, respecting `.gitignore`; OFF verifies that save path before removing the hooks.
 
 ## When to Use
 
@@ -18,7 +18,7 @@ An L1 core skill that turns team mode on or off. ON updates the repo, wires the 
 
 - Write code, create issues, connect services, or automatically call other skills — this skill only toggles team mode.
 - Query issue trackers, calendars, or chat (L2 services) — those are outside the L1 core scope. Once L2 services are connected, other skills handle them.
-- Push unrelated code or force-push. Automatic scoped commits are limited to files named by the active hook; main sync never rewrites remote history.
+- Commit changes in an external project repo or force-push. Only a valid edit inside the active team repo triggers automatic publication of all team-root changes; main sync never rewrites remote history.
 
 ## Environment
 
@@ -92,7 +92,7 @@ An L1 core skill that turns team mode on or off. ON updates the repo, wires the 
    - `<name>`: the English name confirmed with the user. If it has not been confirmed, ask first, using `git config user.name` only as a suggested value.
    - Content: summarize the session work (see "Session Log Format" below).
 
-2. **Verify main sync / fallback commit**: The Edit/Write in step 1 normally triggers the active auto-commit hook, which commits only the named session-log file and immediately syncs main. If the session-log path is still modified or untracked after the hook returns, use this scoped fallback:
+2. **Verify main sync / fallback commit**: The Edit/Write in step 1 normally triggers the active auto-commit hook, which commits all team-root changes (including already staged changes, respecting `.gitignore`) and immediately syncs main. If the session-log path is still modified or untracked after the hook returns, use this scoped fallback:
    ```bash
    python3 infra/teammode.py commit --root . --paths "memory/team/sessions/<name>/<date>.md" --message "session: <이름> <날짜>" --push
    ```
