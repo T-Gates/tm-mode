@@ -8,6 +8,10 @@ When `tm on` detects that upstream's `NOTICE.md` differs from your local copy, t
 
 ---
 
+## 2026-10-08
+
+- **Team-root automatic commits**: a valid file edit inside the active team repo now commits all team-root changes, including new, modified, deleted, and already staged files, respecting `.gitignore`, then syncs main. External-project edits alone do not trigger publication; manual `commit --paths` stays scoped.
+
 ## 2026-07-18
 
 - **Pending publication survives external rebase**: when a supported startup reconcile rewrites a locally pending commit, tm-mode proves the old patch set in current history, advances the pending ledger to the current HEAD, and finishes with an ordinary push instead of getting stuck at `pending-history-changed`.

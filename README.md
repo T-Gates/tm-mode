@@ -115,7 +115,7 @@ Pile up product specs, team rules, decisions, and domain knowledge as markdown i
 | Strength | One line |
 |---|---|
 | 📝 **Personal asset** | Reasons behind decisions, blockers, and daily work remain on record — material for retrospectives, résumés, and blog posts. |
-| 🔒 **Safety first** | Tokens stay in a local vault, real config writes are gated behind `--yes`, and automatic session-log publication is path-scoped, bounded, and recoverable. |
+| 🔒 **Safety first** | Tokens stay in a local vault, real config writes are gated behind `--yes`, and automatic publication requires a valid edit inside the team repo, commits all team-root changes under Git ignore rules, and uses bounded main sync. |
 | 🧩 **No per-agent redefinition** | Put a skill once in `infra/skills/base/` and it deploys to both Claude and Codex. |
 | 🎚️ **Skill management** | Define and share the team's skills in one place; install only the ones you want. |
 | 🔏 **Log privacy** | Session logs are guided to record team work only, and the recording point is explicit every session. |
@@ -214,7 +214,7 @@ Spec: [docs/spec/](docs/spec/README.md) — the single authoritative SPEC v0.4 (
 | `infra/install.py` + `install_lib.py` | **Bootstrap.** Hook wiring, skill deploy, env. `--dry-run`/`--yes` gates | `tests/test_install_*.py` |
 | `infra/git_ops.py` | **Shared git ops** + sync planning (validation plan/apply) — never raises, timeouts, killpg | `tests/test_git_ops.py` |
 | `infra/agents/<name>/` | **Adapters.** Render per-agent config (Claude settings.json · Codex config.toml) | `infra/hooks/manifest.json`(single source), `events.json` |
-| `infra/hooks/` | **Shared hooks.** session-start(context injection + main sync)·auto-commit(scoped commit + main sync); Git transactions use a process-held OS lock | per-hook tests |
+| `infra/hooks/` | **Shared hooks.** session-start(context injection + main sync)·auto-commit(team-root-wide commit + main sync); Git transactions use a process-held OS lock | per-hook tests |
 | `infra/skills/` | **Skills.** base(deployed to both agents)·core(tm-onboard·tm-connect·tm-memory…)·util. **Engine = mechanical, skills = judgment** | `docs/spec/skills.md` |
 | `conformance/check.py` | **Conformance.** Machine-checks that an instance honors the spec contracts | golden scenarios |
 | `providers/*.json` | **L2 provider packs.** Data for service slots (issues/chat/docs/calendar) | `infra/skills/core/tm-connect/` |
@@ -232,7 +232,7 @@ session start
 while working
   └ user-prompt-submit hook: session-log reminder (1–3 lines)
 recording
-  └ agent appends the session log → auto-commit hook: scoped local commit
+  └ agent appends the session log → auto-commit hook: all team-root changes committed (.gitignore respected)
     + main sync (fetch → pull --rebase if behind → push)
       └ sync failure: preserve the local commit + record last-sync-error
 ```
@@ -369,7 +369,7 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
 | 강점 | 한 줄 |
 |---|---|
 | 📝 **개인 자산** | 결정의 이유·막힌 점·그날 한 일이 남아 회고·이력서·자기소개서·블로그 글감이 된다. |
-| 🔒 **안전 우선** | 토큰은 로컬 금고, 실 설정 쓰기는 `--yes` 게이트, 세션로그 자동 발행은 경로·시간·복구 범위를 제한. |
+| 🔒 **안전 우선** | 토큰은 로컬 금고, 실 설정 쓰기는 `--yes` 게이트, 유효한 팀 레포 내부 편집 시 Git ignore 규칙에 따라 팀 루트 전체 변경을 커밋하고 제한된 시간 안에 main 동기화. |
 | 🧩 **에이전트별 재정의 불필요** | 스킬을 `infra/skills/base/`에 한 번 두면 Claude·Codex 양쪽에 자동 배포. |
 | 🎚️ **스킬 관리** | 팀이 쓸 스킬을 한 곳에서 정의·공유하고, 원하는 스킬만 골라 설치. |
 | 🔏 **로그 프라이버시** | 세션로그엔 팀 작업만 기록하도록 안내되고, 기록 시점이 매 세션 명시된다. |
@@ -425,7 +425,7 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
 | `infra/install.py` + `install_lib.py` | **부트스트랩.** 훅 배선·스킬 배포·env 주입. `--dry-run`/`--yes` 게이트 | `tests/test_install_*.py`, golden 시나리오 |
 | `infra/git_ops.py` | **git 공통.** fetch/pull/commit/push + 동기화 판정(validation plan/apply) — 전부 무raise·타임아웃·killpg | `tests/test_git_ops.py`, `test_validation_sync.py` |
 | `infra/agents/<name>/` | **어댑터.** 에이전트별 설정 파일 렌더(Claude settings.json · Codex config.toml). 공통 훅을 각 에이전트 이벤트에 배선 | `infra/hooks/manifest.json`(훅 선언 단일 소스), `events.json` |
-| `infra/hooks/` | **공통 훅.** session-start(맥락 주입 + main 동기화)·auto-commit(경로 한정 커밋 + main 동기화). Git 트랜잭션은 프로세스가 보유한 OS lock으로 보호. 에이전트 무관 — 정규화된 stdin 계약 | `manifest.json`, 훅별 테스트 |
+| `infra/hooks/` | **공통 훅.** session-start(맥락 주입 + main 동기화)·auto-commit(팀 루트 전체 커밋 + main 동기화). Git 트랜잭션은 프로세스가 보유한 OS lock으로 보호. 에이전트 무관 — 정규화된 stdin 계약 | `manifest.json`, 훅별 테스트 |
 | `infra/skills/` | **스킬.** base(양 에이전트 공통 배포)·core(tm-onboard·tm-connect·tm-memory…)·util(인스턴스 이식용). **엔진=기계, 스킬=판단** — 판단이 필요한 일은 스킬 문서가, 기계적 실행은 엔진 동사가 담당 | `docs/spec/skills.md` |
 | `conformance/check.py` | **호환 검사.** 인스턴스가 스펙 계약을 지키는지 기계 검증 | golden 시나리오 |
 | `providers/*.json` | **L2 provider 팩.** 서비스 연결(issues/chat/docs/calendar 슬롯)의 발급 안내·MCP 실행정보 데이터 | `infra/skills/core/tm-connect/` |
@@ -442,7 +442,7 @@ tm-mode init           # 템플릿 복제로 새 레포 생성 → 클론 → �
 작업 중
   └ user-prompt-submit 훅: 세션로그 미작성 리마인드(1~3줄)
 세션 중 기록
-  └ 에이전트가 세션로그 이어쓰기 → auto-commit 훅: 경로 한정 로컬 커밋
+  └ 에이전트가 세션로그 이어쓰기 → auto-commit 훅: 팀 루트 전체 변경 커밋(.gitignore 준수)
     + main 동기화(fetch → 뒤처졌으면 pull --rebase → push)
       └ 동기화 실패: 로컬 커밋 보존 + last-sync-error 기록
 ```
